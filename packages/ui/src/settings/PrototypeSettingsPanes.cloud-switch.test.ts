@@ -1,9 +1,11 @@
 // @vitest-environment happy-dom
 //
-// usage-only-pricing US-016: Settings › Sync has one clearly labelled Cloud
-// switch. Off shows a plain "Cloud is off" state with how to turn it back on,
-// the per-sync switches stay, and the choice comes from the host (persisted
-// outside the app bundle) with a cache-first paint.
+// usage-only-pricing US-016: Settings › Sync lists the personal vault and
+// every company vault, each with its own switch, plus one "Turn off all cloud
+// sync" switch. Each switch says what turning it off does; an off vault shows
+// "Sync is off for <vault>" and how to turn it back on. The choices come from
+// the host (persisted outside the app bundle), with a cache-first paint for
+// the all-off switch.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -37,6 +39,11 @@ function cloudAdapter(options: {
     NonNullable<PlatformAdapter["sync"]["setCloudEnabled"]>
   >;
   withSwitch?: boolean;
+  withVaultSwitches?: boolean;
+  vaultSwitches?: { personalEnabled: boolean; companies: Record<string, boolean> };
+  setVaultSyncEnabled?: (vault: string, enabled: boolean) => ReturnType<
+    NonNullable<PlatformAdapter["sync"]["setVaultSyncEnabled"]>
+  >;
 }) {
   // The host's saved settings: a successful switch change is what the next
   // settings read returns, as with the real settings file.
@@ -48,7 +55,10 @@ function cloudAdapter(options: {
     if (result.ok) saved.cloudPaused = !result.value.cloudEnabled;
     return result;
   });
-  const updateSettings = vi.fn(async () => ok(undefined));
+  const updateSettings = vi.fn(async (patch: Record<string, unknown>) => {
+    Object.assign(saved, patch);
+    return ok(undefined);
+  });
   const sync: Record<string, unknown> = {
     getSyncStatus: async () => ok({}),
     daemonSyncStatus: async () => ok(null),
@@ -58,6 +68,25 @@ function cloudAdapter(options: {
   if (options.withSwitch !== false) {
     sync.setCloudEnabled = setCloudEnabled;
     sync.getCloudEnabled = async () => ok(saved.cloudPaused !== true);
+  }
+  const vaults = {
+    personalEnabled: options.vaultSwitches?.personalEnabled ?? true,
+    companies: { ...(options.vaultSwitches?.companies ?? {}) },
+  };
+  const setVaultSyncEnabled = vi.fn(async (vault: string, enabled: boolean) => {
+    const result = options.setVaultSyncEnabled
+      ? await options.setVaultSyncEnabled(vault, enabled)
+      : ok({ vault, enabled, notice: null });
+    if (result.ok) {
+      if (vault === "personal") vaults.personalEnabled = enabled;
+      else vaults.companies[vault] = enabled;
+    }
+    return result;
+  });
+  if (options.withVaultSwitches !== false) {
+    sync.setVaultSyncEnabled = setVaultSyncEnabled;
+    sync.getVaultSyncSwitches = async () =>
+      ok({ allOff: saved.cloudPaused === true, ...vaults, companies: { ...vaults.companies } });
   }
   const adapter = {
     kind: "desktop",
@@ -71,7 +100,7 @@ function cloudAdapter(options: {
     meetings: { listAccounts: async () => ok([]) },
     sync,
   } as unknown as PlatformAdapter;
-  return { adapter, setCloudEnabled, updateSettings };
+  return { adapter, setCloudEnabled, setVaultSyncEnabled, updateSettings };
 }
 
 async function flush(): Promise<void> {
@@ -81,12 +110,40 @@ async function flush(): Promise<void> {
   }
 }
 
-function mountSync(adapter: PlatformAdapter) {
+function workspace(over: Record<string, unknown>) {
+  return {
+    slug: "acme",
+    displayName: "Acme",
+    kind: "company",
+    state: "synced",
+    cloudUid: "cmp_acme",
+    bucketName: null,
+    hasLocalFolder: true,
+    localPath: null,
+    membershipStatus: "active",
+    role: "member",
+    lastSyncedAt: null,
+    brokenReason: null,
+    invitedBy: null,
+    invitedAt: null,
+    ...over,
+  };
+}
+
+const COMPANIES = [
+  workspace({ slug: "personal", displayName: "Personal", kind: "personal", state: "personal", cloudUid: "prs_me" }),
+  workspace({ slug: "zeta", displayName: "Zeta", cloudUid: "cmp_zeta" }),
+  workspace({ slug: "acme", displayName: "Acme" }),
+  workspace({ slug: "local-co", displayName: "Local Co", state: "local-only", cloudUid: null }),
+  workspace({ slug: "invited", displayName: "Invited", cloudUid: "cmp_inv", membershipStatus: "pending" }),
+];
+
+function mountSync(adapter: PlatformAdapter, companies: unknown[] = []) {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(PrototypeSettingsPanes, {
     target: host,
-    props: { section: "sync", adapter, companies: [] },
+    props: { section: "sync", adapter, companies: companies as never[] },
   });
 }
 
@@ -101,14 +158,14 @@ function switchLabels(): string[] {
 }
 
 describe("Settings Cloud switch (US-016)", () => {
-  it("shows one labelled Cloud switch above the per-sync switches, which stay", async () => {
+  it("shows one Turn off all cloud sync switch above the vault and per-sync switches", async () => {
     const { adapter } = cloudAdapter({ settings: { cloudPaused: false } });
     mountSync(adapter);
     await flush();
 
     const labels = switchLabels();
-    expect(labels.filter((label) => label === "Cloud")).toHaveLength(1);
-    expect(labels[0]).toBe("Cloud");
+    expect(labels.filter((label) => label === "Turn off all cloud sync")).toHaveLength(1);
+    expect(labels[0]).toBe("Turn off all cloud sync");
     for (const kept of [
       "Sync on launch",
       "Auto-sync",
@@ -117,11 +174,12 @@ describe("Settings Cloud switch (US-016)", () => {
     ]) {
       expect(labels).toContain(kept);
     }
-    expect(q("settings-cloud-toggle")?.getAttribute("aria-checked")).toBe("true");
+    // Off by default: all cloud sync is on.
+    expect(q("settings-cloud-toggle")?.getAttribute("aria-checked")).toBe("false");
     expect(q("settings-cloud-off")).toBeNull();
   });
 
-  it("turning Cloud off calls the host once, shows the off state and how to turn it back on", async () => {
+  it("turning all cloud sync off calls the host once, shows the off state and how to turn it back on", async () => {
     const { adapter, setCloudEnabled, updateSettings } = cloudAdapter({
       settings: { cloudPaused: false },
     });
@@ -129,7 +187,7 @@ describe("Settings Cloud switch (US-016)", () => {
     const onChange = (event: Event) =>
       announced.push((event as CustomEvent<{ cloudEnabled: boolean }>).detail.cloudEnabled);
     window.addEventListener(CLOUD_SWITCH_EVENT, onChange);
-    mountSync(adapter);
+    mountSync(adapter, COMPANIES);
     await flush();
 
     q("settings-cloud-toggle")!.click();
@@ -141,34 +199,41 @@ describe("Settings Cloud switch (US-016)", () => {
     expect(updateSettings).not.toHaveBeenCalledWith(
       expect.objectContaining({ cloudPaused: expect.anything() }),
     );
-    expect(q("settings-cloud-toggle")?.getAttribute("aria-checked")).toBe("false");
+    expect(q("settings-cloud-toggle")?.getAttribute("aria-checked")).toBe("true");
     const off = q("settings-cloud-off");
-    expect(off?.textContent).toContain("Cloud is off");
-    expect(off?.textContent).toContain("turn Cloud on above");
-    expect(off?.textContent).toContain("Sign-in, messages, and deploys still work");
+    expect(off?.textContent).toContain("Cloud sync is off for every vault");
+    expect(off?.textContent).toContain("switch off Turn off all cloud sync");
+    expect(off?.textContent).toContain("Sign-in, messages, deploys and local HQ keep working");
     expect(q("settings-cloud-per-sync-note")?.textContent).toContain(
-      "apply when Cloud is on",
+      "apply when cloud sync is on",
     );
+    // Every vault switch reads off and is held until all cloud sync is back on.
+    for (const id of ["personal", "acme", "zeta"]) {
+      const toggle = q(`settings-vault-toggle-${id}`) as HTMLButtonElement;
+      expect(toggle.getAttribute("aria-checked")).toBe("false");
+      expect(toggle.disabled).toBe(true);
+    }
+    expect(q("settings-vault-row-acme")?.textContent).toContain("Off while all cloud sync is off.");
     expect(announced).toEqual([false]);
     expect(memoryStorage.getItem(CLOUD_SWITCH_CACHE_KEY)).toBe("off");
     window.removeEventListener(CLOUD_SWITCH_EVENT, onChange);
   });
 
-  it("paints the saved off state from the host and turns Cloud back on", async () => {
+  it("paints the saved all-off state from the host and turns cloud sync back on", async () => {
     const { adapter, setCloudEnabled } = cloudAdapter({
       settings: { cloudPaused: true },
     });
     mountSync(adapter);
     await flush();
 
-    expect(q("settings-cloud-toggle")?.getAttribute("aria-checked")).toBe("false");
+    expect(q("settings-cloud-toggle")?.getAttribute("aria-checked")).toBe("true");
     expect(q("settings-cloud-off")).not.toBeNull();
 
     q("settings-cloud-toggle")!.click();
     await flush();
 
     expect(setCloudEnabled).toHaveBeenCalledWith(true);
-    expect(q("settings-cloud-toggle")?.getAttribute("aria-checked")).toBe("true");
+    expect(q("settings-cloud-toggle")?.getAttribute("aria-checked")).toBe("false");
     expect(q("settings-cloud-off")).toBeNull();
   });
 
@@ -186,11 +251,11 @@ describe("Settings Cloud switch (US-016)", () => {
     };
     mountSync(adapter);
     await tick();
-    expect(q("settings-cloud-toggle")?.getAttribute("aria-checked")).toBe("false");
+    expect(q("settings-cloud-toggle")?.getAttribute("aria-checked")).toBe("true");
     expect(q("settings-cloud-off")).not.toBeNull();
     release();
     await flush();
-    expect(q("settings-cloud-toggle")?.getAttribute("aria-checked")).toBe("false");
+    expect(q("settings-cloud-toggle")?.getAttribute("aria-checked")).toBe("true");
   });
 
   it("rolls the switch back and shows an actionable error when the host refuses", async () => {
@@ -204,7 +269,7 @@ describe("Settings Cloud switch (US-016)", () => {
     q("settings-cloud-toggle")!.click();
     await flush();
 
-    expect(q("settings-cloud-toggle")?.getAttribute("aria-checked")).toBe("true");
+    expect(q("settings-cloud-toggle")?.getAttribute("aria-checked")).toBe("false");
     expect(q("settings-cloud-off")).toBeNull();
     const error = q("settings-native-error")?.textContent ?? "";
     expect(error).toContain("Cloud wasn’t saved. Try again.");
@@ -229,12 +294,140 @@ describe("Settings Cloud switch (US-016)", () => {
     );
   });
 
-  it("hides the switch on a host that has no Cloud command", async () => {
+  it("hides the all-off switch on a host that has no Cloud command", async () => {
     const { adapter } = cloudAdapter({ withSwitch: false });
     mountSync(adapter);
     await flush();
     expect(q("settings-cloud-row")).toBeNull();
     expect(switchLabels()).toContain("Auto-sync");
+    expect(switchLabels()).toContain("Sync personal vault");
+  });
+});
+
+describe("Settings vault switches (US-016)", () => {
+  it("lists the personal vault and every cloud company vault, each with its own switch and plain copy", async () => {
+    const { adapter } = cloudAdapter({ settings: { cloudPaused: false } });
+    mountSync(adapter, COMPANIES);
+    await flush();
+
+    const rows = [...host.querySelectorAll('[data-testid^="settings-vault-row-"]')].map(
+      (el) => el.getAttribute("data-testid"),
+    );
+    // Personal first, then companies by name. Local-only and pending
+    // companies have no cloud vault to sync yet.
+    expect(rows).toEqual([
+      "settings-vault-row-personal",
+      "settings-vault-row-acme",
+      "settings-vault-row-zeta",
+    ]);
+    const acme = q("settings-vault-row-acme")?.textContent ?? "";
+    expect(acme).toContain("no more sync charges for this vault");
+    expect(acme).toContain("Files stay on this computer");
+    expect(acme).toContain("Teammates stop getting this computer's changes");
+    expect(q("settings-vault-row-personal")?.textContent).toContain(
+      "no more sync charges for this vault",
+    );
+    expect(q("settings-vault-sync")?.textContent).toContain(
+      "This only changes this computer. Teammates keep syncing.",
+    );
+    for (const id of ["personal", "acme", "zeta"]) {
+      expect(q(`settings-vault-toggle-${id}`)?.getAttribute("aria-checked")).toBe("true");
+    }
+  });
+
+  it("turning one company vault off calls the host for that vault only and shows Sync is off for it", async () => {
+    const { adapter, setVaultSyncEnabled, setCloudEnabled } = cloudAdapter({
+      settings: { cloudPaused: false },
+    });
+    const changes: unknown[] = [];
+    const onChange = (event: Event) => changes.push((event as CustomEvent).detail);
+    window.addEventListener("hq:workspace-sync-enabled-changed", onChange);
+    mountSync(adapter, COMPANIES);
+    await flush();
+
+    q("settings-vault-toggle-acme")!.click();
+    await flush();
+
+    expect(setVaultSyncEnabled).toHaveBeenCalledTimes(1);
+    expect(setVaultSyncEnabled).toHaveBeenCalledWith("acme", false);
+    expect(setCloudEnabled).not.toHaveBeenCalled();
+    expect(q("settings-vault-toggle-acme")?.getAttribute("aria-checked")).toBe("false");
+    const off = q("settings-vault-off-acme")?.textContent ?? "";
+    expect(off).toContain("Sync is off for Acme");
+    expect(off).toContain("turn its switch back on");
+    // Personal and the other company keep syncing.
+    expect(q("settings-vault-toggle-personal")?.getAttribute("aria-checked")).toBe("true");
+    expect(q("settings-vault-toggle-zeta")?.getAttribute("aria-checked")).toBe("true");
+    expect(q("settings-vault-off-zeta")).toBeNull();
+    expect(changes).toEqual([{ slug: "acme", enabled: false }]);
+    window.removeEventListener("hq:workspace-sync-enabled-changed", onChange);
+  });
+
+  it("paints saved vault switches from the host and turns the personal vault back on", async () => {
+    const { adapter, setVaultSyncEnabled } = cloudAdapter({
+      settings: { cloudPaused: false, personalSyncEnabled: false },
+      vaultSwitches: { personalEnabled: false, companies: { zeta: false } },
+    });
+    mountSync(adapter, COMPANIES);
+    await flush();
+
+    expect(q("settings-vault-toggle-personal")?.getAttribute("aria-checked")).toBe("false");
+    expect(q("settings-vault-off-personal")?.textContent).toContain(
+      "Sync is off for your personal vault",
+    );
+    expect(q("settings-vault-toggle-zeta")?.getAttribute("aria-checked")).toBe("false");
+    expect(q("settings-vault-toggle-acme")?.getAttribute("aria-checked")).toBe("true");
+
+    q("settings-vault-toggle-personal")!.click();
+    await flush();
+    expect(setVaultSyncEnabled).toHaveBeenCalledWith("personal", true);
+    expect(q("settings-vault-toggle-personal")?.getAttribute("aria-checked")).toBe("true");
+    expect(q("settings-vault-off-personal")).toBeNull();
+  });
+
+  it("rolls a vault switch back with an actionable error when the host refuses", async () => {
+    const { adapter } = cloudAdapter({
+      settings: { cloudPaused: false },
+      setVaultSyncEnabled: async () => failure("error", "EACCES menubar.json"),
+    });
+    mountSync(adapter, COMPANIES);
+    await flush();
+
+    q("settings-vault-toggle-zeta")!.click();
+    await flush();
+
+    expect(q("settings-vault-toggle-zeta")?.getAttribute("aria-checked")).toBe("true");
+    expect(q("settings-vault-off-zeta")).toBeNull();
+    const error = q("settings-native-error")?.textContent ?? "";
+    expect(error).toContain("Zeta");
+    expect(error).not.toContain("EACCES");
+  });
+
+  it("shows the host's notice when background sync did not restart", async () => {
+    const { adapter } = cloudAdapter({
+      settings: { cloudPaused: false },
+      setVaultSyncEnabled: async (vault, enabled) =>
+        ok({ vault, enabled, notice: "Saved. Background sync did not restart yet; use Sync now or restart HQ." }),
+    });
+    mountSync(adapter, COMPANIES);
+    await flush();
+    q("settings-vault-toggle-acme")!.click();
+    await flush();
+    expect(q("settings-vault-notice")?.textContent).toContain("did not restart yet");
+  });
+
+  it("falls back to the personal settings write on a host without vault commands", async () => {
+    const { adapter, updateSettings } = cloudAdapter({
+      settings: { cloudPaused: false, personalSyncEnabled: true },
+      withVaultSwitches: false,
+    });
+    mountSync(adapter, COMPANIES);
+    await flush();
+
+    q("settings-vault-toggle-personal")!.click();
+    await flush();
+    expect(updateSettings).toHaveBeenCalledWith({ personalSyncEnabled: false });
+    expect(q("settings-vault-toggle-personal")?.getAttribute("aria-checked")).toBe("false");
   });
 
   it("styles the off state with a background highlight, no edge stripe, and 13px text", () => {

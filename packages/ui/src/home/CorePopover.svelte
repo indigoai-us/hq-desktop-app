@@ -246,6 +246,7 @@
       lastSyncLabel,
       syncCaption,
       uploadsPaused: uploadsPaused ?? [],
+      workspaces,
       notices: {
         errorMessage,
         errorCompany,
@@ -554,6 +555,7 @@
       companyName={usageCompany.name}
       role={usageCompany.role}
       {onopenurl}
+      onopensync={onopenCloudSettings}
     />
   {/if}
 
@@ -619,10 +621,10 @@
       data-kind="cloud-paused"
       role="status"
     >
-      <span class="core-paused-title">Cloud is off</span>
+      <span class="core-paused-title">Cloud sync is off</span>
       <span class="core-paused-body"
-        >Nothing uploads or downloads on this computer. Turn Cloud on in
-        Settings › Sync to sync again.</span
+        >Nothing uploads or downloads on this computer. To sync again, open
+        Settings › Sync and switch off Turn off all cloud sync.</span
       >
       {#if onopenCloudSettings}
         <div class="core-uploads-paused-actions">
@@ -630,6 +632,32 @@
             type="button"
             class="core-btn primary"
             data-testid="core-popover-cloud-settings"
+            onclick={() => onopenCloudSettings?.()}
+          ><RailIcon name="arrow-right" />
+            Open Sync settings
+          </button>
+        </div>
+      {/if}
+    </div>
+  {/if}
+
+  {#if model.syncOffNotice}
+    <div
+      class="core-paused"
+      data-testid="core-popover-vault-off"
+      data-kind="vault-off"
+      role="status"
+    >
+      <span class="core-paused-title">{model.syncOffNotice}</span>
+      <span class="core-paused-body"
+        >To sync again, turn the vault back on in Settings › Sync.</span
+      >
+      {#if onopenCloudSettings}
+        <div class="core-uploads-paused-actions">
+          <button
+            type="button"
+            class="core-btn primary"
+            data-testid="core-popover-vault-off-settings"
             onclick={() => onopenCloudSettings?.()}
           ><RailIcon name="arrow-right" />
             Open Sync settings

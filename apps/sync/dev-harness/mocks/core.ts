@@ -11,6 +11,8 @@ import { companyFlowAnswer, companyFlowEnabled, NOT_HANDLED } from '../company-f
 import { commandLineToolsAnswer } from '../clt-mocks';
 import { storageAnswer } from '../storage-mocks';
 
+const harnessVaultSwitches: Record<string, boolean> = {};
+
 const settings = {
   hqPath: '/Users/corey/Documents/HQ',
   // Cloud switch (US-016). Preview the off state with `&cloud=off`.
@@ -1655,6 +1657,19 @@ This final paragraph verifies spacing after a thematic break.
   set_cloud_enabled: (args) => {
     settings.cloudPaused = args?.enabled !== true;
     return { cloudEnabled: !settings.cloudPaused, notice: null };
+  },
+  // Per-vault switches (US-016).
+  get_vault_sync_switches: () => ({
+    allOff: settings.cloudPaused,
+    personalEnabled: settings.personalSyncEnabled,
+    companies: { ...harnessVaultSwitches },
+  }),
+  set_vault_sync_enabled: (args) => {
+    const vault = String(args?.vault ?? '');
+    const enabled = args?.enabled === true;
+    if (vault === 'personal') settings.personalSyncEnabled = enabled;
+    else harnessVaultSwitches[vault] = enabled;
+    return { vault, enabled, notice: null };
   },
   daemon_status: () => ({ running: true }),
   open_activity_log: () => null,

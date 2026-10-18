@@ -98,6 +98,13 @@
     writeCachedCloudEnabled,
   } from "./cloud-switch.js";
   import {
+    VAULT_SYNC_COPY,
+    vaultOffTitle,
+    vaultSyncRows,
+    type VaultSyncRow,
+  } from "./vault-sync.js";
+  import type { VaultSyncSwitches } from "@hq/platform";
+  import {
     EMPTY_LIVE_SYNC,
     lastSyncLabelFromLive,
     readLiveSyncStatus,
@@ -288,6 +295,14 @@
   // reconciled with the host's saved setting.
   let cloudEnabled = $state<boolean>(readCachedCloudEnabled() ?? true);
   let cloudNotice = $state<string | null>(null);
+  // Per-vault switches (US-016). The host's saved values, plus switches moved
+  // in this session so a row repaints before the workspace list re-reads.
+  let vaultSwitches = $state<VaultSyncSwitches | null>(null);
+  let vaultOverrides = $state<Record<string, boolean>>({});
+  let vaultNotice = $state<string | null>(null);
+  const vaultRows = $derived(
+    vaultSyncRows(companies, vaultSwitches ?? { personalEnabled: native.personalSyncEnabled, companies: {} }, vaultOverrides),
+  );
   let pendingControls = $state<string[]>([]);
   let nativeReadGeneration = 0;
   let nativeReconcileAfterWrites = false;
@@ -690,6 +705,7 @@
       writeCachedCloudEnabled(hostCloudEnabled);
     }
     if (adapter.isAvailable("canSync")) {
+      void refreshVaultSwitches();
       customHqRoot = readCustomHqRoot(result.value);
       hqFolder = customHqRoot ?? readFolderFromSettings(result.value) ?? hqFolder;
     }
@@ -764,6 +780,53 @@
     cloudEnabled = result.value.cloudEnabled;
     cloudNotice = result.value.notice ?? null;
     announceCloudSwitch(cloudEnabled);
+    if (section === "sync") void refreshLiveSync();
+  }
+
+  async function refreshVaultSwitches(): Promise<void> {
+    const read = adapter?.sync.getVaultSyncSwitches;
+    if (!adapter || !read) return;
+    const result = await read.call(adapter.sync);
+    if (!result.ok) return;
+    vaultSwitches = result.value;
+    // A saved value from the host replaces any switch moved in this session.
+    if (!pendingControls.some((c) => c.startsWith("vault:"))) vaultOverrides = {};
+  }
+
+  /**
+   * One vault's switch. The host saves it and restarts background sync so the
+   * other vaults keep syncing without this one. Hosts without the command
+   * still save the personal switch through settings.
+   */
+  async function toggleVault(row: VaultSyncRow): Promise<void> {
+    const control = `vault:${row.id}`;
+    if (!adapter || pending(control)) return;
+    const next = !row.enabled;
+    const setVault = adapter.sync.setVaultSyncEnabled;
+    if (!setVault) {
+      if (row.personal) await toggleNativeBoolean("personal-sync", "personalSyncEnabled");
+      return;
+    }
+    vaultOverrides = { ...vaultOverrides, [row.id]: next };
+    vaultNotice = null;
+    nativeError = null;
+    beginPending(control);
+    const result = await setVault.call(adapter.sync, row.id, next);
+    endPending(control);
+    if (!result.ok) {
+      const { [row.id]: _dropped, ...rest } = vaultOverrides;
+      vaultOverrides = rest;
+      nativeError = actionableError(row.name, result.message);
+      return;
+    }
+    vaultOverrides = { ...vaultOverrides, [row.id]: result.value.enabled };
+    if (row.personal) native = { ...native, personalSyncEnabled: result.value.enabled };
+    vaultNotice = result.value.notice ?? null;
+    window.dispatchEvent(
+      new CustomEvent("hq:workspace-sync-enabled-changed", {
+        detail: { slug: row.id, enabled: result.value.enabled },
+      }),
+    );
     if (section === "sync") void refreshLiveSync();
   }
 
@@ -1521,37 +1584,80 @@
       </div>
     {/if}
   {:else if section === "sync" && canSync}
-    {#if adapter?.sync.setCloudEnabled}
-      <div class="set-row" data-testid="settings-cloud-row">
-        <div>
-          <div class="sn">{CLOUD_SWITCH_COPY.label}</div>
-          <div class="sd">{CLOUD_SWITCH_COPY.onDescription}</div>
-        </div>
-        <button
-          type="button"
-          class="toggle"
-          class:on={cloudEnabled}
-          role="switch"
-          aria-checked={cloudEnabled}
-          aria-label="Cloud"
-          data-testid="settings-cloud-toggle"
-          disabled={pending("cloud")}
-          aria-busy={pending("cloud")}
-          onclick={() => void toggleCloud()}
-        ></button>
+    <div class="vault-sync" data-testid="settings-vault-sync">
+      <div class="vault-sync-intro">
+        <div class="sn">{VAULT_SYNC_COPY.heading}</div>
+        <div class="sd">{VAULT_SYNC_COPY.intro}</div>
       </div>
-      {#if !cloudEnabled}
-        <div class="cloud-off" role="status" data-testid="settings-cloud-off">
-          <div class="cloud-off-title">{CLOUD_SWITCH_COPY.offTitle}</div>
-          <div class="cloud-off-body">{CLOUD_SWITCH_COPY.offBody}</div>
-          <div class="cloud-off-body">{CLOUD_SWITCH_COPY.cliCaveat}</div>
-          <div class="cloud-off-body">{CLOUD_SWITCH_COPY.turnOnHint}</div>
+      {#if adapter?.sync.setCloudEnabled}
+        <div class="set-row" data-testid="settings-cloud-row">
+          <div>
+            <div class="sn">{VAULT_SYNC_COPY.allOffLabel}</div>
+            <div class="sd">{VAULT_SYNC_COPY.allOffDescription}</div>
+          </div>
+          <button
+            type="button"
+            class="toggle"
+            class:on={!cloudEnabled}
+            role="switch"
+            aria-checked={!cloudEnabled}
+            aria-label={VAULT_SYNC_COPY.allOffLabel}
+            data-testid="settings-cloud-toggle"
+            disabled={pending("cloud")}
+            aria-busy={pending("cloud")}
+            onclick={() => void toggleCloud()}
+          ></button>
         </div>
+        {#if !cloudEnabled}
+          <div class="cloud-off" role="status" data-testid="settings-cloud-off">
+            <div class="cloud-off-title">{VAULT_SYNC_COPY.allOffTitle}</div>
+            <div class="cloud-off-body">{VAULT_SYNC_COPY.allOffBody}</div>
+            <div class="cloud-off-body">{VAULT_SYNC_COPY.allOffHint}</div>
+          </div>
+        {/if}
+        {#if cloudNotice}
+          <p class="cloud-notice" role="status" data-testid="settings-cloud-notice">{cloudNotice}</p>
+        {/if}
       {/if}
-      {#if cloudNotice}
-        <p class="cloud-notice" role="status" data-testid="settings-cloud-notice">{cloudNotice}</p>
+      {#each vaultRows as row (row.id)}
+        <div class="set-row" data-testid={`settings-vault-row-${row.id}`}>
+          <div>
+            <div class="sn">{row.name}</div>
+            <div class="sd">
+              {#if !cloudEnabled}
+                {VAULT_SYNC_COPY.heldByAllOff}
+              {:else}
+                {row.description}
+              {/if}
+            </div>
+          </div>
+          <button
+            type="button"
+            class="toggle"
+            class:on={cloudEnabled && row.enabled}
+            role="switch"
+            aria-checked={cloudEnabled && row.enabled}
+            aria-label={row.personal ? "Sync personal vault" : `Sync ${row.name}`}
+            data-testid={`settings-vault-toggle-${row.id}`}
+            disabled={!cloudEnabled || pending(`vault:${row.id}`) || (row.personal && !nativeLoaded && !adapter?.sync.setVaultSyncEnabled)}
+            aria-busy={pending(`vault:${row.id}`)}
+            onclick={() => void toggleVault(row)}
+          ></button>
+        </div>
+        {#if cloudEnabled && !row.enabled}
+          <div class="cloud-off" role="status" data-testid={`settings-vault-off-${row.id}`}>
+            <div class="cloud-off-title">{vaultOffTitle(row.personal ? "your personal vault" : row.name)}</div>
+            <div class="cloud-off-body">{VAULT_SYNC_COPY.vaultOffHint}</div>
+          </div>
+        {/if}
+      {/each}
+      {#if vaultRows.length === 1 && companies !== null}
+        <p class="cloud-notice" data-testid="settings-vault-no-companies">{VAULT_SYNC_COPY.noCompanies}</p>
       {/if}
-    {/if}
+      {#if vaultNotice}
+        <p class="cloud-notice" role="status" data-testid="settings-vault-notice">{vaultNotice}</p>
+      {/if}
+    </div>
     <div class="set-row">
       <div>
         <div class="sn">HQ folder</div>
@@ -1650,22 +1756,6 @@
         aria-label="Instant sync"
         disabled={!nativeLoaded || pending("instant-sync")}
         onclick={() => void toggleInstantSync()}
-      ></button>
-    </div>
-    <div class="set-row">
-      <div>
-        <div class="sn">Also sync my personal HQ files to the cloud</div>
-        <div class="sd">Your personal folder (notes, knowledge, and settings outside any company) is backed up and kept the same on your other computers.</div>
-      </div>
-      <button
-        type="button"
-        class="toggle"
-        class:on={native.personalSyncEnabled}
-        role="switch"
-        aria-checked={native.personalSyncEnabled}
-        aria-label="Sync personal vault"
-        disabled={!nativeLoaded || pending("personal-sync")}
-        onclick={() => void toggleNativeBoolean("personal-sync", "personalSyncEnabled")}
       ></button>
     </div>
     <div class="set-row">
@@ -2120,6 +2210,14 @@
     font-size: 13px;
   }
 
+  /* Sync section vault list (US-016). */
+  .vault-sync {
+    display: flex;
+    flex-direction: column;
+  }
+  .vault-sync-intro {
+    padding: 4px 16px 10px;
+  }
   /* Cloud is off (US-016): a background highlight, never an edge stripe. */
   .cloud-off {
     display: flex;

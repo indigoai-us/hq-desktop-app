@@ -66,6 +66,12 @@ export interface BuildCorePopoverInput {
    * "All synced" header into "Uploads paused".
    */
   uploadsPaused?: readonly CoreUploadsPausedInput[];
+  /**
+   * Workspace rows from `list_syncable_workspaces`. Rows with
+   * `syncEnabled: false` are vaults whose sync is off on this computer
+   * (usage-only-pricing US-016).
+   */
+  workspaces?: readonly Record<string, unknown>[] | null;
 }
 
 export interface CoreUploadsPausedInput {
@@ -94,8 +100,13 @@ export interface CorePopoverViewModel {
   packsSummary: string;
   packsLoading: boolean;
   cloudPaused: boolean;
-  /** Shown while Cloud is off. */
+  /** Shown while all cloud sync is off. */
   pausedNotice: string | null;
+  /**
+   * "Sync is off for <vaults> on this computer." when one or more vaults are
+   * off and cloud sync as a whole is on. Null otherwise.
+   */
+  syncOffNotice: string | null;
   /** Sync Now is a no-op while paused. */
   syncNowAllowed: boolean;
   /** Status header: state word, last-sync line, live caption (PL-01). */
@@ -276,7 +287,44 @@ export function parseInstalledPacks(raw: unknown): CorePopoverPack[] {
 }
 
 export const CLOUD_PAUSED_NOTICE =
-  "Cloud is off — sync is paused on this device. Turn Cloud on to resume.";
+  "Cloud sync is off for every vault on this computer. To sync again, open Settings › Sync and switch off Turn off all cloud sync.";
+
+/** Names of vaults whose own switch is off, personal first. */
+export function syncOffVaultNames(
+  workspaces: readonly Record<string, unknown>[] | null | undefined,
+): string[] {
+  const names: string[] = [];
+  let personal = false;
+  for (const w of workspaces ?? []) {
+    if (w?.syncEnabled !== false) continue;
+    if (w.kind === "personal") {
+      personal = true;
+      continue;
+    }
+    if (w.kind !== "company" || !w.cloudUid) continue;
+    const name =
+      (typeof w.displayName === "string" && w.displayName.trim()) ||
+      (typeof w.slug === "string" ? w.slug : "");
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return personal ? ["your personal vault", ...names] : names;
+}
+
+function joinNames(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/** "Sync is off for X and Y on this computer." or null when none are off. */
+export function syncOffNotice(
+  workspaces: readonly Record<string, unknown>[] | null | undefined,
+  cloudPaused: boolean,
+): string | null {
+  if (cloudPaused) return null;
+  const names = syncOffVaultNames(workspaces);
+  if (names.length === 0) return null;
+  return `Sync is off for ${joinNames(names)} on this computer.`;
+}
 
 export function isSyncNowAllowed(cloudPaused: boolean): boolean {
   return !cloudPaused;
@@ -316,6 +364,7 @@ export function buildCorePopoverViewModel(
     packsLoading,
     cloudPaused,
     pausedNotice: cloudPaused ? CLOUD_PAUSED_NOTICE : null,
+    syncOffNotice: syncOffNotice(input.workspaces, cloudPaused),
     syncNowAllowed: isSyncNowAllowed(cloudPaused),
     syncHeader: buildCoreSyncHeader({
       syncState: input.syncState,

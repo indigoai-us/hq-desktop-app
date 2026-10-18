@@ -612,7 +612,7 @@ export function cloudFileErrorCopy(code: string | null | undefined, device: stri
     case "open-failed":
       return `It downloaded, but no app on ${device} could open it.`;
     case "cloud-off":
-      return "Cloud is off, so HQ can't download it. Turn Cloud on in Settings › Sync.";
+      return "Sync is off for this file's vault, so HQ can't download it. Turn it back on in Settings › Sync.";
     default:
       return "We couldn't download it. Try again in a moment.";
   }

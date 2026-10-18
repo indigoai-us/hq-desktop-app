@@ -93,7 +93,6 @@ describe("core-popover-model (US-016)", () => {
         const vm = buildCorePopoverViewModel({
           cloudPaused: true,
           syncState,
-          conflicts: [{ path: "companies/a/x.md", status: "pending" }],
         });
         expect(vm.syncHeader.stateWord).toBe("Cloud off");
         expect(vm.syncHeader.tone).toBe("warn");
@@ -330,5 +329,25 @@ describe("parseInstalledPacks displayName / old cache", () => {
     const derived = packDisplayName(packs[0]!);
     expect(derived).toBe("Client Service");
     expect(derived).not.toBe("");
+  });
+});
+
+describe("syncOffNotice (US-016)", () => {
+  it("names the vaults whose own switch is off, personal first", async () => {
+    const { syncOffNotice } = await import("./core-popover-model");
+    const ws = [
+      { slug: "zeta", displayName: "Zeta", kind: "company", cloudUid: "cmp_z", syncEnabled: false },
+      { slug: "personal", kind: "personal", syncEnabled: false },
+      { slug: "acme", displayName: "Acme", kind: "company", cloudUid: "cmp_a", syncEnabled: false },
+      { slug: "on", displayName: "On", kind: "company", cloudUid: "cmp_o", syncEnabled: true },
+      { slug: "local", displayName: "Local", kind: "company", cloudUid: null, syncEnabled: false },
+    ];
+    expect(syncOffNotice(ws, false)).toBe(
+      "Sync is off for your personal vault, Zeta and Acme on this computer.",
+    );
+    expect(syncOffNotice([ws[2]!], false)).toBe("Sync is off for Acme on this computer.");
+    expect(syncOffNotice(ws, true)).toBeNull();
+    expect(syncOffNotice([ws[3]!], false)).toBeNull();
+    expect(syncOffNotice(null, false)).toBeNull();
   });
 });

@@ -280,6 +280,26 @@ export interface CloudSwitchOutcome {
   notice: string | null;
 }
 
+/**
+ * Every Settings › Sync switch (usage-only-pricing US-016): the "Turn off all
+ * cloud sync" switch, the personal vault, and each company vault that has a
+ * saved value (a missing company means on). This computer only.
+ */
+export interface VaultSyncSwitches {
+  allOff: boolean;
+  personalEnabled: boolean;
+  companies: Record<string, boolean>;
+}
+
+/** Result of turning one vault's sync on or off. */
+export interface VaultSwitchOutcome {
+  /** `"personal"` or the company slug. */
+  vault: string;
+  enabled: boolean;
+  /** Plain-language note when background sync did not restart. */
+  notice: string | null;
+}
+
 export interface DaemonSyncStatus {
   running: boolean;
   paused: boolean;
@@ -2125,6 +2145,17 @@ export interface SyncApi {
    * restarts) background sync. Optional: older hosts lack it.
    */
   setCloudEnabled?(enabled: boolean): AdapterPromise<CloudSwitchOutcome>;
+  /** Per-vault switches (US-016). Optional: older hosts lack them. */
+  getVaultSyncSwitches?(): AdapterPromise<VaultSyncSwitches>;
+  /**
+   * Turn sync on or off for one vault on this computer. `vault` is
+   * `"personal"` or a company slug. Saves the switch, then restarts
+   * background sync so other vaults keep syncing without this one.
+   */
+  setVaultSyncEnabled?(
+    vault: string,
+    enabled: boolean,
+  ): AdapterPromise<VaultSwitchOutcome>;
   getSyncStatus(): AdapterPromise<SyncStatus>;
   getActivityLog(): AdapterPromise<Json[]>;
   resolveConflict(path: string, strategy: string): AdapterPromise<void>;

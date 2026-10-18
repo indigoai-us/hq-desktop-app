@@ -63,6 +63,26 @@ async function render(
 
 const q = (id: string) => host.querySelector(`[data-testid="${id}"]`) as HTMLElement | null;
 
+describe("CoreUsagePanel Sync link (US-016)", () => {
+  it("opens Sync settings in one click when the host has a Sync section", async () => {
+    const onopensync = vi.fn();
+    host = document.createElement("div");
+    document.body.append(host);
+    component = mount(CoreUsagePanel, {
+      target: host,
+      props: { source: source() as never, companyUid: null, companyName: "Northwind", onopensync },
+    });
+    flushSync();
+    q("core-usage-sync-settings")!.click();
+    expect(onopensync).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides the link without a Sync section", async () => {
+    await render(source());
+    expect(q("core-usage-sync-settings")).toBeNull();
+  });
+});
+
 describe("CoreUsagePanel", () => {
   it("renders the company, plan, bar, totals and grouped rows", async () => {
     await render(source());

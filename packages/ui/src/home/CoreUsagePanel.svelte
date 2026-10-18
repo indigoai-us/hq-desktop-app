@@ -45,9 +45,14 @@
     role?: string | null;
     /** Open an external link in the system browser. */
     onopenurl?: (url: string) => void;
+    /**
+     * Open Settings › Sync, where each vault's sync can be turned off
+     * (usage-only-pricing US-016). Hidden when the host has no Sync section.
+     */
+    onopensync?: () => void;
   }
 
-  let { source, companyUid, companyName, role = null, onopenurl }: Props = $props();
+  let { source, companyUid, companyName, role = null, onopenurl, onopensync }: Props = $props();
 
   let view = $state<CoreUsageView>({ kind: "loading", companyName: "" });
   let pending = $state(false);
@@ -220,9 +225,32 @@
       <p class="core-usage-note" role="status" data-testid="core-usage-billing-hint">{hint}</p>
     {/if}
   {/if}
+  {#if onopensync}
+    <button
+      type="button"
+      class="core-usage-sync-link"
+      data-testid="core-usage-sync-settings"
+      onclick={() => onopensync?.()}
+    >Turn sync off or on for each vault</button>
+  {/if}
 </section>
 
 <style>
+  .core-usage-sync-link {
+    align-self: flex-start;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--t2);
+    font: inherit;
+    font-size: 12px;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .core-usage-sync-link:hover {
+    color: var(--t1);
+  }
+
   .core-usage {
     display: flex;
     flex-direction: column;

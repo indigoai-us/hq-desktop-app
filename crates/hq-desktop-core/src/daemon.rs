@@ -1418,7 +1418,7 @@ pub fn is_instant_sync_enabled() -> bool {
 /// User-facing message every gated sync entry point returns while Cloud is
 /// off. One constant so the popover, the V2 window, and the daemon agree.
 pub const CLOUD_PAUSED_MESSAGE: &str =
-    "Cloud is off — sync is paused on this device. Turn Cloud on to resume.";
+    "Cloud sync is off for every vault on this computer. To sync again, open Settings › Sync and switch off Turn off all cloud sync.";
 
 /// Check the V2 "Cloud Off" switch (US-001 / US-016) in menubar.json.
 ///

@@ -1,4 +1,5 @@
-//! The Settings "Cloud" switch (usage-only-pricing US-016).
+//! The Settings › Sync switches (usage-only-pricing US-016): one "Turn off all
+//! cloud sync" switch (this section) and one switch per vault (further down).
 //!
 //! One control that turns every cloud upload and download for company vaults
 //! and the personal vault off on this computer, and back on.
@@ -30,6 +31,7 @@ use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::commands::config::MenubarPrefs;
 use crate::util::paths;
+use hq_desktop_core::vault_sync::{SyncVault, VaultSyncSwitches};
 
 const LOG_TAG: &str = "cloud-switch";
 
@@ -197,9 +199,428 @@ pub async fn set_cloud_enabled<R: Runtime>(
     Ok(outcome)
 }
 
+// ── Per-vault switches (US-016, widened 2026-10-18) ────────────────────────
+//
+// Settings › Sync lists the personal vault and every company vault, each with
+// its own switch. Turning one off writes `personalSyncEnabled: false` or
+// `workspaceSyncEnabled.<slug>: false`. The background runner reads those at
+// spawn (`HQ_SYNC_SKIP_PERSONAL` / `HQ_SYNC_SKIP_COMPANIES`), so the running
+// runner is restarted to pick the change up. Other vaults keep syncing. The
+// switch affects only this computer; teammates are untouched.
+
+/// Emitted after a vault switch changes. `detail`: `{ vault, enabled }`.
+pub const EVENT_VAULT_SYNC_CHANGED: &str = "hq:vault-sync-changed";
+
+/// The `vault` argument value that names the personal vault.
+pub const PERSONAL_VAULT_ID: &str = "personal";
+
+/// Result of a vault switch change, returned to the Settings pane.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultSwitchOutcome {
+    pub vault: String,
+    pub enabled: bool,
+    /// Plain-language note when the switch was saved but background sync did
+    /// not restart. The saved switch still governs every new sync.
+    pub notice: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultSyncChangedEvent {
+    vault: String,
+    enabled: bool,
+}
+
+pub(crate) const VAULT_RESTART_NOTICE: &str =
+    "Saved. Background sync did not restart yet; use Sync now or restart HQ.";
+
+/// Side effects a vault switch drives. Injected so tests can prove the order.
+pub(crate) trait VaultSwitchEffects {
+    fn persist(&mut self, vault: &SyncVault, enabled: bool) -> Result<(), String>;
+    fn cloud_paused(&self) -> bool;
+    fn cancel_one_shot_sync(&mut self);
+    fn stop_background_sync(&mut self) -> Result<(), String>;
+    fn auto_sync_enabled(&self) -> bool;
+    fn start_background_sync(&mut self) -> Result<(), String>;
+}
+
+/// Parse the `vault` argument: `"personal"` or a company slug.
+pub(crate) fn parse_vault_id(vault: &str) -> Result<SyncVault, String> {
+    let vault = vault.trim();
+    if vault.is_empty() {
+        return Err("Choose a vault to turn sync on or off.".to_string());
+    }
+    if vault == PERSONAL_VAULT_ID {
+        return Ok(SyncVault::Personal);
+    }
+    if vault.contains(['/', '\\']) || vault.starts_with('.') {
+        return Err("That company name is not valid.".to_string());
+    }
+    Ok(SyncVault::Company(vault.to_string()))
+}
+
+/// Apply one vault switch. Persisting is the only step whose failure fails
+/// the command. While "Turn off all cloud sync" is on nothing is running, so
+/// only the saved value changes.
+pub(crate) fn apply_vault_switch(
+    vault: &SyncVault,
+    enabled: bool,
+    effects: &mut impl VaultSwitchEffects,
+) -> Result<VaultSwitchOutcome, String> {
+    effects.persist(vault, enabled)?;
+    let id = match vault {
+        SyncVault::Personal => PERSONAL_VAULT_ID.to_string(),
+        SyncVault::Company(slug) => slug.clone(),
+    };
+    let mut outcome = VaultSwitchOutcome {
+        vault: id,
+        enabled,
+        notice: None,
+    };
+    if effects.cloud_paused() {
+        return Ok(outcome);
+    }
+    if !enabled {
+        // A one-shot sync already running may be moving this vault's files.
+        effects.cancel_one_shot_sync();
+    }
+    // The runner reads the skip lists at spawn: restart it so the change
+    // applies now. A stop failure still leaves the saved switch in force for
+    // the next spawn.
+    if let Err(error) = effects.stop_background_sync() {
+        crate::util::logfile::log(
+            LOG_TAG,
+            &format!("background sync did not stop after a vault switch: {error}"),
+        );
+    }
+    if effects.auto_sync_enabled() {
+        if let Err(error) = effects.start_background_sync() {
+            crate::util::logfile::log(
+                LOG_TAG,
+                &format!("background sync did not restart after a vault switch: {error}"),
+            );
+            outcome.notice = Some(VAULT_RESTART_NOTICE.to_string());
+        }
+    }
+    Ok(outcome)
+}
+
+/// Write one vault's switch, merged over the latest on-disk settings.
+pub(crate) fn persist_vault_enabled_at(
+    path: &Path,
+    vault: &SyncVault,
+    enabled: bool,
+) -> Result<(), String> {
+    match vault {
+        SyncVault::Personal => {
+            let mut prefs: MenubarPrefs = crate::commands::settings::get_settings_at(path)?;
+            prefs.personal_sync_enabled = Some(enabled);
+            crate::commands::settings::save_settings_at(path, &prefs)
+        }
+        SyncVault::Company(slug) => {
+            hq_desktop_core::workspaces::write_workspace_sync_enabled(slug, enabled)
+        }
+    }
+}
+
+impl<R: Runtime> VaultSwitchEffects for LiveEffects<R> {
+    fn persist(&mut self, vault: &SyncVault, enabled: bool) -> Result<(), String> {
+        let path = paths::menubar_json_path()?;
+        persist_vault_enabled_at(&path, vault, enabled)
+    }
+
+    fn cloud_paused(&self) -> bool {
+        hq_desktop_core::daemon::is_cloud_paused()
+    }
+
+    fn cancel_one_shot_sync(&mut self) {
+        CloudSwitchEffects::cancel_one_shot_sync(self)
+    }
+
+    fn stop_background_sync(&mut self) -> Result<(), String> {
+        CloudSwitchEffects::stop_background_sync(self)
+    }
+
+    fn auto_sync_enabled(&self) -> bool {
+        CloudSwitchEffects::auto_sync_enabled(self)
+    }
+
+    fn start_background_sync(&mut self) -> Result<(), String> {
+        CloudSwitchEffects::start_background_sync(self)
+    }
+}
+
+/// Read every vault switch for Settings › Sync.
+#[tauri::command]
+pub fn get_vault_sync_switches() -> VaultSyncSwitches {
+    VaultSyncSwitches::read()
+}
+
+/// Turn sync on or off for one vault on this computer. `vault` is
+/// `"personal"` or a company slug.
+#[tauri::command]
+pub async fn set_vault_sync_enabled<R: Runtime>(
+    app: AppHandle<R>,
+    vault: String,
+    enabled: bool,
+) -> Result<VaultSwitchOutcome, String> {
+    let target = parse_vault_id(&vault)?;
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let mut effects = LiveEffects { app: handle };
+        apply_vault_switch(&target, enabled, &mut effects)
+    })
+    .await
+    .map_err(|error| format!("Vault switch task failed: {error}"))??;
+    let _ = app.emit(
+        EVENT_VAULT_SYNC_CHANGED,
+        VaultSyncChangedEvent {
+            vault: outcome.vault.clone(),
+            enabled: outcome.enabled,
+        },
+    );
+    Ok(outcome)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct VaultRecorder {
+        calls: Vec<String>,
+        cloud_paused: bool,
+        auto_sync: bool,
+        persist_fails: bool,
+        start_fails: bool,
+    }
+
+    impl VaultSwitchEffects for VaultRecorder {
+        fn persist(&mut self, vault: &SyncVault, enabled: bool) -> Result<(), String> {
+            self.calls.push(format!("persist:{vault:?}:{enabled}"));
+            if self.persist_fails {
+                Err("disk full".to_string())
+            } else {
+                Ok(())
+            }
+        }
+        fn cloud_paused(&self) -> bool {
+            self.cloud_paused
+        }
+        fn cancel_one_shot_sync(&mut self) {
+            self.calls.push("cancel".to_string());
+        }
+        fn stop_background_sync(&mut self) -> Result<(), String> {
+            self.calls.push("stop".to_string());
+            Ok(())
+        }
+        fn auto_sync_enabled(&self) -> bool {
+            self.auto_sync
+        }
+        fn start_background_sync(&mut self) -> Result<(), String> {
+            self.calls.push("start".to_string());
+            if self.start_fails {
+                Err("no runner".to_string())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn turning_one_vault_off_saves_first_then_restarts_background_sync() {
+        let mut effects = VaultRecorder {
+            auto_sync: true,
+            ..VaultRecorder::default()
+        };
+        let vault = SyncVault::Company("acme".into());
+        let outcome = apply_vault_switch(&vault, false, &mut effects).unwrap();
+        assert_eq!(
+            effects.calls,
+            vec!["persist:Company(\"acme\"):false", "cancel", "stop", "start"]
+        );
+        assert_eq!(
+            outcome,
+            VaultSwitchOutcome {
+                vault: "acme".into(),
+                enabled: false,
+                notice: None
+            }
+        );
+    }
+
+    #[test]
+    fn turning_a_vault_back_on_restarts_without_cancelling() {
+        let mut effects = VaultRecorder {
+            auto_sync: true,
+            ..VaultRecorder::default()
+        };
+        apply_vault_switch(&SyncVault::Personal, true, &mut effects).unwrap();
+        assert_eq!(
+            effects.calls,
+            vec!["persist:Personal:true", "stop", "start"]
+        );
+    }
+
+    #[test]
+    fn a_vault_switch_with_auto_sync_off_does_not_start_background_sync() {
+        let mut effects = VaultRecorder::default();
+        apply_vault_switch(&SyncVault::Personal, false, &mut effects).unwrap();
+        assert_eq!(
+            effects.calls,
+            vec!["persist:Personal:false", "cancel", "stop"]
+        );
+    }
+
+    #[test]
+    fn a_vault_switch_while_all_cloud_sync_is_off_only_saves() {
+        let mut effects = VaultRecorder {
+            cloud_paused: true,
+            auto_sync: true,
+            ..VaultRecorder::default()
+        };
+        apply_vault_switch(&SyncVault::Company("acme".into()), true, &mut effects).unwrap();
+        assert_eq!(effects.calls, vec!["persist:Company(\"acme\"):true"]);
+    }
+
+    #[test]
+    fn a_failed_vault_save_changes_nothing() {
+        let mut effects = VaultRecorder {
+            persist_fails: true,
+            auto_sync: true,
+            ..VaultRecorder::default()
+        };
+        assert!(apply_vault_switch(&SyncVault::Personal, false, &mut effects).is_err());
+        assert_eq!(effects.calls, vec!["persist:Personal:false"]);
+    }
+
+    #[test]
+    fn a_failed_restart_is_a_notice() {
+        let mut effects = VaultRecorder {
+            auto_sync: true,
+            start_fails: true,
+            ..VaultRecorder::default()
+        };
+        let outcome =
+            apply_vault_switch(&SyncVault::Company("acme".into()), false, &mut effects).unwrap();
+        assert_eq!(outcome.notice.as_deref(), Some(VAULT_RESTART_NOTICE));
+    }
+
+    #[test]
+    fn vault_ids_parse_to_personal_or_a_company() {
+        assert_eq!(parse_vault_id("personal").unwrap(), SyncVault::Personal);
+        assert_eq!(
+            parse_vault_id(" acme ").unwrap(),
+            SyncVault::Company("acme".into())
+        );
+        assert!(parse_vault_id("").is_err());
+        assert!(parse_vault_id("../acme").is_err());
+        assert!(parse_vault_id("a/b").is_err());
+    }
+
+    /// Both switch kinds survive a restart (they live in menubar.json) and
+    /// leave every other setting alone.
+    #[test]
+    fn vault_switches_persist_and_leave_other_settings_alone() {
+        use crate::util::test_support::{scoped_home, ENV_MUTEX};
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        let path = tmp.path().join(".hq/menubar.json");
+        std::fs::write(&path, r#"{"realtimeSync":false,"machineId":"m-1"}"#).unwrap();
+        let _home = scoped_home(tmp.path());
+
+        persist_vault_enabled_at(&path, &SyncVault::Personal, false).unwrap();
+        persist_vault_enabled_at(&path, &SyncVault::Company("acme".into()), false).unwrap();
+        persist_vault_enabled_at(&path, &SyncVault::Company("zeta".into()), true).unwrap();
+
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["personalSyncEnabled"], serde_json::json!(false));
+        assert_eq!(
+            raw["workspaceSyncEnabled"]["acme"],
+            serde_json::json!(false)
+        );
+        assert_eq!(raw["workspaceSyncEnabled"]["zeta"], serde_json::json!(true));
+        assert_eq!(raw["realtimeSync"], serde_json::json!(false));
+        assert_eq!(raw["machineId"], serde_json::json!("m-1"));
+
+        // A fresh read (the restart seam) sees every saved choice.
+        let switches = get_vault_sync_switches();
+        assert!(!switches.all_off);
+        assert!(!switches.personal_enabled);
+        assert!(!switches.allows(&SyncVault::Company("acme".into())));
+        assert!(switches.allows(&SyncVault::Company("zeta".into())));
+        assert!(switches.allows(&SyncVault::Company("other".into())));
+    }
+
+    /// One company off: the side doors refuse for that company only.
+    #[test]
+    fn one_company_off_refuses_its_conflict_resolve_only() {
+        use crate::util::test_support::{scoped_home, ENV_MUTEX};
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        std::fs::write(
+            tmp.path().join(".hq/menubar.json"),
+            r#"{"workspaceSyncEnabled":{"acme":false}}"#,
+        )
+        .unwrap();
+        let _home = scoped_home(tmp.path());
+
+        let resolve = tauri::async_runtime::block_on(crate::commands::conflicts::resolve_conflict(
+            "companies/acme/notes.md".to_string(),
+            "keep-local".to_string(),
+        ));
+        assert_eq!(
+            resolve.err(),
+            Some(hq_desktop_core::vault_sync::vault_off_message(
+                &SyncVault::Company("acme".into())
+            ))
+        );
+        // Another company is not refused by the vault gate (it fails later for
+        // an unrelated reason in this sandbox, never with the off message).
+        let other = tauri::async_runtime::block_on(crate::commands::conflicts::resolve_conflict(
+            "companies/zeta/notes.md".to_string(),
+            "keep-local".to_string(),
+        ));
+        assert!(!other
+            .err()
+            .unwrap_or_default()
+            .starts_with("Sync is off for"));
+    }
+
+    /// Opening a cloud placeholder refuses for an off vault only.
+    #[test]
+    fn placeholder_fetch_refuses_only_for_an_off_vault() {
+        use crate::util::test_support::{scoped_home, ENV_MUTEX};
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let hq = tmp.path().join("HQ");
+        std::fs::create_dir_all(hq.join("companies/acme")).unwrap();
+        std::fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        std::fs::write(
+            tmp.path().join(".hq/menubar.json"),
+            serde_json::json!({
+                "hqPath": hq.to_string_lossy(),
+                "personalSyncEnabled": false,
+                "workspaceSyncEnabled": { "acme": false }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let _home = scoped_home(tmp.path());
+        let fetch = |rel: &str| {
+            tauri::async_runtime::block_on(crate::commands::cloud_file::fetch(&hq.join(rel)))
+        };
+        let off = Some(crate::commands::cloud_file::CLOUD_OFF_CODE);
+        assert_eq!(fetch("companies/acme/big.mov.hqcloud").err(), off);
+        assert_eq!(fetch("knowledge/big.mov.hqcloud").err(), off);
+        // Another company is not refused by the switch (it fails later in this
+        // sandbox for an unrelated reason).
+        assert_ne!(fetch("companies/zeta/big.mov.hqcloud").err(), off);
+    }
 
     #[derive(Default)]
     struct Recorder {

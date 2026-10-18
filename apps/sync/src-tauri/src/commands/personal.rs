@@ -1721,6 +1721,11 @@ pub(crate) async fn ensure_impl_with<R: tauri::Runtime + 'static>(
     // function's own walk, so the walk itself must refuse. Covers the install
     // stage, its background safety net, and the start_sync caller.
     hq_desktop_core::daemon::ensure_cloud_sync_allowed()?;
+    // The personal vault's own switch, for the same reason: with it off the
+    // handoff check below also reports "not handed", so the walk must refuse.
+    hq_desktop_core::vault_sync::ensure_vault_sync_allowed(
+        &hq_desktop_core::vault_sync::SyncVault::Personal,
+    )?;
 
     // ── Install-stage handoff gate ─────────────────────────────────────────
     // On a fresh install the runner's journal does not exist yet, so the gate

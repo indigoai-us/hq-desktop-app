@@ -54,6 +54,19 @@ function nativeHost(
       case 'save_settings':
         saved = { ...((args?.prefs ?? {}) as Record<string, unknown>) };
         return undefined;
+      // Per-vault switches (US-016): the host writes the personal switch to
+      // the same native settings file.
+      case 'get_vault_sync_switches':
+        return {
+          allOff: saved.cloudPaused === true,
+          personalEnabled: saved.personalSyncEnabled !== false,
+          companies: {},
+        };
+      case 'set_vault_sync_enabled':
+        if (args?.vault === 'personal') {
+          saved = { ...saved, personalSyncEnabled: args.enabled === true };
+        }
+        return { vault: args?.vault, enabled: args?.enabled === true, notice: null };
       case 'set_autostart_enabled':
         if (options.failAutostart) throw new Error('macOS rejected this login item');
         return undefined;

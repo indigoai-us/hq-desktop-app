@@ -822,9 +822,10 @@
         await invoke('set_tray_state', { state: 'syncing' });
         return;
       }
-      // The Settings Cloud switch is off (US-016). That is the person's own
-      // choice, not a failure: leave the tray idle instead of red.
-      if (msg.includes('Cloud is off')) {
+      // Sync is off for every vault, or for the vault this run targets
+      // (US-016). That is the person's own choice, not a failure: leave the
+      // tray idle instead of red.
+      if (msg.includes('Cloud sync is off') || msg.includes('Sync is off for')) {
         manualSyncActive = false;
         manualSyncTelemetryPending = false;
         syncState = 'idle';

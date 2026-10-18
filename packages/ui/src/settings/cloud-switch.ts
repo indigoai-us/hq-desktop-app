@@ -1,5 +1,6 @@
 /**
- * The Settings Cloud switch (usage-only-pricing US-016).
+ * The Settings "Turn off all cloud sync" switch (usage-only-pricing US-016).
+ * The per-vault switches and the Sync section copy live in vault-sync.ts.
  *
  * The host owns the setting (`cloudPaused` in the desktop settings file, so it
  * survives restarts and app updates). This module adds what the UI needs on
@@ -16,15 +17,7 @@ export const CLOUD_SWITCH_EVENT = "hq:cloud-switch-changed";
 export const CLOUD_SWITCH_CACHE_KEY = "hq.cloud-switch.v1";
 
 export const CLOUD_SWITCH_COPY = {
-  label: "Cloud",
-  onDescription:
-    "Sync your companies and personal files with HQ cloud on this computer.",
-  offTitle: "Cloud is off",
-  offBody:
-    "HQ Desktop and the HQ background sync service stop all uploads and downloads for your companies and your personal files on this computer. Sign-in, messages, and deploys still work.",
-  cliCaveat: "An hq sync command you or a skill runs in a terminal still syncs.",
-  turnOnHint: "To sync again, turn Cloud on above.",
-  perSyncNote: "These apply when Cloud is on.",
+  perSyncNote: "These apply when cloud sync is on.",
 } as const;
 
 function storage(): Storage | null {

@@ -258,8 +258,9 @@ fn emit(app: &AppHandle, placeholder: &Path, phase: &'static str, error: Option<
 
 /// Download the original behind `placeholder` and return its restored path.
 pub async fn fetch(placeholder: &Path) -> Result<PathBuf, &'static str> {
-    // Cloud switch off (usage-only-pricing US-016): no vault downloads.
-    if hq_desktop_core::daemon::is_cloud_paused() {
+    // Sync switches (usage-only-pricing US-016): no download while all cloud
+    // sync is off, or while the vault this placeholder belongs to is off.
+    if !placeholder_vault_may_sync(&resolve_hq_folder(), placeholder) {
         return Err(CLOUD_OFF_CODE);
     }
     // Read before fetching: the CLI deletes the placeholder once restored.
@@ -316,8 +317,24 @@ pub async fn fetch_and_open(app: AppHandle, placeholder: PathBuf) -> Result<Path
     Ok(restored)
 }
 
-/// Error code for a fetch refused because the Cloud switch is off.
+/// Error code for a fetch refused because sync is off for the file's vault,
+/// or for every vault.
 pub const CLOUD_OFF_CODE: &str = "cloud-off";
+
+/// Whether the vault holding `placeholder` may download. A placeholder outside
+/// `hq_root` belongs to no known vault, so only the all-off switch applies.
+fn placeholder_vault_may_sync(hq_root: &Path, placeholder: &Path) -> bool {
+    use hq_desktop_core::vault_sync::{vault_for_hq_relative_path, VaultSyncSwitches};
+    let switches = VaultSyncSwitches::read();
+    if switches.all_off {
+        return false;
+    }
+    placeholder
+        .strip_prefix(hq_root)
+        .ok()
+        .map(|rel| vault_for_hq_relative_path(&rel.to_string_lossy()))
+        .map_or(true, |vault| switches.allows(&vault))
+}
 
 pub fn spawn_fetch_and_open(app: &AppHandle, placeholder: PathBuf) {
     let app = app.clone();

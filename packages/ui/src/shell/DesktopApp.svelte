@@ -14403,6 +14403,12 @@
         anchorBottom={accountMenuAnchor.bottom}
         onclose={() => (accountMenuOpen = false)}
         onpage={openAccountPage}
+        onsync={adapter.isAvailable("canSync")
+          ? () => {
+              accountMenuOpen = false;
+              openSettings("sync");
+            }
+          : undefined}
         onsignout={() => {
           accountMenuOpen = false;
           void signOutWithImageCleanup();

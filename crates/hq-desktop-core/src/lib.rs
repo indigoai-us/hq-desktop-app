@@ -60,6 +60,7 @@ pub mod continuation_custody;
 pub mod continuation_endpoints;
 pub mod cpu_throttle;
 pub mod daemon;
+pub mod vault_sync;
 pub mod deep_link;
 pub mod desktop_alt;
 pub mod desktop_referral;
