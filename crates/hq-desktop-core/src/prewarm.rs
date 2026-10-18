@@ -76,6 +76,74 @@ const MATERIALIZATION_LOCK_TIMEOUT_MESSAGE: &str =
      Wait a moment, then try Sync again.";
 const REGISTRY_METADATA_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// How long the first-launch sync keeps waiting on the npm cache lock after
+/// the 30 second materialization bail. The wait runs off the UI thread.
+pub const FIRST_LAUNCH_CACHE_LOCK_WAIT: Duration = Duration::from_secs(180);
+
+/// Shown when the bounded wait or the retry still does not start sync.
+/// Sentence case, no raw npm text.
+pub const FIRST_LAUNCH_SYNC_UNSYNCED_LINE: &str = "Your files have not synced yet.";
+pub const FIRST_LAUNCH_SYNC_NOW_ACTION: &str = "Sync now";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirstLaunchCacheBail {
+    /// The error is not the npm-cache bail. The caller keeps its own path.
+    Unrelated,
+    /// The lock was free and the retry started sync.
+    Started,
+    /// The wait or the retry failed. The customer sees one plain line.
+    NeedsSyncNow {
+        line: &'static str,
+        action: &'static str,
+    },
+}
+
+pub fn is_npm_cache_still_preparing(message: &str) -> bool {
+    message.contains("still preparing its npm cache")
+}
+
+/// On the npm-cache bail, wait for the lock (the closure is the bound) and
+/// retry sync once. Any other error is left alone. A failed wait or retry
+/// never returns the raw npm message.
+pub fn recover_first_launch_cache_bail(
+    error: &str,
+    wait_for_lock: impl FnOnce() -> Result<(), String>,
+    retry_sync: impl FnOnce() -> Result<(), String>,
+) -> FirstLaunchCacheBail {
+    if !is_npm_cache_still_preparing(error) {
+        return FirstLaunchCacheBail::Unrelated;
+    }
+    if wait_for_lock().is_err() {
+        return first_launch_needs_sync_now();
+    }
+    match retry_sync() {
+        Ok(()) => FirstLaunchCacheBail::Started,
+        Err(_) => first_launch_needs_sync_now(),
+    }
+}
+
+fn first_launch_needs_sync_now() -> FirstLaunchCacheBail {
+    FirstLaunchCacheBail::NeedsSyncNow {
+        line: FIRST_LAUNCH_SYNC_UNSYNCED_LINE,
+        action: FIRST_LAUNCH_SYNC_NOW_ACTION,
+    }
+}
+
+/// Wait until the npm cache lock can be taken, then release it so the
+/// caller can prepare the cache itself. `wait` is the bound.
+pub fn wait_for_npm_cache_lock_free_at(
+    lock_path: &std::path::Path,
+    wait: Duration,
+) -> Result<(), String> {
+    let lock = acquire_materialization_lock_in(lock_path, wait)?;
+    drop(lock);
+    Ok(())
+}
+
+pub fn wait_for_npm_cache_lock_free(wait: Duration) -> Result<(), String> {
+    wait_for_npm_cache_lock_free_at(&materialization_lock_path()?, wait)
+}
+
 /// Maximum time an automatic Core update waits for this process's startup
 /// prewarm. On expiry the update is deferred to the next automatic cycle.
 pub const AUTOMATIC_UPDATE_PREWARM_WAIT: Duration = Duration::from_secs(10 * 60);
@@ -1270,6 +1338,95 @@ mod tests {
 
         assert_eq!(err, MATERIALIZATION_LOCK_TIMEOUT_MESSAGE);
         assert_eq!(attempts, 1, "the retry budget must terminate the loop");
+    }
+
+    /// US-014: a held npm-cache lock makes the first-launch sync bail. When
+    /// the lock is released, the sync starts again with no user action.
+    #[test]
+    fn first_launch_cache_bail_waits_for_the_lock_then_retries() {
+        let steps = std::cell::RefCell::new(Vec::new());
+        let outcome = recover_first_launch_cache_bail(
+            MATERIALIZATION_LOCK_TIMEOUT_MESSAGE,
+            || {
+                steps.borrow_mut().push("wait");
+                Ok(())
+            },
+            || {
+                steps.borrow_mut().push("retry");
+                Ok(())
+            },
+        );
+        assert_eq!(steps.borrow().as_slice(), ["wait", "retry"]);
+        assert_eq!(outcome, FirstLaunchCacheBail::Started);
+    }
+
+    #[test]
+    fn released_cache_lock_lets_the_first_launch_retry_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock_path = tmp.path().join("npx-hq-cloud-materialize.lock");
+        let held = acquire_materialization_lock_in(&lock_path, Duration::ZERO).unwrap();
+        let blocked = wait_for_npm_cache_lock_free_at(&lock_path, Duration::ZERO).unwrap_err();
+        assert_eq!(blocked, MATERIALIZATION_LOCK_TIMEOUT_MESSAGE);
+        drop(held);
+        assert!(wait_for_npm_cache_lock_free_at(&lock_path, Duration::ZERO).is_ok());
+
+        let mut started = false;
+        let outcome = recover_first_launch_cache_bail(
+            MATERIALIZATION_LOCK_TIMEOUT_MESSAGE,
+            || wait_for_npm_cache_lock_free_at(&lock_path, Duration::from_secs(2)),
+            || {
+                started = true;
+                Ok(())
+            },
+        );
+        assert!(
+            started,
+            "the sync starts once the lock is free, with no user action"
+        );
+        assert_eq!(outcome, FirstLaunchCacheBail::Started);
+    }
+
+    #[test]
+    fn failed_cache_retry_is_one_plain_line_and_sync_now() {
+        let outcome = recover_first_launch_cache_bail(
+            MATERIALIZATION_LOCK_TIMEOUT_MESSAGE,
+            || Ok(()),
+            || Err(MATERIALIZATION_LOCK_TIMEOUT_MESSAGE.to_string()),
+        );
+        match outcome {
+            FirstLaunchCacheBail::NeedsSyncNow { line, action } => {
+                assert_eq!(line, FIRST_LAUNCH_SYNC_UNSYNCED_LINE);
+                assert_eq!(action, FIRST_LAUNCH_SYNC_NOW_ACTION);
+                assert_eq!(action, "Sync now");
+                let lower = line.to_ascii_lowercase();
+                assert!(
+                    !lower.contains("npm"),
+                    "the customer line must not name npm"
+                );
+                assert!(!line.contains("another window"));
+                assert!(!line.contains('!'));
+                assert!(!line.contains('—') && !line.contains('–'));
+            }
+            other => panic!("expected the plain Sync now line, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unrelated_first_launch_error_does_not_wait_or_retry() {
+        let steps = std::cell::RefCell::new(Vec::new());
+        let outcome = recover_first_launch_cache_bail(
+            "Sync is already running",
+            || {
+                steps.borrow_mut().push("wait");
+                Ok(())
+            },
+            || {
+                steps.borrow_mut().push("retry");
+                Ok(())
+            },
+        );
+        assert!(steps.borrow().is_empty());
+        assert_eq!(outcome, FirstLaunchCacheBail::Unrelated);
     }
 
     #[test]

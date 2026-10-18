@@ -150,6 +150,7 @@
   let loadGeneration = 0;
   let returnNudge = $state<{ companyUid: string; slug?: string; dayIndex: number } | null>(null);
   let returnNudgeBusy = $state(false);
+  let cacheOfferBusy = $state(false);
   const modelPacks = $derived.by((): CorePopoverPack[] => {
     if (packs.length > 0) return packs;
     return useFixtures ? CORE_POPOVER_FIXTURE_PACKS : [];
@@ -394,6 +395,27 @@
     }
   }
 
+  async function runCacheOfferSync(): Promise<void> {
+    if (cacheOfferBusy || !model.syncOffer) return;
+    cacheOfferBusy = true;
+    try {
+      const result = await adapter.sync.startSync();
+      if (!result.ok) {
+        console.error(
+          "core-popover: sync now failed",
+          result.code ?? result.reason,
+        );
+      }
+    } catch (error) {
+      console.error(
+        "core-popover: sync now failed",
+        error instanceof Error ? error.name : "unknown",
+      );
+    } finally {
+      cacheOfferBusy = false;
+    }
+  }
+
   async function runReturnNudgeSync(): Promise<void> {
     const nudge = returnNudge;
     if (!nudge) return;
@@ -512,6 +534,22 @@
     data-tone={model.syncHeader.tone}
     role="status"
   >
+    {#if model.syncOffer}
+      <span class="core-status-plain" data-testid="core-popover-sync-plain">
+        {model.syncOffer.line}
+      </span>
+      <button
+        type="button"
+        class="core-btn"
+        data-testid="core-popover-sync-now"
+        disabled={cacheOfferBusy}
+        aria-busy={cacheOfferBusy}
+        onclick={() => void runCacheOfferSync()}
+      >
+        <RailIcon name="refresh" />
+        {cacheOfferBusy ? "Starting sync…" : model.syncOffer.action}
+      </button>
+    {:else}
     <span class="core-status-state" data-testid="core-popover-sync-state">
       <span class="core-status-dot" aria-hidden="true">●</span>
       {model.syncHeader.stateWord}
@@ -524,7 +562,8 @@
         {model.syncHeader.caption}
       </span>
     {/if}
-    {#if returnNudge}
+    {/if}
+    {#if returnNudge && !model.syncOffer}
       <span class="core-return-nudge" data-testid="core-popover-return-nudge">
         Run a sync today to keep your company up to date.
       </span>
@@ -923,10 +962,15 @@
   }
 
   .core-status-last,
-  .core-status-caption {
+  .core-status-caption,
+  .core-status-plain {
     font-size: 13px;
     line-height: 1.35;
     color: var(--t2);
+  }
+
+  .core-status-plain {
+    color: var(--t1);
   }
 
   .core-status-caption {

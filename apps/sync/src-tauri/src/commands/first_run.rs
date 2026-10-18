@@ -28,7 +28,7 @@
 
 use serde_json::Value;
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager, Runtime, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
 use crate::util::{logfile::log, paths};
 
@@ -384,20 +384,106 @@ pub async fn show_main_window_at_tray(
         }
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         if let Err(error) = crate::commands::sync::start_sync_with_trigger(
-            handle,
+            handle.clone(),
             None,
             crate::commands::cdp_mirror::SyncTrigger::First,
         )
         .await
         {
-            crate::util::logfile::log(
-                "first-run",
-                &format!("first-launch sync did not start: {error}"),
-            );
-            report_first_launch_sync_start_failure(&error);
+            recover_first_launch_sync_after_start_error(handle, &error).await;
         }
     });
     Ok(())
+}
+
+/// The first-launch sync bailed. A busy npm cache is retried once the lock
+/// is free. Anything else keeps today's log-and-report path. The customer
+/// never sees the raw npm sentence.
+async fn recover_first_launch_sync_after_start_error(handle: AppHandle, error: &str) {
+    use hq_desktop_core::prewarm::{
+        recover_first_launch_cache_bail, wait_for_npm_cache_lock_free, FirstLaunchCacheBail,
+        FIRST_LAUNCH_CACHE_LOCK_WAIT,
+    };
+
+    if !hq_desktop_core::prewarm::is_npm_cache_still_preparing(error) {
+        log(
+            "first-run",
+            &format!("first-launch sync did not start: {error}"),
+        );
+        report_first_launch_sync_start_failure(error);
+        return;
+    }
+
+    log(
+        "first-run",
+        "first-launch sync waiting for the npm cache lock",
+    );
+    let waited = tauri::async_runtime::spawn_blocking(|| {
+        wait_for_npm_cache_lock_free(FIRST_LAUNCH_CACHE_LOCK_WAIT)
+    })
+    .await;
+    let wait_result = match waited {
+        Ok(inner) => inner,
+        Err(join_error) => Err(format!("npm cache wait task failed: {join_error}")),
+    };
+    let retry_result = if wait_result.is_ok() {
+        Some(
+            crate::commands::sync::start_sync_with_trigger(
+                handle.clone(),
+                None,
+                crate::commands::cdp_mirror::SyncTrigger::First,
+            )
+            .await
+            .map(|_| ()),
+        )
+    } else {
+        None
+    };
+    let wait_for_decision = wait_result.clone();
+    let outcome = recover_first_launch_cache_bail(
+        error,
+        || wait_for_decision,
+        || match &retry_result {
+            Some(Ok(())) => Ok(()),
+            Some(Err(message)) => Err(message.clone()),
+            None => Err("npm cache lock was still held".to_string()),
+        },
+    );
+    match outcome {
+        FirstLaunchCacheBail::Started => {
+            log(
+                "first-run",
+                "first-launch sync started after the npm cache was ready",
+            );
+        }
+        FirstLaunchCacheBail::NeedsSyncNow { line, .. } => {
+            let detail = match (&retry_result, &wait_result) {
+                (Some(Err(message)), _) => message.clone(),
+                (_, Err(message)) => message.clone(),
+                _ => "npm cache lock was still held".to_string(),
+            };
+            log(
+                "first-run",
+                &format!("first-launch sync did not start after the cache wait: {detail}"),
+            );
+            let _ = handle.emit(
+                crate::events::EVENT_SYNC_ERROR,
+                hq_desktop_core::events::SyncErrorEvent {
+                    company: None,
+                    path: String::new(),
+                    message: line.to_string(),
+                },
+            );
+            report_first_launch_sync_start_failure(line);
+        }
+        FirstLaunchCacheBail::Unrelated => {
+            log(
+                "first-run",
+                &format!("first-launch sync did not start: {error}"),
+            );
+            report_first_launch_sync_start_failure(error);
+        }
+    }
 }
 
 /// Mark the one-time auto-sync notice as shown for an updating user. Also sets

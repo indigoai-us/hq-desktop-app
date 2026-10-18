@@ -106,6 +106,37 @@ describe("CorePopover sync status header (PL-01)", () => {
   });
 });
 
+describe("CorePopover first-launch cache bail (US-014)", () => {
+  const raw =
+    "HQ Sync is still preparing its npm cache in another window. Wait a moment, then try Sync again.";
+
+  it("shows one plain line and Sync now, and hides the raw npm message", async () => {
+    const adapter = makeAdapter();
+    mountPopover({
+      adapter,
+      syncState: "error",
+      errorMessage: raw,
+    });
+    const status = host.querySelector('[data-testid="core-popover-sync-status"]');
+    expect(text(host.querySelector('[data-testid="core-popover-sync-plain"]'))).toBe(
+      "Your files have not synced yet.",
+    );
+    expect(text(host.querySelector('[data-testid="core-popover-sync-now"]'))).toContain(
+      "Sync now",
+    );
+    expect(host.querySelector('[data-testid="core-popover-sync-state"]')).toBeNull();
+    expect(host.querySelector('[data-testid="core-popover-notice"]')).toBeNull();
+    const visible = status?.textContent ?? "";
+    expect(visible.toLowerCase()).not.toContain("npm");
+    expect(visible).not.toContain("another window");
+
+    (host.querySelector('[data-testid="core-popover-sync-now"]') as HTMLButtonElement).click();
+    await vi.waitFor(() => {
+      expect(adapter.sync.startSync).toHaveBeenCalledOnce();
+    });
+  });
+});
+
 describe("CorePopover sync trouble notices (PL-02)", () => {
   it("renders the sync-failed notice", () => {
     mountPopover({

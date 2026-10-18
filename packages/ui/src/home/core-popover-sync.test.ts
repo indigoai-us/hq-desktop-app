@@ -101,6 +101,42 @@ describe("corePillDotTone", () => {
   });
 });
 
+describe("first-launch npm cache bail (US-014)", () => {
+  const raw =
+    "HQ Sync is still preparing its npm cache in another window. Wait a moment, then try Sync again.";
+
+  it("replaces the raw npm message with one plain line and Sync now", () => {
+    const model = buildCorePopoverViewModel({
+      syncState: "error",
+      notices: { errorMessage: raw },
+    });
+    expect(model.syncOffer).toEqual({
+      line: "Your files have not synced yet.",
+      action: "Sync now",
+    });
+    expect(model.notices.some((row) => row.kind === "sync-failed")).toBe(false);
+    const visible = JSON.stringify({
+      offer: model.syncOffer,
+      notices: model.notices,
+    });
+    expect(visible.toLowerCase()).not.toContain("npm");
+    expect(visible).not.toContain("another window");
+    expect(visible).not.toContain("!");
+    expect(visible).not.toContain("—");
+  });
+
+  it("keeps Sync now when the backend already sent the plain line", () => {
+    const model = buildCorePopoverViewModel({
+      syncState: "error",
+      notices: { errorMessage: "Your files have not synced yet." },
+    });
+    expect(model.syncOffer).toEqual({
+      line: "Your files have not synced yet.",
+      action: "Sync now",
+    });
+  });
+});
+
 describe("buildCoreNoticeRows", () => {
   it("renders nothing when everything is healthy", () => {
     expect(

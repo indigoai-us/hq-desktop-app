@@ -145,6 +145,8 @@
   //     empty lists, a held skeleton (?loadingMs=N to release), or failed loads
   //   shell view also takes ?auth=, ?reads=, ?toast=, ?gates=on, ?atlas=populated
   //     (AUDIT-3 switches, dev-harness/audit-switches.ts)
+  //   shell view also takes ?sync=cache-bail: emit the raw npm-cache bail so
+  //     the Core popover can be screenshotted on the plain Sync now line
   //   shell view also takes ?tour=1: a fresh install that has not seen the
   //     first-run guided tour, so the tour starts by itself (clears the
   //     local "seen" key on load)
@@ -252,6 +254,17 @@
   // ?toast=update|info|error|progress|stack (dev-harness/audit-switches.ts).
   if (view === 'shell') {
     setTimeout(() => raiseToasts(toastSwitch(), emit, pushToast), 2500);
+    // Dev harness only. The listener in the shell attaches after mount, so
+    // this waits the same way the toast fixture does.
+    if (params.get('sync') === 'cache-bail') {
+      setTimeout(() => {
+        void emit('sync:error', {
+          path: '',
+          message:
+            'HQ Sync is still preparing its npm cache in another window. Wait a moment, then try Sync again.',
+        });
+      }, 2500);
+    }
   }
 
   if (view === 'drift') {

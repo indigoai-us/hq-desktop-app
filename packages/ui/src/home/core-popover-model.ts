@@ -98,12 +98,49 @@ export interface CorePopoverViewModel {
   pausedNotice: string | null;
   /** Sync Now is a no-op while paused. */
   syncNowAllowed: boolean;
+  /**
+   * US-014: the first-launch npm-cache bail, rewritten as one plain line
+   * and a Sync now action. Null for every other sync state.
+   */
+  syncOffer: FirstLaunchSyncOffer | null;
   /** Status header: state word, last-sync line, live caption (PL-01). */
   syncHeader: CorePopoverSyncHeader;
   /** Sync trouble rows, in tray-popover order (PL-02). */
   notices: CoreNoticeRow[];
   /** One row per company whose uploads are paused by a plan limit. */
   uploadsPaused: CoreUploadsPausedRow[];
+}
+
+/** Customer line after a first-launch sync could not start on its own. */
+export const FIRST_LAUNCH_SYNC_PLAIN_LINE = "Your files have not synced yet.";
+export const FIRST_LAUNCH_SYNC_ACTION = "Sync now";
+
+const NPM_CACHE_PREPARING_MARK = "still preparing its npm cache";
+
+export interface FirstLaunchSyncOffer {
+  line: string;
+  action: string;
+}
+
+/**
+ * The raw npm-cache bail must never reach the screen. Both that message and
+ * the backend's already-plain line become one sentence plus Sync now.
+ */
+export function firstLaunchSyncOffer(
+  message: string | null | undefined,
+): FirstLaunchSyncOffer | null {
+  const text = (message ?? "").trim();
+  if (!text) return null;
+  if (
+    text === FIRST_LAUNCH_SYNC_PLAIN_LINE ||
+    text.includes(NPM_CACHE_PREPARING_MARK)
+  ) {
+    return {
+      line: FIRST_LAUNCH_SYNC_PLAIN_LINE,
+      action: FIRST_LAUNCH_SYNC_ACTION,
+    };
+  }
+  return null;
 }
 
 export interface CoreUploadsPausedRow {
@@ -317,6 +354,7 @@ export function buildCorePopoverViewModel(
     cloudPaused,
     pausedNotice: cloudPaused ? CLOUD_PAUSED_NOTICE : null,
     syncNowAllowed: isSyncNowAllowed(cloudPaused),
+    syncOffer: firstLaunchSyncOffer(input.notices?.errorMessage),
     syncHeader: buildCoreSyncHeader({
       syncState: input.syncState,
       lastSyncLabel: input.lastSyncLabel,
@@ -527,7 +565,10 @@ export function buildCoreNoticeRows(
   const phase = (input.syncState ?? "").toLowerCase();
   const errorMessage = (input.errorMessage ?? "").trim();
 
-  if (phase === "error" && errorMessage) {
+  // The cache bail has its own one-line status and Sync now action. The
+  // Claude Code notice would show a second sentence and could carry the
+  // raw npm text in its tooltip.
+  if (phase === "error" && errorMessage && !firstLaunchSyncOffer(errorMessage)) {
     rows.push({
       kind: "sync-failed",
       tone: "alert",
