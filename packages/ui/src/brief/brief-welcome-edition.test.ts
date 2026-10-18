@@ -118,4 +118,22 @@ describe("welcomeEdition", () => {
       expect(s).not.toMatch(/[!—]/);
     }
   });
+
+  it("puts each item under the company its origin names and counts each company's own items", () => {
+    const input = { ...welcomeRiseBriefInput(), companies: ["co-north", "northstar", "co-field", "fieldwork"] };
+    input.decisions = input.decisions.map((d, i) => ({ ...d, origin: { ...d.origin, companyUid: i === 1 ? "co-field" : "co-north" } }));
+    const labels = new Map([
+      ["co-north", "Northstar"],
+      ["northstar", "Northstar"],
+      ["co-field", "Fieldwork"],
+      ["fieldwork", "Fieldwork"],
+    ]);
+    const e = welcomeEdition(input, {}, labels);
+    expect(e.cards[0]!.kicker).toBe("Northstar");
+    expect(e.cards[2]!.kicker).toBe("Pick up your work · Northstar");
+    expect(e.sections).toEqual([
+      { name: "Northstar", lines: ["2 open items for you"] },
+      { name: "Fieldwork", lines: [WELCOME_RISE_FINDING_CODEX, "1 open item for you"] },
+    ]);
+  });
 });

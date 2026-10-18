@@ -2,7 +2,7 @@
   /**
    * The welcome edition after the rise (round 11b final frame): the risen sky
    * behind the greeting, "Your day, ready to read." with three cards, and one
-   * short section per company. Same page offsets as BriefRise, so the reveal
+   * short section per company. Same page offsets as BriefRise (in normal flow), so the reveal
    * hands off without a jump. The theme follows the welcome report around it.
    */
   import BriefDawn from "./BriefDawn.svelte";
@@ -43,10 +43,23 @@
     if (!action) return false;
     return action.kind === "launch" || !!onopenmeetings;
   }
-  function run(action: WelcomeEditionAction | null): void {
+  /** Items whose launch is still in flight; their link is disabled so a double click starts one session. */
+  let busy = $state<Record<string, boolean>>({});
+  async function run(action: WelcomeEditionAction | null): Promise<void> {
     if (!action) return;
-    if (action.kind === "meetings") onopenmeetings?.();
-    else void onlaunch(action.itemId, action.prompt);
+    if (action.kind === "meetings") {
+      onopenmeetings?.();
+      return;
+    }
+    if (busy[action.itemId]) return;
+    busy = { ...busy, [action.itemId]: true };
+    try {
+      await onlaunch(action.itemId, action.prompt);
+    } catch {
+      // The launch failed before it could say why; the link stays so the person can try again.
+    } finally {
+      busy = { ...busy, [action.itemId]: false };
+    }
   }
   const noteFor = (action: WelcomeEditionAction | null) => (action?.kind === "launch" ? launched(action.itemId) : null);
 </script>
@@ -86,7 +99,7 @@
           {#if note}
             <p class="note" data-testid="welcome-edition-note">{note}</p>
           {:else if card.label && canRun(card.action)}
-            <button type="button" class="link" data-testid="welcome-edition-action" onclick={() => run(card.action)}>{card.label}</button>
+            <button type="button" class="link" data-testid="welcome-edition-action" disabled={card.action?.kind === "launch" && !!busy[card.action.itemId]} onclick={() => void run(card.action)}>{card.label}</button>
           {/if}
         </section>
       {/each}
@@ -116,7 +129,9 @@
     --rule: rgba(255, 236, 226, 0.14);
     --shadow: none;
     position: relative;
+    box-sizing: border-box;
     min-height: 854px;
+    padding: 29px 48px 28px var(--pad);
     overflow: hidden;
     background: rgb(20, 18, 25);
     color: var(--ink);
@@ -147,22 +162,24 @@
   .edition :global(.dawn .copy) {
     display: none;
   }
+  /* Normal flow, so long titles and narrow windows grow the page instead of clipping it. */
+  .top,
+  .hero,
+  .brief {
+    position: relative;
+  }
   .top {
-    position: absolute;
-    left: var(--pad);
-    right: 46px;
-    top: 29px;
     display: flex;
     justify-content: space-between;
     font-size: 12px;
     color: var(--ink-2);
   }
   .hero {
-    position: absolute;
-    left: var(--pad);
-    top: 92px;
+    box-sizing: border-box;
     width: 630px;
-    max-width: calc(100% - 2 * var(--pad));
+    max-width: 100%;
+    min-height: 278px;
+    padding-top: 46px;
   }
   .lede {
     margin: 0 0 16px;
@@ -174,7 +191,7 @@
     margin: 0;
     font: 500 52px/1.08 var(--serif);
     letter-spacing: -1.6px;
-    white-space: nowrap;
+    text-wrap: balance;
   }
   .sub {
     margin: 20px 0 0;
@@ -182,12 +199,6 @@
     font-size: 15px;
     line-height: 1.7;
     color: var(--ink-2);
-  }
-  .brief {
-    position: absolute;
-    left: var(--pad);
-    right: 48px;
-    top: 324px;
   }
   h3 {
     margin: 0;
@@ -260,6 +271,10 @@
     text-underline-offset: 4px;
     cursor: pointer;
   }
+  .link:disabled {
+    cursor: progress;
+    opacity: 0.6;
+  }
   .link:focus-visible {
     outline: 2px solid currentColor;
     outline-offset: 4px;
@@ -289,9 +304,6 @@
     color: var(--ink-2);
   }
   @media (max-width: 900px) {
-    h2 {
-      white-space: normal;
-    }
     .cards,
     .zero .cards,
     .sections {

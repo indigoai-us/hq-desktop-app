@@ -486,4 +486,52 @@ describe("WelcomeReport", () => {
     expect(q('[data-testid="welcome-edition"]')).toBeNull();
     expect(q('[data-testid="brief-review"]')).not.toBeNull();
   });
+
+  it("the welcome edition launches in the engine the person saved, and a second click while it starts does nothing", async () => {
+    localStorage.setItem("hq.brief.engine", "codex");
+    target = document.createElement("div");
+    document.body.appendChild(target);
+    let finish: (v: string | null) => void = () => undefined;
+    const onlaunch = vi.fn(() => new Promise<string | null>((r) => (finish = r)));
+    try {
+      component = mount(ReportWithBrief, {
+        target,
+        props: { input: welcomeRiseBriefInput(), report: { aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: true } } }, onlaunch },
+      });
+      await settle();
+      const link = q<HTMLButtonElement>('[data-card="decision"] [data-testid="welcome-edition-action"]')!;
+      link.click();
+      await settle();
+      expect(link.disabled).toBe(true);
+      link.click();
+      await settle();
+      expect(onlaunch).toHaveBeenCalledTimes(1);
+      expect((onlaunch.mock.calls[0] as unknown as [string])[0]).toBe("codex");
+      finish(null);
+      await settle();
+      expect(q('[data-card="decision"] [data-testid="welcome-edition-note"]')?.textContent).toBe("Started in Codex.");
+    } finally {
+      localStorage.removeItem("hq.brief.engine");
+    }
+  });
+
+  it("a launch that throws keeps the welcome edition link so the person can try again", async () => {
+    target = document.createElement("div");
+    document.body.appendChild(target);
+    const onlaunch = vi.fn(async (): Promise<string | null> => {
+      throw new Error("bridge down");
+    });
+    component = mount(ReportWithBrief, {
+      target,
+      props: { input: welcomeRiseBriefInput(), report: { aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: false } } }, onlaunch },
+    });
+    await settle();
+    q<HTMLButtonElement>('[data-card="decision"] [data-testid="welcome-edition-action"]')!.click();
+    await settle();
+    expect(onlaunch).toHaveBeenCalledTimes(1);
+    const link = q<HTMLButtonElement>('[data-card="decision"] [data-testid="welcome-edition-action"]');
+    expect(link).not.toBeNull();
+    expect(link!.disabled).toBe(false);
+    expect(q('[data-card="decision"] [data-testid="welcome-edition-note"]')).toBeNull();
+  });
 });

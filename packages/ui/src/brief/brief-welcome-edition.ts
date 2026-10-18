@@ -158,7 +158,8 @@ export function welcomeEdition(
     };
   }
 
-  const lead = companyName(companies[0]!, labels);
+  // A decision belongs to the company its origin names; one with no company is the lead company's.
+  const owner = (d: BriefDecision) => companyName(d.origin?.companyUid?.trim() || companies[0]!, labels);
   const [first, ...rest] = input.decisions;
   const work = rest.length ? rest[rest.length - 1]! : null;
   const cards: WelcomeEditionCard[] = [];
@@ -166,7 +167,7 @@ export function welcomeEdition(
     cards.push({
       id: "decision",
       pill: "Your decision",
-      kicker: lead,
+      kicker: owner(first),
       title: first.title,
       lines: [first.summary].filter((l) => l.trim()),
       label: "Review the decision",
@@ -178,7 +179,7 @@ export function welcomeEdition(
     cards.push({
       id: "work",
       pill: null,
-      kicker: `Pick up your work · ${lead}`,
+      kicker: `Pick up your work · ${owner(work)}`,
       title: work.title,
       lines: [work.summary].filter((l) => l.trim()),
       label: "Pick it up",
@@ -186,15 +187,14 @@ export function welcomeEdition(
     });
   }
 
-  // Items not on a card, in brief order, go under the first company.
+  // Each company lists its first item not on a card, in brief order, and its open count.
   const onCards = new Set([first?.id, work?.id]);
-  const others = input.decisions.filter((d) => !onCards.has(d.id));
-  const open = input.decisions.length;
-  const sections = companies.slice(0, 3).map((slug, i): WelcomeEditionSection => {
-    const name = companyName(slug, labels);
-    if (i > 0) return { name, lines: ["Nothing new for you today."] };
-    const lines = others.slice(0, 1).map((d) => d.title);
-    lines.push(`${open} open item${open === 1 ? "" : "s"} for you`);
+  const names = [...new Set(companies.map((slug) => companyName(slug, labels)))];
+  const sections = names.slice(0, 3).map((name): WelcomeEditionSection => {
+    const mine = input.decisions.filter((d) => owner(d) === name);
+    if (!mine.length) return { name, lines: ["Nothing new for you today."] };
+    const lines = mine.filter((d) => !onCards.has(d.id)).slice(0, 1).map((d) => d.title);
+    lines.push(`${mine.length} open item${mine.length === 1 ? "" : "s"} for you`);
     return { name, lines };
   });
 

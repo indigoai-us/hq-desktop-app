@@ -294,17 +294,16 @@
   /** Inside the welcome report, outside review mode: the round 11b welcome edition replaces the grid. */
   const edition = $derived(
     welcomeAiApps && !allCards && !sectionOnly && !summaryOnly
-      ? welcomeEdition(input, plan.prompts, new Map(companies.flatMap((c) => (c.slug ? [[c.slug.toLowerCase(), c.label] as [string, string]] : []))))
+      ? welcomeEdition(input, plan.prompts, new Map(companies.flatMap((c) => [[c.uid.toLowerCase(), c.label] as [string, string], ...(c.slug ? [[c.slug.toLowerCase(), c.label] as [string, string]] : [])])))
       : null,
   );
-  const editionEngine = $derived(actions && actions.destinations.codex && !actions.destinations.claudeCode ? "codex" : "claude");
 </script>
 
 <svelte:window onkeydown={onkey} />
 
 <div class="daily-brief" data-testid="daily-brief" data-lead={plan.lead} data-density={plan.density} data-template={plan.template} data-daytype={plan.dayType}>
   {#if edition}
-  <BriefWelcomeEdition {edition} now={nowDate} onlaunch={(id, prompt) => launchAction(id, editionEngine, prompt)} launched={launchedNote} {onopenmeetings} />
+  <BriefWelcomeEdition {edition} now={nowDate} onlaunch={(id, prompt) => briefState.start(id, prompt)} launched={launchedNote} {onopenmeetings} />
   {:else}
   {#if !sectionOnly}
   <header class="b-head">

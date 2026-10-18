@@ -11,6 +11,7 @@
   import BriefWelcome from "./BriefWelcome.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import { briefSections } from "./brief-sections.js";
+  import { getWelcomeAiApps } from "./welcome-ai-apps.js";
   import { readRunWelcome, readRunExclusions, readRunFailedCompanies, type BriefFailedCompany, type BriefExclusion, type BriefWelcome as Welcome } from "./brief-welcome.js";
   import type { BriefActions } from "./brief-action-cards.js";
   import BriefRunBar from "./BriefRunBar.svelte";
@@ -73,6 +74,9 @@
   let welcome = $state<Welcome | null>(null);
   let exclusions = $state<BriefExclusion[]>([]);
   let failedCompanies = $state<BriefFailedCompany[]>([]);
+  // Inside the welcome report the page is one brief, so the welcome edition
+  // (which carries its own company sections) replaces the split layout.
+  const inWelcome = !!getWelcomeAiApps();
   const sections = $derived(input ? briefSections(input, companies.filter(c => !failedCompanies.some(f => f.company === c.uid || f.company === c.slug) && !exclusions.some(e => e.company === c.uid || e.company === c.slug))) : []);
   let housekeeping = $state<BriefHousekeeping | null>(null);
   let missing = $state<string[]>([]);
@@ -366,7 +370,7 @@
       {/each}
     </aside>
   {/if}
-  {#if sections.length}
+  {#if sections.length && !inWelcome}
     <DailyBrief summaryOnly {clearedItemIds} dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {actions} onlog={logItem} header={entries.length || run ? runBar : undefined} />
     <div class="brief-sections" data-testid="brief-sections">
       {#each sections as section, index (section.id)}
