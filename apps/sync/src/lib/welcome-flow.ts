@@ -44,7 +44,12 @@ import {
   TRUST_STEP_INDEX,
   WELCOME_SIGNIN_STEP_INDEX,
 } from './onboarding-wizard';
-import { setupStepSummary } from './onboarding-setup';
+import {
+  SETUP_ACTIVITY_PHRASES,
+  SETUP_STILL_WORKING_AFTER_MS,
+  setupActivityLabel,
+  setupActivityPhrase,
+} from './onboarding-setup';
 
 export const STORY_SCENES = ['welcome', 'folder', 'cloud', 'shortcut', 'ready'] as const;
 export type StorySceneId = (typeof STORY_SCENES)[number];
@@ -300,6 +305,7 @@ export interface InstallCardInput {
   completed: boolean;
   /** The auto-retry notice for the running stage, when it is waiting on one. */
   retryText: string | null;
+  currentItemId?: string | null;
 }
 
 export interface InstallCardModel {
@@ -308,23 +314,20 @@ export interface InstallCardModel {
   line: string;
   /** Bar fill, 0-100. */
   percent: number;
-  step: number;
-  total: number;
 }
 
 const INSTALL_CARD_TITLE = 'Installing HQ in the background';
 const INSTALL_CARD_DONE_TITLE = 'HQ is installed';
 const INSTALL_CARD_DONE_LINE = 'Keep going, you’re all set.';
-export const READY_PROGRESS_DONE_TEXT = 'Installed and synced across your devices.';
 
 /**
  * The ready screen's two waits. The usage-data checkbox is ticked by default,
- * so the screen stays up READY_CONSENT_DWELL_MS after the checkbox appears (or
+ * so the screen stays up READY_CONSENT_DWELL_MS after blocking setup finishes and the checkbox is visible (or
  * after the person last touched a checkbox) before it finishes by itself and
  * records the answer. A ready screen that has not finished READY_WATCHDOG_MS
  * after it opened shows the Finish setup button.
  */
-export const READY_CONSENT_DWELL_MS = 8_000;
+export const READY_CONSENT_DWELL_MS = 3_000;
 export const READY_WATCHDOG_MS = 90_000;
 
 interface ReadyTimings {
@@ -351,40 +354,54 @@ export function __setReadyTimingsForTests(next: Partial<ReadyTimings> | null): v
 }
 
 /**
- * The corner card and the ready screen's capsule, driven by the install's real
- * progress. A stage waiting on its automatic retry says so in place of the
- * step line; failures that remain once every stage has settled are recorded
+ * The corner card names actual work and uses the install's real progress.
+ * A stage waiting on its automatic retry says so in place of the activity
+ * line; failures that remain once every stage has settled are recorded
  * for the setup skill and never shown here (seamless completion).
  */
-export function installCardModel({ percent, completed, retryText }: InstallCardInput): InstallCardModel {
-  const summary = setupStepSummary(completed ? 100 : Math.min(99, percent));
+export function installCardModel({ percent, completed, retryText, currentItemId = null }: InstallCardInput): InstallCardModel {
   if (completed) {
     return {
       state: 'done',
       title: INSTALL_CARD_DONE_TITLE,
       line: INSTALL_CARD_DONE_LINE,
       percent: 100,
-      step: summary.total,
-      total: summary.total,
     };
   }
-  const stepLine = `Step ${summary.step} of ${summary.total} · ${summary.compactLabel}`;
   return {
     state: retryText ? 'retrying' : 'running',
     title: INSTALL_CARD_TITLE,
-    line: retryText ?? stepLine,
+    line: retryText ?? setupActivityLabel(currentItemId) ?? '',
     percent: Math.max(0, Math.min(99, percent)),
-    step: summary.step,
-    total: summary.total,
   };
 }
 
-/** Every step line the card can show, so it can be sized once to the longest. */
-export function installCardStepLines(): string[] {
-  const lines: string[] = [];
-  for (let step = 0; step < 5; step += 1) {
-    const summary = setupStepSummary(step * 20);
-    lines.push(`Step ${summary.step} of ${summary.total} · ${summary.compactLabel}`);
-  }
-  return lines;
+export interface ReadyProgressLineInput {
+  /** The item the install is on, a blocking stage or a host queue item. */
+  itemId: string | null;
+  /** True while that item waits on its automatic retry. */
+  retrying: boolean;
+  /** How long that item has been running, or 0 when unknown. */
+  elapsedMs: number;
+}
+
+/** The Ready screen's progress line while blocking setup still runs. */
+export const READY_PROGRESS_FALLBACK = 'Setting up HQ';
+
+/**
+ * The Ready screen's progress line while blocking setup runs. It names the
+ * running work, and says so in one short line when that work is waiting on its
+ * automatic retry or has run past the still-working threshold, so a stuck step
+ * never shows only "Almost ready." until the watchdog.
+ */
+export function readyProgressLine({ itemId, retrying, elapsedMs }: ReadyProgressLineInput): string {
+  const phrase = setupActivityPhrase(itemId) ?? 'setting up HQ';
+  if (retrying) return `Still ${phrase}, trying again`;
+  if (elapsedMs >= SETUP_STILL_WORKING_AFTER_MS) return `Still ${phrase}`;
+  return setupActivityLabel(itemId, READY_PROGRESS_FALLBACK)!;
+}
+
+/** Possible activity lines keep the corner card's width steady. */
+export function installCardActivityLines(): string[] {
+  return [...new Set(Object.keys(SETUP_ACTIVITY_PHRASES).map(id => setupActivityLabel(id)!))];
 }
