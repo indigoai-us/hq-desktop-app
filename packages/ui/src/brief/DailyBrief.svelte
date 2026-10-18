@@ -69,6 +69,10 @@
     onlaunch?: BriefLaunch;
     /** Run controls (Create brief, history) shown in the header. */
     header?: Snippet;
+    sectionOnly?: boolean;
+    summaryOnly?: boolean;
+    /** Company sections report completed actions to the shared summary. */
+    clearedItemIds?: readonly string[];
     /** The shown run's housekeeping.json, when it has one. */
     housekeeping?: BriefHousekeepingData | null;
     /** Live DM reads for the Team card. */
@@ -85,7 +89,7 @@
      */
     actions?: BriefActions | null;
   }
-  let { input, companies = [], onlaunch, header, housekeeping = null, dmApi = null, onopenthread, onopenmeetings, onlog, actions = null }: Props = $props();
+  let { input, companies = [], onlaunch, header, sectionOnly = false, summaryOnly = false, clearedItemIds = [], housekeeping = null, dmApi = null, onopenthread, onopenmeetings, onlog, actions = null }: Props = $props();
 
   const briefState = new BriefState(
     (engine, prompt) => (onlaunch ?? launchBriefPromptViaClipboard)(engine, prompt),
@@ -99,7 +103,7 @@
   const priorities = $derived(briefPriorities(input));
   // Needs rows: the ones a priority points at first, then by what they unblock.
   const needsRows = $derived(rankDecisions(ctx));
-  const cleared = $derived(input.decisions.filter((d) => briefState.cleared[d.id]).length);
+  const cleared = $derived(input.decisions.filter((d) => briefState.cleared[d.id] || clearedItemIds.includes(d.id)).length);
   // One card per open decision that carries a launch prompt, in the Needs-you order.
   // A card its own launch cleared stays, with the launch note and no buttons.
   const launchedNote = (id: string): string | null => (briefState.launched[id] ? (briefState.notes[id] ?? null) : null);
@@ -252,7 +256,7 @@
     return tiles;
   });
   const liveTiles = $derived.by((): Tile[] => plan.widgets.map((w) => ({ type: "card", key: w.kind, w, scored: plan.scored.find((s) => s.kind === w.kind)! })));
-  const tiles = $derived(allCards ? reviewTiles : liveTiles);
+  const tiles = $derived((allCards ? reviewTiles : liveTiles).filter(t => t.type === "label" ? !summaryOnly : summaryOnly ? t.w.kind === "sunrise" : !sectionOnly || t.w.kind !== "sunrise"));
   // When the Handoffs card is on the page, the Waiting card leaves handoff rows to it.
   const handoffsPlaced = $derived(tiles.some((t) => t.type === "card" && t.w.kind === "handoffs"));
   const partsOf = (kind: string) => {
@@ -287,6 +291,7 @@
 <svelte:window onkeydown={onkey} />
 
 <div class="daily-brief" data-testid="daily-brief" data-lead={plan.lead} data-density={plan.density} data-template={plan.template} data-daytype={plan.dayType}>
+  {#if !sectionOnly}
   <header class="b-head">
     <div class="b-brand">
       <div class="b-mark" aria-hidden="true">
@@ -307,14 +312,15 @@
   {#if header}<div class="b-runs">{@render header()}</div>{/if}
 
   <BriefTodayStrip events={input.calendarToday} now={input.now} dateLabel={dateLabel.toUpperCase()} sample={input.calendarSample ?? false} {onopenmeetings} />
+  {/if}
 
-  {#if priorities.length}<BriefPriorities {priorities} decisions={input.decisions} risks={input.risks} prompts={plan.prompts} now={input.now} />{/if}
+  {#if !summaryOnly && priorities.length}<BriefPriorities {priorities} decisions={input.decisions} risks={input.risks} prompts={plan.prompts} now={input.now} />{/if}
 
   {#if allCards}<div class="b-review" data-testid="brief-review">Review mode · every card with evidence, by group · Shift+A to go back</div>{/if}
   <main
     class="b-grid"
     class:review={allCards}
-    style={gridStyle(plan.areas, allCards)}
+    style={gridStyle(plan.areas, allCards || sectionOnly || summaryOnly)}
   >
     {#each tiles as t, i (t.key)}
       {#if t.type === "label"}
@@ -326,7 +332,7 @@
         <div
           class="slot"
           class:short={w.rows === 1}
-          style="{allCards ? `grid-column:span ${w.cols};grid-row:span ${w.rows}` : `grid-area:${w.kind}`};animation-delay:{i * 70}ms"
+          style="{summaryOnly ? 'grid-column:1 / -1' : allCards || sectionOnly ? `grid-column:span ${w.cols};grid-row:span ${w.rows}` : `grid-area:${w.kind}`};animation-delay:{i * 70}ms"
           data-widget={w.kind}
           data-reason={w.reason}
           title={w.reason}
@@ -443,7 +449,7 @@
     {/each}
   </main>
 
-  {#if actions && actionCards.length}
+  {#if !summaryOnly && actions && actionCards.length}
     <section class="b-actions" data-testid="brief-action-cards">
       {#each actionCards as card (card.id)}
         <BriefActionCard
@@ -459,12 +465,12 @@
     </section>
   {/if}
 
-  {#if welcomeAiApps?.current}
+  {#if !summaryOnly && !sectionOnly && welcomeAiApps?.current}
     {@const connect = welcomeAiApps.current}
-    <BriefConnectApps detect={connect.detect} cli={connect.cli} suggest={connect.suggest} session={connect.session} />
+    <BriefConnectApps detect={connect.detect} cli={connect.cli} suggest={connect.suggest} session={connect.session} anywhereOnId={connect.anywhereOnId ?? null} />
   {/if}
 
-  {#if notShown.length}
+  {#if !summaryOnly && notShown.length}
     <div class="b-dropped" data-testid="brief-dropped">
       <span class="eyebrow">Not shown today</span>
       {#each notShown.slice(0, 5) as r, i (`${r.kind}-${i}`)}
@@ -476,7 +482,7 @@
     </div>
   {/if}
 
-  {#if housekeeping}<BriefHousekeeping {housekeeping} />{/if}
+  {#if !summaryOnly && housekeeping}<BriefHousekeeping {housekeeping} />{/if}
 
   <BriefPeek />
 </div>

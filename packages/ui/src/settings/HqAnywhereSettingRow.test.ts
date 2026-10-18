@@ -67,6 +67,9 @@ function render(adapter: PlatformAdapter) {
   component = mount(HqAnywhereSettingRow, { target: host, props: { adapter } });
 }
 
+const unavailableRow = () =>
+  host.querySelector('[data-testid="hq-anywhere-setting-unavailable"]');
+
 const toggle = () =>
   host.querySelector<HTMLButtonElement>('[data-testid="hq-anywhere-setting-toggle"]');
 
@@ -237,7 +240,7 @@ describe("Settings > HQ Anywhere", () => {
     expect(host.querySelector('[data-testid="hq-anywhere-setting-retry"]')).toBeNull();
   });
 
-  it("hides the row and skips the person-setting read when the rollout flag is off", async () => {
+  it("shows one unavailable line and skips every setting call when the kill switch is explicitly false", async () => {
     let releaseFlag!: () => void;
     let flagSettled = false;
     const flagWait = new Promise<void>((resolve) => {
@@ -264,12 +267,18 @@ describe("Settings > HQ Anywhere", () => {
     await vi.waitFor(() => expect(flagSettled).toBe(true));
 
     expect(host.querySelector('[data-testid="hq-anywhere-setting-row"]')).toBeNull();
+    await vi.waitFor(() => expect(unavailableRow()).not.toBeNull());
+    expect(unavailableRow()?.textContent?.replace(/\s+/g, " ").trim()).toBe(
+      "HQ Anywhere HQ Anywhere is turned off for your account right now.",
+    );
+    expect(unavailableRow()?.querySelector("button")).toBeNull();
+    expect(toggle()).toBeNull();
     expect(getHqAnywherePersonSetting).not.toHaveBeenCalled();
     expect(putHqAnywherePersonSetting).not.toHaveBeenCalled();
     expect(syncHqAnywhereGlobal).not.toHaveBeenCalled();
   });
 
-  it("hides the row when the rollout flag turns off while Settings stays open", async () => {
+  it("switches to the unavailable line when the kill switch turns off while Settings stays open", async () => {
     let flagState = ok({ enabled: true, configured: true });
     let onFeatureChange: ((result: AdapterResult<boolean>) => void) | undefined;
     const unsubscribe = vi.fn();
@@ -298,11 +307,32 @@ describe("Settings > HQ Anywhere", () => {
     await vi.waitFor(() =>
       expect(host.querySelector('[data-testid="hq-anywhere-setting-row"]')).toBeNull(),
     );
+    expect(unavailableRow()).not.toBeNull();
     expect(getHqAnywherePersonSetting).toHaveBeenCalledTimes(1);
     expect(putHqAnywherePersonSetting).not.toHaveBeenCalled();
 
     if (component) await unmount(component);
     component = null;
     expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["the flag is missing", async () => ok({ enabled: false, configured: false })],
+    ["the flag lookup fails", async () => failure("network", "down")],
+    [
+      "the flag lookup throws",
+      async () => {
+        throw new Error("flag service down");
+      },
+    ],
+  ] as Array<[string, ResolveFeatureFlag]>)("keeps the toggle on offer when %s", async (_case, resolveFlag) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { adapter, getHqAnywherePersonSetting } = createAdapter({ resolveFlag });
+    render(adapter);
+
+    await vi.waitFor(() => expect(toggle()?.disabled).toBe(false));
+    expect(unavailableRow()).toBeNull();
+    expect(getHqAnywherePersonSetting).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
 });

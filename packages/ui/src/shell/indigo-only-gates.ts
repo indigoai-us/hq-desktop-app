@@ -89,15 +89,27 @@ type FeatureReader = {
 /**
  * Read every gate key from the registry and keep the values current. Calls
  * `onChange` with the full map after each answer. A failed read leaves the
- * key unset, so it keeps its everyone-default. Returns a stop function.
+ * key unset, so it keeps its everyone-default. `onSettled` runs once, after
+ * every key's first read has answered or failed (at once with no reader), so
+ * a caller can tell "not answered yet" from "answered off". Returns a stop
+ * function.
  */
 export function watchIndigoOnlyGates(
   identity: FeatureReader | null | undefined,
   onChange: (values: GateRegistryValues) => void,
+  onSettled?: () => void,
 ): () => void {
-  if (!identity || typeof identity.hasFeature !== "function") return () => {};
+  if (!identity || typeof identity.hasFeature !== "function") {
+    onSettled?.();
+    return () => {};
+  }
   let live = true;
   const values: GateRegistryValues = {};
+  const unread = new Set<IndigoOnlyGateKey>(INDIGO_ONLY_GATE_KEYS);
+  const markRead = (key: IndigoOnlyGateKey): void => {
+    if (!live || !unread.delete(key) || unread.size > 0) return;
+    onSettled?.();
+  };
   const apply = (key: IndigoOnlyGateKey, result: { ok: boolean; value?: unknown }): void => {
     if (!live) return;
     if (result.ok && typeof result.value === "boolean") values[key] = result.value;
@@ -107,9 +119,13 @@ export function watchIndigoOnlyGates(
   const stops: Array<() => void> = [];
   for (const key of INDIGO_ONLY_GATE_KEYS) {
     void identity.hasFeature(key).then(
-      (result) => apply(key, result),
+      (result) => {
+        apply(key, result);
+        markRead(key);
+      },
       (err: unknown) => {
         console.warn(`[hq-desktop] gate ${key} lookup failed:`, err);
+        markRead(key);
       },
     );
     if (typeof identity.subscribeFeature === "function") {

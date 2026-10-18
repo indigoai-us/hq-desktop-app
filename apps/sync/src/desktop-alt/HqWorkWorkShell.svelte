@@ -1,6 +1,10 @@
 <script lang="ts">
   import RailIcon from '@hq/ui/rail-icon';
   import { FIRST_RUN_TIMING_TAG, formatShell } from '@hq/ui/first-run-timing';
+  import {
+    parseFirstRunHandoffHint,
+    type FirstRunHandoffHint,
+  } from '@hq/ui/first-run-handoff';
   /**
    * Native desktop host for the shared @hq/work shell.
    *
@@ -53,7 +57,7 @@
   import { emitPlanLimitPromptTelemetry } from '../lib/desktop-telemetry';
   import { isPostReadyActionReady } from '../lib/post-ready-action-telemetry';
   import type { DmRequestContact } from '../lib/dmRequests';
-  import { dismissBootLoader } from './boot-loader';
+  import { dismissBootLoader, removeBootLoaderNow } from './boot-loader';
   import SignInPrompt from '../components/SignInPrompt.svelte';
   import PackInstallSheet from '../lib/PackInstallSheet.svelte';
   import {
@@ -1049,6 +1053,76 @@
   }
 
   const IDENTITY_SETTLE_TIMEOUT_MS = 4000;
+  // US-010: the first-run handoff hint rides the pending route. The shell
+  // mounts once it is read (normally a few ms), or after this bound. The host
+  // holds the route while its flag reads finish (PENDING_ROUTE_WAIT, 2500 ms),
+  // so this bound sits above that hold; a launch with no handoff answers at once.
+  const HANDOFF_READ_TIMEOUT_MS = 3000;
+  let firstRunHandoff = $state<FirstRunHandoffHint | null>(null);
+  let handoffRead = $state(false);
+  // US-010: a hidden window may not run animation frames, so the painted
+  // signal also goes after this bound.
+  const FIRST_RUN_PAINTED_FALLBACK_MS = 50;
+
+  /**
+   * US-010: tells the first-run handoff the desktop window has painted, so it
+   * shows the window and hides the welcome window. A launch with no handoff
+   * waiting ignores it. The window may be hidden and about to be revealed by
+   * this signal, so a boot overlay still in place goes now rather than fading
+   * in front of the revealed window.
+   */
+  function sendFirstRunPainted(): void {
+    if (document.visibilityState === 'hidden') removeBootLoaderNow();
+    void Promise.resolve()
+      .then(() => invokeFn('desktop_first_run_takeover_painted'))
+      .catch(() => undefined);
+  }
+
+  // US-010: the signed-out, reconnecting and account-error screens mount no
+  // shell, so they send the painted signal themselves once they are on
+  // screen. Without it the handoff waits for its watchdog.
+  $effect(() => {
+    if (lifecycle !== 'signed-out' && lifecycle !== 'recovery' && lifecycle !== 'identity-error') {
+      return;
+    }
+    let sent = false;
+    const send = () => {
+      if (sent) return;
+      sent = true;
+      sendFirstRunPainted();
+    };
+    const frame = requestAnimationFrame(() => requestAnimationFrame(send));
+    const fallback = setTimeout(send, FIRST_RUN_PAINTED_FALLBACK_MS);
+    return () => {
+      sent = true;
+      cancelAnimationFrame(frame);
+      clearTimeout(fallback);
+    };
+  });
+
+  // The first-run handoff hides the welcome window only once this window is
+  // on screen: the report goes two frames after the page turns visible. A
+  // launch with no handoff waiting ignores it.
+  onMount(() => {
+    let frame = 0;
+    const reportOnScreen = () => {
+      if (document.visibilityState !== 'visible') return;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => {
+          void Promise.resolve()
+            .then(() => invokeFn('desktop_first_run_desktop_visible'))
+            .catch(() => undefined);
+        });
+      });
+    };
+    reportOnScreen();
+    document.addEventListener('visibilitychange', reportOnScreen);
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener('visibilitychange', reportOnScreen);
+    };
+  });
 
   onMount(() => {
     postReadyActionReady = isPostReadyActionReady();
@@ -1066,6 +1140,32 @@
 
     const bootRevealTimeoutId = setTimeout(() => void reveal(), IDENTITY_SETTLE_TIMEOUT_MS);
 
+    // Read the pending route at once (not after the session settles) so a
+    // first-run handoff hint reaches the shell before its first frame.
+    const pendingRoutePromise = Promise.resolve().then(() =>
+      invokeFn('desktop_alt_consume_pending_route'),
+    );
+    const handoffReadTimeoutId = setTimeout(() => {
+      if (!handoffRead) {
+        console.warn(`[desktop] first-run handoff hint not read within ${HANDOFF_READ_TIMEOUT_MS} ms; mounting without it`);
+      }
+      handoffRead = true;
+    }, HANDOFF_READ_TIMEOUT_MS);
+    void pendingRoutePromise
+      .then(
+        (pending) => parseFirstRunHandoffHint(pending).hint,
+        (err) => {
+          console.warn('[desktop] first-run handoff hint read failed', err);
+          return null;
+        },
+      )
+      .then((hint) => {
+        if (cancelled) return;
+        clearTimeout(handoffReadTimeoutId);
+        if (!handoffRead) firstRunHandoff = hint;
+        handoffRead = true;
+      });
+
     const unlistenWatcherStatusPromise = listen<{
       state: string;
       holderCommand?: string;
@@ -1078,13 +1178,10 @@
 
     const restoreInitialNavigation = async () => {
       try {
-        const pending = await invokeFn('desktop_alt_consume_pending_route');
+        const { route: pendingRoute } = parseFirstRunHandoffHint(await pendingRoutePromise);
         if (cancelled) return;
         if (!latestLiveNavigation) {
-          applyDesktopAltRoute(
-            typeof pending === 'string' ? pending : null,
-            navigation,
-          );
+          applyDesktopAltRoute(pendingRoute, navigation);
         }
         const setupTarget = await invokeFn('take_pending_setup_target');
         if (
@@ -1353,6 +1450,7 @@
     return () => {
       cancelled = true;
       clearTimeout(bootRevealTimeoutId);
+      clearTimeout(handoffReadTimeoutId);
       hydration += 1;
       unsubscribeRosterEvents();
       for (const pending of unlistenWorkPushes) {
@@ -1542,6 +1640,7 @@
       </div>
     {/if}
     <div class="work-shell-frame">
+    {#if handoffRead}
     {#key authGeneration}
       <WorkShell
         data={{ user: capabilities.hostIdentity }}
@@ -1585,6 +1684,8 @@
         onShellReady={() => {
           void invokeFn('shell_ready');
         }}
+        {firstRunHandoff}
+        onFirstRunPainted={sendFirstRunPainted}
         onembeddednavigationready={() => {
           detachNavigation?.();
           // Pending-route bridge only: the shared shell converts `target`
@@ -1600,6 +1701,7 @@
         }}
       />
     {/key}
+    {/if}
     </div>
   {/if}
 </div>

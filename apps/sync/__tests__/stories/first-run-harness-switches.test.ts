@@ -89,6 +89,11 @@ describe("first-run harness: coding tools sign-in switches", () => {
   });
 
   it("visual still has a tool signed in", () => {
-    expect(preflight("?firstrun=visual")).toMatchObject({ claudeLoggedIn: true, claudeStatus: { state: "signedIn" } });
+    expect(preflight("?firstrun=visual")).toMatchObject({
+      claudeLoggedIn: true,
+      claudeStatus: { state: "signedIn" },
+      codexLoggedIn: true,
+      codexStatus: { state: "signedIn" },
+    });
   });
 });

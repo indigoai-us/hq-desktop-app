@@ -104,7 +104,10 @@ export const HUMAN_ONLY_CONVERSATIONS_FLAG =
   "desktop.human-only-conversations";
 export const PERSONAL_TRANSCRIPTS_FLAG =
   "desktop.meetings-personal-transcripts";
-/** Admin-owned rollout gate for the person's self-service HQ Anywhere setting. */
+/**
+ * Kill switch for HQ Anywhere. Explicit false hides the callout and skips
+ * the install. A missing or unreadable value means on.
+ */
 export const HQ_ANYWHERE_RUNTIME_FLAG = "hq-anywhere-runtime";
 /**
  * Settings > Storage and `hq storage` (shared with hq-cli). Allowlist gate:

@@ -10,6 +10,7 @@
    */
   import { onDestroy, onMount, type Component, type ComponentProps } from "svelte";
   import { FIRST_RUN_TIMING_TAG, formatShell } from "@hq/ui/first-run-timing";
+  import type { FirstRunHandoffHint } from "@hq/ui/first-run-handoff";
   import {
     createSyncPlatformAdapter,
     resolveHostPlatform,
@@ -156,6 +157,10 @@
     bootTimeoutMs?: number;
     /** Native hosts receive DesktopApp's first successful shell-paint signal. */
     onShellReady?: () => void;
+    /** First-run handoff hint read from the pending route (US-010). */
+    firstRunHandoff?: FirstRunHandoffHint | null;
+    /** Fires once the first-run view (takeover or shell) has painted. */
+    onFirstRunPainted?: () => void;
     /** Native external-browser seam for Settings and rendered links. */
     onOpenConsole?: (url: string) => Promise<void> | void;
     onopenurl?: (url: string) => void;
@@ -281,6 +286,8 @@
     onopenhostnotification,
     bootTimeoutMs,
     onShellReady,
+    firstRunHandoff = null,
+    onFirstRunPainted,
     onOpenConsole: hostOnOpenConsole,
     onopenurl: hostOpenUrl,
     callsHost = null,
@@ -1054,6 +1061,8 @@
       {notificationWakeSeq}
       {bootTimeoutMs}
       {onShellReady}
+      {firstRunHandoff}
+      {onFirstRunPainted}
       {searchRows}
       hydrateLiveMessages={true}
       onlivemessages={cacheLiveMessages}

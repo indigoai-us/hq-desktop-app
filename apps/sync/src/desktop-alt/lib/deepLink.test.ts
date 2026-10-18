@@ -88,6 +88,17 @@ describe('parseHqUrl', () => {
     expect(parseHqUrl('HQ://meetings')).toBe('meetings');
   });
 
+  it('maps hq://brief and hq://vault onto their bare routes (US-008)', () => {
+    expect(parseHqUrl('hq://brief')).toBe('brief');
+    expect(parseHqUrl('hq://brief/')).toBe('brief');
+    expect(parseHqUrl('HQ://Brief')).toBe('brief');
+    expect(parseHqUrl('hq://vault')).toBe('vault');
+    expect(parseHqUrl('hq://vault/')).toBe('vault');
+    expect(parseHqUrl('hq://brief/today')).toBeNull();
+    expect(parseHqUrl('hq://vault/indigo')).toBeNull();
+    expect(parseHqUrl('hq://vault?path=x')).toBeNull();
+  });
+
   it('rejects a malformed hq:// URL with a shape-only warning', () => {
     expect(parseHqUrl('hq://not-a-real-target')).toBeNull();
     expect(warn).toHaveBeenCalledTimes(1);

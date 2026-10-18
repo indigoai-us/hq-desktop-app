@@ -37,13 +37,13 @@
     keyboardRowsFor,
   } from './welcome/engines';
   import {
-    READY_PROGRESS_DONE_TEXT,
     SCENE_HOLD_MS,
     forwardLabel,
     installCardModel,
-    installCardStepLines,
+    installCardActivityLines,
     isStoryScene,
     previousScene,
+    readyProgressLine,
     readyTimings,
     sceneForStep,
     stepForScene,
@@ -127,6 +127,7 @@
     type SetupStageRecoveryAction,
     type StageId,
     type StageState,
+    setupActivityPhrase,
   } from '../../lib/onboarding-setup';
   import {
     openHqShortcutChord,
@@ -400,8 +401,8 @@
   /** Whether the optional teammate invite has been offered in this run. */
   let inviteTeammateVisited = false;
   /**
-   * The first-folder flag and invite eligibility, read once setup completes,
-   * have settled. The follow-on steps wait for them so the connector import
+   * The first-folder flag and invite eligibility, read once the blocking
+   * phase is done, have settled. The follow-on steps wait for them so the connector import
    * never jumps ahead of a step that turns out to be on.
    */
   let postSetupStepsResolved = $state(false);
@@ -527,6 +528,8 @@
    * screen instead of after it. Reset on an account switch.
    */
   let companyRouteResolution: Promise<void> | null = null;
+  let personEntityNeedsRetry = false;
+  let personEntityRetry: Promise<void> | null = null;
   let companyRouteGeneration = 0;
   /** The company lookup has answered with a usable route (or none needed). */
   let companyRouteResolved = $state(false);
@@ -614,7 +617,7 @@
   let autoFinishRetryOwed = $state(false);
   let autoFinishRetried = false;
   // The usage-data checkbox is ticked by default, so the ready step stays up
-  // `readyTimings().consentDwellMs` after the checkbox appears before it
+  // `readyTimings().consentDwellMs` after blocking setup ends and the checkbox is visible before it
   // finishes by itself and records the answer. Touching either checkbox
   // starts the wait again.
   let readyDwellElapsed = $state(false);
@@ -867,13 +870,33 @@
   const installSettled = $derived(setupCompleted && !hostQueueRunning);
   /**
    * Some part of the install is still running, the background phase and the
-   * host's queue included. The ready screen's heading and progress line follow
-   * this, and the ready step does not finish until every install item has
-   * settled. A queue that settled with failures is not running.
+   * host's queue included. The ready screen's progress line follows this, so
+   * it names the step still running. The ready step does not wait for it: it
+   * finishes once the blocking phase is done (`installPending`), and the
+   * Finishing setup chip shows whatever is still running after the window
+   * closes. A queue that settled with failures is not running.
    */
   const installActivityRunning = $derived(
     (setupStarted && !setupCompleted && (!blockingPhaseDone || backgroundPhaseRunning)) ||
       hostQueueRunning,
+  );
+  const currentInstallItemId = $derived(
+    installPending && currentStageId
+      ? currentStageId
+      : hostQueueRunning && hostQueue?.currentId ? hostQueue.currentId : currentStageId,
+  );
+  const currentInstallActivity = $derived(setupActivityPhrase(currentInstallItemId));
+  // While blocking setup runs, the Ready line names the step and says so when
+  // that step waits on its automatic retry or has run a while. The retry and
+  // the elapsed clock belong to the wizard's own stage, not a host queue item.
+  const readyLine = $derived(
+    readyProgressLine({
+      itemId: currentInstallItemId,
+      retrying: Boolean(
+        setupRetry && setupRetry.stageId === currentStageId && currentInstallItemId === currentStageId,
+      ),
+      elapsedMs: currentInstallItemId !== null && currentInstallItemId === currentStageId ? stageElapsedMs : 0,
+    }),
   );
   const chrome = $derived(welcomeChrome({ scene, replay, setupCompleted }));
   const installCard = $derived(
@@ -884,13 +907,14 @@
           ? Math.floor((hostQueue.done * 100) / hostQueue.total)
           : overallPercent,
       completed: installSettled,
+      currentItemId: currentInstallItemId,
       retryText:
         setupRetry && setupRetry.stageId === currentStageId
           ? setupRetrySubStatusText(setupRetry.attempt)
           : null,
     }),
   );
-  const installCardLines = installCardStepLines();
+  const installCardLines = installCardActivityLines();
   const consentGate = $derived(deferredConsentGate(deferredConsent));
   const storyOrder = $derived(storyScenes(replay));
 
@@ -947,11 +971,12 @@
   });
 
   // Entering the ready step reads the host's queue, so a run this wizard did
-  // not start (or one still going after this flow's stages settled) keeps the
-  // screen from saying the install is done.
-  // It reads again when this flow's stages settle, so the step never finishes
-  // on a queue status that predates the queue's start. `hostQueueChecked`
-  // turns true only once the latest of these reads has come back.
+  // not start (or one still going after this flow's stages settled) shows on
+  // the progress line instead of a finished install.
+  // It reads again when this flow's stages settle, so the line never shows a
+  // queue status that predates the queue's start. `hostQueueChecked` turns
+  // true only once the latest of these reads has come back; the step waits
+  // for that read, not for the queue to settle.
   $effect(() => {
     if (consentOnly || replay || currentStep !== READY_STEP_INDEX) return;
     void setupCompleted;
@@ -964,7 +989,7 @@
 
   // While the install runs on the ready step, read the host's queue again
   // every READY_STATUS_REREAD_MS, so a missed progress event cannot leave a
-  // stale "running" that would keep the step from finishing.
+  // stale "running" on the progress line.
   $effect(() => {
     if (consentOnly || replay || currentStep !== READY_STEP_INDEX) return;
     if (!installActivityRunning) return;
@@ -1121,8 +1146,10 @@
     mounted = false;
     currentSignInCall += 1;
     // The background install phase outlives the wizard; it cancels itself when
-    // it finishes after unmount.
-    if (!backgroundPhaseRunning) cancelSetupRun();
+    // it finishes after unmount. The ready screen finishes while the host's
+    // install queue still runs, so closing the window leaves the queue's
+    // tool installs running.
+    if (!backgroundPhaseRunning) cancelSetupRun({ leaveHostInstalls: true });
   });
 
   function errorMessage(err: unknown): string {
@@ -2214,7 +2241,18 @@
     );
   }
 
-  async function cancelForegroundWork(runId: number): Promise<void> {
+  async function cancelForegroundWork(
+    runId: number,
+    { leaveHostInstalls = false }: { leaveHostInstalls?: boolean } = {},
+  ): Promise<void> {
+    if (leaveHostInstalls) {
+      // The install handles belong to the host's queue items (tool installs,
+      // embeddings). The queue owns them and has its own per-item deadline,
+      // so only this wizard's tracking of them is dropped.
+      if (runId === currentRunId) activeInstallHandles.clear();
+      await cancelActiveContentHandles(runId);
+      return;
+    }
     await Promise.allSettled([
       cancelActiveInstallHandles(runId),
       cancelActiveContentHandles(runId),
@@ -3073,14 +3111,19 @@
     // so it is created before the decision screen. A failure here is retried
     // by the consent path and by the initial-sync stage.
     try {
-      await invokeCommand<boolean>('ensure_person_entity');
+      personEntityNeedsRetry = !(await invokeCommand<boolean>('ensure_person_entity'));
     } catch (err) {
+      personEntityNeedsRetry = true;
       console.warn('[onboarding-setup] ensure_person_entity failed:', err);
     }
     if (!isCurrentRun(runId)) return;
     logFirstRunPhaseOnce('blocking', 'ok');
     blockingPhaseDone = true;
     void runBackgroundPhase(runId, background, runStageList);
+    // The optional follow-on steps need the person entity, not the tools
+    // install, so they are looked up now and the ready screen can offer them
+    // while the background phase runs.
+    void resolvePostSetupSteps(() => isCurrentRun(runId) && mounted);
   }
 
   /**
@@ -3133,7 +3176,7 @@
       logFirstRunPhaseOnce('background', backgroundOk ? 'ok' : 'failed');
       if (backgroundOk) await completeSetup(runId);
     }
-    if (!mounted && backgroundRunId === runId) cancelSetupRun();
+    if (!mounted && backgroundRunId === runId) cancelSetupRun({ leaveHostInstalls: true });
   }
 
   async function completeSetup(runId: number): Promise<void> {
@@ -3168,7 +3211,7 @@
       // the story, so it no longer moves the wizard: it records its own
       // completion wherever the person is. A held consent answer is sent, and
       // the optional first-folder sync, teammate invite and connector offer are
-      // made, from effects keyed on `setupCompleted`.
+      // made, from effects keyed on `blockingPhaseDone` (or `setupCompleted`).
       recordStep(SETUP_STEP_INDEX, 'completed', {
         failedStageCount: result.failedStages.length,
         failedStages,
@@ -3177,7 +3220,9 @@
       });
       // Both follow-on steps are optional. The invite path appears only for a
       // company with one active member; every membership lookup fails closed.
-      await resolvePostSetupSteps(() => isCurrentRun(runId) && mounted);
+      // They were looked up when the blocking phase ended; a run that reached
+      // completion without that lookup settling looks them up here.
+      if (!postSetupStepsResolved) await resolvePostSetupSteps(() => isCurrentRun(runId) && mounted);
     }
   }
 
@@ -3204,6 +3249,9 @@
   }
 
   async function lookUpCompanyRoute(stillCurrent: () => boolean): Promise<void> {
+    // A lookup that starts once the blocking phase is done has the person
+    // entity to look up with, so its answer is final.
+    const afterPersonEntity = blockingPhaseDone || setupCompleted;
     if ((await probeMachineIdentity()).active) {
       // An outpost has no person entity: there is no membership to look up,
       // no company to name and no teammate to invite. Its company is the
@@ -3271,20 +3319,41 @@
     const active = await activeCompanyForConnectorImport();
     if (!stillCurrent()) return;
     connectorImportCompany = active;
-    if (setupCompleted) {
-      // After setup there is no later attempt: settle on no company step.
+    if (afterPersonEntity) {
+      // There is no later attempt: settle on no company step.
       companyRouteResolved = true;
     } else {
-      // Too early (before setup); setup completion looks again.
+      // Too early (before the person entity); the post-setup lookup looks again.
       companyRouteResolution = null;
     }
   }
 
   /** The optional follow-on steps after setup; re-run after an account switch. */
   async function resolvePostSetupSteps(stillCurrent: () => boolean): Promise<void> {
+    if (personEntityNeedsRetry && !personEntityRetry) {
+      // Share one retry across concurrent post-setup resolutions. A failed
+      // blocking-phase person write must not make the company lookup final.
+      personEntityNeedsRetry = false;
+      personEntityRetry = (async () => {
+        try {
+          await invokeCommand<boolean>('ensure_person_entity');
+        } catch (err) {
+          console.warn('[onboarding-setup] person entity retry failed:', err);
+        }
+        if (!stillCurrent()) return;
+        membershipMeRead = null;
+        resetCompanyRoute();
+      })();
+    }
+    if (personEntityRetry) await personEntityRetry;
+    if (!stillCurrent()) return;
     const [firstFolderEnabled] = await Promise.all([
       resolveFirstFolderSyncStepFlag(),
-      resolveCompanyStep(),
+      resolveCompanyStep().then(() => {
+        // A lookup started before the person entity existed and failed is
+        // forgotten; look once more now that it exists.
+        if (!companyRouteResolved && stillCurrent()) return resolveCompanyStep();
+      }),
     ]);
     if (!stillCurrent()) return;
     showFirstFolderSyncStep = firstFolderEnabled;
@@ -3624,7 +3693,13 @@
     }
   }
 
-  function cancelSetupRun() {
+  /**
+   * Stop this wizard's setup run. `leaveHostInstalls` is for the wizard going
+   * away (window closed, desktop opened): the host's install queue keeps
+   * running, so its processes are not cancelled. A retry, a stage timeout and
+   * going back before setup still cancel them.
+   */
+  function cancelSetupRun({ leaveHostInstalls = false }: { leaveHostInstalls?: boolean } = {}) {
     setupCancelled = true;
     unlistenInstallProgress?.();
     unlistenInstallProgress = null;
@@ -3645,7 +3720,7 @@
     // next run owns it again.
     stages = resetRetryingStages(stages);
     setupRetry = null;
-    void cancelForegroundWork(currentRunId);
+    void cancelForegroundWork(currentRunId, { leaveHostInstalls });
   }
 
   /** Any stage left waiting on a retry goes back to 'pending'. */
@@ -3678,7 +3753,7 @@
     finishError = false;
     try {
       // Every way of finishing from the ready screen (the auto-finish once
-      // the install has settled, the finish-error note's Finish setup, the
+      // the blocking phase is done, the finish-error note's Finish setup, the
       // consent Retry) records the usage-data answer first, and nothing
       // finishes on a failed write: the failure is shown with Retry, or for
       // an offline person whose answer is cached, "Finish setup, send later".
@@ -3768,6 +3843,8 @@
       cancelSetupRun();
       setupStarted = false;
       blockingPhaseDone = false;
+      personEntityNeedsRetry = false;
+      personEntityRetry = null;
       stages = buildInitialStages();
       // The only genuine start-over: the next run earns its percent again.
       resetSetupProgressTracker(setupProgressTracker);
@@ -4100,15 +4177,16 @@
   function restartReadyDwell(): void {
     clearReadyDwell();
     readyDwellElapsed = false;
+    if (installPending || scene !== 'ready' || !navRevealed || !consentOnReady) return;
     readyDwellTimer = setTimeout(() => {
       readyDwellTimer = null;
       readyDwellElapsed = true;
     }, readyTimings().consentDwellMs);
   }
 
-  // The dwell starts when the usage-data line comes on show.
+  // Count the full dwell only while the ready heading and usage-data choice are visible.
   $effect(() => {
-    if (scene !== 'ready' || !navRevealed || !consentOnReady) return;
+    if (scene !== 'ready' || !navRevealed || !consentOnReady || installPending) return;
     untrack(restartReadyDwell);
     return clearReadyDwell;
   });
@@ -4182,16 +4260,17 @@
     if (result.phase === 'sent') void resolveInstallerPersonUid();
   }
 
-  // Someone who answered before the install finished is already on the ready
-  // screen when it does. The optional follow-on steps run then (they need the
-  // finished install), each once, in order: the first-folder sync (flag-gated),
+  // Someone who answered before the blocking phase finished is already on the
+  // ready screen when it does. The optional follow-on steps run then (they
+  // need the person entity, not the tools install, which keeps running in the
+  // background), each once, in order: the first-folder sync (flag-gated),
   // the teammate invite (flag-gated, sole active member only), then the
   // connector import, which only shows itself if it has something to offer.
   // Each hands back to the ready screen, which picks the next one up here.
   // There is no company step (US-007): memberships connect on their own.
 
   $effect(() => {
-    if (consentOnly || replay || !setupCompleted || !postSetupStepsResolved) return;
+    if (consentOnly || replay || !(blockingPhaseDone || setupCompleted) || !postSetupStepsResolved) return;
     if (currentStep !== READY_STEP_INDEX) return;
     if (showFirstFolderSyncStep && !firstFolderSyncVisited) {
       advanceTo(FIRST_FOLDER_SYNC_STEP_INDEX, null);
@@ -4212,16 +4291,21 @@
   });
 
   // AUTO-FINISH. The ready screen has no buttons: it finishes by itself, and
-  // the desktop opens, once nothing is left for this flow to do. That is when
-  // the ready screen is on show and its scene has arrived (`navRevealed`, set
-  // by the ready engine when the usage-data line appears), the host queue
-  // has been read on this step, no install item is running, the usage-data
-  // answer is not held back, and the post-ready steps above have all run:
-  // the conditions below mirror the routing effect, so this never fires
-  // while the routing effect still has a step to open.
+  // the desktop opens, once the blocking phase is done. That is when the
+  // ready screen is on show and its scene has arrived (`navRevealed`, set by
+  // the ready engine when the usage-data line appears), the host queue has
+  // been read on this step, the blocking phase is done (`installPending` is
+  // false), the usage-data answer is not held back, and the post-ready steps
+  // above have all run: the conditions below mirror the routing effect, so
+  // this never fires while the routing effect still has a step to open.
+  // It does not wait for the background phase (tool installs, the vault
+  // upload, indexing) or the host's install queue. They keep running after
+  // the window closes, and the Finishing setup chip shows them; the desktop
+  // does not need any of them to open (the hq CLI falls back to npx until
+  // its install lands).
   // A wizard that started no install on this mount (only a direct mount at
-  // the ready step) never runs those steps, so it finishes once the host
-  // queue has settled.
+  // the ready step) never runs those steps; its blocking phase ran on an
+  // earlier mount, so it finishes once the host queue has been read.
   // The usage-data checkbox is ticked by default, so it also waits
   // the consent dwell after the checkbox appears, or after the person
   // last touched a checkbox, so the default is never recorded before the
@@ -4233,11 +4317,11 @@
   $effect(() => {
     if (consentOnly || replay || currentStep !== READY_STEP_INDEX || scene !== 'ready') return;
     if (!navRevealed || !hostQueueChecked) return;
-    if (installPending || installActivityRunning) return;
+    if (installPending) return;
     if (consentOnReady && !readyDwellElapsed) return;
     if (consentGate !== 'clear' || consentFailure !== null || finishing || autoFinishAttempted) return;
     if (setupStarted) {
-      if (!setupCompleted || !postSetupStepsResolved) return;
+      if (!(blockingPhaseDone || setupCompleted) || !postSetupStepsResolved) return;
       if (showFirstFolderSyncStep && !firstFolderSyncVisited) return;
       if (showInviteTeammateStep && inviteTeammateContext && !inviteTeammateVisited) return;
       if (!connectorImportVisited && connectorImportCompany) return;
@@ -4940,33 +5024,29 @@
       <canvas bind:this={refs.readyCanvas} aria-hidden="true"></canvas>
       <div class="copy" bind:this={refs.readyCopy}>
         <h2 class="h h-lg" id="onboarding-title-ready" tabindex="-1" data-scene-heading>
-          {installActivityRunning ? 'Almost ready.' : 'HQ is ready.'}
+          {installPending ? 'Almost ready.' : 'HQ is ready.'}
         </h2>
         <p class="body">
           HQ lives in your {setupHostOs === 'macos' ? 'menu bar' : 'system tray'} now and keeps everything in sync.
         </p>
       </div>
-      <div class="prog" class:done={!installActivityRunning} bind:this={refs.readyProg}>
-        <div class="pwrap">
-          <!-- One indicator for every outcome: a turning ring while the install
-               runs, a check once it has settled. A failed stage is recorded for
-               the setup skill and never turns this into a warning. -->
-          <i class="pi" data-testid="onboarding-completion-success-indicator" aria-hidden="true"></i>
-          <span class="pl">{installActivityRunning ? installCard.line : READY_PROGRESS_DONE_TEXT}</span>
-          <span class="pbar" aria-hidden="true"><b style:width={`${installActivityRunning ? installCard.percent : 100}%`}></b></span>
-        </div>
+      <div class="prog" class:done={!installPending} bind:this={refs.readyProg} aria-live="polite">
+        {#if installPending}
+          <div class="pwrap">
+            <i class="pi" data-testid="onboarding-completion-success-indicator" aria-hidden="true"></i>
+            <span class="pl">{readyLine}</span>
+            <span class="pbar" aria-hidden="true"><b style:width={`${installCard.percent}%`}></b></span>
+          </div>
+        {:else if installActivityRunning && currentInstallActivity}
+          <span class="pl finishing-activity">Finishing setup: {currentInstallActivity}</span>
+        {/if}
       </div>
       <!-- The ready screen has no buttons: it shows the install's progress and
-           finishes by itself once the install has settled (the AUTO-FINISH
-           effect). This element stays because the ready engine measures it
+           finishes by itself once the blocking phase is done (the AUTO-FINISH
+           effect); the rest of the install keeps running in the background. This element stays because the ready engine measures it
            (refs.navReady) when it lays out the scene. -->
       <div class="nav ready-options" class:on={scene === 'ready' && navRevealed} bind:this={refs.navReady} data-testid="onboarding-launchers"></div>
       <div class="alt-block" bind:this={refs.readyAlt}>
-        {#if installPending}
-          <p class="substatus" data-testid="welcome-ready-substatus">
-            {setupSubStatusModel.text ?? setupExpectation}{#if setupSubStatusModel.elapsedLabel}<span class="elapsed">{setupSubStatusModel.elapsedLabel}</span>{/if}
-          </p>
-        {/if}
         {#if deferredConsent?.phase === 'failed'}
           <div class="note consent-error" role="alert" data-testid="consent-deferred-error">
             {#if deferredConsent.kind === 'offline'}
@@ -5255,7 +5335,7 @@
         <span class="st">{installCard.title}</span>
         <span class="ss-stack">
           {#each installCardLines as line (line)}<span class="ss ghost">{line}</span>{/each}
-          <span class="ss live">{installCard.line}</span>
+          {#if installCard.line}<span class="ss live">{installCard.line}</span>{/if}
         </span>
       </div>
       <span

@@ -187,7 +187,7 @@ export function formatRoute(state: FirstRunRouteState): string {
 }
 
 export type FirstRunFlagName = "visual-first-run" | "found-apps";
-export type FlagLookupPath = "scoped" | "unscoped" | "timeout" | "error" | "skipped";
+export type FlagLookupPath = "scoped" | "unscoped" | "timeout" | "error" | "skipped" | "hint";
 
 /**
  * An "on" answer that lands after its wait ran out on a new install: applied

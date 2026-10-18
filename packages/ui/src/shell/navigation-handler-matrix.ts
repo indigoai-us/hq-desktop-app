@@ -113,6 +113,9 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   // A failed bot start becomes state (honest notice + start gate), never a
   // navigation.
   applyBotStartFailure: "none",
+  // The brief's live HQ Anywhere check updates the Open line. It does not
+  // change the page.
+  applyBriefInstallCheck: "none",
   handleCardAction: "push",
   openReply: "push",
   openArtifact: "none",
@@ -188,6 +191,9 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   handleSyncToastDismiss: "none",
   // Forward picker (US-009): opens a dialog over the current route, not navigation.
   openForward: "none",
+  // Welcome edition Open: launches the coding tool outside HQ. The shell
+  // stays on the brief, so this is not navigation.
+  openRememberedCodingTool: "none",
 };
 
 export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
@@ -746,7 +752,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "projects-page",
     file: SHARED_SHELL_FILE,
-    needle: '{#if view === "projects"}',
+    needle: '{:else if view === "projects"}',
     destinationKind: "projects",
     history: "push",
     host: "shared-shell",

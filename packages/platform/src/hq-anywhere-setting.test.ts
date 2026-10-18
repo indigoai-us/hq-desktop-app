@@ -10,19 +10,25 @@ import {
 } from "./hq-anywhere-setting.js";
 
 describe("HQ Anywhere setting support", () => {
-  it("fails closed unless the rollout flag is explicitly configured and enabled", async () => {
+  it("is on unless the flag is explicitly configured and false", async () => {
     const identity = {
-      resolveFeatureFlagStatus: vi.fn(async () => ok({ enabled: true, configured: false })),
+      resolveFeatureFlagStatus: vi.fn(async () => ok({ enabled: false, configured: false })),
     } as unknown as PlatformAdapter["identity"];
 
-    await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(false);
+    await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(true);
     expect(identity.resolveFeatureFlagStatus).toHaveBeenCalledWith("hq-anywhere-runtime");
 
     identity.resolveFeatureFlagStatus = vi.fn(async () => ok({ enabled: true, configured: true }));
     await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(true);
+
+    identity.resolveFeatureFlagStatus = vi.fn(async () => ok({ enabled: false, configured: true }));
+    await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(false);
+
+    identity.resolveFeatureFlagStatus = vi.fn(async () => failure("network", "down"));
+    await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(true);
   });
 
-  it("logs an unreadable rollout flag while failing closed", async () => {
+  it("logs an unreadable rollout flag and treats it as on", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const identity = {
       resolveFeatureFlagStatus: vi.fn(async () => {
@@ -30,7 +36,7 @@ describe("HQ Anywhere setting support", () => {
       }),
     } as unknown as PlatformAdapter["identity"];
 
-    await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(false);
+    await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(true);
     expect(warn).toHaveBeenCalledWith(
       "[hq-anywhere] runtime flag lookup failed:",
       expect.any(Error),
@@ -111,6 +117,39 @@ describe("HQ Anywhere setting support", () => {
       .resolves.toEqual(ok(undefined));
     expect(getHqAnywherePersonSetting).not.toHaveBeenCalled();
     expect(syncHqAnywhereGlobal).not.toHaveBeenCalled();
+  });
+
+  // HQ Anywhere is GA: a missing or unreadable flag is on, so launch sync
+  // passes the saved setting (false by default) to the desktop. The desktop
+  // removes only a setup it turned on itself, so a CLI-made
+  // `hq install --global` survives (hq_anywhere.rs launch_sync_leaves_* tests).
+  it.each([
+    ["missing", async () => ok({ enabled: false, configured: false })],
+    ["failing", async () => failure("network", "down")],
+    [
+      "throwing",
+      async () => {
+        throw new Error("private flag service detail");
+      },
+    ],
+  ])("runs launch sync with the saved setting when the flag lookup is %s", async (_case, lookup) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const syncHqAnywhereGlobal = vi.fn(async () => ok(undefined));
+    const getHqAnywherePersonSetting = vi.fn(async () => ok(false));
+    const settings = {
+      getHqAnywherePersonSetting,
+      syncHqAnywhereGlobal,
+    } as unknown as PlatformAdapter["settings"];
+    const identity = {
+      resolveFeatureFlagStatus: vi.fn(lookup),
+    } as unknown as PlatformAdapter["identity"];
+
+    await expect(ensureHqAnywhereGlobalRuntime(identity, settings, { pause: async () => {} }))
+      .resolves.toEqual(ok(undefined));
+    expect(getHqAnywherePersonSetting).toHaveBeenCalledTimes(1);
+    expect(syncHqAnywhereGlobal).toHaveBeenCalledTimes(1);
+    expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(false);
+    warn.mockRestore();
   });
 
   it("clears pending setup when the flag turns off before global files are touched", async () => {

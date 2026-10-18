@@ -162,8 +162,9 @@ function conversationRoute(conversationId: string, eventId: string): string | nu
 }
 
 function mapSegments(segs: readonly string[]): string | null {
-  if (segs.length === 1 && segs[0]!.toLowerCase() === 'meetings') {
-    return 'meetings';
+  if (segs.length === 1) {
+    const only = segs[0]!.toLowerCase();
+    if (only === 'meetings' || only === 'brief' || only === 'vault') return only;
   }
   const head = segs[0]?.toLowerCase() ?? '';
   if (head === 'inbox') {

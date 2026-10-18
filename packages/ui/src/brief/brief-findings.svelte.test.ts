@@ -74,8 +74,8 @@ describe("samples", () => {
     expect(out[2]!.title.length).toBeLessThanOrEqual(90);
   });
 
-  it("shows nothing when the run's company is unknown, and caps at eight", () => {
-    expect(parseSamples(list, null)).toEqual([]);
+  it("shows every company in person mode, and caps at eight", () => {
+    expect(parseSamples(list, null).map(s => s.at)).toEqual(["1", "2", "3", "4", "5"]);
     const many = Array.from({ length: 12 }, (_, i) => ({ kind: "pr", title: `t${i}`, company: "indigo", at: `${i}` }));
     expect(parseSamples(many, "indigo").map((s) => s.title)).toEqual(["t4", "t5", "t6", "t7", "t8", "t9", "t10", "t11"]);
     expect(parseSamples("nope", "indigo")).toEqual([]);

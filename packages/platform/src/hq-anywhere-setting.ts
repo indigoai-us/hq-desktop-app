@@ -59,16 +59,21 @@ function publishGlobalRuntimeStatus(
 const pauseFor = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
-/** Missing, discovered, archived, disabled, or unreadable flags fail closed and hide the setting. */
+/**
+ * HQ Anywhere is on unless the flag is explicitly false.
+ * Missing, unconfigured, or unreadable reads mean on. Only a configured
+ * false is the kill switch.
+ */
 export async function hqAnywhereRuntimeEnabled(
   identity: IdentityApi,
 ): Promise<boolean> {
   try {
     const result = await identity.resolveFeatureFlagStatus?.(HQ_ANYWHERE_RUNTIME_FLAG);
-    return result?.ok === true && result.value.configured && result.value.enabled;
+    if (!result || result.ok !== true) return true;
+    return !(result.value.configured && result.value.enabled === false);
   } catch (error) {
     console.warn("[hq-anywhere] runtime flag lookup failed:", error);
-    return false;
+    return true;
   }
 }
 

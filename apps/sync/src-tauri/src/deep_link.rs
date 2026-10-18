@@ -321,6 +321,11 @@ fn conversation_route(conversation: &str, message: &str) -> String {
 fn map_hq_segments(segs: &[&str]) -> Option<String> {
     match segs {
         [head] if head.eq_ignore_ascii_case("meetings") => Some("meetings".into()),
+        // US-008: links a coding tool's first session prints back into the
+        // desktop. `hq://brief` opens the Daily Brief (the welcome report),
+        // `hq://vault` opens the Files view.
+        [head] if head.eq_ignore_ascii_case("brief") => Some("brief".into()),
+        [head] if head.eq_ignore_ascii_case("vault") => Some("vault".into()),
         [head, "dm", uid] if head.eq_ignore_ascii_case("inbox") && is_id_token(uid) => {
             Some(format!("inbox:dm:{uid}"))
         }
@@ -475,6 +480,18 @@ mod tests {
             parse_hq_url("hq:///inbox/dm/prs_ada").as_deref(),
             Some("inbox:dm:prs_ada")
         );
+    }
+
+    #[test]
+    fn parse_hq_url_maps_welcome_brief_and_vault_links() {
+        assert_eq!(parse_hq_url("hq://brief").as_deref(), Some("brief"));
+        assert_eq!(parse_hq_url("hq://brief/").as_deref(), Some("brief"));
+        assert_eq!(parse_hq_url("HQ://Brief").as_deref(), Some("brief"));
+        assert_eq!(parse_hq_url("hq://vault").as_deref(), Some("vault"));
+        assert_eq!(parse_hq_url("hq:///vault").as_deref(), Some("vault"));
+        assert!(parse_hq_url("hq://brief/extra").is_none());
+        assert!(parse_hq_url("hq://vault/extra").is_none());
+        assert!(parse_hq_url("hq://brief?id=1").is_none());
     }
 
     #[test]

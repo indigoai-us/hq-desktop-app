@@ -24,6 +24,13 @@ export interface InstallQueueStatus {
   total: number;
   /** Ids of the items that failed and need attention. */
   failed: string[];
+  /**
+   * Ids of the items a caller waiting on them would still wait for. Absent
+   * in a payload from an older app build.
+   */
+  unsettled?: string[];
+  /** Ids of the items not done or skipped. Absent from an older app build. */
+  unfinished?: string[];
 }
 
 /**
@@ -54,7 +61,7 @@ export function parseInstallQueueStatus(value: unknown): InstallQueueStatus | nu
   if (typeof raw.state !== "string" || !STATES.includes(raw.state as InstallQueueState)) {
     return null;
   }
-  return {
+  const status: InstallQueueStatus = {
     state: raw.state as InstallQueueState,
     current: typeof raw.current === "string" && raw.current ? raw.current : null,
     currentId: typeof raw.currentId === "string" && raw.currentId ? raw.currentId : null,
@@ -64,6 +71,13 @@ export function parseInstallQueueStatus(value: unknown): InstallQueueStatus | nu
       ? raw.failed.filter((id): id is string => typeof id === "string")
       : [],
   };
+  if (Array.isArray(raw.unsettled)) {
+    status.unsettled = raw.unsettled.filter((id): id is string => typeof id === "string");
+  }
+  if (Array.isArray(raw.unfinished)) {
+    status.unfinished = raw.unfinished.filter((id): id is string => typeof id === "string");
+  }
+  return status;
 }
 
 /**
