@@ -257,10 +257,18 @@ describe("shell bindings for advertised shortcuts (QA-077)", () => {
     );
   });
 
-  it("⌘⇧A with no company shows a one-line toast", async () => {
+  it("⌘⇧A with no company shows a one-line toast with a New company button", async () => {
     await mountShell([]);
     await press("Mod+Shift+A");
-    expect(toastItems().map((t) => t.title)).toContain("Open a company first");
+    const toast = toastItems().find((t) => t.title === "Open a company first");
+    expect(toast).toBeDefined();
     expect(currentRail()).toBe("home");
+    // The toast is not a dead end: its button opens the New company sheet.
+    expect(toast!.actions?.map((a) => a.label)).toEqual(["New company"]);
+    expect(host.querySelector('[data-testid="new-company-sheet"]')).toBeNull();
+    toast!.actions![0]!.onAction();
+    await vi.waitFor(() =>
+      expect(host.querySelector('[data-testid="new-company-sheet"]')).not.toBeNull(),
+    );
   });
 });

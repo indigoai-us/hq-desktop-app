@@ -4,7 +4,7 @@
  * console-rail US-003 — AppRail order, routing, history, and shortcuts.
  */
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
 import { SvelteSet } from "svelte/reactivity";
 import { ok, type PlatformAdapter } from "@hq/platform";
@@ -226,6 +226,31 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     expect(host.querySelector('[data-testid="rail-placeholder"]')).toBeNull();
     expect(current()).toBe("brief");
     await lazyBodiesLoaded(loadBrief);
+  });
+
+  it("opens the new-company sheet from a getting-started brief", async () => {
+    const run = "brief-20261017-090000";
+    const payload = JSON.stringify({mode: "person", personal: {items: {}}, companies: {}, welcome: {first_run: true, getting_started: "Begin with a personal task.", next_steps: [{kind: "connect_company"}]}});
+    const files: Record<string, string> = {
+      "workspace/brief/index.jsonl": JSON.stringify({run_id: run, created_at: "2026-10-17T16:00:00Z", state: "ready", counts: {}}),
+      ["workspace/brief/" + run + "/brief.json"]: payload,
+      ["workspace/brief/" + run + "/brief-data.json"]: payload,
+    };
+    const adapter = {...telemetryAdapter(), files: {...localFilesAdapter().files, getFileContent: async (path: string) => ok(files[path] ?? "")}} as PlatformAdapter;
+    await mountShell(adapter, {companies: []});
+    click("rail-brief");
+    await lazyBodiesLoaded(loadBrief);
+    const action = () => [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Start or join a company");
+    await vi.waitFor(() => expect(action()).toBeDefined());
+    action()!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="new-company-sheet"]')).not.toBeNull());
+    expect(host.querySelector('[data-testid="new-company-sheet"]')?.getAttribute("role")).toBe("dialog");
+    expect(host.querySelector('[data-testid="new-company-name"]')).not.toBeNull();
+    host.querySelector<HTMLButtonElement>('[data-testid="new-company-scrim"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="new-company-sheet"]')).toBeNull());
+    action()!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="new-company-name"]')).not.toBeNull());
+    expect(current()).toBe("brief");
   });
 
   it("asks for AI-tools detection once on the Daily Brief, even when the host's request reads its own state", async () => {
