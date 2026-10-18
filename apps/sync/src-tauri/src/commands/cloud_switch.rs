@@ -208,9 +208,6 @@ pub async fn set_cloud_enabled<R: Runtime>(
 // runner is restarted to pick the change up. Other vaults keep syncing. The
 // switch affects only this computer; teammates are untouched.
 
-/// Emitted after a vault switch changes. `detail`: `{ vault, enabled }`.
-pub const EVENT_VAULT_SYNC_CHANGED: &str = "hq:vault-sync-changed";
-
 /// The `vault` argument value that names the personal vault.
 pub const PERSONAL_VAULT_ID: &str = "personal";
 
@@ -223,13 +220,6 @@ pub struct VaultSwitchOutcome {
     /// Plain-language note when the switch was saved but background sync did
     /// not restart. The saved switch still governs every new sync.
     pub notice: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct VaultSyncChangedEvent {
-    vault: String,
-    enabled: bool,
 }
 
 pub(crate) const VAULT_RESTART_NOTICE: &str =
@@ -366,21 +356,16 @@ pub async fn set_vault_sync_enabled<R: Runtime>(
     enabled: bool,
 ) -> Result<VaultSwitchOutcome, String> {
     let target = parse_vault_id(&vault)?;
-    let handle = app.clone();
-    let outcome = tauri::async_runtime::spawn_blocking(move || {
-        let mut effects = LiveEffects { app: handle };
+    // No host event: the Settings pane that made the change repaints from the
+    // result and tells the other surfaces in the window
+    // (`hq:workspace-sync-enabled-changed`); the Core menu re-reads the
+    // workspace list on its poll.
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut effects = LiveEffects { app };
         apply_vault_switch(&target, enabled, &mut effects)
     })
     .await
-    .map_err(|error| format!("Vault switch task failed: {error}"))??;
-    let _ = app.emit(
-        EVENT_VAULT_SYNC_CHANGED,
-        VaultSyncChangedEvent {
-            vault: outcome.vault.clone(),
-            enabled: outcome.enabled,
-        },
-    );
-    Ok(outcome)
+    .map_err(|error| format!("Vault switch task failed: {error}"))?
 }
 
 #[cfg(test)]
