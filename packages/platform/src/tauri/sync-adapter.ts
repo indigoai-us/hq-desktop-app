@@ -36,11 +36,11 @@ import {
   normalizeNotificationsFeed,
   ok,
   unavailable,
+  withoutSecret,
   validateFetchReplyThread,
   validateSendReply,
   vaultPutIntegrityFields,
   withHttpStatus,
-  withoutSecret,
   localIanaZone,
 } from '../adapter.js';
 import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
@@ -1347,6 +1347,11 @@ export function createSyncPlatformAdapter(
         call('list_local_sessions', { from: range.from, to: range.to, offset: page?.offset ?? 0, limit: page?.limit ?? 50 }),
       getMyOutpostStatus: () => hqProJson('POST', OUTPOST_PATHS.status, {}),
       listMyOutpostJobs: () => hqProJson('GET', OUTPOST_PATHS.jobsStatus),
+      companyOutpostSignIn: (body) => {
+        const sent = typeof body.code === 'string' ? body.code : '';
+        const request = hqProRequestWithStatus<Json>('POST', OUTPOST_PATHS.companySignIn, body);
+        return sent ? request.then((result) => withoutSecret(result, sent)) : request;
+      },
       listMyGoogleAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.googleAccounts),
       listMySlackAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.slackAccounts),
     },

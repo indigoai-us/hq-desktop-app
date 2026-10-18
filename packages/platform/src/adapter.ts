@@ -1502,6 +1502,8 @@ export interface AgentProfilePatch {
 export const OUTPOST_PATHS = {
   status: "/outpost/status",
   jobsStatus: "/outpost/jobs/status",
+  /** Person actions: status, code, regenerate. regenerate drops the current link. */
+  companySignIn: "/outpost/company/signin",
 } as const;
 
 /**
@@ -1782,6 +1784,16 @@ export interface AgentsApi {
   getMyOutpostStatus?(): AdapterPromise<Json>;
   /** GET /outpost/jobs/status — the caller's scheduled-job status rows. */
   listMyOutpostJobs?(): AdapterPromise<Json>;
+  /**
+   * POST /outpost/company/signin. `regenerate` invalidates the current
+   * sign-in link. `code` is a verification code and must not be logged.
+   */
+  companyOutpostSignIn?(body: {
+    companyUid: string;
+    action: "status" | "code" | "regenerate";
+    outpostId?: string;
+    code?: string;
+  }): AdapterPromise<Json>;
   /** GET /v1/google/accounts — the caller's connected Google accounts. */
   listMyGoogleAccounts?(): AdapterPromise<Json>;
   /** GET /v1/slack/personal/accounts — the caller's personal Slack accounts. */

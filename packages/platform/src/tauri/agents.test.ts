@@ -278,6 +278,36 @@ describe("createSyncPlatformAdapter personal Outpost", () => {
     ]);
   });
 
+  it("posts company sign-in on the contract route and strips a code from a failure", async () => {
+    const code = "EXAMPLE-NOT-A-REAL-CODE";
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        return { status: 400, body: JSON.stringify({ code: "invalid_login_code", message: `rejected ${code}` }) };
+      },
+    });
+    const res = await adapter.agents.companyOutpostSignIn?.({
+      companyUid: "cmp_indigo",
+      outpostId: "opc_main",
+      action: "code",
+      code,
+    });
+    expect(calls).toEqual([
+      {
+        cmd: "hq_pro_fetch",
+        args: {
+          url: OUTPOST_PATHS.companySignIn,
+          method: "POST",
+          body: JSON.stringify({ companyUid: "cmp_indigo", outpostId: "opc_main", action: "code", code }),
+        },
+      },
+    ]);
+    expect(res?.ok).toBe(false);
+    expect(JSON.stringify(res)).not.toContain(code);
+    expect(res && !res.ok ? res.code : "").toBe("invalid_login_code");
+  });
+
   it("surfaces a missing Outpost as an http-404 failure", async () => {
     const adapter = createSyncPlatformAdapter({
       invoke: async () => ({ status: 404, body: JSON.stringify({ error: true, message: "not found" }) }),
