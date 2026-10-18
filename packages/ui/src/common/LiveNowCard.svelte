@@ -163,6 +163,7 @@
           <Dropdown
             testid="live-company-select"
             label="Record as"
+            floating
             value={meeting.companyUid ?? ""}
             onchange={(v) => oncompany(meeting.windowId, v || null)}
             disabled={isBusy}
