@@ -1292,3 +1292,98 @@ export function stageCreepAt(elapsedMs: number): number {
     Math.min(1, elapsed / STAGE_CREEP_TAIL_MS);
   return Math.min(STAGE_CREEP_CEILING, fast + tail);
 }
+
+// ─── Windows onboarding run 006 ───────────────────────────────────────
+
+/**
+ * Elapsed time for the running stage, read from a monotonic source and
+ * clamped so it never goes down. The wall clock can step back when Windows
+ * corrects the time on a fresh PC, which made the cue read 7m 31s and then
+ * 7m 25s.
+ */
+export interface StageClock {
+  elapsed(): number;
+}
+
+export function createStageClock(
+  now: () => number = () =>
+    typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now(),
+): StageClock {
+  const startedAt = now();
+  let shown = 0;
+  return {
+    elapsed() {
+      shown = Math.max(shown, now() - startedAt);
+      return shown;
+    },
+  };
+}
+
+/** The ready screen heading while setup runs: it follows the setup step. */
+export function setupHeading(input: {
+  installPending: boolean;
+  step: SetupStepSummary;
+}): string {
+  if (!input.installPending) return 'HQ is ready.';
+  return input.step.step >= input.step.total ? 'Almost ready.' : 'Setting up HQ';
+}
+
+/** Plain names for the tools the deps stage installs. */
+const DEPS_TOOL_NAMES: Record<string, string> = {
+  git: 'Git',
+  node: 'Node.js',
+  yq: 'yq',
+  qmd: 'HQ search',
+  'hq-cli': 'the HQ command line tool',
+};
+
+/**
+ * The deps sub-status line for a `setup:deps-tool` event: the tool that is
+ * installing now, or null when the event says nothing worth showing.
+ */
+export function depsToolDetail(
+  payload: { id?: unknown; state?: unknown } | null | undefined,
+): string | null {
+  if (!payload || payload.state !== 'installing') return null;
+  const id = typeof payload.id === 'string' ? payload.id.trim() : '';
+  if (!id) return null;
+  return `Installing ${DEPS_TOOL_NAMES[id] ?? humanizeStageId(id)}…`;
+}
+
+/** Shown once Windows is about to ask for permission to install Git. */
+export const GIT_PERMISSION_NOTICE =
+  'Windows will ask for permission to install Git. Choose Yes to continue.';
+
+export type DepsFailureRecoveryKind = 'git-permission-declined' | 'winget-timeout';
+
+export interface DepsFailureRecovery {
+  kind: DepsFailureRecoveryKind;
+  message: string;
+}
+
+/**
+ * A deps failure the user can fix by trying again, read from the tagged
+ * error the Windows installer returns; null for any other failure.
+ */
+export function depsFailureRecovery(error: string | null | undefined): DepsFailureRecovery | null {
+  if (!error) return null;
+  if (error.includes('[git-permission-declined]')) {
+    return {
+      kind: 'git-permission-declined',
+      message:
+        'Git was not installed because permission was declined. Select Try again and choose Yes when Windows asks.',
+    };
+  }
+  const timeout = /\[winget-timeout\]\s*([^\n]*)/.exec(error);
+  if (timeout) {
+    const reason =
+      timeout[1]?.trim() || 'Installing a tool took longer than 10 minutes and was stopped.';
+    return {
+      kind: 'winget-timeout',
+      message: `${reason} Select Try again to start it again.`,
+    };
+  }
+  return null;
+}

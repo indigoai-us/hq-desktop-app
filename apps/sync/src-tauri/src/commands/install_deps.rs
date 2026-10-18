@@ -5694,7 +5694,27 @@ async fn run_streaming<R: tauri::Runtime>(
     program: &str,
     args: &[&str],
 ) -> Result<String, String> {
-    run_streaming_with_npm_cache_blocking(app, program, args, None)
+    // The streaming runner waits on its child without yielding, so it runs on
+    // the blocking pool: on the async task it would stall the executor (and
+    // every sibling dep in the same `join_all` wave) until the child exits.
+    let app = app.clone();
+    let program = program.to_string();
+    let label = program.clone();
+    let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+    let locals = SetupTaskLocals::capture();
+    tokio::task::spawn_blocking(move || {
+        locals.run(move || {
+            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            // Installer executions (winget, scoop installs, msiexec, .msi or
+            // setup .exe) stay strictly serial: Windows allows one MSI
+            // install at a time and concurrent winget runs fail or queue.
+            let _installer_guard =
+                is_installer_program(&program, &arg_refs).then(acquire_installer_lock);
+            run_streaming_with_npm_cache_blocking(&app, &program, &arg_refs, None)
+        })
+    })
+    .await
+    .unwrap_or_else(|error| Err(format!("'{label}' runner stopped: {error}")))
 }
 
 #[cfg(windows)]
@@ -5898,6 +5918,9 @@ fn run_streaming_with_npm_cache_blocking<R: tauri::Runtime>(
     let mut first_stream_err: Option<String> = None;
     let mut status = None;
     let mut cancel_signal_sent = false;
+    let started = std::time::Instant::now();
+    let deadline = install_deadline_for(program, args);
+    let mut timed_out = false;
 
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
@@ -5931,6 +5954,15 @@ fn run_streaming_with_npm_cache_blocking<R: tauri::Runtime>(
                 record_cleanup_failure(&handle_id, e);
             }
             cancel_signal_sent = true;
+        }
+
+        if !timed_out && install_deadline_exceeded(started.elapsed(), deadline) {
+            // Stop the whole winget tree (winget and the installer it ran).
+            if let Err(e) = terminate_process_tree(&handle_id) {
+                record_cleanup_failure(&handle_id, e);
+            }
+            let _ = child.kill();
+            timed_out = true;
         }
 
         if is_cancelled(&handle_id) {
@@ -5968,6 +6000,30 @@ fn run_streaming_with_npm_cache_blocking<R: tauri::Runtime>(
     let was_cancelled = is_cancelled(&handle_id);
     let cleanup_failure = take_cleanup_failure(&handle_id);
     deregister_handle(&handle_id);
+
+    if timed_out && !was_cancelled {
+        let label = ACTIVE_SETUP_DEPENDENCY.try_with(|id| *id).ok().and_then(|id| {
+            dependency_defs()
+                .iter()
+                .find(|dep| dep.id == id)
+                .map(|dep| dep.label)
+        });
+        let msg = winget_timeout_error(&winget_tool_name(label, args));
+        let stdout = recover_lock(&stdout_tail).clone();
+        let stderr = recover_lock(&stderr_tail).clone();
+        record_setup_command_failure(program, args, status.code(), stdout, stderr, msg.clone());
+        let _ = app.emit(
+            "install:progress",
+            InstallProgress {
+                setup_run_id: current_setup_run_id(),
+                handle: handle_id.clone(),
+                line: String::new(),
+                finished: true,
+                error: Some(msg.clone()),
+            },
+        );
+        return Err(msg);
+    }
 
     if let Err(e) = stdout_join.and(stderr_join) {
         let _ = app.emit(
@@ -6531,10 +6587,18 @@ async fn install_git_windows(app: AppHandle) -> Result<String, String> {
     match pm {
         PackageManager::Winget => {
             emit_progress(&app, "Installing Git via winget...");
-            match winget_install(&app, "Git.Git").await {
+            // Git for Windows is a machine-wide installer, so Windows shows a
+            // UAC prompt. Tell the onboarding window before it appears.
+            emit_git_permission(&app, GitPermissionState::Requesting);
+            let install = winget_install(&app, "Git.Git").await;
+            emit_git_permission(&app, GitPermissionState::Done);
+            match install {
                 Ok(_) => {
                     append_user_path(&program_files().join("Git").join("cmd"))?;
                     Ok("git installed via winget".to_string())
+                }
+                Err(error) if git_winget_failure_is_permission_declined(&error) => {
+                    Err(git_permission_declined_error())
                 }
                 Err(error) => resolve_git_winget_install_failure(error, || {
                     dependency_defs()
@@ -7833,6 +7897,223 @@ fn is_concurrent_install_skip_result(result: &DepInstallResult) -> bool {
 }
 
 const WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE: i32 = 0x8A15_005E_u32 as i32;
+
+/// Windows runs one MSI install at a time (the `_MSIExecute` mutex) and
+/// concurrent winget runs fail or queue, so every installer execution holds
+/// this process-wide lock. Downloads, npm, and version probes do not.
+#[cfg_attr(not(windows), allow(dead_code))]
+static INSTALLER_EXECUTION_LOCK: Mutex<()> = Mutex::new(());
+
+/// Blocks the calling (blocking-pool) thread until no other installer runs.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn acquire_installer_lock() -> std::sync::MutexGuard<'static, ()> {
+    recover_lock(&INSTALLER_EXECUTION_LOCK)
+}
+
+/// Lowercased file name of `program`, accepting `\` and `/` separators.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn program_file_name(program: &str) -> String {
+    program
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase()
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn program_stem(file_name: &str) -> &str {
+    for ext in [".exe", ".cmd", ".bat", ".ps1"] {
+        if let Some(stem) = file_name.strip_suffix(ext) {
+            return stem;
+        }
+    }
+    file_name
+}
+
+/// True when running `program args` executes an installer (winget, a scoop
+/// install/update, msiexec, or a downloaded `.msi` / setup `.exe`). Those
+/// runs are serialized by [`INSTALLER_EXECUTION_LOCK`].
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_installer_program(program: &str, args: &[&str]) -> bool {
+    let file_name = program_file_name(program);
+    let stem = program_stem(&file_name);
+    match stem {
+        "winget" | "msiexec" => true,
+        "scoop" => args.first().is_some_and(|sub| {
+            matches!(
+                sub.to_ascii_lowercase().as_str(),
+                "install" | "update" | "uninstall" | "reset"
+            )
+        }),
+        _ => {
+            file_name.ends_with(".msi")
+                || (file_name.ends_with(".exe")
+                    && (stem.contains("setup") || stem.contains("installer")))
+        }
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+const WINGET_TIMEOUT_MARKER: &str = "[winget-timeout]";
+#[cfg_attr(not(windows), allow(dead_code))]
+const GIT_PERMISSION_DECLINED_MARKER: &str = "[git-permission-declined]";
+
+/// A winget install that runs longer than this is stopped.
+#[cfg_attr(not(windows), allow(dead_code))]
+const WINGET_INSTALL_DEADLINE: Duration = Duration::from_secs(10 * 60);
+
+/// Deadline for one streamed command, or `None` when it runs unbounded.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn install_deadline_for(program: &str, args: &[&str]) -> Option<Duration> {
+    let file_name = program_file_name(program);
+    let is_winget = program_stem(&file_name) == "winget";
+    let is_install = args.first().is_some_and(|sub| {
+        matches!(sub.to_ascii_lowercase().as_str(), "install" | "upgrade")
+    });
+    (is_winget && is_install).then_some(WINGET_INSTALL_DEADLINE)
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn install_deadline_exceeded(elapsed: Duration, deadline: Option<Duration>) -> bool {
+    deadline.is_some_and(|deadline| elapsed > deadline)
+}
+
+/// Name shown in a winget timeout: the dependency label, else the `--id`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn winget_tool_name(dependency_label: Option<&str>, args: &[&str]) -> String {
+    if let Some(label) = dependency_label {
+        return label.to_string();
+    }
+    args.iter()
+        .position(|arg| *arg == "--id")
+        .and_then(|index| args.get(index + 1))
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "the package".to_string())
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn winget_timeout_error(tool: &str) -> String {
+    format!(
+        "{WINGET_TIMEOUT_MARKER} Installing {tool} took longer than {} minutes and was stopped.",
+        WINGET_INSTALL_DEADLINE.as_secs() / 60
+    )
+}
+
+/// ERROR_CANCELLED: the user answered No at the UAC prompt.
+#[cfg_attr(not(windows), allow(dead_code))]
+const WINDOWS_ERROR_CANCELLED: i32 = 1223;
+#[cfg_attr(not(windows), allow(dead_code))]
+const HRESULT_ERROR_CANCELLED: i32 = 0x8007_04C7_u32 as i32;
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn winget_output_indicates_permission_declined(exit_code: Option<i32>, output: &str) -> bool {
+    if matches!(exit_code, Some(WINDOWS_ERROR_CANCELLED) | Some(HRESULT_ERROR_CANCELLED)) {
+        return true;
+    }
+    let lower = output.to_ascii_lowercase();
+    if lower.contains("0x800704c7")
+        || lower.contains("canceled by the user")
+        || lower.contains("cancelled by the user")
+    {
+        return true;
+    }
+    // "1223" as a whole number, not a substring of a larger one.
+    lower
+        .split(|c: char| !c.is_ascii_digit())
+        .any(|token| token == "1223")
+}
+
+/// Classifies a failed Git winget run from its error string and the streamed
+/// command's recorded diagnostic (winget prints the installer result on
+/// stdout, which the error string does not carry).
+#[cfg(any(test, windows))]
+fn git_winget_failure_indicates_permission_declined(
+    error: &str,
+    diagnostic: Option<&SetupCommandDiagnostic>,
+) -> bool {
+    if error.starts_with(WINGET_TIMEOUT_MARKER) {
+        return false;
+    }
+    let exit_code = diagnostic
+        .and_then(|diagnostic| diagnostic.exit_code)
+        .or_else(|| winget_exit_code_from_error(error));
+    let mut output = error.to_string();
+    if let Some(diagnostic) = diagnostic {
+        output.push('\n');
+        output.push_str(&diagnostic.stdout);
+        output.push('\n');
+        output.push_str(&diagnostic.stderr);
+    }
+    winget_output_indicates_permission_declined(exit_code, &output)
+}
+
+#[cfg(windows)]
+#[cfg_attr(not(windows), allow(dead_code))]
+fn git_winget_failure_is_permission_declined(error: &str) -> bool {
+    let diagnostic = ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR
+        .try_with(|collector| collector.current())
+        .ok()
+        .flatten();
+    git_winget_failure_indicates_permission_declined(error, diagnostic.as_ref())
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn git_permission_declined_error() -> String {
+    format!("{GIT_PERMISSION_DECLINED_MARKER} Windows permission to install Git was declined.")
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+const GIT_PERMISSION_EVENT: &str = "setup:git-permission";
+#[cfg_attr(not(windows), allow(dead_code))]
+const DEPS_TOOL_EVENT: &str = "setup:deps-tool";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+enum GitPermissionState {
+    Requesting,
+    Done,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn git_permission_payload(state: GitPermissionState) -> serde_json::Value {
+    let state = match state {
+        GitPermissionState::Requesting => "requesting",
+        GitPermissionState::Done => "done",
+    };
+    serde_json::json!({ "state": state })
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn emit_git_permission<R: tauri::Runtime>(app: &AppHandle<R>, state: GitPermissionState) {
+    let _ = app.emit(GIT_PERMISSION_EVENT, git_permission_payload(state));
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DepsToolState {
+    Installing,
+    Done,
+    Failed,
+}
+
+fn deps_tool_payload(id: &str, state: DepsToolState) -> serde_json::Value {
+    let state = match state {
+        DepsToolState::Installing => "installing",
+        DepsToolState::Done => "done",
+        DepsToolState::Failed => "failed",
+    };
+    serde_json::json!({ "id": id, "state": state })
+}
+
+fn deps_tool_settled_state(status: &DepInstallStatus) -> DepsToolState {
+    match status {
+        DepInstallStatus::Ok | DepInstallStatus::Skipped => DepsToolState::Done,
+        DepInstallStatus::Cancelled | DepInstallStatus::Failed => DepsToolState::Failed,
+    }
+}
+
+fn emit_deps_tool<R: tauri::Runtime>(app: &AppHandle<R>, id: &str, state: DepsToolState) {
+    let _ = app.emit(DEPS_TOOL_EVENT, deps_tool_payload(id, state));
+}
 const QMD_POST_INSTALL_PROBE_COMMAND: &str = "qmd post-install probe";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8639,6 +8920,7 @@ pub async fn install_deps(
             let app = app.clone();
             let failure_scope = failure_scope.clone();
             async move {
+                emit_deps_tool(&app, dep.id, DepsToolState::Installing);
                 let collector = SetupDiagnosticCollector::new();
                 let cancellation_collector = InstallCancellationCollector::new();
                 let install_result = ACTIVE_SETUP_DEPENDENCY
@@ -8674,8 +8956,10 @@ pub async fn install_deps(
                     .await;
                 let cancellation = cancellation_collector.take();
                 let cleanup_reported = cancellation_collector.cleanup_failure_reported();
+                let result = result_from_install(dep, install_result, cancellation.as_ref());
+                emit_deps_tool(&app, dep.id, deps_tool_settled_state(&result.status));
                 (
-                    result_from_install(dep, install_result, cancellation.as_ref()),
+                    result,
                     collector.take(),
                     cancellation,
                     cleanup_reported,
@@ -14144,5 +14428,199 @@ mod cwrsync_fstab_tests {
         let toolchain = tempfile::tempdir().unwrap();
         assert!(!repair_managed_cwrsync_fstab_in(toolchain.path()).unwrap());
         assert!(!toolchain.path().join("etc").exists());
+    }
+}
+
+#[cfg(test)]
+mod install_deps_windows_onboarding_tests {
+    use super::*;
+
+    #[test]
+    fn installer_programs_are_serialized() {
+        assert!(is_installer_program("winget", &["install", "--id", "Git.Git"]));
+        assert!(is_installer_program(r"C:\Users\me\AppData\Local\Microsoft\WindowsApps\winget.exe", &["install"]));
+        assert!(is_installer_program("WINGET.EXE", &["upgrade", "--id", "Git.Git"]));
+        assert!(is_installer_program("scoop", &["install", "git"]));
+        assert!(is_installer_program("scoop.cmd", &["update", "gh"]));
+        assert!(is_installer_program("msiexec", &["/i", "node.msi", "/qn"]));
+        assert!(is_installer_program(r"C:\Windows\System32\msiexec.exe", &["/i", "x.msi"]));
+        assert!(is_installer_program(r"C:\Temp\hq\node-v22-x64.msi", &[]));
+        assert!(is_installer_program(r"C:\Temp\hq\Git-2.47.0-64-bit-setup.exe", &["/VERYSILENT"]));
+        assert!(is_installer_program(r"C:\Temp\hq\GitHubCLI-installer.exe", &[]));
+    }
+
+    #[test]
+    fn non_installer_programs_are_not_serialized() {
+        assert!(!is_installer_program("npm", &["install", "-g", "@indigoai-us/hq-cli"]));
+        assert!(!is_installer_program("npm.cmd", &["install", "-g", "qmd"]));
+        assert!(!is_installer_program("node", &["--version"]));
+        assert!(!is_installer_program("git", &["--version"]));
+        assert!(!is_installer_program("scoop", &["list"]));
+        assert!(!is_installer_program("scoop", &[]));
+        assert!(!is_installer_program("/usr/local/bin/brew", &["--version"]));
+    }
+
+    #[test]
+    fn winget_install_deadline_is_ten_minutes_and_only_applies_to_winget_installs() {
+        assert_eq!(WINGET_INSTALL_DEADLINE, Duration::from_secs(600));
+        assert_eq!(
+            install_deadline_for("winget", &["install", "--id", "Git.Git"]),
+            Some(WINGET_INSTALL_DEADLINE)
+        );
+        assert_eq!(
+            install_deadline_for(r"C:\x\winget.exe", &["upgrade", "--id", "Git.Git"]),
+            Some(WINGET_INSTALL_DEADLINE)
+        );
+        assert_eq!(install_deadline_for("winget", &["--version"]), None);
+        assert_eq!(install_deadline_for("npm", &["install", "-g", "qmd"]), None);
+        assert_eq!(install_deadline_for("scoop", &["install", "git"]), None);
+    }
+
+    #[test]
+    fn install_deadline_expires_only_after_the_limit() {
+        let limit = Some(WINGET_INSTALL_DEADLINE);
+        assert!(!install_deadline_exceeded(Duration::ZERO, limit));
+        assert!(!install_deadline_exceeded(Duration::from_secs(599), limit));
+        assert!(!install_deadline_exceeded(Duration::from_secs(600), limit));
+        assert!(install_deadline_exceeded(Duration::from_secs(601), limit));
+        assert!(!install_deadline_exceeded(Duration::from_secs(100_000), None));
+    }
+
+    #[test]
+    fn winget_timeout_error_has_stable_marker_and_plain_text() {
+        assert_eq!(
+            winget_timeout_error("Git"),
+            "[winget-timeout] Installing Git took longer than 10 minutes and was stopped."
+        );
+        assert!(winget_timeout_error("GitHub CLI").starts_with(WINGET_TIMEOUT_MARKER));
+    }
+
+    #[test]
+    fn winget_tool_name_prefers_dependency_label_then_package_id() {
+        assert_eq!(winget_tool_name(Some("Git"), &["install", "--id", "Git.Git"]), "Git");
+        assert_eq!(winget_tool_name(None, &["install", "--id", "Git.Git"]), "Git.Git");
+        assert_eq!(winget_tool_name(None, &["install"]), "the package");
+    }
+
+    #[test]
+    fn permission_declined_detects_uac_cancellation() {
+        assert!(winget_output_indicates_permission_declined(Some(1223), ""));
+        assert!(winget_output_indicates_permission_declined(
+            Some(0x8007_04C7_u32 as i32),
+            ""
+        ));
+        assert!(winget_output_indicates_permission_declined(
+            Some(-1978335226),
+            "Installer failed with exit code: 1223"
+        ));
+        assert!(winget_output_indicates_permission_declined(
+            None,
+            "Error 0x800704C7: The operation was canceled by the user."
+        ));
+        assert!(winget_output_indicates_permission_declined(
+            Some(1),
+            "The operation was Cancelled by the user"
+        ));
+    }
+
+    #[test]
+    fn permission_declined_ignores_other_failures() {
+        assert!(!winget_output_indicates_permission_declined(Some(0), ""));
+        assert!(!winget_output_indicates_permission_declined(
+            Some(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE),
+            "Process exited with code -1978335138"
+        ));
+        assert!(!winget_output_indicates_permission_declined(
+            Some(1),
+            "No package found matching input criteria."
+        ));
+        assert!(!winget_output_indicates_permission_declined(None, ""));
+        // A number that merely contains 1223 as a substring is not a cancellation.
+        assert!(!winget_output_indicates_permission_declined(
+            Some(1),
+            "Downloading 12234 bytes"
+        ));
+    }
+
+    #[test]
+    fn git_winget_failure_reads_installer_result_from_diagnostic_stdout() {
+        let diagnostic = SetupCommandDiagnostic {
+            command: "winget install --id Git.Git".to_string(),
+            exit_code: Some(-1978335226),
+            stdout: "Starting package install...\nInstaller failed with exit code: 1223".to_string(),
+            stderr: String::new(),
+            error: "Process exited with code -1978335226".to_string(),
+        };
+        assert!(git_winget_failure_indicates_permission_declined(
+            "Process exited with code -1978335226",
+            Some(&diagnostic)
+        ));
+        assert!(git_winget_failure_indicates_permission_declined(
+            "Process exited with code 1223",
+            None
+        ));
+        assert!(!git_winget_failure_indicates_permission_declined(
+            "Process exited with code -1978335138",
+            None
+        ));
+        // A deadline stop is a timeout, never a declined prompt.
+        assert!(!git_winget_failure_indicates_permission_declined(
+            &winget_timeout_error("Git"),
+            Some(&diagnostic)
+        ));
+    }
+
+    #[test]
+    fn git_permission_declined_error_has_stable_marker() {
+        assert_eq!(
+            git_permission_declined_error(),
+            "[git-permission-declined] Windows permission to install Git was declined."
+        );
+    }
+
+    #[test]
+    fn git_permission_payload_shape() {
+        assert_eq!(GIT_PERMISSION_EVENT, "setup:git-permission");
+        assert_eq!(
+            git_permission_payload(GitPermissionState::Requesting),
+            serde_json::json!({ "state": "requesting" })
+        );
+        assert_eq!(
+            git_permission_payload(GitPermissionState::Done),
+            serde_json::json!({ "state": "done" })
+        );
+    }
+
+    #[test]
+    fn deps_tool_payload_shape() {
+        assert_eq!(DEPS_TOOL_EVENT, "setup:deps-tool");
+        assert_eq!(
+            deps_tool_payload("git", DepsToolState::Installing),
+            serde_json::json!({ "id": "git", "state": "installing" })
+        );
+        assert_eq!(
+            deps_tool_payload("node", DepsToolState::Done),
+            serde_json::json!({ "id": "node", "state": "done" })
+        );
+        assert_eq!(
+            deps_tool_payload("qmd", DepsToolState::Failed),
+            serde_json::json!({ "id": "qmd", "state": "failed" })
+        );
+    }
+
+    #[test]
+    fn deps_tool_settled_state_maps_install_status() {
+        assert_eq!(deps_tool_settled_state(&DepInstallStatus::Ok), DepsToolState::Done);
+        assert_eq!(deps_tool_settled_state(&DepInstallStatus::Skipped), DepsToolState::Done);
+        assert_eq!(deps_tool_settled_state(&DepInstallStatus::Failed), DepsToolState::Failed);
+        assert_eq!(deps_tool_settled_state(&DepInstallStatus::Cancelled), DepsToolState::Failed);
+    }
+
+    #[test]
+    fn installer_lock_is_exclusive() {
+        let guard = acquire_installer_lock();
+        assert!(INSTALLER_EXECUTION_LOCK.try_lock().is_err());
+        drop(guard);
+        assert!(INSTALLER_EXECUTION_LOCK.try_lock().is_ok());
     }
 }

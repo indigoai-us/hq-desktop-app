@@ -1960,3 +1960,31 @@
 .hq-welcome.motion-failed .scene.on .folder {
   display: none;
 }
+
+/* Run 006: the shortcut screen says Next works without the shortcut. Sits
+   under the button so the nav keeps its laid-out height. */
+.hq-welcome .nav-hint {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 10px 0 0;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--w-muted);
+}
+.hq-welcome .deps-notice {
+  margin-top: 4px;
+}
+.hq-welcome .deps-retry {
+  margin-top: 8px;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}

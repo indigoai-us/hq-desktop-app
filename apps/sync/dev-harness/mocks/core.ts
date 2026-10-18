@@ -1574,7 +1574,13 @@ This final paragraph verifies spacing after a thematic break.
   // real detector can produce: `?scenario=tools-claude-only` (the fresh-VM
   // case that has only Claude Code), `?scenario=tools-codex-only`, and
   // `?scenario=tools-none` (nothing installed at all).
-  detect_ai_tools: () => {
+  // `&toolsDelay=<ms>` makes each probe take that long, as on a slow PC, so
+  // the "Checking for AI tools" row stays on screen (run 006 grid-0077).
+  detect_ai_tools: async () => {
+    const delay = Number(new URLSearchParams(window.location.search).get('toolsDelay') ?? 0);
+    if (Number.isFinite(delay) && delay > 0) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(delay, 10_000)));
+    }
     const scenario = harnessScenario();
     const claude = scenario !== 'tools-codex-only' && scenario !== 'tools-none';
     const codex = scenario !== 'tools-claude-only' && scenario !== 'tools-none';

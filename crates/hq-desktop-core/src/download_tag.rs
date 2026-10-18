@@ -1,7 +1,7 @@
 //! Recover the website visitor id from the URL the installer came from.
 //!
-//! The marketing site appends `?aid=<anonId>&src=<surface>` to the final
-//! installer URL. The OS records that URL next to the downloaded file:
+//! The marketing site appends `?aid=<anonId>&src=<surface>` (and, when the
+//! visitor picked one, `&plan=<plan>`) to the final installer URL. The OS records that URL next to the downloaded file:
 //!
 //! - macOS: the `com.apple.metadata:kMDItemWhereFroms` extended attribute,
 //!   a binary plist array of URL strings. Finder/LaunchServices usually carry
@@ -10,7 +10,7 @@
 //!   `ReferrerUrl=`), read from the running exe and, as a fallback, from
 //!   the newest recent `HQ-*.exe` in the Downloads folder.
 //!
-//! Only `aid` and `src` are ever extracted or returned. The full URL can
+//! Only `aid`, `src` and `plan` are ever extracted or returned. The full URL can
 //! carry other parameters and is never logged or stored. Every reader is
 //! bounded and returns `None` on malformed input; nothing here panics.
 
@@ -25,6 +25,8 @@ pub const MAX_TAG_BYTES: usize = 16 * 1024;
 pub const DOWNLOADS_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const MAX_AID_LEN: usize = 128;
 const MAX_SRC_LEN: usize = 64;
+/// Longest plan hint kept from a download URL or sign-in link reply.
+pub const MAX_PLAN_LEN: usize = 32;
 const MAX_DOWNLOADS_ENTRIES: usize = 2_000;
 
 /// Where the tag was found. Telemetry label via [`TagSource::label`].
@@ -43,11 +45,14 @@ impl TagSource {
     }
 }
 
-/// The two values the website put on the download URL.
+/// The values the website put on the download URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DownloadTag {
     pub anon_id: String,
     pub install_source: Option<String>,
+    /// The plan the visitor picked before downloading (`plan=`), sanitized by
+    /// [`safe_plan`]. A hint only: onboarding validates the value itself.
+    pub plan: Option<String>,
     pub source: TagSource,
 }
 
@@ -59,6 +64,30 @@ fn safe_value(value: &str, max: usize) -> Option<String> {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')))
     .then(|| value.to_string())
+}
+
+/// A plan hint, lowercased, kept only when it is 1-32 chars of `[a-z0-9_-]`.
+pub fn safe_plan(value: &str) -> Option<String> {
+    let value = value.trim().to_ascii_lowercase();
+    (!value.is_empty()
+        && value.len() <= MAX_PLAN_LEN
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_')))
+    .then_some(value)
+}
+
+/// The `plan` query parameter of one http(s) URL, sanitized by [`safe_plan`].
+pub fn plan_from_url(url: &str) -> Option<String> {
+    let url = url::Url::parse(url.trim()).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let value = url
+        .query_pairs()
+        .find(|(key, _)| key == "plan")
+        .map(|(_, value)| value.into_owned())?;
+    safe_plan(&value)
 }
 
 /// `(aid, src)` from one URL. `aid` is required; `src` is optional.
@@ -89,6 +118,7 @@ where
         tag_from_url(url).map(|(anon_id, install_source)| DownloadTag {
             anon_id,
             install_source,
+            plan: plan_from_url(url),
             source,
         })
     })
@@ -447,6 +477,39 @@ mod tests {
             tag_from_url("https://x.com/?aid=vyg-1&src=%3Cscript%3E"),
             Some(("vyg-1".into(), None))
         );
+    }
+
+    #[test]
+    fn plan_hint_is_kept_from_the_download_url() {
+        assert_eq!(
+            plan_from_url("https://x.com/HQ.dmg?aid=vyg-1&src=pricing&plan=Just-Me").as_deref(),
+            Some("just-me")
+        );
+        assert_eq!(plan_from_url("https://x.com/HQ.dmg?plan=free").as_deref(), Some("free"));
+        assert_eq!(plan_from_url("https://x.com/HQ.dmg?plan=solo_1").as_deref(), Some("solo_1"));
+        assert_eq!(plan_from_url("https://x.com/HQ.dmg?aid=vyg-1"), None);
+        assert_eq!(plan_from_url("https://x.com/HQ.dmg?plan="), None);
+        assert_eq!(plan_from_url("https://x.com/HQ.dmg?plan=a.b"), None);
+        assert_eq!(plan_from_url("https://x.com/HQ.dmg?plan=%3Cscript%3E"), None);
+        assert_eq!(plan_from_url("file:///HQ.dmg?plan=free"), None);
+        let long = format!("https://x.com/?plan={}", "a".repeat(33));
+        assert_eq!(plan_from_url(&long), None);
+        let max = format!("https://x.com/?plan={}", "a".repeat(32));
+        assert_eq!(plan_from_url(&max), Some("a".repeat(32)));
+        assert_eq!(safe_plan(" Personal "), Some("personal".into()));
+    }
+
+    #[test]
+    fn download_tag_carries_the_plan_hint() {
+        let tag = tag_from_urls(
+            ["https://x.com/HQ.dmg?aid=vyg-1&plan=Solo"],
+            TagSource::WhereFroms,
+        )
+        .unwrap();
+        assert_eq!(tag.anon_id, "vyg-1");
+        assert_eq!(tag.plan.as_deref(), Some("solo"));
+        let none = tag_from_urls(["https://x.com/HQ.dmg?aid=vyg-1"], TagSource::WhereFroms).unwrap();
+        assert_eq!(none.plan, None);
     }
 
     #[test]

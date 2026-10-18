@@ -199,6 +199,42 @@ describe('createReadyEngine layout', () => {
     expect(altTop + 18).toBeLessThanOrEqual(560 - skylineBand(560));
     expect(parseFloat(refs.copy.style.top)).toBeGreaterThanOrEqual(56);
   });
+  // Run 006 grid-0077: "Checking for AI tools on this PC" appears in the nav
+  // after the screen was laid out, and the status line under it was drawn over.
+  it('moves the status line down when the nav grows after the screen is shown', () => {
+    vi.stubGlobal('innerWidth', 1024);
+    vi.stubGlobal('innerHeight', 800);
+    const observers: Array<() => void> = [];
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(callback: () => void) {
+          observers.push(callback);
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    const canvas = document.createElement('canvas');
+    canvas.getContext = (() => null) as never;
+    const refs = {
+      canvas,
+      copy: sized(document.createElement('div'), 880, 132),
+      prog: sized(document.createElement('div'), 300, 34),
+      nav: sized(document.createElement('div'), 600, 120),
+      alt: sized(document.createElement('p'), 360, 18),
+    };
+    const engine = createReadyEngine(refs, { reveal: () => {} });
+    engine.enter(0);
+    const navTop = () => parseFloat(refs.nav.style.top);
+    const gapBefore = parseFloat(refs.alt.style.top) - (navTop() + 120);
+    expect(gapBefore).toBeGreaterThanOrEqual(18);
+
+    // The checking row arrives: the nav is now 40px taller.
+    sized(refs.nav, 600, 160);
+    for (const callback of observers) callback();
+    expect(parseFloat(refs.alt.style.top)).toBeGreaterThanOrEqual(navTop() + 160 + 18);
+  });
 });
 
 describe('createPanelEngine', () => {

@@ -38,6 +38,10 @@ pub const FIRST_LAUNCH_AT_KEY: &str = "cdpFirstLaunchAtMs";
 pub const DOWNLOAD_URL_TAG_KEY: &str = "cdpDownloadUrlTag";
 /// Unix ms of the one-time download-URL read (set whether or not it found one).
 pub const DOWNLOAD_TAG_READ_AT_KEY: &str = "cdpDownloadTagReadAt";
+/// The plan the visitor picked before downloading (`plan=` on the download URL).
+pub const DOWNLOAD_PLAN_KEY: &str = "cdpDownloadPlan";
+/// The plan the visitor picked on the website, from the sign-in link reply.
+pub const SIGNIN_PLAN_INTENT_KEY: &str = "cdpSigninPlanIntent";
 /// `{found, source}` of that read until hq-pro accepts `install_tag_read`.
 pub const INSTALL_TAG_PENDING_KEY: &str = "cdpInstallTagReadPending";
 /// hq-pro operational event for the one-time read.
@@ -213,6 +217,11 @@ pub fn apply_download_tag(
             updates.push((INSTALL_SOURCE_KEY, json!(source)));
         }
     }
+    // The plan hint is kept even when an earlier visitor id wins: it is only
+    // an onboarding fallback, and onboarding validates it again.
+    if let Some(plan) = tag.and_then(|t| t.plan.as_deref()) {
+        updates.push((DOWNLOAD_PLAN_KEY, json!(plan)));
+    }
     let _ = merge_menubar_flags(path, &updates);
     Some(report)
 }
@@ -257,6 +266,32 @@ pub fn web_visitor_anon_id() -> Option<String> {
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
         })
+}
+
+/// `{signinPlanIntent, downloadPlan}` stored in this menubar.json, each
+/// re-sanitized (null when missing or malformed).
+pub fn plan_hints_at(path: &std::path::Path) -> Value {
+    let obj = read_menubar_obj(path);
+    let hint = |key: &str| {
+        obj.get(key)
+            .and_then(Value::as_str)
+            .and_then(hq_desktop_core::download_tag::safe_plan)
+    };
+    json!({
+        "signinPlanIntent": hint(SIGNIN_PLAN_INTENT_KEY),
+        "downloadPlan": hint(DOWNLOAD_PLAN_KEY),
+    })
+}
+
+/// The plan the visitor picked on the website, as hints for onboarding when
+/// `/membership/me` has none: the sign-in link reply's `planIntent` and the
+/// download URL's `plan`. Onboarding decides which values count.
+#[tauri::command]
+pub fn web_visitor_plan_hints() -> Value {
+    match paths::menubar_json_path() {
+        Ok(path) => plan_hints_at(&path),
+        Err(_) => json!({ "signinPlanIntent": null, "downloadPlan": null }),
+    }
 }
 
 /// Send the pending `install_tag_read` row to hq-pro; clear it on success.
@@ -1196,6 +1231,19 @@ pub fn note_signin_link_visitor(anon_id: &str) {
     });
 }
 
+/// Store the sign-in link reply's `planIntent` for onboarding.
+pub fn note_signin_link_plan_intent(plan: &str) {
+    let Some(plan) = hq_desktop_core::download_tag::safe_plan(plan) else {
+        return;
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let Ok(path) = paths::menubar_json_path() else {
+            return;
+        };
+        let _ = merge_menubar_flags(&path, &[(SIGNIN_PLAN_INTENT_KEY, json!(plan))]);
+    });
+}
+
 /// Hook for the company first push completing; `account_linked` gets that
 /// company's hash.
 pub fn note_first_sync_completed(company_uid: &str) {
@@ -1284,8 +1332,28 @@ mod tests {
         hq_desktop_core::download_tag::DownloadTag {
             anon_id: aid.into(),
             install_source: Some("welcome-install-arm".into()),
+            plan: None,
             source: hq_desktop_core::download_tag::TagSource::WhereFroms,
         }
+    }
+
+    #[test]
+    fn download_tag_plan_is_stored_as_an_onboarding_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("menubar.json");
+        let hints = plan_hints_at(&path);
+        assert_eq!(hints["signinPlanIntent"], Value::Null);
+        assert_eq!(hints["downloadPlan"], Value::Null);
+        let mut tagged = tag("vyg-dl");
+        tagged.plan = Some("solo".into());
+        apply_download_tag(&path, Some(&tagged), 7).unwrap();
+        assert_eq!(read_menubar_obj(&path)[DOWNLOAD_PLAN_KEY], "solo");
+        merge_menubar_flags(&path, &[(SIGNIN_PLAN_INTENT_KEY, json!("Just-Me"))]).unwrap();
+        let hints = plan_hints_at(&path);
+        assert_eq!(hints["downloadPlan"], "solo");
+        assert_eq!(hints["signinPlanIntent"], "just-me");
+        merge_menubar_flags(&path, &[(SIGNIN_PLAN_INTENT_KEY, json!("<b>"))]).unwrap();
+        assert_eq!(plan_hints_at(&path)["signinPlanIntent"], Value::Null);
     }
 
     #[test]

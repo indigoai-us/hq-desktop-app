@@ -70,6 +70,11 @@ export function setupExpectationCopy(os: OnboardingHostOs): string {
   }
 }
 
+/** The honest time for the tools step, shown only where it runs long. */
+export function depsExpectationCopy(os: OnboardingHostOs): string | null {
+  return os === "windows" ? "This step can take up to 10 minutes on Windows." : null;
+}
+
 /** Which drawn keyboard the shortcut scene shows. */
 export type ShortcutKeyboardLayout = "mac" | "pc";
 
@@ -96,3 +101,11 @@ export function openHqShortcutChord(layout: ShortcutKeyboardLayout): ShortcutCho
     ? { keys: ["\u2325", "\u21E7", "O"], spoken: "Option, Shift, O", highlight: ["alt", "shift", "o"] }
     : { keys: ["Alt", "Shift", "O"], spoken: "Alt, Shift, O", highlight: ["alt", "shift", "o"] };
 }
+
+/** The hint beside Next on the shortcut screen: the shortcut is optional. */
+export function shortcutTryItHint(chord: ShortcutChord): string {
+  return `Try it now: press ${chord.spoken.replace(/,/g, "")}. Or select Next.`;
+}
+
+/** Why Next is briefly unavailable after it is selected. */
+export const SHORTCUT_NEXT_BUSY_HINT = "Checking your account. This takes a few seconds.";

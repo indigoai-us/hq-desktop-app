@@ -4606,6 +4606,10 @@ describe('setup progress direction', () => {
   }
 
   it('never walks the ring or the bands backward while a stage auto-retries', async () => {
+    // The elapsed cue reads the monotonic clock (run 006), so fake it too.
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'],
+    });
     let depsAttempts = 0;
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {

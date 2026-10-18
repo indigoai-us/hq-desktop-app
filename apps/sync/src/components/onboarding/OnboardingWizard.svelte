@@ -128,8 +128,18 @@
     type SetupStageRecoveryAction,
     type StageId,
     type StageState,
+    GIT_PERMISSION_NOTICE,
+    createStageClock,
+    depsFailureRecovery,
+    depsToolDetail,
+    setupHeading,
+    setupStepSummary,
+    type DepsFailureRecovery,
   } from '../../lib/onboarding-setup';
   import {
+    SHORTCUT_NEXT_BUSY_HINT,
+    depsExpectationCopy,
+    shortcutTryItHint,
     openHqShortcutChord,
     readOnboardingHostOs,
     setupExpectationCopy,
@@ -565,6 +575,11 @@
   let stageElapsedMs = $state(0);
   /** Real backend progress text for the running stage, when one was reported. */
   let stageDetail = $state<string | null>(null);
+  // Run 006: Windows asks for permission before Git installs, and a declined
+  // prompt or a stuck winget run waits here for the user's Try again.
+  let gitPermissionRequested = $state(false);
+  let depsRecovery = $state<DepsFailureRecovery | null>(null);
+  let depsRecoveryResolve: (() => void) | null = null;
   /** Set while the active stage waits for its automatic next attempt. */
   // Apple's developer tools gate (macOS). null = no card on screen.
   let cltPhase = $state<CommandLineToolsPhase | null>(null);
@@ -806,6 +821,21 @@
     readOnboardingHostOs(typeof navigator === 'undefined' ? null : navigator.userAgent),
   );
   const setupExpectation = $derived(setupExpectationCopy(setupHostOs));
+  const depsExpectation = $derived(depsExpectationCopy(setupHostOs));
+  const setupStep = $derived(
+    setupStepSummary(setupCompleted ? 100 : Math.min(99, overallPercent)),
+  );
+  // One line under the sub-status for the tools step: the Windows permission
+  // warning, a Try again reason, or the honest Windows time.
+  const depsNotice = $derived(
+    depsRecovery
+      ? depsRecovery.message
+      : gitPermissionRequested
+        ? GIT_PERMISSION_NOTICE
+        : currentStageId === 'deps'
+          ? depsExpectation
+          : null,
+  );
   const thisComputer = $derived(thisComputerNounFor(setupHostOs));
   // The global shortcut is Option-Shift-O on a Mac and Alt+Shift+O elsewhere.
   const yourComputer = $derived(yourComputerNounFor(setupHostOs));
@@ -815,6 +845,7 @@
   const shortcutChord = $derived(openHqShortcutChord(shortcutLayout));
   const chordKeys = $derived(shortcutChord.keys);
   const chordSpoken = $derived(shortcutChord.spoken);
+  const shortcutHint = $derived(shortcutTryItHint(shortcutChord));
   const setupSubStatusModel = $derived(
     setupSubStatus({
       stageId: currentStageId,
@@ -960,9 +991,10 @@
 
     if (done || activeId === null) return;
 
-    const startedAt = Date.now();
+    // Monotonic, so a wall-clock correction cannot make the cue run backward.
+    const clock = createStageClock();
     const interval = window.setInterval(() => {
-      const elapsed = Date.now() - startedAt;
+      const elapsed = clock.elapsed();
       stageElapsedMs = elapsed;
       stageCreep = stageCreepAt(elapsed);
     }, 1000);
@@ -2276,9 +2308,33 @@
       unlistenCliLockWait();
       return;
     }
+    const unlistenDepsTool = safeUnlisten(await listen<{ id?: string; state?: string }>(
+      'setup:deps-tool',
+      (event) => {
+        if (!isCurrentRun(runId) || currentStageId !== 'deps') return;
+        const detail = depsToolDetail(event.payload);
+        if (detail) stageDetail = detail;
+      },
+    ));
+    const unlistenGitPermission = safeUnlisten(await listen<{ state?: string }>(
+      'setup:git-permission',
+      (event) => {
+        if (!isCurrentRun(runId)) return;
+        gitPermissionRequested = event.payload?.state === 'requesting';
+      },
+    ));
+    if (!isCurrentRun(runId)) {
+      unlisten();
+      unlistenCliLockWait();
+      unlistenDepsTool();
+      unlistenGitPermission();
+      return;
+    }
     unlistenInstallProgress = () => {
       unlisten();
       unlistenCliLockWait();
+      unlistenDepsTool();
+      unlistenGitPermission();
     };
 
     const unlistenContent = safeUnlisten(await listen<ContentProgressPayload>(
@@ -2653,6 +2709,25 @@
     }
     if (result.kind === 'failed') {
       const message = errorMessage(result.err);
+      gitPermissionRequested = false;
+      const userRecovery = id === 'deps' ? depsFailureRecovery(message) : null;
+      if (userRecovery) {
+        // A declined Windows prompt or a stuck winget run: the user starts
+        // the next attempt, so it never fails on its own.
+        stages = setStageStatus(stages, id, 'retrying', message);
+        await journalStageFailure(id, message);
+        recordStep(SETUP_STEP_INDEX, 'failed', {
+          component: id,
+          failureStage: id,
+          attemptCount,
+          durationMs: Date.now() - startedAt,
+          outcome: 'stage_command_failed',
+          setupRunId,
+        });
+        await waitForDepsRetry(userRecovery);
+        if (!isCurrentRun(runId)) return CANCELLED_STAGE_RUN;
+        return runStage(id, runId, attemptCount + 1, depsTimeoutRetryStatus);
+      }
       // Decide recovery before the status lands: a stage that will try again
       // must never pass through 'failed', which would count it as settled and
       // then un-count it, jolting the ring forward and straight back.
@@ -2874,6 +2949,21 @@
       });
       cltRetryResolve = null;
     }
+  }
+
+  function waitForDepsRetry(recovery: DepsFailureRecovery): Promise<void> {
+    depsRecovery = recovery;
+    return new Promise<void>((resolve) => {
+      depsRecoveryResolve = () => {
+        depsRecoveryResolve = null;
+        depsRecovery = null;
+        resolve();
+      };
+    });
+  }
+
+  function retryDepsInstall() {
+    depsRecoveryResolve?.();
   }
 
   function retryCommandLineTools() {
@@ -4699,8 +4789,15 @@
         type="button"
         disabled={leavingExplainers}
         aria-busy={leavingExplainers}
+        aria-describedby="welcome-shortcut-hint"
+        title={leavingExplainers ? SHORTCUT_NEXT_BUSY_HINT : undefined}
         onclick={forward}
       >{replay ? 'Done' : leavingExplainers ? 'One moment…' : 'Next'}</button>
+      <!-- Run 006 grid-0023: Next read as disabled. Say that the shortcut is
+           optional, and why Next waits once it is selected. -->
+      <p class="nav-hint" id="welcome-shortcut-hint" data-testid="welcome-shortcut-hint">
+        {leavingExplainers ? SHORTCUT_NEXT_BUSY_HINT : shortcutHint}
+      </p>
     </div>
   </section>
 
@@ -5062,7 +5159,7 @@
       <canvas bind:this={refs.readyCanvas} aria-hidden="true"></canvas>
       <div class="copy" bind:this={refs.readyCopy}>
         <h2 class="h h-lg" id="onboarding-title-ready" tabindex="-1" data-scene-heading>
-          {installPending ? 'Almost ready.' : 'HQ is ready.'}
+          {setupHeading({ installPending, step: setupStep })}
         </h2>
         <p class="body">
           HQ lives in your {setupHostOs === 'macos' ? 'menu bar' : 'system tray'} now and keeps everything in sync.<br />Open HQ Desktop and your setup bot will walk you through the rest.
@@ -5156,6 +5253,21 @@
           <p class="substatus" data-testid="welcome-ready-substatus">
             {setupSubStatusModel.text ?? setupExpectation}{#if setupSubStatusModel.elapsedLabel}<span class="elapsed">{setupSubStatusModel.elapsedLabel}</span>{/if}
           </p>
+          {#if depsNotice}
+            <p
+              class="substatus deps-notice"
+              role={depsRecovery || gitPermissionRequested ? 'status' : undefined}
+              data-testid="welcome-ready-deps-notice"
+            >{depsNotice}</p>
+          {/if}
+          {#if depsRecovery}
+            <button
+              type="button"
+              class="deps-retry"
+              data-testid="welcome-ready-deps-retry"
+              onclick={retryDepsInstall}
+            >Try again</button>
+          {/if}
         {/if}
         {#if deferredConsent?.phase === 'failed'}
           <div class="note consent-error" role="alert" data-testid="consent-deferred-error">
