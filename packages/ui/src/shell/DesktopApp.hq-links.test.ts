@@ -241,6 +241,39 @@ describe("DesktopApp hq:// links (US-008)", () => {
     expect(current()).not.toBe("brief");
   });
 
+  it("a later hq://brief whose gates still hang gets its own 10 s wait", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const adapter = webAdapter();
+    (adapter as unknown as { identity: unknown }).identity = {
+      whoami: async () => ok({ personUid: "prs_fixture", email: "" }),
+      hasFeature: () => new Promise(() => undefined),
+      subscribeFeature: () => () => {},
+    };
+    await mountShell(adapter);
+    warn.mockClear();
+    const gateLogs = () =>
+      warn.mock.calls.filter((c) => String(c[0]).startsWith("[first-run] hq://brief gates did not answer")).length;
+    vi.useFakeTimers();
+    try {
+      dispatchEmbeddedNavigation(HQ_BRIEF_TARGET);
+      await vi.advanceTimersByTimeAsync(10_500);
+      expect(gateLogs()).toBe(1);
+      expect(current()).not.toBeNull();
+      dispatchEmbeddedNavigation(HQ_BRIEF_TARGET);
+      await vi.advanceTimersByTimeAsync(9_000);
+      // The second request is held for its own wait, not redirected at once.
+      expect(current()).toBeNull();
+      expect(gateLogs()).toBe(1);
+      await vi.advanceTimersByTimeAsync(1_500);
+    } finally {
+      vi.useRealTimers();
+    }
+    await settle();
+    expect(gateLogs()).toBe(2);
+    expect(current()).not.toBeNull();
+    expect(current()).not.toBe("brief");
+  });
+
   it("hq://vault opens the Files page with the rail on Files", async () => {
     await mountShell(localFilesAdapter());
     expect(host.querySelector('[data-testid="rail-files-host"]')).toBeNull();

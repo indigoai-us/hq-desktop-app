@@ -419,6 +419,34 @@ describe("FirstRunDecisionTakeover", () => {
     expect(byId("first-run-takeover")?.textContent ?? "").not.toContain("no launch");
   });
 
+  it("a Retry after a thrown handoff reads Retry while it runs, never Continue in <tool>", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let calls = 0;
+    let release: () => void = () => undefined;
+    render({
+      oncontinueintool: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("no launch");
+        await new Promise<void>((resolve) => (release = resolve));
+      },
+    });
+    await waitForDecision();
+    await continuePastCallout();
+    await vi.waitFor(() => expect(text("first-run-decision-primary")).toBe(FIRST_RUN_COPY.retry));
+    byId<HTMLButtonElement>("first-run-decision-primary")!.click();
+    await settle();
+    const primary = byId<HTMLButtonElement>("first-run-decision-primary")!;
+    expect(calls).toBe(2);
+    expect(primary.disabled).toBe(true);
+    expect(primary.getAttribute("aria-busy")).toBe("true");
+    expect(primary.textContent?.trim()).toBe(FIRST_RUN_COPY.retry);
+    expect(primary.textContent ?? "").not.toContain("Continue in");
+    release();
+    await settle();
+    expect(primary.disabled).toBe(false);
+    expect(primary.textContent?.trim()).toBe("Continue in Codex");
+  });
+
   it("shows the sentence the host returns when the tool does not open, offers Retry, and clears it on the next press", async () => {
     const replies: Array<string | null> = ["Codex was not detected. Open your HQ folder in the ChatGPT app's Codex tab (or the codex CLI).", null];
     let release: () => void = () => undefined;
@@ -442,7 +470,9 @@ describe("FirstRunDecisionTakeover", () => {
 
     await continuePastCallout();
     expect(byId("first-run-decision-error")).toBeNull();
-    expect(text("first-run-decision-primary")).toBe("Continue in Codex");
+    // The retry's own press keeps reading Retry while it runs (Shepherd, PR 1642).
+    expect(text("first-run-decision-primary")).toBe(FIRST_RUN_COPY.retry);
+    expect(byId<HTMLButtonElement>("first-run-decision-primary")!.disabled).toBe(true);
     release();
     await settle();
     expect(handlers.oncontinueintool).toHaveBeenCalledTimes(2);

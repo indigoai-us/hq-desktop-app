@@ -14155,7 +14155,12 @@
   const BRIEF_GATE_WAIT_MS = 10_000;
   let briefGateWaitExpired = $state(false);
   $effect(() => {
-    if (railPlaceholder?.id !== "brief" || railGatesSettled || briefGateWaitExpired) return;
+    // Leaving the brief page ends that request, so the next hq://brief gets its own wait.
+    if (railPlaceholder?.id !== "brief") {
+      briefGateWaitExpired = false;
+      return;
+    }
+    if (railGatesSettled || briefGateWaitExpired) return;
     const timer = setTimeout(() => {
       console.warn("[first-run] hq://brief gates did not answer in 10s; opening Home without the brief");
       briefGateWaitExpired = true;

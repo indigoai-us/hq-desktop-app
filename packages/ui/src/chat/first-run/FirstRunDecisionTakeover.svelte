@@ -225,6 +225,15 @@
 
   /** True only while Enable's HQ Anywhere install runs; every other Continue installs nothing. */
   let installingAnywhere = $state(false);
+  /** True while a press that follows a failed handoff runs, so the button keeps reading Retry. */
+  let retryingHandoff = $state(false);
+  const toolPrimaryLabel = $derived(
+    pressed === "tool" && installingAnywhere
+      ? COPY.anywhereTurningOn
+      : (pressed === "tool" ? retryingHandoff : toolError !== null)
+        ? FIRST_RUN_COPY.retry
+        : COPY.toolPrimary(toolName),
+  );
 
   async function continueInTool(runtime: FirstRunRuntime): Promise<void> {
     toolError = null;
@@ -255,10 +264,15 @@
   /** Sign in, then continue. A failed handoff retries from here. Skip never installs. */
   function handoffChosenTool(runtime: FirstRunRuntime): void {
     void press("tool", async () => {
-      const connected = toolError !== null || (await signInFirst(runtime));
-      if (!live) return;
-      if (connected) await continueInTool(runtime);
-      else await onskipintool(runtime);
+      retryingHandoff = toolError !== null;
+      try {
+        const connected = retryingHandoff || (await signInFirst(runtime));
+        if (!live) return;
+        if (connected) await continueInTool(runtime);
+        else await onskipintool(runtime);
+      } finally {
+        retryingHandoff = false;
+      }
     });
   }
 
@@ -606,11 +620,7 @@
           aria-busy={pressed === "tool" ? "true" : undefined}
           aria-describedby="first-run-anywhere-callout"
           onclick={continueInChosenTool}
-        >{pressed === "tool" && installingAnywhere
-          ? COPY.anywhereTurningOn
-          : toolError && pressed === null
-            ? FIRST_RUN_COPY.retry
-            : COPY.toolPrimary(toolName)}</button>
+        >{toolPrimaryLabel}</button>
       </div>
     {:else if tool}
       <div class="fr-decision-head">
@@ -629,11 +639,7 @@
           disabled={pressed !== null}
           aria-busy={pressed === "tool" ? "true" : undefined}
           onclick={continueInChosenTool}
-        >{pressed === "tool" && installingAnywhere
-          ? COPY.anywhereTurningOn
-          : toolError && pressed === null
-            ? FIRST_RUN_COPY.retry
-            : COPY.toolPrimary(toolName)}</button>
+        >{toolPrimaryLabel}</button>
         <button
           type="button"
           class="new-bot-create-submit"
