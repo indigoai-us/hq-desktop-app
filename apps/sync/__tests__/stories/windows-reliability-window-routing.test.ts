@@ -35,6 +35,12 @@ function readDesktopAlt(): string {
 }
 
 describe('US-004: Single-window activation and navigation', () => {
+  it('imports the shared painted-reveal atomics on Windows too', () => {
+    const src = readDesktopAlt();
+    expect(src).toContain('static REVEAL_ON_PAINT: AtomicBool');
+    expect(src).toContain('use std::sync::atomic::{AtomicBool, Ordering};');
+    expect(src).not.toMatch(/#\[cfg\(not\(target_os = "windows"\)\)\]\s*use std::sync::atomic/);
+  });
   describe('typed WindowRouter policy', () => {
     it('declares ActivationSource, ActivationAction, DesktopDestination, and open_destination', () => {
       const src = readDesktopAlt();
@@ -145,7 +151,12 @@ describe('US-004: Single-window activation and navigation', () => {
       expect(body).toMatch(/reveal_desktop_alt_window\(&window\)/);
       expect(body).toMatch(/set_focus\(\)/);
       expect(body).toContain('desktop:navigate');
-      expect(body).toContain('set_pending_route');
+      // US-010: the fresh build moved into `build_desktop_alt_window`, which the
+      // held first-run reveal shares. It still queues the route for the mount.
+      expect(body).toContain('build_desktop_alt_window(&app, route)');
+      const buildIdx = src.indexOf('fn build_desktop_alt_window(');
+      expect(buildIdx).toBeGreaterThan(-1);
+      expect(src.slice(buildIdx, buildIdx + 400)).toContain('set_pending_route(route)');
       // The helper is what actually shows the existing window.
       expect(src).toMatch(/fn reveal_desktop_alt_window[\s\S]*window\.show\(\)/);
       // Single builder path uses the fixed desktop-alt label.

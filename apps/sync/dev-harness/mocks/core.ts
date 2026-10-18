@@ -789,6 +789,7 @@ const handlers: Record<string, Handler> = {
         }
       : null,
   mark_welcome_tour_shown: () => null,
+  desktop_first_run_takeover_painted: () => true,
   // Deterministic full-desktop route for visual QA:
   //   ?view=desktop&route=company:indigo:projects
   // Mirrors the native pending-route handoff consumed once on mount.
