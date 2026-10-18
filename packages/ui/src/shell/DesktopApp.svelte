@@ -4335,12 +4335,12 @@
         if (welcomeReportBlockedOn === null) welcomeReportBlockedOn = botState;
         else if (welcomeReportBlockedOn !== botState) {
           welcomeReportBlockedOn = botState;
-          void run.start();
+          void run.start({ welcome: true });
         }
         return;
       }
       welcomeReportBlockedOn = null;
-      void run.start();
+      void run.start({ welcome: true });
     });
   });
   // A job held back on the assistant (a terminal or browser sign-in, the
@@ -4354,7 +4354,7 @@
     if (!welcomeReportUnsent(uid)) return;
     const onBack = (): void => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-      if (run.phase.kind === "blocked") void run.start();
+      if (run.phase.kind === "blocked") void run.start({ welcome: true });
     };
     window.addEventListener("focus", onBack);
     document.addEventListener("visibilitychange", onBack);
@@ -6497,18 +6497,6 @@
    */
   const briefCreator: BriefCreator | null = adapter.bots
     ? {
-        async company() {
-          const open = railCompanyRoster.find((c) => c.uid === tenantCompanyId)?.slug;
-          if (open) return open;
-          const bound = await adapter.appShell.getActiveCompany?.();
-          if (bound?.ok && bound.value) return bound.value;
-          const recent = readSettingsPrefs().companyRecentIds ?? [];
-          for (const uid of recent) {
-            const slug = railCompanyRoster.find((c) => c.uid === uid)?.slug;
-            if (slug) return slug;
-          }
-          return railCompanyRoster.length === 1 ? (railCompanyRoster[0]!.slug ?? null) : null;
-        },
         async check() {
           await refreshLocalBots();
           await loadLocalBotRuntimeReady(true);
@@ -14490,7 +14478,7 @@
 
   /**
    * ⌘⇧A: Atlas for the active company; on Home the first rail company; with
-   * no company at all, a one-line toast (QA-077).
+   * no company at all, a one-line toast with a New company button (QA-077).
    */
   function openAtlasShortcut(): void {
     paletteOpen = false;
@@ -14500,7 +14488,12 @@
       railCompanyRoster.map((company) => company.uid),
     );
     if (target.kind === "none") {
-      pushToast({ title: "Open a company first", detail: "", tone: "neutral" });
+      pushToast({
+        title: "Open a company first",
+        detail: "",
+        tone: "neutral",
+        actions: [{ label: "New company", testId: "atlas-new-company", onAction: () => (newCompanyOpen = true) }],
+      });
       return;
     }
     const item = railItemList.find(
@@ -15700,6 +15693,7 @@
               onopenthread={openBriefDm}
               onopenmeetings={() => void navigate({ kind: "meetings" })}
               actions={briefActions}
+              onconnectcompany={() => (newCompanyOpen = true)}
               onshown={(runId) => (briefShownRunId = runId)}
             />
           {/snippet}

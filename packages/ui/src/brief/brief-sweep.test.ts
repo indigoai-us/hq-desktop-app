@@ -97,7 +97,7 @@ describe("BriefSweepSource in gatherBriefInput", () => {
     expect(input.calendarToday.map((e) => e.title)).toEqual(["Live standup"]);
     expect([input.merged, input.opened]).toEqual([87, 101]);
     expect(input.today).toBe("2026-10-09");
-    expect(input.risks.map((r) => r.id)).toEqual(["ci:hq-desktop-app"]);
+    expect(input.risks.map((r) => r.id)).toEqual(["ci:cmp_indigo:hq-desktop-app"]);
     expect(input.shipped.length).toBeGreaterThan(0);
   });
 
@@ -499,5 +499,121 @@ describe("sweepToInput never throws on a row the sweep writes without its fields
     expect(isMainHealthRow({})).toBe(false);
     expect(isMainHealthRow(null)).toBe(false);
     expect(isMainHealthRow("red")).toBe(false);
+  });
+});
+
+
+describe("per-person sweep attribution", () => {
+  it("uses authoritative sections, rejects unlisted and nested-person sections, and separates teammates", () => {
+    const section: BriefSweep = {
+      sessions: [{ company: "beta", date: "2026-10-08", time: "12:00", title: "Session" }],
+      meeting_signals: [{ company: "beta", meeting: "Meeting", start: "2026-10-08T12:00:00Z" }],
+      main_health: { shared: { company: "beta", workflows: 1, red: [] } },
+      releases: [{ company: "beta", repo: "shared" }],
+      dms: [{ from: "Alex", from_uid: "usr_alex", at: "2026-10-08T12:00:00Z" }],
+    };
+    const input = sweepToInput({ mode: "person", personal: section, companies: {
+      alpha: section,
+      outsider: section,
+      beta: { mode: "person", personal: section },
+    } }, { day: "2026-10-08", companyUid: null, companies: [{ uid: "cmp_a", slug: "alpha" }, { uid: "cmp_b", slug: "beta" }] });
+    expect(input.sessions.map(x => x.company)).toEqual([null, "cmp_a"]);
+    expect(input.meetingsYesterday.map(x => x.companyUid)).toEqual([null, "cmp_a"]);
+    expect(input.mainHealth?.map(x => x.companyUid)).toEqual([null, "cmp_a"]);
+    expect(input.releases?.map(x => x.origin.companyUid)).toEqual([null, "cmp_a"]);
+    expect(input.team.map(x => [x.companyUid, x.id, x.dmCount])).toEqual([[null, "usr_alex", 1], ["cmp_a", "usr_alex", 1]]);
+  });
+  it("aggregates the writer's nested personal and company sweeps", () => {
+    const section = (company: string | null, merged: number): BriefSweep => ({
+      company,
+      prs_summary: { merged, opened: merged + 1 },
+      prs: [{ company, repo: "shared", number: merged, title: "change", state: "merged", created: "2026-10-08T12:00:00Z", closed: "2026-10-08T13:00:00Z" }],
+      meeting_signals: [{ company, meeting: "Planning", start: "2026-10-08T12:00:00Z" }],
+      sessions: [{ company, date: "2026-10-08", time: "12:00", title: "work" }],
+      main_health: { shared: { workflows: 1, red: ["tests"] } },
+      fleet: { total: 1, stuck: [{ name: "Agent", phase: "waiting" }] },
+      window: { from: "2026-10-08", to: "2026-10-09", today: "2026-10-09" },
+    });
+    const input = sweepToInput({ mode: "person", personal: section(null, 1), companies: { alpha: section("alpha", 2), beta: section("beta", 3) } }, {
+      day: "2026-10-08", companyUid: null, companies: [{ uid: "cmp_a", slug: "alpha" }, { uid: "cmp_b", slug: "beta" }],
+    });
+    expect([input.merged, input.opened]).toEqual([6, 9]);
+    expect(input.shipped.map(x => x.origin.companyUid)).toEqual([null, "cmp_a", "cmp_b"]);
+    expect(input.meetingsYesterday.map(x => x.companyUid)).toEqual([null, "cmp_a", "cmp_b"]);
+    expect(new Set(input.meetingsYesterday.map(x => x.id)).size).toBe(3);
+    expect(new Set(input.sessions.map(x => x.id)).size).toBe(3);
+    expect(input.prWindow?.total).toBe(3);
+    expect(input.mainHealth?.map(x => x.companyUid)).toEqual([null, "cmp_a", "cmp_b"]);
+    expect(input.fleetIncidents?.map(x => x.companyUid)).toEqual([null, "cmp_a", "cmp_b"]);
+    expect(input.fleetIncident).toBeNull();
+    expect(input.today).toBe("2026-10-09");
+  });
+  it("keeps companies and personal rows distinct across every source", () => {
+    const companies = [{ uid: "cmp_a", slug: "alpha" }, { uid: "cmp_b", slug: "beta" }];
+    const input = sweepToInput({
+      company: null,
+      window: { from: "2026-10-08", to: "2026-10-09", prs_from: "2026-10-08T00:00:00Z", prs_to: "2026-10-09T00:00:00Z" },
+      prs: ["alpha", "beta", undefined].map((company, i) => ({ company, repo: "shared", number: i, title: "change", state: "merged", created: "2026-10-08T12:00:00Z", closed: "2026-10-08T13:00:00Z", product: `Product ${i}` })),
+      meeting_signals: ["alpha", "beta", undefined].map(company => ({ company, meeting: "Planning", start: "2026-10-08T12:00:00Z" })),
+      main_health: { shared: { company: "beta", workflows: 1, red: ["test"] } },
+      releases: [{ company: "beta", repo: "shared" }, { repo: "personal" }],
+      sessions: ["alpha", "beta", null].map(company => ({ company, date: "2026-10-08", time: "12:00", title: "work", project: "shared", product: "App" })),
+    }, { day: "2026-10-08", companyUid: null, companies });
+    expect(input.shipped.map(x => x.origin.companyUid).sort()).toEqual(["cmp_a", "cmp_b", null].sort());
+    expect(new Set(input.shipped.map(x => x.id)).size).toBe(3);
+    expect(input.shipped.every(x => x.lines.length === 1)).toBe(true);
+    expect(input.meetingsYesterday.map(x => x.companyUid)).toEqual(["cmp_a", "cmp_b", null]);
+    expect(input.mainHealth?.[0]?.companyUid).toBe("cmp_b");
+    expect(input.risks[0]?.origin.companyUid).toBe("cmp_b");
+    expect(input.releases?.map(x => x.origin.companyUid)).toEqual(["cmp_b", null]);
+    expect(input.sessions.map(x => x.company)).toEqual(["cmp_a", "cmp_b", null]);
+    expect(input.sessions.every(x => x.project === "shared")).toBe(true);
+  });
+});
+
+
+describe("legacy flat sweep company boundaries", () => {
+  const options = { day: "2026-10-08", companyUid: null, companies: [{ uid: "cmp_a", slug: "alpha" }] };
+  it("keeps same-name DM senders separate across flat companies and personal", () => {
+    const input = sweepToInput({ dms: [null, "alpha", "alpha"].map(company => ({ company, from: "Alex", at: "2026-10-08T12:00:00Z" })) }, options);
+    expect(input.team.map(row => [row.companyUid, row.dmCount])).toEqual([[null, 1], ["cmp_a", 2]]);
+  });
+  const fixture = (company?: string | null): BriefSweep => ({
+    company: "alpha",
+    prs: [{ company, repo: "app", number: 1, title: "Change", state: "merged", created: "2026-10-08T12:00:00Z", closed: "2026-10-08T13:00:00Z" }],
+    meeting_signals: [{ company, meeting: "Planning", start: "2026-10-08T12:00:00Z" }],
+    main_health: { app: { company, workflows: 1, red: ["tests"] } },
+    releases: [{ company, repo: "app" }],
+    sessions: [{ company, date: "2026-10-08", time: "12:00", title: "Work" }] as BriefSweep["sessions"],
+    dms: [{ company, from: "Alex", at: "2026-10-08T12:00:00Z" }],
+  });
+  it("inherits the legacy root company for every untagged flat source", () => {
+    const input = sweepToInput(fixture(), options);
+    expect(input.shipped[0]?.origin.companyUid).toBe("cmp_a");
+    expect(input.meetingsYesterday[0]?.companyUid).toBe("cmp_a");
+    expect(input.mainHealth?.[0]?.companyUid).toBe("cmp_a");
+    expect(input.releases?.[0]?.origin.companyUid).toBe("cmp_a");
+    expect(input.sessions[0]?.company).toBe("cmp_a");
+    expect(input.team[0]?.companyUid).toBe("cmp_a");
+  });
+  it("inherits root company for null and empty legacy row attribution", () => {
+    for (const company of [null, ""]) {
+      const input = sweepToInput(fixture(company), options);
+      expect(input.shipped[0]?.origin.companyUid).toBe("cmp_a");
+      expect(input.releases?.[0]?.origin.companyUid).toBe("cmp_a");
+      expect(input.mainHealth?.[0]?.companyUid).toBe("cmp_a");
+      expect(input.meetingsYesterday[0]?.companyUid).toBe("cmp_a");
+      expect(input.sessions[0]?.company).toBe("cmp_a");
+      expect(input.team[0]?.companyUid).toBe("cmp_a");
+    }
+  });
+  it("drops explicitly unknown-company rows from every flat source", () => {
+    const input = sweepToInput(fixture("outsider"), options);
+    expect([input.shipped, input.meetingsYesterday, input.mainHealth ?? [], input.releases ?? [], input.sessions, input.team, input.risks]).toEqual([[], [], [], [], [], [], []]);
+    expect([input.merged, input.opened, input.dmCount]).toEqual([0, 0, 0]);
+  });
+  it("does not alias an unlisted company named personal to Personal", () => {
+    const input = sweepToInput(fixture("personal"), options);
+    expect([input.shipped, input.meetingsYesterday, input.mainHealth ?? [], input.releases ?? [], input.sessions, input.team, input.risks]).toEqual([[], [], [], [], [], [], []]);
   });
 });

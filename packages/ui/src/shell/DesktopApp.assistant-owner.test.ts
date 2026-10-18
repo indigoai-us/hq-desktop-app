@@ -649,8 +649,13 @@ describe("round 2 review items", () => {
     await settle(30);
     expect(sendDm).not.toHaveBeenCalled();
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
-    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
-    const [to, , opts] = (sendDm.mock.calls as unknown as Array<[string, string, { idempotencyKey?: string }]>)[0]!;
+    // With no company the welcome report's brief job goes out too; the
+    // handoff note is counted among the other messages.
+    const isBriefJob = (call: unknown[]) => String(call[1]).startsWith("/daily-brief ");
+    const notes = () =>
+      sendDm.mock.calls.filter((call) => !isBriefJob(call)) as unknown as Array<[string, string, { idempotencyKey?: string }]>;
+    await vi.waitFor(() => expect(notes()).toHaveLength(1));
+    const [to, , opts] = notes()[0]!;
     expect(to).toBe(ASSISTANT_UID);
     expect(opts.idempotencyKey).toBe(`first-run-handoff:${ASSISTANT_UID}`);
     await landsOnWelcomeReport();
@@ -661,7 +666,8 @@ describe("round 2 review items", () => {
     await vi.waitFor(() => expect(q('[data-testid="agent-thinking-row"]')?.textContent).toContain("Hazel is thinking"));
     expectNoSlug("the assistant's conversation after the handoff");
     await settle(30);
-    expect(sendDm).toHaveBeenCalledTimes(1);
+    expect(notes()).toHaveLength(1);
+    expect(sendDm.mock.calls.filter(isBriefJob), "the welcome report's one brief job").toHaveLength(1);
   });
 
   it("Restore all leaves out the assistant before setup has run here (3)", async () => {

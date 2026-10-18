@@ -70,7 +70,14 @@
     if (!h) return value;
     return Math.round(countValue(h, t, TWEEN_S));
   }
-  const cardList = $derived(samples.slice(-cards));
+  const sections = $derived.by(() => {
+    const groups = new Map<string, BriefSample[]>();
+    for (const sample of samples) {
+      const key = sample.company || "Personal";
+      groups.set(key, [...(groups.get(key) ?? []), sample].slice(-cards));
+    }
+    return [...groups].map(([company, items]) => ({ company, items }));
+  });
 </script>
 
 <div class="fd" data-testid="brief-findings">
@@ -87,9 +94,11 @@
       </div>
     {/each}
   </div>
-  {#if cardList.length}
+  {#each sections as section (section.company)}
+    <section aria-label={section.company} data-testid="brief-sample-section">
+    <h3 class="sample-heading">{#if section.company === "Personal"}Personal{:else}<CompanyLabel name={section.company} size={12} />{/if}</h3>
     <ul class="cards">
-      {#each cardList as s (`${s.at}|${s.title}`)}
+      {#each section.items as s (`${s.company}|${s.at}|${s.title}`)}
         <li class="card" data-testid="brief-sample" in:fly={{ y: reduced ? 0 : 14, duration: reduced ? 0 : 420, opacity: reduced ? 1 : 0 }}>
           <span class="kind tone-{sampleTone(s.kind)}">{s.kind.replace(/[_-]+/g, " ")}</span>
           <span class="title" title={s.title}>{s.title}</span>
@@ -97,10 +106,12 @@
         </li>
       {/each}
     </ul>
-  {/if}
+    </section>
+  {/each}
 </div>
 
 <style>
+  .sample-heading { font-size: 12px; font-weight: 500; margin: 4px 0 6px; }
   .fd {
     display: flex;
     flex-direction: column;
