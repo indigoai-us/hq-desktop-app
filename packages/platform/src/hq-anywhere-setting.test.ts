@@ -195,7 +195,7 @@ describe("HQ Anywhere setting support", () => {
       await expect(
         ensureHqAnywhereGlobalRuntime(identity, settings, { pause: async () => {} }),
       ).resolves.toEqual(ok(undefined));
-      expect(statuses).toContainEqual({ state: "running", enabled: null });
+      expect(statuses).toContainEqual({ state: "running", enabled: null, explicit: false });
       expect(statuses.at(-1)).toEqual({ state: "idle" });
       expect(syncHqAnywhereGlobal).not.toHaveBeenCalled();
     } finally {
@@ -264,7 +264,7 @@ describe("HQ Anywhere setting support", () => {
       });
       expect(isHqAnywhereSetupPending(result)).toBe(true);
       expect(syncHqAnywhereGlobal).toHaveBeenCalledTimes(1);
-      expect(statuses.at(-1)).toEqual({ state: "pending", enabled: true });
+      expect(statuses.at(-1)).toEqual({ state: "pending", enabled: true, explicit: false });
     } finally {
       unsubscribe();
     }

@@ -244,6 +244,26 @@ describe("Settings > HQ Anywhere", () => {
     expect(host.querySelector('[data-testid="hq-anywhere-setting-retry"]')).toBeNull();
   });
 
+  it("retries a failed startup reconciliation as launch sync, never as the person's own switch-off", async () => {
+    const syncRuntime = vi.fn<(enabled: boolean, explicit?: boolean) => Promise<AdapterResult<void>>>(
+      async () => failure("network", "raw startup setup detail"),
+    );
+    const { adapter } = createAdapter({ initialValue: false, syncRuntime });
+    render(adapter);
+    await vi.waitFor(() => expect(toggle()?.disabled).toBe(false));
+
+    await ensureHqAnywhereGlobalRuntime(adapter.identity, adapter.settings, {
+      pause: async () => {},
+    });
+    expect(syncRuntime).toHaveBeenCalledTimes(3);
+    expect(syncRuntime.mock.calls.every(([, explicit]) => explicit === false)).toBe(true);
+
+    syncRuntime.mockResolvedValue(ok(undefined));
+    host.querySelector<HTMLButtonElement>('[data-testid="hq-anywhere-setting-retry"]')!.click();
+    await vi.waitFor(() => expect(syncRuntime).toHaveBeenCalledTimes(4));
+    expect(syncRuntime).toHaveBeenLastCalledWith(false, false);
+  });
+
   it("shows one unavailable line and skips every setting call when the kill switch is explicitly false", async () => {
     let releaseFlag!: () => void;
     let flagSettled = false;

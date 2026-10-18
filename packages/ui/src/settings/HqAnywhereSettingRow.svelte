@@ -87,7 +87,8 @@
       retryValue = null;
     } else if (status.state === "failed" || status.state === "pending") {
       setupRunning = false;
-      retryKind = status.enabled === null ? "reconcile" : "setup";
+      // Only the person's own switch retries as their choice; launch sync retries as launch sync.
+      retryKind = status.explicit && status.enabled !== null ? "setup" : "reconcile";
       retryValue = status.enabled;
     } else {
       setupRunning = false;

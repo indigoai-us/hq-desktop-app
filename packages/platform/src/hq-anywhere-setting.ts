@@ -21,9 +21,9 @@ export const HQ_ANYWHERE_SETUP_PENDING_CODE = "setup_pending";
 
 export type HqAnywhereGlobalRuntimeStatus =
   | { state: "idle" }
-  | { state: "running"; enabled: boolean | null }
-  | { state: "pending"; enabled: boolean | null }
-  | { state: "failed"; enabled: boolean | null };
+  | { state: "running"; enabled: boolean | null; explicit: boolean }
+  | { state: "pending"; enabled: boolean | null; explicit: boolean }
+  | { state: "failed"; enabled: boolean | null; explicit: boolean };
 
 /** True when a request failed only because first-run setup has not finished installing hq. */
 export function isHqAnywhereSetupPending(result: AdapterResult<unknown>): boolean {
@@ -147,12 +147,13 @@ export async function setHqAnywhereGlobalRuntime(
     publishGlobalRuntimeStatus(IDLE_RUNTIME_STATUS);
     return ok(undefined);
   }
-  publishGlobalRuntimeStatus({ state: "running", enabled });
+  const explicit = options?.explicit === true;
+  publishGlobalRuntimeStatus({ state: "running", enabled, explicit });
   let result: AdapterResult<void>;
   try {
     result = settings.syncHqAnywhereGlobal
       ? await retryHqAnywhereRequest(
-          () => settings.syncHqAnywhereGlobal!(enabled, options?.explicit === true),
+          () => settings.syncHqAnywhereGlobal!(enabled, explicit),
           options,
         )
       : unavailable("hq-anywhere-global-runtime-unavailable");
@@ -166,8 +167,8 @@ export async function setHqAnywhereGlobalRuntime(
     result.ok
       ? IDLE_RUNTIME_STATUS
       : isHqAnywhereSetupPending(result)
-        ? { state: "pending", enabled }
-        : { state: "failed", enabled },
+        ? { state: "pending", enabled, explicit }
+        : { state: "failed", enabled, explicit },
   );
   return result;
 }
@@ -179,10 +180,10 @@ export async function ensureHqAnywhereGlobalRuntime(
   options?: HqAnywhereRetryOptions,
 ): Promise<AdapterResult<void>> {
   if (!(await hqAnywhereRuntimeEnabled(identity))) return ok(undefined);
-  publishGlobalRuntimeStatus({ state: "running", enabled: null });
+  publishGlobalRuntimeStatus({ state: "running", enabled: null, explicit: false });
   const setting = await getHqAnywherePersonSetting(settings, options);
   if (!setting.ok) {
-    publishGlobalRuntimeStatus({ state: "failed", enabled: null });
+    publishGlobalRuntimeStatus({ state: "failed", enabled: null, explicit: false });
     return setting;
   }
   return setHqAnywhereGlobalRuntime(identity, settings, setting.value, {
