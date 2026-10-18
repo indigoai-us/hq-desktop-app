@@ -17,6 +17,7 @@ import {
   forwardLabel,
   installCardModel,
   installCardActivityLines,
+  readyProgressLine,
   nextScene,
   previousScene,
   sceneForStep,
@@ -249,5 +250,41 @@ describe('install card', () => {
   it('sizes the card for the activity phrases rather than percentage bands', () => {
     expect(installCardActivityLines()).toContain('Installing the hq command');
     expect(installCardActivityLines().join(' ')).not.toContain('Step');
+  });
+});
+
+describe('ready progress line', () => {
+  it('names the running blocking step', () => {
+    expect(readyProgressLine({ itemId: 'content', retrying: false, elapsedMs: 0 })).toBe('Setting up your workspace');
+    expect(readyProgressLine({ itemId: null, retrying: false, elapsedMs: 0 })).toBe('Setting up HQ');
+  });
+
+  it('says when the step is trying again', () => {
+    expect(readyProgressLine({ itemId: 'content', retrying: true, elapsedMs: 0 })).toBe(
+      'Still setting up your workspace, trying again',
+    );
+    expect(readyProgressLine({ itemId: 'claude-code', retrying: true, elapsedMs: 0 })).toBe(
+      'Still installing Claude Code, trying again',
+    );
+    expect(readyProgressLine({ itemId: 'future-item', retrying: true, elapsedMs: 0 })).toBe(
+      'Still setting up HQ, trying again',
+    );
+  });
+
+  it('says when the step has run past the still-working threshold', () => {
+    expect(readyProgressLine({ itemId: 'deps', retrying: false, elapsedMs: 19_999 })).toBe('Installing your tools');
+    expect(readyProgressLine({ itemId: 'deps', retrying: false, elapsedMs: 20_000 })).toBe('Still installing your tools');
+  });
+
+  it('keeps every line in sentence case with no em dash or exclamation mark', () => {
+    for (const itemId of ['content', 'git-init', 'personalize', 'deps', null]) {
+      for (const retrying of [false, true]) {
+        for (const elapsedMs of [0, 60_000]) {
+          const line = readyProgressLine({ itemId, retrying, elapsedMs });
+          expect(line).toMatch(/^[A-Z]/);
+          expect(line).not.toMatch(/[!—…]|Step/);
+        }
+      }
+    }
   });
 });

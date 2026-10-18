@@ -45,6 +45,7 @@ import {
   __setReadyTimingsForTests,
 } from '../../lib/welcome-flow';
 import { __resetInstallerStepTelemetryForTests } from '../../lib/installer-step-telemetry';
+import { SETUP_STILL_WORKING_AFTER_MS } from '../../lib/onboarding-setup';
 
 const TOOLS = {
   claude_cli: false,
@@ -334,11 +335,12 @@ describe('welcome flow: the install runs in the background', () => {
       payload: { handle, line: 'installing', finished },
     });
   /** The ready screen while the blocking phase runs: honest progress, no buttons, no finish. */
-  const expectWaiting = (onfinish: ReturnType<typeof vi.fn>) => {
+  const expectWaiting = (onfinish: ReturnType<typeof vi.fn>, line = 'Setting up your workspace') => {
     expect(readyTitle()).toBe('Almost ready.');
     expect(readyLine()).not.toBe('Installed and synced across your devices.');
-    expect(readyLine()).toBe('Setting up your workspace');
-    expect(byId('welcome-ready-substatus')).toBeNull();
+    // The line names the blocking step, and says so while that step is trying
+    // again or slow ("Still setting up your workspace, trying again").
+    expect(readyLine()).toBe(line);
     expect(host.querySelector('[data-scene="ready"]')!.textContent).not.toContain('Installed and synced across your devices.');
     expect(byId<HTMLElement>('onboarding-launchers')!.querySelectorAll('button')).toHaveLength(0);
     expect(onfinish).not.toHaveBeenCalled();
@@ -779,6 +781,8 @@ describe("welcome flow: the ready screen's waits", () => {
   };
   const optIns = () => calls.filter((c) => c.command === 'post_telemetry_opt_in');
   const finishNote = () => byId<HTMLElement>('launcher-finish-error');
+  const readyTitle = () => host.querySelector('#onboarding-title-ready')?.textContent?.trim();
+  const readyLine = () => host.querySelector('[data-scene="ready"] .pl')?.textContent?.trim();
 
   async function mountSettledReady(overrides: Record<string, Handler> = {}) {
     stubInvoke({ get_install_queue_status: () => queueStatusComplete(), ...overrides });
@@ -810,6 +814,77 @@ describe("welcome flow: the ready screen's waits", () => {
     await advance(200);
     for (let i = 0; i < 60 && onfinish.mock.calls.length !== 1; i++) await advance(5);
     expect(onfinish).toHaveBeenCalledTimes(1);
+  });
+
+  // Review of PR 1685 (C1): a blocking step that is retrying or slow says so
+  // on the Ready screen instead of only "Almost ready." until the watchdog.
+  it('says on the Ready screen when a blocking step is trying again or slow', async () => {
+    let attempts = 0;
+    const second = deferred();
+    stubInvoke({
+      fetch_and_extract_template: () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('network timeout while fetching the template');
+        return second.promise;
+      },
+    });
+    const onfinish = mountAt(2);
+    for (let i = 0; i < 60 && !commands().includes('fetch_and_extract_template'); i++) await advance(5);
+    byId('welcome-skip')!.click();
+    await advance(5);
+    expect(scene()).toBe('ready');
+    for (let i = 0; i < 40 && byId<HTMLElement>('onboarding-setup')?.dataset.state !== 'retrying'; i++) await advance(25);
+    expect(byId<HTMLElement>('onboarding-setup')!.dataset.state).toBe('retrying');
+    expect(readyTitle()).toBe('Almost ready.');
+    expect(readyLine()).toBe('Still setting up your workspace, trying again');
+    expect(host.querySelector('[data-scene="ready"] .prog')!.getAttribute('aria-live')).toBe('polite');
+
+    // The next attempt runs: the line names the step again.
+    await advance(2_000);
+    expect(attempts).toBe(2);
+    expect(readyLine()).toBe('Setting up your workspace');
+    expect(onfinish).not.toHaveBeenCalled();
+
+    // The step runs past the still-working threshold: the line says so.
+    await advance(SETUP_STILL_WORKING_AFTER_MS);
+    expect(readyTitle()).toBe('Almost ready.');
+    expect(readyLine()).toBe('Still setting up your workspace');
+    expect(onfinish).not.toHaveBeenCalled();
+
+    second.resolve();
+    for (let i = 0; i < 60 && readyTitle() !== 'HQ is ready.'; i++) await advance(5);
+    expect(readyTitle()).toBe('HQ is ready.');
+    expect(host.querySelector('[data-scene="ready"]')!.textContent).not.toContain('Still ');
+  });
+
+  // Review of PR 1685 (I4): touching the checkbox while blocking setup runs
+  // cannot start the consent dwell early.
+  it('does not start the consent dwell early when the checkbox is touched during blocking setup', async () => {
+    const template = deferred();
+    stubInvoke({ fetch_and_extract_template: () => template.promise });
+    const onfinish = mountAt(2);
+    for (let i = 0; i < 60 && !commands().includes('fetch_and_extract_template'); i++) await advance(5);
+    byId('welcome-skip')!.click();
+    await advance(5);
+    for (let i = 0; i < 40 && !byId('ready-consent-share'); i++) await advance(5);
+    const box = byId<HTMLInputElement>('ready-consent-share')!;
+    expect(readyTitle()).toBe('Almost ready.');
+    box.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    box.click();
+    await flush();
+    await advance(READY_CONSENT_DWELL_MS + 1_000);
+    expect(onfinish).not.toHaveBeenCalled();
+
+    template.resolve();
+    for (let i = 0; i < 60 && readyTitle() !== 'HQ is ready.'; i++) await advance(5);
+    expect(readyTitle()).toBe('HQ is ready.');
+    await advance(READY_CONSENT_DWELL_MS - 200);
+    expect(onfinish).not.toHaveBeenCalled();
+    expect(optIns()).toHaveLength(0);
+    await advance(400);
+    for (let i = 0; i < 60 && onfinish.mock.calls.length !== 1; i++) await advance(5);
+    expect(onfinish).toHaveBeenCalledTimes(1);
+    expect(optIns()[0].args).toMatchObject({ enabled: false });
   });
 
   it('stays up for the consent dwell after the checkbox appears, then records the answer and finishes', async () => {

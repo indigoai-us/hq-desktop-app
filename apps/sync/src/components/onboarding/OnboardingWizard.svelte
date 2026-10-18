@@ -40,6 +40,7 @@
     installCardActivityLines,
     isStoryScene,
     previousScene,
+    readyProgressLine,
     readyTimings,
     sceneForStep,
     stepForScene,
@@ -124,7 +125,6 @@
     type StageId,
     type StageState,
     setupActivityPhrase,
-    setupActivityLabel,
   } from '../../lib/onboarding-setup';
   import {
     openHqShortcutChord,
@@ -883,6 +883,18 @@
       : hostQueueRunning && hostQueue?.currentId ? hostQueue.currentId : currentStageId,
   );
   const currentInstallActivity = $derived(setupActivityPhrase(currentInstallItemId));
+  // While blocking setup runs, the Ready line names the step and says so when
+  // that step waits on its automatic retry or has run a while. The retry and
+  // the elapsed clock belong to the wizard's own stage, not a host queue item.
+  const readyLine = $derived(
+    readyProgressLine({
+      itemId: currentInstallItemId,
+      retrying: Boolean(
+        setupRetry && setupRetry.stageId === currentStageId && currentInstallItemId === currentStageId,
+      ),
+      elapsedMs: currentInstallItemId !== null && currentInstallItemId === currentStageId ? stageElapsedMs : 0,
+    }),
+  );
   const chrome = $derived(welcomeChrome({ scene, replay, setupCompleted }));
   const installCard = $derived(
     installCardModel({
@@ -4995,11 +5007,11 @@
           HQ lives in your {setupHostOs === 'macos' ? 'menu bar' : 'system tray'} now and keeps everything in sync.
         </p>
       </div>
-      <div class="prog" class:done={!installPending} bind:this={refs.readyProg}>
+      <div class="prog" class:done={!installPending} bind:this={refs.readyProg} aria-live="polite">
         {#if installPending}
           <div class="pwrap">
             <i class="pi" data-testid="onboarding-completion-success-indicator" aria-hidden="true"></i>
-            <span class="pl">{setupActivityLabel(currentInstallItemId, 'Setting up HQ')}</span>
+            <span class="pl">{readyLine}</span>
             <span class="pbar" aria-hidden="true"><b style:width={`${installCard.percent}%`}></b></span>
           </div>
         {:else if installActivityRunning && currentInstallActivity}

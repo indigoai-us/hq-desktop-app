@@ -44,7 +44,12 @@ import {
   TRUST_STEP_INDEX,
   WELCOME_SIGNIN_STEP_INDEX,
 } from './onboarding-wizard';
-import { SETUP_ACTIVITY_PHRASES, setupActivityLabel } from './onboarding-setup';
+import {
+  SETUP_ACTIVITY_PHRASES,
+  SETUP_STILL_WORKING_AFTER_MS,
+  setupActivityLabel,
+  setupActivityPhrase,
+} from './onboarding-setup';
 
 export const STORY_SCENES = ['welcome', 'folder', 'cloud', 'shortcut', 'ready'] as const;
 export type StorySceneId = (typeof STORY_SCENES)[number];
@@ -369,6 +374,31 @@ export function installCardModel({ percent, completed, retryText, currentItemId 
     line: retryText ?? setupActivityLabel(currentItemId) ?? '',
     percent: Math.max(0, Math.min(99, percent)),
   };
+}
+
+export interface ReadyProgressLineInput {
+  /** The item the install is on, a blocking stage or a host queue item. */
+  itemId: string | null;
+  /** True while that item waits on its automatic retry. */
+  retrying: boolean;
+  /** How long that item has been running, or 0 when unknown. */
+  elapsedMs: number;
+}
+
+/** The Ready screen's progress line while blocking setup still runs. */
+export const READY_PROGRESS_FALLBACK = 'Setting up HQ';
+
+/**
+ * The Ready screen's progress line while blocking setup runs. It names the
+ * running work, and says so in one short line when that work is waiting on its
+ * automatic retry or has run past the still-working threshold, so a stuck step
+ * never shows only "Almost ready." until the watchdog.
+ */
+export function readyProgressLine({ itemId, retrying, elapsedMs }: ReadyProgressLineInput): string {
+  const phrase = setupActivityPhrase(itemId) ?? 'setting up HQ';
+  if (retrying) return `Still ${phrase}, trying again`;
+  if (elapsedMs >= SETUP_STILL_WORKING_AFTER_MS) return `Still ${phrase}`;
+  return setupActivityLabel(itemId, READY_PROGRESS_FALLBACK)!;
 }
 
 /** Possible activity lines keep the corner card's width steady. */

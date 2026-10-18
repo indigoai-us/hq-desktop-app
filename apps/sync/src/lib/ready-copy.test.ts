@@ -5,9 +5,23 @@ import { setupActivityPhrase, setupActivityLabel, SETUP_ACTIVITY_PHRASES } from 
 describe('setup activity copy', () => {
   it('names every native queue item in plain language', () => {
     const source = readFileSync(new URL('../../../../crates/hq-desktop-core/src/install_queue.rs', import.meta.url), 'utf8');
-    const ids = [...source.split('pub fn as_str')[1].split('pub fn parse')[0].matchAll(/=> "([a-z-]+)"/g)].map(m => m[1]);
-    expect(ids).toHaveLength(12);
-    for (const id of ids) {
+    // Variants come from the declared queue order; each id is the first
+    // `QueueItemId::Variant => "id"` arm for that variant (as_str precedes the
+    // label table). No dependence on method names, layout or a fixed count.
+    const order = source.match(/pub const ALL:\s*\[QueueItemId;\s*(\d+)\]\s*=\s*\[([^\]]*)\]/);
+    expect(order).not.toBeNull();
+    const variants = [...order![2].matchAll(/QueueItemId::(\w+)/g)].map(m => m[1]);
+    expect(variants).toHaveLength(Number(order![1]));
+    const firstArm = new Map<string, string>();
+    for (const m of source.matchAll(/QueueItemId::(\w+)\s*=>\s*"([a-z][a-z-]*)"/g)) {
+      if (!firstArm.has(m[1])) firstArm.set(m[1], m[2]);
+    }
+    const ids = variants.map(v => firstArm.get(v));
+    expect(ids.every(Boolean)).toBe(true);
+    expect(new Set(ids).size).toBe(variants.length);
+    // Ids are the kebab-case variant names, so a label arm can never stand in.
+    expect(ids).toEqual(variants.map(v => v.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase()));
+    for (const id of ids as string[]) {
       expect(SETUP_ACTIVITY_PHRASES).toHaveProperty(id);
       expect(setupActivityPhrase(id)).toMatch(/^(installing|connecting|building|syncing) /);
       expect(setupActivityPhrase(id)).not.toMatch(/Step|[!—]/);
