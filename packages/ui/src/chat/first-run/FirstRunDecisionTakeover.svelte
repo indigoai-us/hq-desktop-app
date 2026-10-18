@@ -45,6 +45,7 @@
   } from "./visual-first-run.js";
   import { createScreenTimer, formatSignIn, writeFirstRunLine, type FirstRunTimingSink, type SignInEvent } from "./first-run-timing.js";
   import { FIRST_RUN_SIGNIN_COPY, type FirstRunInstallWait, type FirstRunSignInHost } from "./first-run-signin.js";
+  import { GOOGLE_DEVICE_CHECK_COPY, armGoogleDeviceCheck, isGoogleBrowserSignIn } from "../../onboarding/google-device-check.js";
   import "../create-bot/new-bot-takeover.css";
 
   interface Props {
@@ -298,6 +299,32 @@
   // ── the coding tool's sign-in (owner, 2026-10-16) ──────────────────────
   /** The sign-in on screen: installing the tool, waiting on the browser, or failed. */
   let signinView = $state<{ runtime: FirstRunRuntime; state: "installing" | "waiting" | "failed" } | null>(null);
+  let googleDeviceCheck = $state(false);
+  let stopGoogleDeviceCheck: (() => void) | null = null;
+
+  function endGoogleDeviceCheck(): void {
+    stopGoogleDeviceCheck?.();
+    stopGoogleDeviceCheck = null;
+    googleDeviceCheck = false;
+  }
+
+  function beginGoogleDeviceCheck(): void {
+    endGoogleDeviceCheck();
+    stopGoogleDeviceCheck = armGoogleDeviceCheck(() => {
+      googleDeviceCheck = true;
+    });
+  }
+
+  $effect(() => {
+    const view = signinView;
+    const googleWait = view?.state === "waiting" && isGoogleBrowserSignIn({ runtime: view.runtime });
+    if (!googleWait) {
+      endGoogleDeviceCheck();
+      return;
+    }
+    beginGoogleDeviceCheck();
+    return () => endGoogleDeviceCheck();
+  });
   /** Lets the action that asked for the sign-in go on (signed in or skipped). */
   let signinGoOn: ((connected: boolean) => void) | null = null;
   /** Bumped by Skip and by leaving: an older attempt's answer is dropped. */
@@ -494,6 +521,9 @@
       <div class="fr-decision-head">
         {#if signinView.state !== "failed"}
           <p class="fr-decision-lead" data-testid="first-run-signin-waiting" aria-busy="true">{signinText}</p>
+          {#if googleDeviceCheck}
+            <p class="fr-decision-lead" data-testid="google-device-check">{GOOGLE_DEVICE_CHECK_COPY}</p>
+          {/if}
         {:else}
           <p class="fr-decision-lead fr-decision-failed" data-testid="first-run-signin-failed">{signinText}</p>
         {/if}

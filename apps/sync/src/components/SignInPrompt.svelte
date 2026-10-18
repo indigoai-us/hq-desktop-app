@@ -24,6 +24,7 @@
     type ContinuationState,
   } from '../lib/desktop-session-continuation';
   import type { SignInProvider } from '../lib/onboarding-signin';
+  import { GOOGLE_DEVICE_CHECK_COPY, armGoogleDeviceCheck, isGoogleBrowserSignIn } from '@hq/ui/google-device-check';
 
   const AUTH_RECHECK_INTERVAL_MS = 2_000;
   const CALLBACK_TIMEOUT_MS = 3 * 60 * 1_000;
@@ -235,6 +236,21 @@
   let signInRun = 0;
   let callbackTimeout: number | null = null;
   let acceptedExistingSession = false;
+  let googleDeviceCheck = $state(false);
+  let stopGoogleDeviceCheck: (() => void) | null = null;
+
+  function endGoogleDeviceCheck(): void {
+    stopGoogleDeviceCheck?.();
+    stopGoogleDeviceCheck = null;
+    googleDeviceCheck = false;
+  }
+
+  function beginGoogleDeviceCheck(): void {
+    endGoogleDeviceCheck();
+    stopGoogleDeviceCheck = armGoogleDeviceCheck(() => {
+      googleDeviceCheck = true;
+    });
+  }
 
   function clearCallbackTimeout() {
     if (callbackTimeout === null) return;
@@ -244,6 +260,7 @@
 
   function resetManualSignInState() {
     clearCallbackTimeout();
+    endGoogleDeviceCheck();
     loadingProvider = null;
     activeState = null;
     authorizeUrl = null;
@@ -331,6 +348,7 @@
     // Preparation observes this claim and leaves continuation unarmed. Manual
     // OAuth starts now; its native completion supplies AttemptEnd::Superseded.
     loadingProvider = provider;
+    endGoogleDeviceCheck();
     error = '';
     lastProvider = provider;
     activeState = null;
@@ -364,6 +382,7 @@
       if (!isCurrentSignInRun(run)) return;
       authorizeUrl = nextAuthorizeUrl;
       armCallbackTimeout(provider, run);
+      if (isGoogleBrowserSignIn({ provider })) beginGoogleDeviceCheck();
 
       // Step 3: Listen for the OAuth callback code
       console.info('[signin] OAuth runner waiting for callback', { provider });
@@ -371,6 +390,7 @@
         'oauth_listen_for_code',
         { state }
       );
+      endGoogleDeviceCheck();
       clearCallbackTimeout();
       authStep = 'callback_received';
       void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
@@ -639,6 +659,9 @@
         <p class="loading-hint">
           Continue with {loadingProvider} in your browser, then return to HQ.
         </p>
+        {#if googleDeviceCheck}
+          <p class="loading-hint" data-testid="google-device-check">{GOOGLE_DEVICE_CHECK_COPY}</p>
+        {/if}
       </div>
       <button
         class="sign-in-btn"

@@ -66,6 +66,7 @@
     homeDirFromDefaultHqPath,
   } from '../../lib/onboarding-path';
   import { isSignInTimeout, mapSignInError, type SignInProvider } from '../../lib/onboarding-signin';
+  import { GOOGLE_DEVICE_CHECK_COPY, armGoogleDeviceCheck, isGoogleBrowserSignIn } from '@hq/ui/google-device-check';
   import {
     continuationDeps,
     loadContinuationContext,
@@ -447,6 +448,8 @@
   type ConsentFailure = { kind: 'server' | 'offline'; message: string };
   let consentFailure = $state<ConsentFailure | null>(null);
   let loadingProvider = $state<SignInProvider | null>(null);
+  let googleDeviceCheck = $state(false);
+  let stopGoogleDeviceCheck: (() => void) | null = null;
   let signInError = $state('');
   let microsoftEmail = $state('');
   let microsoftEmailPrompt = $state(false);
@@ -1142,6 +1145,7 @@
   onDestroy(() => {
     screenTimer.close();
     clearReadyDwell();
+    endGoogleDeviceCheck();
     recordOnboardingAbandonment();
     mounted = false;
     currentSignInCall += 1;
@@ -1151,6 +1155,19 @@
     // tool installs running.
     if (!backgroundPhaseRunning) cancelSetupRun({ leaveHostInstalls: true });
   });
+
+  function endGoogleDeviceCheck(): void {
+    stopGoogleDeviceCheck?.();
+    stopGoogleDeviceCheck = null;
+    googleDeviceCheck = false;
+  }
+
+  function beginGoogleDeviceCheck(): void {
+    endGoogleDeviceCheck();
+    stopGoogleDeviceCheck = armGoogleDeviceCheck(() => {
+      googleDeviceCheck = true;
+    });
+  }
 
   function errorMessage(err: unknown): string {
     if (err instanceof Error) return err.message;
@@ -1227,6 +1244,7 @@
     existingSessionOutpost = null;
     const call = ++currentSignInCall;
     loadingProvider = provider;
+    endGoogleDeviceCheck();
     signInError = '';
     const telemetryProvider = provider === 'Google' ? 'google' : 'microsoft';
     if (signInTimedOut) {
@@ -1261,11 +1279,13 @@
       void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep, sessionId: progressSessionId });
       recordManualOAuthReceipt(progressSessionId, 'browser_opened');
       if (!isCurrentSignInCall(call)) return;
+      if (isGoogleBrowserSignIn({ provider })) beginGoogleDeviceCheck();
 
       const { code } = await invokeCommand<{ code: string }>(
         'oauth_listen_for_code',
         { state },
       );
+      endGoogleDeviceCheck();
       authStep = 'callback_received';
       void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep, sessionId: progressSessionId });
       recordManualOAuthReceipt(progressSessionId, 'callback_received');
@@ -1331,6 +1351,7 @@
     } finally {
       if (isCurrentSignInCall(call)) {
         loadingProvider = null;
+        endGoogleDeviceCheck();
       }
     }
   }
@@ -4531,6 +4552,9 @@
                 ? `A browser window opened for ${loadingProvider} sign-in. Finish there and we’ll pick up right here.`
                 : ''}
             </p>
+            {#if googleDeviceCheck}
+              <p class="status" role="status" data-testid="google-device-check">{GOOGLE_DEVICE_CHECK_COPY}</p>
+            {/if}
           {/if}
         {/if}
       </div>

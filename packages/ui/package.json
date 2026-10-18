@@ -13,6 +13,7 @@
     "./first-run-handoff": "./src/chat/first-run/first-run-handoff.ts",
     "./first-run-timing": "./src/chat/first-run/first-run-timing.ts",
     "./finishing-setup": "./src/shell/finishing-setup.ts",
+    "./google-device-check": "./src/onboarding/google-device-check.ts",
     "./link-preview": "./src/common/linkPreview.ts",
     "./visible-interval": "./src/common/visible-interval.ts",
     "./link-titles": "./src/common/linkTitles.ts",
