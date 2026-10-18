@@ -42,6 +42,7 @@
     type CloudFileEventPayload,
 } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
+  import { resolveUsageCompany } from "../home/core-usage-model.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
@@ -5563,6 +5564,14 @@
       ""
     );
   });
+  /**
+   * Company for the Core menu's usage panel: the company on screen, else the
+   * branded company. A local-only company shows "No usage", never another
+   * company's spend (resolveUsageCompany).
+   */
+  const usageCompany = $derived(
+    resolveUsageCompany(companies, selectedCompanySlug, brandState?.companySlug),
+  );
   const activeCompanyPane = $derived.by(() => {
     if (view !== "conversation" || selectedRow?.kind !== "channel") return null;
     const scope = (selectedRow.channelScope ?? "").trim();
@@ -14256,6 +14265,7 @@
     {cloudReachable}
     {cloudError}
     workspaces={syncWorkspaces}
+    {usageCompany}
     hqFolderPath={hqFolderPath ?? liveSync.hqFolderPath}
     watchedCount={watched}
     {unreadCount}
@@ -14907,6 +14917,7 @@
               messagePersonByUid(uid, { name, companyUid: companyPaneCompany?.uid });
             }}
             onaddbot={addAgentFromTeam}
+            {onopenurl}
           />
         {:else if railPlaceholder?.id === "activity" && companyPaneCompany}
           <ActivityRailHost
@@ -16042,7 +16053,7 @@
                 </div>
               {:else if openAgentMember && openLocalBot}
                 <div
-                  class="reply-column profile-column inspector-pane"
+                  class="reply-column profile-column inspector-pane bot-management-column"
                   class:overlay={narrowViewport}
                   data-testid="local-bot-detail-column"
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
@@ -16060,6 +16071,8 @@
                       runtimeKind: "local",
                       companyUid: profileCompanyUid,
                       agents: adapter.agents ?? null,
+                      adapter,
+                      onopenurl,
                       onclose: closeAgentDetail,
                       onmessage: () => messageMemberDirectly(openAgentMember!),
                     }}
@@ -16085,7 +16098,7 @@
                 </div>
               {:else if openAgentMember}
                 <div
-                  class="reply-column profile-column inspector-pane"
+                  class="reply-column profile-column inspector-pane bot-management-column"
                   class:overlay={narrowViewport}
                   data-testid="agent-detail-column"
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
@@ -16103,6 +16116,8 @@
                       runtimeKind: "cloud",
                       companyUid: promotedBotCompany(localBotRecords, openAgentMember.personUid) ?? profileCompanyUid,
                       agents: adapter.agents ?? null,
+                      adapter,
+                      onopenurl,
                       onclose: closeAgentDetail,
                       onmessage: () => messageMemberDirectly(openAgentMember!),
                     }}
@@ -16726,6 +16741,12 @@
     flex: 0 0 340px;
     background: var(--v4-secondary-sidebar, var(--side-bg));
   }
+
+  .reply-column.inspector-pane.bot-management-column {
+    width: min(680px, 60%);
+    flex: 0 0 min(680px, 60%);
+  }
+  .reply-column.inspector-pane.bot-management-column.overlay { width: 100%; max-width: 680px; }
 
   /* First frame of a profile pane while its chunk loads (lazy-doors.ts). */
   .profile-pane-loading {

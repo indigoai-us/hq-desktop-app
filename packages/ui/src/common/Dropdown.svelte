@@ -32,6 +32,8 @@
     testid?: string;
     /** Stretch to the container width (form fields). */
     block?: boolean;
+    /** Fit the menu inside its dialog, opening upward when space is limited. */
+    constrainToDialog?: boolean;
     /** Pill shape for header filters; `active` paints the selected style. */
     pill?: boolean;
     active?: boolean;
@@ -53,6 +55,7 @@
     disabled = false,
     testid,
     block = false,
+    constrainToDialog = false,
     pill = false,
     active: selectedStyle = false,
     floating = false,
@@ -76,7 +79,7 @@
     const i = options.findIndex((o) => o.value === value);
     active = i >= 0 ? i : 0;
     await tick();
-    list?.focus();
+    list?.focus({ preventScroll: true });
     scrollActive();
   }
 
@@ -96,7 +99,38 @@
   }
 
   function scrollActive(): void {
-    list?.querySelector<HTMLElement>(`[data-index="${active}"]`)?.scrollIntoView?.({ block: "nearest" });
+    const option = list?.querySelector<HTMLElement>(`[data-index="${active}"]`);
+    if (!list || !option) return;
+    // Scroll only the options, never the modal/page containing the dropdown.
+    const top = option.offsetTop, bottom = top + option.offsetHeight;
+    if (top < list.scrollTop) list.scrollTop = top;
+    else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
+  }
+
+  function fitMenu(node: HTMLDivElement) {
+    if (!constrainToDialog) return {};
+    const dialog = root?.closest<HTMLElement>('[role="dialog"]');
+    function place() {
+      if (!button) return;
+      const anchor = button.getBoundingClientRect();
+      const bounds = dialog?.getBoundingClientRect();
+      const top = Math.max(8, (bounds?.top ?? 0) + 8);
+      const bottom = Math.min(window.innerHeight - 8, (bounds?.bottom ?? window.innerHeight) - 8);
+      const below = Math.max(0, bottom - anchor.bottom - 4);
+      const above = Math.max(0, anchor.top - top - 4);
+      const upward = below < Math.min(node.scrollHeight, 280) && above > below;
+      node.style.top = upward ? 'auto' : 'calc(100% + 4px)';
+      node.style.bottom = upward ? 'calc(100% + 4px)' : 'auto';
+      node.style.maxHeight = `${Math.min(280, upward ? above : below)}px`;
+      node.style.boxSizing = 'border-box';
+      node.style.width = '100%';
+      node.style.minWidth = '0';
+      node.style.maxWidth = '100%';
+    }
+    place();
+    window.addEventListener('resize', place);
+    dialog?.addEventListener('scroll', place);
+    return { destroy() { window.removeEventListener('resize', place); dialog?.removeEventListener('scroll', place); } };
   }
 
   function move(next: number): void {
@@ -184,6 +218,7 @@
   {#if open}
     <div
       bind:this={list}
+      use:fitMenu
       id={`${uid}-list`}
       class="dd-menu"
       class:floating
