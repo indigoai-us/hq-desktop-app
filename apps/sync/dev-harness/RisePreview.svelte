@@ -62,6 +62,7 @@
       {elapsed}
       {theme}
       readyAt={phase === 'record' ? 23 : null}
+      now={welcomeRiseNow()}
       bind:briefOpacity
     />
     <div class="invite">
@@ -104,10 +105,10 @@
   }
   .invite {
     position: absolute;
-    left: 28px;
-    bottom: 28px;
+    left: 52px;
+    top: 300px;
     z-index: 4;
-    width: min(420px, calc(50% - 120px));
+    width: min(485px, calc(100% - 104px));
   }
   .brief {
     position: absolute;

@@ -299,3 +299,38 @@ export function welcomeRiseSources(companies: readonly { id: string; name: strin
   }
   return sources;
 }
+
+/** Round 11b welcome copy for the rise page. */
+export const RISE_CRUMB = "Home / Your Daily Brief";
+export const RISE_EYEBROW = "Your welcome edition · Taking shape";
+export const RISE_HEADLINE = "Your day is coming into focus.";
+export const RISE_SUB = "Your agent is finding the threads that matter.";
+export const RISE_READING = "Reading your sources";
+
+/** "Saturday, October 17" in the person's locale order, English names. */
+export function riseDateLine(now: Date): string {
+  return now.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+}
+
+/** "8 sec elapsed", then "2 min elapsed" past a minute. */
+export function riseElapsedText(t: number): string {
+  const s = Number.isFinite(t) ? Math.max(0, Math.floor(t)) : 0;
+  if (s < 60) return `${s} sec elapsed`;
+  return `${Math.floor(s / 60)} min elapsed`;
+}
+
+/** What the agent is reading now: the latest source to come up, or the first before any has. */
+export function riseStepLine(t: number, sources: readonly RiseSource[]): string {
+  if (sources.length === 0) return RISE_READING;
+  let index = 0;
+  sources.forEach((_, i) => {
+    if (t + 1e-9 >= riseRevealAt(i)) index = i;
+  });
+  const source = sources[index]!;
+  const label = source.label.trim();
+  if (!label || /sessions?$/i.test(label)) return "Reading your sessions";
+  if (source.icon === "start") return "Getting your brief started";
+  if (source.icon === "company") return `Reading ${label}`;
+  if ((source.counts.sessions ?? 0) > 0) return `Reading your ${label} sessions`;
+  return `Reading your ${label.toLowerCase()}`;
+}

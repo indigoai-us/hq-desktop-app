@@ -80,3 +80,39 @@ describe("BriefRise frames", () => {
     expect(icon?.closest(".above")?.classList.contains("free")).toBe(false);
   });
 });
+
+describe("BriefRise welcome page", () => {
+  it("frames the rise with the breadcrumb, the date and the headline", async () => {
+    target = document.createElement("div");
+    document.body.appendChild(target);
+    component = mount(BriefRise, {
+      target,
+      props: { sources: SOURCES, elapsed: 1, reducedMotion: false, theme: "light", now: new Date(2026, 9, 17, 9) },
+    });
+    await tick();
+    expect(target.querySelector('[data-testid="brief-rise-crumb"]')?.textContent).toBe("Home / Your Daily Brief");
+    expect(target.querySelector('[data-testid="brief-rise-date"]')?.textContent).toBe("Saturday, October 17");
+    const hero = target.querySelector('[data-testid="brief-rise-hero"]');
+    expect(hero?.querySelector("h2")?.textContent).toBe("Your day is coming into focus.");
+    expect(hero?.textContent).toContain("Your welcome edition · Taking shape");
+    expect(hero?.textContent).toContain("Your agent is finding the threads that matter.");
+    expect(target.querySelector('[data-testid="brief-rise"] .dawn')?.getAttribute("data-layout")).toBe("welcome");
+  });
+
+  it("shows reading progress before the first count, then the count, the time and the source", async () => {
+    await show(0);
+    const progress = target.querySelector('[data-testid="brief-rise-progress"]');
+    expect(progress?.textContent).toContain("Reading your sources");
+    expect(target.querySelector('[data-testid="brief-rise-elapsed"]')?.textContent).toBe("0 sec elapsed");
+    expect(target.querySelector('[data-testid="brief-rise-step"]')?.textContent).toBe("Reading your Claude sessions");
+    unmount(component!);
+    component = null;
+    target.remove();
+
+    await show(riseRevealAt(1) + 3);
+    expect(target.querySelector('[data-testid="brief-rise-count"]')).not.toBeNull();
+    expect(target.querySelector('[data-testid="brief-rise-progress"]')?.textContent).not.toContain("Reading your sources");
+    expect(target.querySelector('[data-testid="brief-rise-step"]')?.textContent).toBe("Reading your Codex sessions");
+    expect(target.querySelector('[data-testid="brief-rise-elapsed"]')?.textContent).toMatch(/^\d+ sec elapsed$/);
+  });
+});

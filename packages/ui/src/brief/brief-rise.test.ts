@@ -1,14 +1,22 @@
 import { describe, expect, it } from "vitest";
 import {
+  RISE_CRUMB,
+  RISE_EYEBROW,
+  RISE_HEADLINE,
   RISE_ICON,
   RISE_PITCH,
+  RISE_READING,
   RISE_SPEED,
+  RISE_SUB,
   riseCompaniesLine,
+  riseDateLine,
   riseDawnProgress,
+  riseElapsedText,
   riseFrame,
   riseHaloCells,
   riseRevealAt,
   riseRippleCells,
+  riseStepLine,
   welcomeRiseSources,
   type RiseSource,
 } from "./brief-rise.js";
@@ -166,5 +174,37 @@ describe("rise handoff", () => {
     expect(mid.briefOpacity).toBeGreaterThan(0.4);
     expect(mid.briefOpacity).toBeLessThan(0.6);
     expect(riseFrame(readyAt + 0.6, SOURCES, { readyAt }).briefOpacity).toBe(1);
+  });
+});
+
+describe("welcome rise page copy", () => {
+  it("dates the page header the way the mockup does", () => {
+    expect(riseDateLine(new Date(2026, 9, 17, 9))).toBe("Saturday, October 17");
+  });
+
+  it("counts elapsed time in seconds, then minutes", () => {
+    expect(riseElapsedText(0)).toBe("0 sec elapsed");
+    expect(riseElapsedText(17.6)).toBe("17 sec elapsed");
+    expect(riseElapsedText(125)).toBe("2 min elapsed");
+  });
+
+  it("names the source being read, latest revealed first", () => {
+    const sources: RiseSource[] = [
+      { id: "claude", label: "Claude Code", icon: "claude", counts: { sessions: 168 }, finding: "" },
+      { id: "repos", label: "Repos", icon: "repos", counts: { repos: 3 }, finding: "" },
+    ];
+    expect(riseStepLine(0, [])).toBe(RISE_READING);
+    expect(riseStepLine(0, sources)).toBe("Reading your Claude Code sessions");
+    expect(riseStepLine(riseRevealAt(1) + 0.1, sources)).toBe("Reading your repos");
+    expect(riseStepLine(0, [{ id: "s", label: "Sessions", icon: "claude", counts: {}, finding: "" }])).toBe("Reading your sessions");
+    expect(riseStepLine(0, [{ id: "s", label: "Start", icon: "start", counts: {}, finding: "" }])).toBe("Getting your brief started");
+    expect(riseStepLine(0, [{ id: "n", label: "Northstar", icon: "company", counts: {}, finding: "" }])).toBe("Reading Northstar");
+  });
+
+  it("keeps the page copy in sentence case with no exclamation marks or em dashes", () => {
+    for (const line of [RISE_CRUMB, RISE_EYEBROW, RISE_HEADLINE, RISE_SUB, RISE_READING]) {
+      expect(line).not.toMatch(/[!—]/);
+    }
+    expect(RISE_HEADLINE).toBe("Your day is coming into focus.");
   });
 });

@@ -11,7 +11,22 @@
    * per change and crossfades it.
    */
   import { onDestroy, onMount, type Snippet } from "svelte";
-  import { bloomAt, clamp01, dawnDisplay, dawnLook, easeDawn, type DawnPhase } from "./brief-dawn.js";
+  import {
+    bloomAt,
+    clamp01,
+    dawnDisplay,
+    dawnLook,
+    easeDawn,
+    welcomeElevation,
+    welcomeSky,
+    welcomeSunRow,
+    welcomeSunX,
+    WELCOME_HOLD,
+    WELCOME_HORIZON_Y,
+    WELCOME_SEA_BOTTOM,
+    WELCOME_SUN_R,
+    type DawnPhase,
+  } from "./brief-dawn.js";
 
   interface Props {
     progress: number;
@@ -24,10 +39,12 @@
     theme?: "dark" | "light";
     /** The mirrored sun in the water. The first-brief rise turns it off (round 11b). */
     reflection?: boolean;
+    /** Centre: the sun mid-sky over a split page. Welcome: the round 11b sky beside the hero, with a striped sea. */
+    layout?: "center" | "welcome";
     onbloomdone?: () => void;
     children?: Snippet;
   }
-  let { progress, phase, headline = "", step = "", size = "page", theme = "dark", reflection = true, onbloomdone, children }: Props = $props();
+  let { progress, phase, headline = "", step = "", size = "page", theme = "dark", reflection = true, layout = "center", onbloomdone, children }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
   let canvas = $state<HTMLCanvasElement | null>(null);
@@ -57,7 +74,85 @@
     return c.map((v) => Math.round(v + (l - v) * d));
   };
 
+  /** Round 11b: diagonal sky over the whole page, the sun right of the hero, a striped sea, no reflection. */
+  function drawWelcome(ctx: CanvasRenderingContext2D, W: number, H: number, bloom: number, drawn: number): void {
+    const look = dawnLook(drawn, failedFade);
+    const e = welcomeElevation(drawn);
+    const light = theme === "light";
+    const d = look.desaturate;
+    const tint = (c: number[]) => (d > 0 ? grey(c, d) : c);
+    const lit = clamp01(drawn / WELCOME_HOLD);
+    const [s0, s1, s2] = welcomeSky(theme, lit).map(tint) as [number[], number[], number[]];
+    ctx.clearRect(0, 0, W, H);
+    const bg = ctx.createLinearGradient(0, 0, W, H);
+    bg.addColorStop(0, `rgb(${s0.join(",")})`);
+    bg.addColorStop(0.7, `rgb(${s1.join(",")})`);
+    bg.addColorStop(1, `rgb(${s2.join(",")})`);
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+    const hz = Math.round(WELCOME_HORIZON_Y / 8);
+    const cx = welcomeSunX(W) / 8;
+    const R = WELCOME_SUN_R;
+    const sy = welcomeSunRow(hz, e);
+    const half = 37;
+    const top = Math.max(0, hz - 32);
+    const lightness = 0.45 + e * 0.55;
+    const pulse = time * 5;
+    for (let y = top; y <= hz; y++) {
+      for (let x = Math.max(0, Math.floor(cx - half)); x <= Math.ceil(cx + half); x++) {
+        if (x * 8 > W) break;
+        const dx = x - cx;
+        const dist = Math.hypot(dx, y - sy);
+        let col: number[] = [255, 255, 255];
+        let a = 0;
+        if (y === hz) {
+          const near = Math.max(0, 1 - Math.abs(dx) / (75 * 0.42));
+          col = HOR;
+          a = 0.1 + near * 0.3 * lightness;
+        } else if (dist <= R) {
+          const down = (y - sy + R) / (R * 2);
+          col = [255, Math.round(181 - 53 * down), Math.round(128 + 31 * down)];
+          a = down > 0.52 && Math.floor(y + time * 0.9) % 2 === 0 ? 0.28 : 0.9;
+        } else {
+          const n = noise(x, y);
+          const halo = Math.max(0, 1 - (dist - R) / (R * 1.1));
+          const wave = R + (pulse % (R * 2.2));
+          const ring = !reduced && Math.abs(dist - wave) < 0.7 ? 0.1 * (1 - (wave - R) / (R * 2.2)) : 0;
+          const star = n > 0.93 ? (0.2 + 0.3 * (0.5 + 0.5 * Math.sin(time * (1 + n * 2) + n * 40))) * (1 - e * 0.85) : 0;
+          if (halo > 0 || ring > 0) col = HALO;
+          const edge = Math.pow(Math.min(1, Math.min(x - (cx - half), cx + half - x) / 15), 2) * Math.pow(Math.min(1, (y - top) / 10), 2);
+          const faint = 0.032 * edge * Math.exp(-Math.pow(dx / (75 * 0.43), 2));
+          a = Math.max(faint, halo * halo * 0.34 * lightness + ring, star * edge);
+        }
+        if (light && y === hz) col = col.map((v) => Math.round(v * 0.85));
+        if (a > 0.012) {
+          const c = tint(col);
+          ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${a.toFixed(3)})`;
+          ctx.fillRect(x * 8 + 1, y * 8 + 1, 6, 6);
+        }
+      }
+    }
+    // The striped sea runs edge to edge, every other row, and fades into the progress block.
+    const sea = light ? [176, 100, 98] : [255, 150, 150];
+    const seaTop = (hz + 1) * 8;
+    for (let yy = seaTop; yy < Math.min(H, WELCOME_SEA_BOTTOM); yy += 16) {
+      const fadeOut = Math.min(1, (WELCOME_SEA_BOTTOM - yy) / 16);
+      const a = (light ? 0.4 : 0.26) * fadeOut * Math.max(0.5, lit);
+      const c = tint(sea);
+      ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${a.toFixed(3)})`;
+      for (let xx = 0; xx < W; xx += 8) ctx.fillRect(xx + 1, yy + 1, 6, 6);
+    }
+    if (bloom > 0) {
+      const g = ctx.createRadialGradient(cx * 8, sy * 8, 0, cx * 8, sy * 8, Math.max(W, H) * 0.8);
+      g.addColorStop(0, `rgba(255,236,214,${0.85 * bloom})`);
+      g.addColorStop(1, `rgba(255,190,160,0)`);
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W, H);
+    }
+  }
+
   function draw(ctx: CanvasRenderingContext2D, W: number, H: number, bloom: number, drawn: number): void {
+    if (layout === "welcome") return drawWelcome(ctx, W, H, bloom, drawn);
     const look = dawnLook(drawn, failedFade);
     const e = look.elevation;
     const cols = Math.floor(W / 8);
@@ -223,10 +318,12 @@
 
 <div
   class="dawn {size}"
+  class:welcome={layout === "welcome"}
   class:failed={phase === "failed"}
   data-testid="brief-dawn"
   data-phase={phase}
   data-progress={progress.toFixed(2)}
+  data-layout={layout}
 >
   <!-- The sky keeps its own fixed height; the card grows below it to fit the copy. -->
   <div class="sky" bind:this={host}><canvas bind:this={canvas} class:fade aria-hidden="true"></canvas></div>
@@ -244,6 +341,9 @@
     border-radius: var(--b-r, 22px);
     background: #121216;
     min-height: var(--sky-h);
+  }
+  .dawn.welcome {
+    background: transparent;
   }
   .dawn.page {
     --sky-h: max(420px, min(680px, calc(100vh - 120px)));

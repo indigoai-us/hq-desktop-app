@@ -10,7 +10,7 @@ const clipsDir = process.argv[3] ?? '/tmp/rise-clips';
 mkdirSync(framesDir, { recursive: true });
 mkdirSync(clipsDir, { recursive: true });
 
-const base = 'http://localhost:1422/?view=rise';
+const base = `http://localhost:${process.env.RISE_PORT ?? '1422'}/?view=rise`;
 const STILLS = [
   { phase: 'opening', t: '1', name: 'opening' },
   { phase: 'reveal', t: '9.35', name: 'reveal' },

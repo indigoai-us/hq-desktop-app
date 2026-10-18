@@ -238,13 +238,13 @@
     margin: 0 0 0 -10px;
     padding: 4px 10px 6px;
     border-radius: 6px;
-    background: color-mix(in srgb, #121216 55%, transparent);
+    background: color-mix(in srgb, #121012 92%, transparent);
     color: rgba(255, 236, 220, 0.94);
     box-shadow: none;
     animation: none;
   }
   .connect.quiet[data-theme="light"] {
-    background: color-mix(in srgb, #fff7e7 90%, transparent);
+    background: color-mix(in srgb, #f3f1ef 94%, transparent);
     color: #2a1c16;
   }
   .strip-title,

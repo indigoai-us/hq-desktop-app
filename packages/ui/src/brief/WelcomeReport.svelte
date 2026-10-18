@@ -239,12 +239,12 @@
     position: relative;
     gap: 0;
     padding: 0;
-    min-height: 640px;
+    min-height: 780px;
   }
   .rise-hold {
     position: relative;
     flex: 1;
-    min-height: 640px;
+    min-height: 780px;
   }
   .rise-hold.out {
     position: absolute;
@@ -258,12 +258,13 @@
     from { opacity: 1; }
     to { opacity: 0; }
   }
+  /* Same offsets as the invite slot in BriefRise: over the sea, under the headline. */
   .welcome.rising .held-connect {
     position: absolute;
-    left: 28px;
-    bottom: 28px;
+    left: 52px;
+    top: 300px;
     z-index: 4;
-    width: min(420px, calc(50% - 120px));
+    width: min(485px, calc(100% - 104px));
   }
   .report.reveal {
     animation: brief-in 0.6s ease both;
