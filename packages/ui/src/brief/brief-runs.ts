@@ -560,16 +560,13 @@ export const BRIEF_FIX_LABEL: Record<BriefBotFix, string> = {
   "connect-model": "Connect a model",
 };
 
-/**
- * The job message the bot receives: the skill invocation first so the bot
- * runs it as written, then the run id and company in plain words.
- */
-export function briefJobMessage(runId: string, company: string): string {
-  const co = company.trim();
+/** Person-scoped job: personal work plus all permitted companies, with one run id. */
+export function briefJobMessage(runId: string, options: { welcome?: boolean } = {}): string {
   return (
-    `/daily-brief ${co} --run-id ${runId}\n\n` +
-    `Run the daily-brief skill now with run_id ${runId} for company ${co}. ` +
-    `The company is ${co}, the one open in the HQ app; do not pick another company. ` +
+    `/daily-brief --all --run-id ${runId}${options.welcome ? " --welcome" : ""}\n\n` +
+    `Run the daily-brief skill now with run_id ${runId} for this person across their HQ. ` +
+    `Include personal scope and every company in the person's lock, keeping each company's items in its own section. ` +
+    `With zero companies, write the getting-started welcome brief. ` +
     `Write workspace/brief/${runId}/status.json at every step and append workspace/brief/index.jsonl when the run ends.`
   );
 }

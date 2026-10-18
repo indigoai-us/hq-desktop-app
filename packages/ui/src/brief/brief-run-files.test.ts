@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_PREFS, parseBriefItems, parseHousekeeping, parsePrefs } from "./brief-run-files.js";
 import { gatherBriefInput, readRunHousekeeping, type BriefSweepSource } from "./brief-data.js";
 import { briefPrompts } from "./brief-prompts.js";
+import { briefSections } from "./brief-sections.js";
 import sweepJson from "./fixtures/sweep-2026-10-08.json";
 
 const RUN = "brief-20261008-090000";
@@ -616,9 +617,41 @@ const ADAPTER_FAILS = ["identity", "calendar", "meetings", "dm threads", "sessio
 const runFailures = (failures: readonly string[]) => failures.filter((f) => !ADAPTER_FAILS.includes(f));
 
 describe("gatherBriefInput: folds between the sweep and the writer", () => {
+  it("does not borrow a stale company from a person-mode sweep", async () => {
+    const { input } = await gatherBriefInput({}, { now: NOW2, companies: companies2, sweep: runSource({
+      [`workspace/brief/${RUN2}/brief-data.json`]: JSON.stringify({ mode: "person", company: "indigo", personal: {} }),
+      [`workspace/brief/${RUN2}/brief.json`]: JSON.stringify({ items: { decisions: [{ title: "Personal choice" }] } }),
+    }), runId: RUN2, previousRunId: null, log: () => {} });
+    expect(input.decisions[0]?.origin.companyUid).toBeNull();
+  });
+  it("preserves the writer's explicit root company over a legacy sweep default", () => {
+    const items = parseBriefItems(JSON.stringify({ company: "other", items: { decisions: [{ title: "Other choice" }] } }), [...companies2, { uid: "cmp_other", slug: "other" }], "indigo")!;
+    expect(items.decisions[0]?.origin.companyUid).toBe("cmp_other");
+  });
+  it("uses the legacy sweep company for an untagged writer and keeps its people, releases and five priorities together", async () => {
+    const writer = { ...brief2, priorities: ["d3", "p1", "p2", "d4", "d5"].map((item_id, i) => ({ n: i + 1, item_id, text: `Priority ${i + 1}` })), items: {
+      ...brief2.items,
+      decisions: [...brief2.items.decisions, { id: "d4", title: "Choose launch day" }, { id: "d5", title: "Approve rollout" }],
+      releases: [{ product: "App", version: "1.0" }],
+    } };
+    const { input } = await gatherBriefInput({}, { now: NOW2, companies: companies2, sweep: runSource({ ...run2Files, [`workspace/brief/${RUN2}/brief-data.json`]: JSON.stringify({ ...sweep2, dms: [] }), [`workspace/brief/${RUN2}/brief.json`]: JSON.stringify(writer) }), runId: RUN2, previousRunId: null, log: () => {} });
+    const [personal, company] = briefSections(input, companies2);
+    expect(personal!.input.decisions).toEqual([]);
+    expect(personal!.input.team).toEqual([]);
+    expect(personal!.input.releases).toEqual([]);
+    expect(personal!.input.priorities).toEqual([]);
+    for (const key of ["risks", "meetingsYesterday", "shipped", "handoffs", "carry", "waitingOn", "recovered", "reminders", "mainHealth", "sessions"] as const) expect(personal!.input[key] ?? [], key).toEqual([]);
+    expect(personal!.input.fleetIncident).toBeNull();
+    expect(company!.input.priorities?.map(row => [row.n, row.text, row.itemId])).toEqual([
+      [1, "Priority 1", "d3"], [2, "Priority 2", "p1"], [3, "Priority 3", "p2"], [4, "Priority 4", "d4"], [5, "Priority 5", "d5"],
+    ]);
+    expect(company!.input.team).toHaveLength(2);
+    expect(company!.input.team.map(row => row.name)).toEqual(["Ada", "Bo"]);
+    expect(company!.input.releases?.[0]?.product).toBe("App");
+  });
   it("folds a sweep red main into the writer's decision or incident on the same repo or product, keeping the rest", async () => {
     const { input } = await gatherBriefInput({}, { now: NOW2, companies: companies2, sweep: runSource(run2Files), runId: RUN2, log: () => {} });
-    expect(input.risks.map((r) => r.id)).toEqual(["p1", "p2", "ci:hq-pro"]);
+    expect(input.risks.map((r) => r.id)).toEqual(["p1", "p2", "ci:cmp_indigo:hq-pro"]);
     // The writer's incident keeps its words and prompt slot; the sweep's facts fill what it left blank.
     expect(input.risks[0]!.ci).toMatchObject({ repo: "hq-cloud", workflow: "Sync nightly", ageHours: 48, note: "1 of 3 workflows red on main." });
     expect(input.decisions.map((d) => d.id)).toEqual(["d3"]);
@@ -640,7 +673,7 @@ describe("gatherBriefInput: folds between the sweep and the writer", () => {
 
   it("merges writer shipped rows onto the sweep rollups by product or repo; a named ship stays its own row", async () => {
     const { input } = await gatherBriefInput({}, { now: NOW2, companies: companies2, sweep: runSource(run2Files), runId: RUN2, log: () => {} });
-    expect(input.shipped.map((s) => s.id)).toEqual(["ship:hq-cli", "ship:hq-core-staging", "s1"]);
+    expect(input.shipped.map((s) => s.id)).toEqual(['ship:["cmp_indigo","hq-cli"]', 'ship:["cmp_indigo","hq-core-staging"]', "s1"]);
     const [cli, core, named] = input.shipped;
     expect(cli).toMatchObject({ origin: { product: "HQ command line" }, why: "Colors landed.", highlights: ["Colors in the CLI"], mergeHoursMedian: 6 });
     expect(cli!.lines).toHaveLength(1);
@@ -732,5 +765,52 @@ describe("gatherBriefInput: the previous run's digest", () => {
     const { input } = await gatherBriefInput({}, { now: NOW2, companies: companies2, sweep: source, log: () => {} });
     expect(input.previous).toBeUndefined();
     expect(source.reads).toEqual(["workspace/brief/2026-10-11/brief-data.json"]);
+  });
+});
+
+
+describe("legacy flat writer company boundaries", () => {
+  const roster = [{ uid: "cmp_a", slug: "alpha" }];
+  it("ignores stale root company on a person writer", () => {
+    const input = parseBriefItems(JSON.stringify({ mode: "person", company: "outsider", priorities: [{ text: "Personal priority" }], personal: { items: { decisions: [{ title: "Personal" }] } } }), roster)!;
+    expect(input.decisions[0]?.origin.companyUid).toBeNull();
+    expect(input.priorities[0]?.companyUid ?? null).toBeNull();
+  });
+  const fixture = (company?: string) => ({ company: "alpha", priorities: [{ company, text: "Priority" }], items: {
+    decisions: [{ company, title: "Decision" }], waiting: [{ company, who: "Alex", what: "Review" }],
+    incidents: [{ company, title: "Incident" }], watch: [{ company, title: "Watch" }], meetings: [{ company, title: "Meeting" }],
+    people: [{ company, name: "Alex" }], shipped: [{ company, title: "Shipped", repo: "app" }], carry: [{ company, title: "Carry" }],
+    handoffs: [{ company, title: "Handoff", to: "Alex" }], recovered: [{ company, title: "Recovered" }],
+    releases: [{ company, product: "App" }], reminders: [{ company, text: "Remember" }],
+  } });
+  it("inherits missing legacy attribution and excludes unknown origin attribution and roots", () => {
+    const input = parseBriefItems(JSON.stringify({ company: "alpha", items: { decisions: [
+      { title: "Inherited" }, { title: "Null", company: null }, { title: "Empty", company: "" },
+      { title: "Foreign", origin: { company: "outsider" } },
+      { title: "Foreign UID", origin: { companyUid: "cmp_outsider" } },
+    ] } }), roster)!;
+    expect(input.decisions.map(row => [row.title, row.origin.companyUid])).toEqual([["Inherited", "cmp_a"], ["Null", "cmp_a"], ["Empty", "cmp_a"]]);
+    const personal = parseBriefItems(JSON.stringify({ items: { decisions: [{ title: "Personal", company: null }] } }), roster)!;
+    expect(personal.decisions[0]?.origin.companyUid).toBeNull();
+    const explicitOrigin = parseBriefItems(JSON.stringify({ company: "alpha", items: { decisions: [{ title: "Other", company: null, origin: { company: "beta" } }] } }), [...roster, { uid: "cmp_b", slug: "beta" }])!;
+    expect(explicitOrigin.decisions[0]?.origin.companyUid).toBe("cmp_b");
+    expect(parseBriefItems(JSON.stringify({ ...fixture(), company: "outsider" }), roster)).toBeNull();
+  });
+  it("inherits root-company attribution on legacy writer rows", () => {
+    const input = parseBriefItems(JSON.stringify(fixture()), roster)!;
+    expect(input.decisions[0]?.origin.companyUid).toBe("cmp_a");
+    expect(input.waiting[0]?.origin?.companyUid).toBe("cmp_a");
+    expect(input.meetings[0]?.companyUid).toBe("cmp_a");
+    expect(input.people[0]?.companyUid).toBe("cmp_a");
+    expect(input.priorities[0]?.companyUid).toBe("cmp_a");
+    expect(input.reminders[0]?.companyUid).toBe("cmp_a");
+  });
+  it("drops unknown explicit companies across every writer item group", () => {
+    const input = parseBriefItems(JSON.stringify(fixture("outsider")), roster)!;
+    for (const key of ["decisions", "waiting", "incidents", "watch", "meetings", "people", "shipped", "carry", "handoffs", "recovered", "releases", "reminders", "priorities"] as const) expect(input[key], key).toEqual([]);
+  });
+  it("does not alias an unlisted company named personal to Personal", () => {
+    const input = parseBriefItems(JSON.stringify(fixture("personal")), roster)!;
+    for (const key of ["decisions", "waiting", "incidents", "watch", "meetings", "people", "shipped", "carry", "handoffs", "recovered", "releases", "reminders", "priorities"] as const) expect(input[key], key).toEqual([]);
   });
 });

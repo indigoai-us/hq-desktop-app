@@ -76,22 +76,29 @@ const norm = (v: string) => v.trim().toLowerCase();
 
 /**
  * status.json `samples`, kept only when they belong to the run's company.
- * A sample with no company, or any other company, is dropped. Newest last,
- * at most eight; titles are cut to one short line.
+ * Person mode (null) keeps personal samples and every company separately.
+ * Newest last, at most eight per company; titles are cut to one short line.
  */
 export function parseSamples(raw: unknown, company: string | null): BriefSample[] {
-  if (!Array.isArray(raw) || !company?.trim()) return [];
-  const own = norm(company);
+  if (!Array.isArray(raw)) return [];
+  const own = company?.trim() ? norm(company) : null;
   const out: BriefSample[] = [];
   for (const item of raw) {
     const r = rec(item);
     const title = str(r.title).replace(/\s+/g, " ");
     const co = str(r.company);
-    if (!title || !co || norm(co) !== own) continue;
+    if (!title || (own !== null && norm(co) !== own)) continue;
     const clean = humanTitle(title).text;
     out.push({ kind: str(r.kind) || "item", title: clean.length > 90 ? `${clean.slice(0, 89).trimEnd()}…` : clean, company: co, at: str(r.at) });
   }
-  return out.slice(-8);
+  if (own !== null) return out.slice(-8);
+  const groups = new Map<string, BriefSample[]>();
+  for (const sample of out) {
+    const key = norm(sample.company);
+    groups.set(key, [...(groups.get(key) ?? []), sample].slice(-8));
+  }
+  const retained = new Set([...groups.values()].flat());
+  return out.filter(sample => retained.has(sample));
 }
 
 /** Meaning of a counter, which picks its color (the brief's widget tones). */
