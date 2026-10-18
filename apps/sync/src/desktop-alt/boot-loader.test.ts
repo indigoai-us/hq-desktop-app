@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BOOT_LOADER_FADE_MS, dismissBootLoader } from './boot-loader';
+import { BOOT_LOADER_FADE_MS, dismissBootLoader, removeBootLoaderNow } from './boot-loader';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -70,6 +70,29 @@ describe('dismissBootLoader', () => {
     expect(el.classList.contains('hq-boot-done')).toBe(true);
     vi.advanceTimersByTime(400);
     expect(doc.getElementById('hq-boot')).toBeNull();
+  });
+});
+
+describe('removeBootLoaderNow', () => {
+  it('removes the overlay in the same call, with no fade', () => {
+    vi.useFakeTimers();
+    mountOverlay();
+    removeBootLoaderNow();
+    expect(document.getElementById('hq-boot')).toBeNull();
+  });
+
+  it('removes an overlay whose fade has already started', () => {
+    vi.useFakeTimers();
+    const el = mountOverlay();
+    dismissBootLoader();
+    removeBootLoaderNow();
+    expect(document.getElementById('hq-boot')).toBeNull();
+    expect(el.isConnected).toBe(false);
+    expect(() => vi.advanceTimersByTime(400)).not.toThrow();
+  });
+
+  it('no-ops when #hq-boot is missing', () => {
+    expect(() => removeBootLoaderNow()).not.toThrow();
   });
 });
 
