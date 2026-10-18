@@ -733,6 +733,7 @@ fn main() {
             commands::app::quit_app,
             commands::app::frontend_log,
             commands::app::bring_main_window_to_front,
+            commands::app::bring_desktop_window_to_front,
             commands::app::hide_main_window,
             commands::app::open_settings_window,
             commands::app::open_claude_code_link,

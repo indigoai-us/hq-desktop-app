@@ -275,7 +275,7 @@ describe("VITE_HQ_DEV_FIRST_RUN_FORCE + VITE_HQ_DEV_FIRST_RUN_DRY", () => {
     confirmName();
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
     expect(step()).toBe("done");
-    expect(q('[data-testid="first-run-talk"]')?.textContent).toContain("Talk to Biscuit");
+    expect(q('[data-testid="first-run-talk"]')?.textContent?.trim()).toBe("Open HQ");
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
     await settle();
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
