@@ -126,8 +126,6 @@ export interface GatherOptions {
   lastBriefAt?: string | null;
   /** Reads the morning sweep file when present; merged under adapter data. */
   sweep?: BriefSweepSource | null;
-  /** Company the sweep's work belongs to; defaults to the first company. */
-  sweepCompanyUid?: string | null;
   /**
    * The run to render. Its brief-data.json replaces the per-day sweep, and
    * its brief.json supplies decisions, waits and incidents with their prompts.
@@ -393,9 +391,9 @@ export async function gatherBriefInput(adapter: BriefAdapter, opts: GatherOption
     dmCount: dms.count,
   };
   const sweep = opts.sweep === undefined ? adapterSweepSource(adapter.files) : opts.sweep;
-  if (sweep) await mergeSweep(input, sweep, opts, now, yesterday, fail);
+  const legacyCompany = sweep ? await mergeSweep(input, sweep, opts, now, yesterday, fail) : null;
   if (sweep && opts.runId) {
-    await mergeRunItems(input, sweep, opts, fail);
+    await mergeRunItems(input, sweep, opts, fail, legacyCompany);
     input.runId = opts.runId;
     input.previous = opts.previousRunId === null ? null : await readPrevious(sweep, opts, now, userName, log);
     input.previousRunId = input.previous?.runId ?? null;
@@ -443,8 +441,8 @@ async function readPrevious(
     const soft = (name: string) => problems.push(name);
     const prevOpts: GatherOptions = { ...opts, runId: prevId, lastBriefAt };
     const prev = baseInput(prevNow, userName, opts.companies.slice(0, MAX_COMPANIES), lastBriefAt);
-    await mergeSweep(prev, source, prevOpts, prevNow, prevYesterday, soft);
-    await mergeRunItems(prev, source, prevOpts, soft);
+    const legacyCompany = await mergeSweep(prev, source, prevOpts, prevNow, prevYesterday, soft);
+    await mergeRunItems(prev, source, prevOpts, soft, legacyCompany);
     if (problems.length) {
       log(`previous brief ${prevId} is missing ${problems.join(", ")}; no rotation`);
       return null;
@@ -468,6 +466,7 @@ async function mergeRunItems(
   source: BriefSweepSource,
   opts: GatherOptions,
   fail: (name: string, err: unknown) => void,
+  legacyCompany: string | null = null,
 ): Promise<void> {
   let text: string | null;
   try {
@@ -480,7 +479,7 @@ async function mergeRunItems(
     fail("brief.json", new SourceError("brief.json: not written"));
     return;
   }
-  const items = parseBriefItems(text, opts.sweepCompanyUid ?? opts.companies[0]?.uid ?? null);
+  const items = parseBriefItems(text, opts.companies, legacyCompany);
   if (!items) {
     fail("brief.json", new SourceError("brief.json: not valid JSON"));
     return;
@@ -539,20 +538,20 @@ const repoLike = (s: string) => /^[\w.-]+(\/[\w.-]+)?$/.test(s);
 export function foldMainHealth(risks: readonly BriefRisk[], decisions: readonly BriefDecision[]): BriefRisk[] {
   const sweepRows = risks.filter(isSweepCi);
   if (!sweepRows.length) return [...risks];
-  const claims: { repo: string; product: string; risk: BriefRisk | null }[] = [
+  const claims: { companyUid: string | null; repo: string; product: string; risk: BriefRisk | null }[] = [
     ...decisions
       .filter((d) => d.source === "main_health")
-      .map((d) => ({ repo: repoKey(d.origin.repo), product: productKey(d.origin.repo, d.origin.product), risk: null })),
+      .map((d) => ({ companyUid: d.origin.companyUid, repo: repoKey(d.origin.repo), product: productKey(d.origin.repo, d.origin.product), risk: null })),
     ...risks
       .filter((r) => !isSweepCi(r) && r.severity === "incident" && r.ci)
-      .map((r) => ({ repo: repoKey(r.ci!.repo || r.origin.repo), product: productKey(r.origin.repo ?? r.ci!.repo, r.origin.product), risk: r })),
+      .map((r) => ({ companyUid: r.origin.companyUid, repo: repoKey(r.ci!.repo || r.origin.repo), product: productKey(r.origin.repo ?? r.ci!.repo, r.origin.product), risk: r })),
   ];
   const dropped = new Set<string>();
   const patched = new Map<string, NonNullable<BriefRisk["ci"]>>();
   for (const row of sweepRows) {
     const repo = repoKey(row.ci!.repo || row.origin.repo);
     const product = productKey(row.origin.repo, row.origin.product);
-    const hit = claims.find((c) => (c.repo && c.repo === repo) || (c.product && c.product === product));
+    const hit = claims.find((c) => c.companyUid === row.origin.companyUid && ((c.repo && c.repo === repo) || (c.product && c.product === product)));
     if (!hit) continue;
     dropped.add(row.id);
     if (hit.risk?.ci) {
@@ -591,7 +590,7 @@ export function mergeShipped(rollups: readonly BriefShipped[], writer: readonly 
   for (const w of writer) {
     const product = lower(w.origin.product);
     const repo = repoKey(w.origin.repo);
-    const hit = out.find((r) => (product && productKey(r.origin.repo, r.origin.product) === product) || (repo && repoKey(r.origin.repo) === repo));
+    const hit = out.find((r) => r.origin.companyUid === w.origin.companyUid && ((product && productKey(r.origin.repo, r.origin.product) === product) || (repo && repoKey(r.origin.repo) === repo)));
     if (!hit) {
       extra.push(w);
       continue;
@@ -621,7 +620,7 @@ export function mergeTeam(team: readonly BriefTeammate[], people: readonly Brief
   const rest = [...team];
   const out: BriefTeammate[] = [];
   for (const p of people) {
-    const i = rest.findIndex((t) => t.id === p.id || lower(t.name) === lower(p.name));
+    const i = rest.findIndex((t) => (t.companyUid ?? null) === (p.companyUid ?? null) && (t.id === p.id || lower(t.name) === lower(p.name)));
     const hit = i >= 0 ? rest.splice(i, 1)[0]! : null;
     out.push(hit ? { ...hit, ...p, id: hit.id, isAgent: hit.isAgent || p.isAgent } : p);
   }
@@ -638,7 +637,7 @@ export function mergeMeetings(existing: readonly BriefMeeting[], writer: readonl
   const out = existing.map((m) => ({ ...m }));
   for (const w of writer) {
     const start = Date.parse(w.startTime);
-    const hit = out.find((m) => lower(m.title) === lower(w.title) || (Number.isFinite(start) && Date.parse(m.startTime) === start));
+    const hit = out.find((m) => m.companyUid === w.companyUid && (lower(m.title) === lower(w.title) || (Number.isFinite(start) && Date.parse(m.startTime) === start)));
     if (!hit) {
       if (Number.isFinite(start)) out.push({ ...w });
       continue;
@@ -664,7 +663,7 @@ export function mergeReleases(existing: readonly BriefRelease[], writer: readonl
   for (const w of writer) {
     const product = lower(w.product);
     const repo = repoKey(w.origin.repo);
-    const at = out.findIndex((r) => lower(r.product) === product || (repo && repoKey(r.origin.repo) === repo));
+    const at = out.findIndex((r) => r.origin.companyUid === w.origin.companyUid && (lower(r.product) === product || (repo && repoKey(r.origin.repo) === repo)));
     if (at < 0) {
       out.push({ ...w });
       continue;
@@ -716,7 +715,7 @@ async function mergeSweep(
   now: Date,
   yesterday: Date,
   fail: (name: string, err: unknown) => void,
-): Promise<void> {
+): Promise<string | null | undefined> {
   let text: string | null;
   try {
     text = await source.readHqFile(sweepPath(now, opts.runId));
@@ -733,7 +732,7 @@ async function mergeSweep(
     fail("sweep", new SourceError("sweep: brief-data.json is not valid JSON"));
     return;
   }
-  const s = sweepToInput(sweep, { day: localDay(yesterday), companyUid: opts.sweepCompanyUid ?? opts.companies[0]?.uid ?? null });
+  const s = sweepToInput(sweep, { day: localDay(yesterday), companyUid: null, companies: opts.companies });
   if (!input.meetingsYesterday.length) input.meetingsYesterday = s.meetingsYesterday;
   if (!input.shipped.length) input.shipped = s.shipped;
   if (!input.team.length) input.team = s.team;
@@ -747,7 +746,9 @@ async function mergeSweep(
   // Only the sweep knows these.
   if (s.mainHealth?.length) input.mainHealth = input.mainHealth ?? s.mainHealth;
   if (s.fleetIncident) input.fleetIncident = input.fleetIncident ?? s.fleetIncident;
+  if (s.fleetIncidents) input.fleetIncidents = s.fleetIncidents;
   if (s.releases?.length) input.releases = input.releases ?? s.releases;
+  return sweep.mode !== "person" && typeof sweep.company === "string" ? sweep.company : null;
 }
 
 /**
