@@ -157,7 +157,10 @@ describe("US-004: Cover nested destinations in the same stack", () => {
     expect(shell).not.toContain("onnavigatetab={(next) => (libraryTab = next)}");
     expect(shell).not.toContain('onclose={() => (agentSurface = "chat")}');
     expect(functionSource(shell, "openReply")).toContain("pushConversationSurface(");
-    expect(functionSource(shell, "closeReply")).toContain("leaveCurrentDestination(");
+    const closeReply = functionSource(shell, "closeReply");
+    expect(closeReply).toContain('navigate(closed, "replace")');
+    expect(closeReply).not.toContain("leaveCurrentDestination(");
+    expect(closeReply).not.toContain("goBack(");
     expect(functionSource(shell, "openNotification")).toContain("handleSelect(");
     expect(functionSource(shell, "changeTenantCompany")).toContain("void navigate(");
 
