@@ -1042,12 +1042,14 @@ pub(crate) fn resume_on_launch(app: &AppHandle) {
         let unfinished = {
             let mut rt = lock_runtime();
             match rt.manifest.as_mut() {
-                Some(manifest) if core_queue::has_unfinished_items(manifest) => {
-                    manifest.release_all_gated();
-                    persist(manifest);
-                    true
+                Some(manifest) => {
+                    let resume = core_queue::prepare_launch_resume(manifest);
+                    if resume {
+                        persist(manifest);
+                    }
+                    resume
                 }
-                _ => false,
+                None => false,
             }
         };
         if unfinished {

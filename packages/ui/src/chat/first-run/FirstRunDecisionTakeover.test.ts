@@ -18,7 +18,7 @@ import {
   type FirstRunToolUsage,
 } from "./visual-first-run.js";
 import type { ImportScanEnd, ImportScanHost } from "./knowledge-tree/import-runner.js";
-import { FIRST_RUN_SIGNIN_COPY, type FirstRunSignInHost } from "./first-run-signin.js";
+import { FIRST_RUN_SIGNIN_COPY, type FirstRunInstallWait, type FirstRunSignInHost } from "./first-run-signin.js";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -862,6 +862,101 @@ describe("FirstRunDecisionTakeover sign-in", () => {
     byId<HTMLButtonElement>("first-run-signin-skip")!.click();
     await settle();
     expect(handlers.onconfirmname).toHaveBeenCalledWith("Pickles", "codex");
+  });
+
+  function withInstallWait(signin: FirstRunSignInHost) {
+    const waits: Array<{ runtime: string; retry: boolean; finish: (result: FirstRunInstallWait) => void }> = [];
+    signin.waitForInstall = vi.fn(
+      (runtime: string, opts: { cancelled: () => boolean; retry: boolean }) =>
+        new Promise<FirstRunInstallWait>((resolve) => waits.push({ runtime, retry: opts.retry, finish: resolve })),
+    );
+    return waits;
+  }
+
+  it("a tool still installing keeps the waiting state until its install settles, re-reads readiness, then signs in", async () => {
+    const { signin, runs } = fakeSignIn(false);
+    const waits = withInstallWait(signin);
+    const { handlers } = render({ signin, installed: SIGNED_OUT });
+    await waitForDecision();
+    await continuePastCallout();
+    expect(waits.map((wait) => [wait.runtime, wait.retry])).toEqual([["codex", false]]);
+    expect(text("first-run-signin-waiting")).toBe("Finishing Codex setup…");
+    expect(text("first-run-signin-skip")).toBe("Skip for now");
+    expect(signin.run).not.toHaveBeenCalled();
+    expect(signin.signedIn).toHaveBeenCalledTimes(1);
+
+    waits[0]!.finish("installed");
+    await settle();
+    expect(signin.signedIn).toHaveBeenCalledTimes(2);
+    expect(runs.map((run) => run.runtime)).toEqual(["codex"]);
+    expect(text("first-run-signin-waiting")).toBe("Signing in to Codex…");
+    runs[0]!.finish(true);
+    await settle();
+    expect(handlers.oncontinueintool).toHaveBeenCalledWith("codex", { enableHqAnywhere: false });
+    expect(handlers.onskipintool).not.toHaveBeenCalled();
+  });
+
+  // Shepherd (PR 1642): this path is a successful connect, so "Continue in
+  // <tool>" runs. Before the fix it went on as a Skip and the tool never opened.
+  it("a tool that comes up signed in once installed goes on to Continue in <tool> with no browser sign-in", async () => {
+    const { signin } = fakeSignIn(false);
+    const waits = withInstallWait(signin);
+    const { handlers, timing } = render({ signin, installed: SIGNED_OUT });
+    await waitForDecision();
+    await continuePastCallout();
+    vi.mocked(signin.signedIn).mockResolvedValue(true);
+    waits[0]!.finish("installed");
+    await settle();
+    expect(signin.run).not.toHaveBeenCalled();
+    expect(byId("first-run-signin-waiting")).toBeNull();
+    expect(handlers.oncontinueintool).toHaveBeenCalledTimes(1);
+    expect(handlers.oncontinueintool).toHaveBeenCalledWith("codex", { enableHqAnywhere: false });
+    expect(handlers.onskipintool).not.toHaveBeenCalled();
+    expect(timing).toContain("kind=signin event=done tool=codex");
+  });
+
+  it("a failed install goes straight to the failed state with Retry and Skip; Retry queues the install again", async () => {
+    const { signin, runs } = fakeSignIn(false);
+    const waits = withInstallWait(signin);
+    const { handlers, timing } = render({ signin, installed: SIGNED_OUT });
+    await waitForDecision();
+    await continuePastCallout();
+    waits[0]!.finish("failed");
+    await settle();
+    expect(signin.run).not.toHaveBeenCalled();
+    expect(text("first-run-signin-failed")).toBe("Sign-in didn't finish. Try again or skip for now.");
+    expect(byId("first-run-signin-retry")).not.toBeNull();
+    expect(text("first-run-signin-skip")).toBe("Skip for now");
+    expect(handlers.oncontinueintool).not.toHaveBeenCalled();
+    expect(timing).toContain("kind=signin event=failed tool=codex");
+
+    byId<HTMLButtonElement>("first-run-signin-retry")!.click();
+    await settle();
+    expect(waits.map((wait) => wait.retry)).toEqual([false, true]);
+    expect(text("first-run-signin-waiting")).toBe("Finishing Codex setup…");
+    waits[1]!.finish("installed");
+    await settle();
+    expect(runs.map((run) => run.runtime)).toEqual(["codex"]);
+  });
+
+  // With PR 1642, Skip for now goes on through onskipintool, which never opens the tool.
+  it("Skip while the install is still running goes on and drops the install's answer", async () => {
+    const { signin } = fakeSignIn(false);
+    const waits = withInstallWait(signin);
+    const { handlers } = render({ signin, installed: SIGNED_OUT });
+    await waitForDecision();
+    await continuePastCallout();
+    byId<HTMLButtonElement>("first-run-signin-skip")!.click();
+    await settle();
+    expect(handlers.onskipintool).toHaveBeenCalledTimes(1);
+    expect(handlers.onskipintool).toHaveBeenCalledWith("codex");
+    expect(handlers.oncontinueintool).not.toHaveBeenCalled();
+    waits[0]!.finish("installed");
+    await settle();
+    expect(signin.run).not.toHaveBeenCalled();
+    expect(signin.signedIn).toHaveBeenCalledTimes(1);
+    expect(handlers.onskipintool).toHaveBeenCalledTimes(1);
+    expect(handlers.oncontinueintool).not.toHaveBeenCalled();
   });
 
   it("with no detected tool, the name path has no sign-in step", async () => {

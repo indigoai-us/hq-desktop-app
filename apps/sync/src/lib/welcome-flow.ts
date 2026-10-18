@@ -262,7 +262,8 @@ export function forwardLabel(scene: StorySceneId, replay: boolean): string | nul
       return 'Next';
     case 'ready':
       // The ready screen has no forward button: it finishes by itself once
-      // the install has settled and the post-ready steps are done.
+      // the blocking phase is done and the post-ready steps are done. The
+      // background install keeps running after it.
       return null;
   }
 }
