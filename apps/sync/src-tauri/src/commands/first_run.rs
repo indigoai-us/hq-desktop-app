@@ -518,7 +518,10 @@ async fn recover_first_launch_sync_after_start_error(handle: AppHandle, error: &
                 "first-run",
                 "first-launch sync waiting for the npm cache lock",
             );
-            let _ = handle_waiting.emit(
+            // Desktop is the only window that shows this caption. A broadcast
+            // would also wake the popover, banner, and any other open webview.
+            let _ = handle_waiting.emit_to(
+                crate::commands::desktop_alt::WINDOW_LABEL,
                 crate::events::EVENT_SYNC_WAITING,
                 hq_desktop_core::events::SyncWaitingEvent {
                     message: hq_desktop_core::prewarm::FIRST_LAUNCH_CACHE_WAIT_CAPTION.to_string(),
