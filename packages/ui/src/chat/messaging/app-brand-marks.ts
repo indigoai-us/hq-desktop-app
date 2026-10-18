@@ -83,6 +83,8 @@ import {
   siPaypal,
   siPerplexity,
   siPosthog,
+  siPostman,
+  siSanity,
   siQuickbooks,
   siReddit,
   siResend,
@@ -203,6 +205,8 @@ const MARKS: Readonly<Record<string, BrandMark>> = {
   // Product and analytics.
   "mixpanel.com": mark(siMixpanel),
   "posthog.com": mark(siPosthog),
+  "postman.com": mark(siPostman),
+  "sanity.io": mark(siSanity),
   // Work and planning.
   "calendly.com": mark(siCalendly),
   "cal.com": mark(siCaldotcom),

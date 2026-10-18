@@ -1,21 +1,26 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import BriefRemindersHost from "./fixtures/BriefRemindersHost.svelte";
 import { buildContext, entryOf } from "./brief-catalogue.js";
 import { octoberEightBrief } from "./brief-fixture.js";
 import {
+  REMINDER_TALL_PX,
   REMINDER_WINDOW_MS,
   addDays,
   dayDiff,
   dueLabel,
   dueReminders,
   dueState,
+  dueTone,
   localDay,
   reminderPrompt,
   reminderRows,
+  reminderStrip,
   saidLabel,
-  saidLine,
+  sourceLine,
   whenLine,
 } from "./brief-reminders.js";
 import type { BriefInput, BriefReminder } from "./brief-types.js";
@@ -115,11 +120,71 @@ describe("brief-reminders helpers", () => {
     expect(saidLabel(at(4, 14), NOW)).toBe("said Oct 4");
     expect(saidLabel(at(1, 14), NOW)).toBe("said Oct 1");
     expect(saidLabel("junk", NOW)).toBe("said");
-    expect(saidLine(seven()[1]!, NOW, TODAY)).toBe("said Thu in a DM to yourself · due today");
-    expect(saidLine(seven()[3]!, NOW, TODAY)).toBe("said Thu in HQ Dev Standup · due today");
-    expect(saidLine(rem("w", "no where", { where: "  " }), NOW, TODAY)).toBe("said Thu · due today");
+    // The source line says when and where; the due state is the pill's, never repeated here.
+    expect(sourceLine(seven()[1]!, NOW)).toBe("said Thu in a DM to yourself");
+    expect(sourceLine(seven()[3]!, NOW)).toBe("said Thu in HQ Dev Standup");
+    expect(sourceLine(rem("w", "no where", { where: "  " }), NOW)).toBe("said Thu");
     expect(whenLine(at(8, 14))).toBe("Thu, Oct 8 at 2 PM");
     expect(whenLine(at(8, 14, 5))).toBe("Thu, Oct 8 at 2:05 PM");
+  });
+
+  it("the due pill's tone is the due state, or done once marked in this brief", () => {
+    const [r1, r2, , , , r6, r7] = seven() as [BriefReminder, BriefReminder, BriefReminder, BriefReminder, BriefReminder, BriefReminder, BriefReminder];
+    expect(dueTone(r1, TODAY)).toBe("overdue");
+    expect(dueTone(r2, TODAY)).toBe("today");
+    expect(dueTone(r6, TODAY)).toBe("tomorrow");
+    expect(dueTone(r7, TODAY)).toBe("later");
+    expect(dueTone(r1, TODAY, true)).toBe("done");
+    expect(dueTone(r2, TODAY, true)).toBe("done");
+  });
+
+  it("the day strip runs from the day it was said to the day it is due, a week wide, centred on the track", () => {
+    // Said Thu Oct 8, due today (Sun Oct 11): four days of track, a day before, two after.
+    const strip = reminderStrip(rem("a", "x"), TODAY);
+    expect(strip.map((d) => d.label)).toEqual(["WED", "THU", "FRI", "SAT", "SUN", "MON", "TUE"]);
+    expect(strip.map((d) => d.day)).toEqual(["2026-10-07", "2026-10-08", "2026-10-09", "2026-10-10", "2026-10-11", "2026-10-12", "2026-10-13"]);
+    expect(strip.filter((d) => d.said).map((d) => d.day)).toEqual(["2026-10-08"]);
+    expect(strip.filter((d) => d.due).map((d) => d.day)).toEqual(["2026-10-11"]);
+    expect(strip.filter((d) => d.today).map((d) => d.day)).toEqual(["2026-10-11"]);
+    expect(strip.map((d) => d.out)).toEqual([null, "past", "past", "past", null, null, null]);
+    expect(strip.map((d) => d.into)).toEqual([null, null, "past", "past", "past", null, null]);
+
+    // Said yesterday, due today: two days of track, two days before, three after.
+    expect(reminderStrip(rem("y", "x", { saidAt: at(10, 9) }), TODAY).map((d) => d.day)).toEqual([
+      "2026-10-08", "2026-10-09", "2026-10-10", "2026-10-11", "2026-10-12", "2026-10-13", "2026-10-14",
+    ]);
+
+    // Due tomorrow: gone until today, dotted from today to the due day.
+    const ahead = reminderStrip(rem("b", "x", { dueAt: at(12, 10) }), TODAY);
+    expect(ahead[0]!.day).toBe("2026-10-07");
+    expect(ahead.find((d) => d.day === "2026-10-10")!.out).toBe("past");
+    expect(ahead.find((d) => d.day === "2026-10-11")!.out).toBe("ahead");
+    expect(ahead.find((d) => d.due)!.day).toBe("2026-10-12");
+    expect(ahead.find((d) => d.due)!.out).toBeNull();
+
+    // Overdue since yesterday: solid to the due day, then late up to today.
+    const late = reminderStrip(rem("c", "x", { dueAt: at(10, 17) }), TODAY);
+    expect(late.find((d) => d.day === "2026-10-09")!.out).toBe("past");
+    expect(late.find((d) => d.day === "2026-10-10")!.out).toBe("late");
+    expect(late.find((d) => d.today)!.into).toBe("late");
+    expect(late.find((d) => d.today)!.out).toBeNull();
+
+    // Said before the window: the track runs in from the left edge, and the strip still ends a day after.
+    const old = reminderStrip(rem("d", "x", { saidAt: at(1, 9) }), TODAY);
+    expect(old.some((d) => d.said)).toBe(false);
+    expect(old[0]!.into).toBe("past");
+    expect(old.at(-1)!.day).toBe("2026-10-12");
+    expect(old).toHaveLength(7);
+
+    // Said and due the same day: one mark, the due one.
+    const same = reminderStrip(rem("e", "x", { saidAt: at(11, 7) }), TODAY);
+    expect(same.filter((d) => d.said)).toEqual([]);
+    expect(same.filter((d) => d.due)).toHaveLength(1);
+    expect(same.every((d) => d.out === null)).toBe(true);
+
+    expect(reminderStrip(rem("f", "x", { dueAt: null }), TODAY)).toEqual([]);
+    expect(reminderStrip(rem("g", "x"), "junk")).toEqual([]);
+    expect(REMINDER_TALL_PX).toBeGreaterThan(136);
   });
 
   it("the built-in prompt quotes the owner's words verbatim, names where, and keeps the guard", () => {
@@ -186,12 +251,17 @@ describe("BriefReminders", () => {
       "send Hassaan the SAFE numbers",
       "renew the domain",
     ]);
+    // Each row says when it is due (the pill) and where and when it was said (the source line).
     const said = qa('[data-testid="brief-reminder-said"]').map((el) => el.textContent);
-    expect(said[0]).toBe("said Thu in a DM to yourself · overdue");
-    expect(said[1]).toBe("said Thu in a DM to yourself · due today");
-    expect(said[3]).toBe("said Thu in HQ Dev Standup · due today");
+    expect(said[0]).toBe("said Thu in a DM to yourself");
+    expect(said[1]).toBe("said Thu in a DM to yourself");
+    expect(said[3]).toBe("said Thu in HQ Dev Standup");
+    const pills = qa('[data-testid="brief-reminder-due"]');
+    expect(pills.map((el) => el.textContent)).toEqual(["overdue", "due today", "due today", "due today", "due today"]);
     expect(rows[0]!.classList.contains("late")).toBe(true);
     expect(rows[1]!.classList.contains("late")).toBe(false);
+    // Several reminders are open rows, never the lone hero.
+    expect(qa('[data-testid="brief-reminder"].hero')).toHaveLength(0);
     const more = q('[data-testid="brief-reminder-more"]')!;
     expect(more.textContent!.trim()).toBe("+2 more");
   });
@@ -206,6 +276,63 @@ describe("BriefReminders", () => {
     expect(lines[0]!.textContent).toContain("book the dentist");
     expect(lines[0]!.textContent).toContain("DUE TOMORROW");
     expect(lines[1]!.textContent).toContain("pay the contractor invoice");
+  });
+
+  it("the due pill is toned by due state: overdue red, today warm, tomorrow and later quiet", () => {
+    render({ reminders: [seven()[0]!, seven()[1]!, seven()[5]!, seven()[6]!] });
+    const pills = qa('[data-testid="brief-reminder-due"]');
+    expect(pills.map((el) => el.getAttribute("data-tone"))).toEqual(["overdue", "today", "tomorrow", "later"]);
+    expect(pills.map((el) => el.textContent)).toEqual(["overdue", "due today", "due tomorrow", "due Tue"]);
+  });
+
+  it("a lone reminder leads as the hero, with no footer; the day strip joins it on a tall card", () => {
+    render({ reminders: [seven()[3]!] });
+    const row = q('[data-testid="brief-reminder"]')!;
+    expect(row.classList.contains("hero")).toBe(true);
+    expect(q('[data-testid="brief-reminder-text"]')!.textContent).toBe("send Hassaan the SAFE numbers");
+    expect(q('[data-testid="brief-reminder-due"]')!.getAttribute("data-tone")).toBe("today");
+    expect(q('[data-testid="brief-reminder-said"]')!.textContent).toBe("said Thu in HQ Dev Standup");
+    // A one-row card is short: the strip waits for the room.
+    expect(q('[data-testid="brief-reminder-strip"]')).toBeNull();
+    if (app) unmount(app);
+    target.remove();
+    render({ reminders: [seven()[3]!], rows: 2 });
+    expect(q(".foot")).toBeNull();
+    const strip = q('[data-testid="brief-reminder-strip"]')!;
+    const days = [...strip.querySelectorAll<HTMLElement>(".d")];
+    expect(days.map((d) => d.querySelector(".dl")!.textContent)).toEqual(["WED", "THU", "FRI", "SAT", "SUN", "MON", "TUE"]);
+    expect(strip.querySelector(".d.said")!.getAttribute("data-day")).toBe("2026-10-08");
+    const dueDay = strip.querySelector<HTMLElement>(".d.due")!;
+    expect(dueDay.getAttribute("data-day")).toBe("2026-10-11");
+    expect(dueDay.getAttribute("data-tone")).toBe("today");
+    expect(dueDay.classList.contains("today")).toBe(true);
+    expect(strip.querySelectorAll(".seg.past").length).toBeGreaterThan(0);
+  });
+
+  it("several reminders on a tall card keep the footer and never draw the strip", () => {
+    render({ rows: 2 });
+    expect(q('[data-testid="brief-reminder-strip"]')).toBeNull();
+    expect(q(".foot")!.textContent).toContain("0 of 7 done");
+  });
+
+  it("the quote starts on the content edge with its open quote mark in the text flow, never hanging into the margin", () => {
+    render({});
+    // The open mark is the quote's first inline child, before the words, in every row.
+    for (const q of qa(".q")) {
+      const first = q.firstElementChild!;
+      expect(first.classList.contains("qm")).toBe(true);
+      expect(first.textContent).toBe("“");
+      expect(first.nextElementSibling!.getAttribute("data-testid")).toBe("brief-reminder-text");
+    }
+    // No rule for the quote or its marks pulls it left: no absolute mark, no negative offset, margin or indent.
+    const css = readFileSync(resolve(process.cwd(), "src/brief/BriefReminders.svelte"), "utf8").split("<style>")[1]!;
+    const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(([, sel]) => /\.qm?\b/.test(sel!.replace(/\/\*[\s\S]*?\*\//g, "")));
+    expect(rules.length).toBeGreaterThan(0);
+    for (const [, sel, body] of rules) {
+      expect(body, sel).not.toMatch(/position:\s*absolute/);
+      expect(body, sel).not.toMatch(/(^|[\s;])(left|margin-left|text-indent|translate):\s*(calc\()?-/);
+      expect(body, sel).not.toMatch(/hanging-punctuation/);
+    }
   });
 
   it("a one-column slot shows three rows then +N more", () => {
@@ -241,7 +368,12 @@ describe("BriefReminders", () => {
     expect(row.classList.contains("done")).toBe(true);
     expect(row.classList.contains("late")).toBe(false);
     expect(row.textContent).toContain("Done");
+    // The pill turns to Done, so the overdue tone no longer shouts.
+    const pill = row.querySelector('[data-testid="brief-reminder-due"]')!;
+    expect(pill.textContent).toBe("Done");
+    expect(pill.getAttribute("data-tone")).toBe("done");
     expect(row.querySelector('[data-testid="brief-reminder-done"]')).toBeNull();
+    expect(row.querySelector('[data-testid="brief-start"]')).toBeNull();
     // Only that row changed.
     expect(qa('[data-testid="brief-reminder"].done')).toHaveLength(1);
   });

@@ -1,37 +1,39 @@
 <script lang="ts">
   /**
    * Carried over: what was open at your last brief and still has no follow-up
-   * today, so nothing is dropped as "nothing new". One row per carried item:
-   * a ring at the left whose colour carries age only (hollow white under a
-   * day, amber past a day, red past two; grey and filled when a decision or
-   * live incident today continues it), the title in plain words, the company
-   * logo and product, and a mono tag ("2 briefs", "since Fri"; on a catch-up
-   * day the day it was first seen). In a two-row slot each row also shows a
-   * 72-hour micro-timeline: a dotted thread drifts from the day it was first
-   * seen to today while it waits for a link, and sits solid and faded once a
-   * card continues it. Hover a row for Start in <engine>; its peek shows why,
-   * when it was first seen, the closest follow-up and the prompt. At most five
-   * rows (three in a one-row slot), then "+N more" whose peek lists the rest.
-   * Renders nothing with no rows; the picker hides it when every row is linked.
+   * today, so nothing is dropped as "nothing new". One glass row per carried
+   * item: the company's 20px logo circle at the left, the title in plain words
+   * (two lines at most) and the age as a small pill at the right ("2 briefs",
+   * "since Fri"; on a catch-up day the day it was first seen). The pill turns
+   * warm yellow once the item is past a day (or has run two briefs); a row a
+   * card continues today (a decision or live incident) is set quieter. In a
+   * two-row slot each row also shows the product and a 72-hour micro-timeline:
+   * a dotted thread drifts from the day it was first seen to today while it
+   * waits for a link, and sits solid and faded once a card continues it. Hover
+   * a row for Start in <engine>; its peek shows why, when it was first seen,
+   * the closest follow-up and the prompt. At most five rows (three in a
+   * one-row slot), then "+N more" whose peek lists the rest. Renders nothing
+   * with no rows; the picker hides it when every row is linked.
    */
   import BriefLaunch from "./BriefLaunch.svelte";
-  import BriefOrigin from "./BriefOrigin.svelte";
+  import BriefLogo from "./BriefLogo.svelte";
   import { peek, useBrief } from "./brief-context.svelte.js";
   import { CARRY_CAP, CARRY_CAP_SHORT, carryHeadline, carryMorePeek, carryPeek, carryRows, carryTag, orphanRows, resolvePrompt, threadX, type RingTone } from "./brief-carry.js";
+  import { productName } from "./brief-origin.js";
   import type { BriefCarry, BriefDecision, BriefRisk } from "./brief-types.js";
 
   interface Props {
     carry: BriefCarry[];
-    /** Today's decisions: a row whose itemId is one of them renders grey and launches that decision's prompt. */
+    /** Today's decisions: a row whose itemId is one of them is set quieter and launches that decision's prompt. */
     decisions: BriefDecision[];
     /** Today's risks: only live incidents continue a row (same rule as the picker). */
     risks: BriefRisk[];
     /** Prompt per item id from the plan; a linked row uses its linked item's. */
     prompts: Record<string, string>;
     rows: number;
-    /** ISO time of the brief; ring colour is age against it. */
+    /** ISO time of the brief; the age tint is age against it. */
     now: string;
-    /** Catch-up day: the mono tag shows the day each row was first seen. */
+    /** Catch-up day: the age pill shows the day each row was first seen. */
     catchUp?: boolean;
   }
   let { carry, decisions, risks, prompts, rows, now, catchUp = false }: Props = $props();
@@ -46,7 +48,10 @@
   const shown = $derived(all.slice(0, tall ? CARRY_CAP : CARRY_CAP_SHORT));
   const rest = $derived(all.slice(shown.length));
 
-  const RING: Record<RingTone, string> = { white: "#fff", warn: "var(--b-warn)", red: "var(--b-red)", grey: "rgba(255,255,255,.32)" };
+  /** Past a day (or two briefs running): the warm yellow tint used across the brief. */
+  const old = (tone: RingTone) => tone === "warn" || tone === "red";
+  /** Thread colour on the micro-timeline: white while fresh, warm yellow once old, faint when a card continues it. */
+  const THREAD: Record<RingTone, string> = { white: "rgb(var(--b-ink) / .85)", warn: "#ffe08a", red: "#ffe08a", grey: "rgb(var(--b-ink) / .4)" };
 </script>
 
 {#if all.length}
@@ -73,22 +78,23 @@
           aria-label={r.title}
           use:peek={{ state: brief, content: () => carryPeek(r, prompt) }}
         >
-          <svg class="ring" viewBox="0 0 14 14" aria-hidden="true">
-            <circle cx="7" cy="7" r="5" fill={r.linked ? RING.grey : "none"} stroke={RING[r.tone]} stroke-width="1.8" />
-          </svg>
-          <div class="tx">
-            <span class="t" data-testid="brief-carry-row-title">{r.title}</span>
-            <BriefOrigin origin={r.carry.origin} product />
-          </div>
-          <span class="mt" class:y={r.tone === "warn"} class:r={r.tone === "red"} data-testid="brief-carry-tag">{carryTag(r, catchUp)}</span>
-          {#if tall && x != null}
-            <!-- 72h micro-timeline: first-seen dot, thread to today's ring. -->
-            <svg class="thread-line" viewBox="0 0 160 10" preserveAspectRatio="none" aria-hidden="true">
-              <line x1="4" y1="5" x2="154" y2="5" stroke="var(--b-line)" stroke-width="1" />
-              <line class:thread={!r.linked} x1={x} y1="5" x2="154" y2="5" stroke={RING[r.tone]} stroke-width="1.2" opacity={r.linked ? 0.5 : 0.8} />
-              <circle cx={x} cy="5" r="2.5" fill="var(--b-t2)" />
-              <circle cx="154" cy="5" r="2" fill={r.linked ? RING.grey : "none"} stroke={RING[r.tone]} />
-            </svg>
+          <span class="lg"><BriefLogo company={brief.company(r.carry.origin.companyUid)} fallback={r.carry.origin.companyUid} size={20} /></span>
+          <span class="t" data-testid="brief-carry-row-title">{r.title}</span>
+          <span class="mt" class:old={old(r.tone)} data-testid="brief-carry-tag">{carryTag(r, catchUp)}</span>
+          {#if tall}
+            {@const product = productName(r.carry.origin.repo, r.carry.origin.product)}
+            <div class="sub">
+              {#if product}<span class="prod">{product}</span>{/if}
+              {#if x != null}
+                <!-- 72h micro-timeline: first-seen dot, thread to today. -->
+                <svg class="thread-line" viewBox="0 0 160 10" preserveAspectRatio="none" aria-hidden="true">
+                  <line x1="4" y1="5" x2="154" y2="5" stroke="rgb(var(--b-ink) / .2)" stroke-width="1" />
+                  <line class:thread={!r.linked} x1={x} y1="5" x2="154" y2="5" stroke={THREAD[r.tone]} stroke-width="1.2" opacity={r.linked ? 0.6 : 0.9} />
+                  <circle cx={x} cy="5" r="2.5" fill="rgb(var(--b-ink) / .7)" />
+                  <circle cx="154" cy="5" r="2" fill={THREAD[r.tone]} />
+                </svg>
+              {/if}
+            </div>
           {/if}
           <div class="acts">
             {#if done}
@@ -100,7 +106,7 @@
         </div>
       {/each}
       {#if rest.length}
-        <div class="orow more-row" role="button" tabindex="0" data-testid="brief-carry-more" use:peek={{ state: brief, content: () => carryMorePeek(rest, catchUp) }}>
+        <div class="orow more" role="button" tabindex="0" data-testid="brief-carry-more" use:peek={{ state: brief, content: () => carryMorePeek(rest, catchUp) }}>
           +{rest.length} more
         </div>
       {/if}
@@ -115,79 +121,122 @@
 {/if}
 
 <style>
+  /* A small card's headline: one size up from the rows, never broken with a hyphen. */
+  .w h3 {
+    font-size: 16px;
+    font-weight: 500;
+    line-height: 1.3;
+    letter-spacing: -0.01em;
+    hyphens: none;
+    overflow-wrap: normal;
+    text-wrap: pretty;
+  }
   .list {
     display: flex;
     flex-direction: column;
-    gap: 2px;
-    margin-top: 10px;
+    gap: 6px;
+    margin-top: 12px;
     min-height: 0;
+    container-type: inline-size;
   }
-  /* ring | title + origin | mono tag; the thread line sits under the title in two-row slots. */
+  /* Glass rows: logo circle | title (two lines at most) | age pill; in a two-row slot the
+     product and the micro-timeline sit under the title. */
   .orow {
     position: relative;
     display: grid;
-    grid-template-columns: 14px minmax(0, 1fr) auto;
-    gap: 2px 10px;
+    grid-template-columns: 20px minmax(0, 1fr) auto;
+    grid-template-areas: "lg t mt";
+    column-gap: 10px;
+    row-gap: 4px;
     align-items: center;
-    padding: 5px 8px;
-    margin: 0 -8px;
-    border-radius: 12px;
-    border: 1px solid transparent;
-    transition: background 0.2s, border-color 0.2s, opacity 0.5s;
+    padding: 8px 10px;
+    border-radius: 10px;
+    color: var(--b-t1);
+    background: rgb(var(--b-ink) / 0.14);
+    border: 0;
+    --acts-w: 64px;
+    transition: background 0.2s, opacity 0.5s;
+  }
+  .orow.tall {
+    grid-template-areas: "lg t mt" "lg sub sub";
   }
   .orow:hover,
   .orow:focus-within {
-    background: rgba(255, 255, 255, 0.05);
-    border-color: rgba(255, 255, 255, 0.06);
+    background: rgb(var(--b-ink) / 0.22);
   }
-  .ring {
-    width: 14px;
-    height: 14px;
-    flex: none;
-  }
-  .tx {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-width: 0;
-    container-type: inline-size;
+  .lg {
+    grid-area: lg;
+    display: inline-grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    overflow: hidden;
   }
   .t {
-    flex: 1;
+    grid-area: t;
     min-width: 0;
-    font-size: 12px;
-    line-height: 1.25;
+    font-size: var(--b-row-fs, 13px);
+    font-weight: 500;
+    line-height: 1.3;
+    color: var(--b-t1);
+    overflow: hidden;
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow-wrap: anywhere;
+    transition: opacity 0.2s;
+  }
+  /* Continued by a card today: still listed, set back. */
+  .linked .t {
+    color: rgb(var(--b-ink) / 0.72);
+  }
+  .linked .lg {
+    opacity: 0.7;
+  }
+  /* The age as a small glass pill; past a day, the warm yellow tint. */
+  .mt {
+    grid-area: mt;
+    flex: none;
+    height: 20px;
+    padding: 0 8px;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
     white-space: nowrap;
+    color: rgb(var(--b-ink) / 0.88);
+    background: rgb(var(--b-ink) / 0.16);
+    transition: opacity 0.2s;
+  }
+  .mt.old {
+    color: #ffe08a;
+    background: rgba(255, 205, 110, 0.32);
+  }
+  .sub {
+    grid-area: sub;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .prod {
+    flex: none;
+    max-width: 50%;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-  .linked .t {
-    color: var(--b-t2);
-  }
-  .tx :global(.org) {
-    flex: none;
-    margin-left: auto;
-  }
-  /* Too narrow for the product name: keep the logo, hide the text. */
-  @container (max-width: 220px) {
-    .tx :global(.org b) {
-      display: none;
-    }
-  }
-  .mt {
-    font-family: var(--b-mono);
-    font-size: 10px;
-    color: var(--b-t3);
     white-space: nowrap;
-  }
-  .mt.y {
-    color: var(--b-warn);
-  }
-  .mt.r {
-    color: var(--b-red);
+    font-size: 11px;
+    line-height: 1.35;
+    color: rgb(var(--b-ink) / 0.75);
   }
   .thread-line {
-    grid-column: 2 / 4;
+    flex: 1;
     width: 100%;
     height: 10px;
     min-width: 0;
@@ -202,18 +251,18 @@
       stroke-dashoffset: -40;
     }
   }
-  /* Actions appear only on the row that has your attention, over the tag. */
+  /* Actions float over the row's end on the row that has your attention; no panel behind
+     them: the age pill fades and the title fades out under them instead. */
   .acts {
     position: absolute;
-    right: 6px;
+    z-index: 2;
     top: 50%;
-    translate: 6px -50%;
+    right: 8px;
     display: flex;
     align-items: center;
-    padding-left: 18px;
     opacity: 0;
+    translate: 6px -50%;
     pointer-events: none;
-    background: linear-gradient(90deg, transparent, var(--b-card-hi) 18px);
     transition: opacity 0.25s, translate 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
   }
   .orow:hover .acts,
@@ -223,30 +272,128 @@
     translate: 0 -50%;
     pointer-events: auto;
   }
+  .orow:is(:hover, :focus-within) .mt,
+  .orow.done .mt {
+    opacity: 0;
+  }
+  .orow:is(:hover, :focus-within) .t,
+  .orow.done .t {
+    /* The title column ends at the pill's column (about 72px from the row's end), so the fade
+       starts just before the actions' left edge, measured from there. */
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% + 72px - var(--acts-w) - 28px), transparent calc(100% + 72px - var(--acts-w) - 4px));
+    mask-image: linear-gradient(90deg, #000 calc(100% + 72px - var(--acts-w) - 28px), transparent calc(100% + 72px - var(--acts-w) - 4px));
+  }
+  /* Controls one height (26px) on the glass, no ring or drop; the row title's shadow stays off them. */
+  .acts :global(.launch) {
+    gap: 4px;
+    text-shadow: none;
+  }
+  .acts :global(.launch .go) {
+    height: 26px;
+    padding: 0 10px;
+    box-shadow: none;
+  }
+  .acts :global(.launch .go:hover) {
+    background: rgba(255, 255, 255, 0.86);
+  }
+  .acts :global(.launch .eng) {
+    height: 26px;
+    padding: 2px;
+    border-radius: 8px;
+    background: rgb(var(--b-ink) / 0.16);
+  }
+  .acts :global(.launch .eng button) {
+    height: 22px;
+    padding: 0 6px;
+    border-radius: 6px;
+    color: rgb(var(--b-ink) / 0.7);
+  }
+  .acts :global(.launch .eng button[aria-pressed="true"]) {
+    background: rgba(255, 255, 255, 0.95);
+    color: #1d3b6e;
+  }
+  .acts :global(.launch .copy) {
+    width: 26px;
+    height: 26px;
+    background: rgb(var(--b-ink) / 0.16);
+    color: rgb(var(--b-ink) / 0.85);
+  }
+  .acts :global(.launch .copy:hover) {
+    background: rgb(var(--b-ink) / 0.26);
+  }
+  /* A narrow row has room for the start button only; a wide one also shows the engine switch and copy. */
+  .acts :global(.launch .eng),
+  .acts :global(.launch .copy) {
+    display: none;
+  }
+  @container (min-width: 380px) {
+    .acts :global(.launch .eng) {
+      display: inline-flex;
+    }
+    .acts :global(.launch .copy) {
+      display: inline-grid;
+    }
+    .orow {
+      --acts-w: 190px;
+    }
+  }
   .orow.done {
     opacity: 0.5;
   }
   .orow.done .t {
     text-decoration: line-through;
-    text-decoration-color: rgba(255, 255, 255, 0.4);
+    text-decoration-color: rgb(var(--b-ink) / 0.4);
   }
   .donechip {
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
     font-size: 11px;
     font-weight: 500;
-    padding: 4px 10px;
+    padding: 0 10px;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.14);
+    background: rgb(var(--b-ink) / 0.16);
   }
-  .more-row {
+  /* "+N more": a plain glass row, centred. */
+  .orow.more {
     display: flex;
     justify-content: center;
-    padding: 5px 12px;
-    font-size: 12px;
-    color: var(--b-t2);
+    padding: 6px 10px;
+    font-size: var(--b-row-fs, 13px);
+    color: rgb(var(--b-ink) / 0.85);
     cursor: default;
   }
-  .more-row:focus-visible {
-    outline: 2px solid rgba(255, 255, 255, 0.5);
+  .orow.more:focus-visible {
+    outline: 2px solid rgb(var(--b-ink) / 0.5);
     outline-offset: 1px;
+  }
+  /* A one-column card is too narrow for title and pill side by side: the title takes the
+     full width and the pill drops under it (beside the timeline in a two-row slot). */
+  @container (max-width: 260px) {
+    .orow,
+    .orow.tall {
+      grid-template-columns: 20px auto minmax(0, 1fr);
+      grid-template-areas: "lg t t" "lg mt sub";
+      row-gap: 5px;
+    }
+    .orow:not(.tall) .sub {
+      display: none;
+    }
+    /* The actions take the pill's line, so the title above stays whole. */
+    .acts {
+      top: auto;
+      bottom: 5px;
+      translate: 6px 0;
+    }
+    .orow:hover .acts,
+    .orow:focus-within .acts,
+    .orow.done .acts {
+      translate: 0 0;
+    }
+    .orow:is(:hover, :focus-within) .t,
+    .orow.done .t {
+      -webkit-mask-image: none;
+      mask-image: none;
+    }
   }
 </style>

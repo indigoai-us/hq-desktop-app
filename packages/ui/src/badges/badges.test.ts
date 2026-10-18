@@ -9,9 +9,9 @@ afterEach(() => setBadgeSource(null));
 
 describe("badge catalog", () => {
   // Owner pick 2026-10-15, option B: every mark is a drawn Phosphor Duotone icon.
-  it("has 19 badges with unique ids and a Duotone icon, tint and line, for each", () => {
-    expect(BADGES).toHaveLength(19);
-    expect(new Set(BADGES.map((b) => b.id)).size).toBe(19);
+  it("has 20 badges with unique ids and a Duotone icon, tint and line, for each", () => {
+    expect(BADGES).toHaveLength(20);
+    expect(new Set(BADGES.map((b) => b.id)).size).toBe(20);
     for (const b of BADGES) {
       expect(BADGE_DUOTONE[b.icon]?.tint, b.id).toMatch(/^M[\d.,\s\-A-Za-z]+$/);
       expect(BADGE_DUOTONE[b.icon]?.line, b.id).toMatch(/^M[\d.,\s\-A-Za-z]+$/);
@@ -50,7 +50,7 @@ describe("badge catalog", () => {
   // Owner review 2026-10-12: OG, Captain and Patient Zero are given, not
   // earned. Core Builder is an honor, but merging pull requests earns it.
   it("marks only the single-level honors as awarded", () => {
-    expect(BADGES.filter(isAwarded).map((b) => b.id)).toEqual(["og", "captain", "patientzero"]);
+    expect(BADGES.filter(isAwarded).map((b) => b.id)).toEqual(["og", "captain", "patientzero", "ecomrat"]);
     expect(isAwarded(BADGE_BY_ID.corebuilder)).toBe(false);
   });
 
@@ -108,7 +108,7 @@ describe("badge levels", async () => {
     expect(rows.map((r) => r.current)).toEqual([false, false, true]);
   });
   it("gives the honors badges one Legendary row", () => {
-    for (const id of ["og", "captain", "patientzero"]) {
+    for (const id of ["og", "captain", "patientzero", "ecomrat"]) {
       expect(badgeLevels(BADGE_BY_ID[id], BADGE_BY_ID[id].tier)).toEqual([{ tier: "Legendary", label: "Single level", reached: true, current: true }]);
     }
   });
@@ -137,7 +137,7 @@ describe("light-mode badges", () => {
 
   it("has full-size art for every level of the new badges", async () => {
     const { FULL_ASCII } = await import("./full-ascii-data.js");
-    for (const key of ["og:L", "captain:L", "patientzero:L", "corebuilder:1", "corebuilder:2", "corebuilder:3", "corebuilder:L"]) {
+    for (const key of ["og:L", "captain:L", "patientzero:L", "ecomrat:L", "corebuilder:1", "corebuilder:2", "corebuilder:3", "corebuilder:L"]) {
       const art = FULL_ASCII[key];
       expect(art, key).toBeDefined();
       expect(art.chars).toHaveLength(24);

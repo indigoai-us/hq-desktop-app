@@ -58,6 +58,8 @@ describe('onboarding invite errors', () => {
     const messages = INVITE_ERROR_KINDS.map(inviteErrorMessage);
     expect(new Set(messages).size).toBe(INVITE_ERROR_KINDS.length);
     expect(inviteErrorMessage('plan_limit')).toMatch(/plan/i);
+    // Usage-priced companies have no seats (usage-only-pricing US-014).
+    expect(inviteErrorMessage('plan_limit')).not.toMatch(/seat/i);
     expect(inviteErrorMessage('network')).toMatch(/connection/i);
   });
 

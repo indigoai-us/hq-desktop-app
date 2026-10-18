@@ -52,6 +52,7 @@
     onmessage?: (uid: string, name?: string) => void;
     /** Opens the shared 3-step New bot sheet. */
     onaddbot?: () => void;
+    onopenurl?: (url: string) => void;
   }
 
   let {
@@ -63,6 +64,7 @@
     ownerName = null,
     onmessage,
     onaddbot,
+    onopenurl,
   }: Props = $props();
 
   let cloud = $state<BotTableRow[]>([]);
@@ -208,6 +210,7 @@
     {#if !(cloudFailed && rows.length === 0) && !(cloudPhase === "shimmer" && rows.length === 0)}
       <span class="meta-line" data-meta-line data-testid="bots-count">{rows.length === totalBots ? (rows.length === 1 ? "1 bot" : `${rows.length} bots`) : `${rows.length} of ${totalBots} bots`}</span>
     {/if}
+    {#if current && onmessage}<RailButton icon="send" data-testid="bots-message" onclick={() => onmessage?.(current.uid, current.name)}>Message bot</RailButton>{/if}
     <RailButton icon="plus" variant="primary" type="button" data-testid="bots-new" onclick={() => onaddbot?.()}>New bot</RailButton>
   </div>
 
@@ -306,6 +309,8 @@
                 runtimeKind: current.kind,
                 companyUid,
                 agents: adapter?.agents ?? null,
+                adapter,
+                onopenurl,
                 onclose: closeProfile,
                 onmessage: () => onmessage?.(current.uid, current.name),
               }}
@@ -423,9 +428,12 @@
   .empty-state { margin: 0; padding: 48px 16px; text-align: center; color: var(--t3); font-size: 13px; }
   .load-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 12px 16px; }
   .load-error p { margin: 0; }
-  .split { display: flex; min-height: 0; flex: 1; }
+  .split { position: relative; container-type: inline-size; display: flex; min-height: 0; flex: 1; }
   .roster { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 12px; display: flex; flex-direction: column; }
-  .inspector { flex: 0 0 340px; width: 340px; min-height: 0; border-left: 1px solid var(--line); display: flex; flex-direction: column; }
+  .inspector { flex: 0 0 clamp(340px, min(45%, 100% - 420px), 680px); width: clamp(340px, min(45%, 100% - 420px), 680px); min-height: 0; border-left: 1px solid var(--line); display: flex; flex-direction: column; }
+  @container (max-width: 760px) {
+    .inspector { position: absolute; inset: 0; width: 100%; border-left: 0; z-index: 2; background: var(--v4-secondary-sidebar, var(--side-bg)); }
+  }
   .profile-loading { height: 100%; padding: 12px; box-sizing: border-box; }
   .thead {
     display: grid;

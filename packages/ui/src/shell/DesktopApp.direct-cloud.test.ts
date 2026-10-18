@@ -307,7 +307,7 @@ describe("DesktopApp New bot → Cloud, agents.desktop-agent-creation", () => {
     await vi.waitFor(
       () =>
         expect(document.querySelector('[data-testid="chat-create-entry-error"]')?.textContent).toContain(
-          "Cloud bots need the Agents plan ($500 a month). Acme isn't on it yet.",
+          "Cloud bots are not on Acme's plan yet ($500 a month).",
         ),
       { timeout: 10_000, interval: 50 },
     );

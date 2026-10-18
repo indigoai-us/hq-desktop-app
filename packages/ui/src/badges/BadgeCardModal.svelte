@@ -48,9 +48,15 @@
     returnFocus?: HTMLElement | null;
     /** The pocket the card was tapped in: it flies out of it and back. */
     origin?: HTMLElement | null;
+    /**
+     * Draw inside this element instead of the app shell. The launch
+     * announcement passes its own layer: it sits above the shell and makes
+     * the shell inert, so a card drawn there would be hidden and unclickable.
+     */
+    host?: HTMLElement | null;
   }
 
-  let { open, badge, owner = null, reveal = false, onclose, returnFocus = null, origin = null }: Props = $props();
+  let { open, badge, owner = null, reveal = false, onclose, returnFocus = null, origin = null, host = null }: Props = $props();
 
   /** The card is flying back to its pocket; the stage fades out with it. */
   let closing = $state(false);
@@ -110,7 +116,8 @@
     // reveal opens from a notice that is gone by the time the card closes.
     const active = document.activeElement;
     const opener = active instanceof HTMLElement && active !== document.body ? active : null;
-    const ported = portal(node);
+    // Moved out of its place, so it removes itself on close either way.
+    const ported = host ? (host.appendChild(node), { destroy: () => node.remove() }) : portal(node);
     const releaseInert = inertOutside(node);
     const releaseShortcuts = suspendShortcuts();
     focusIntoDialog(node.querySelector<HTMLElement>('[role="dialog"]'));
@@ -259,7 +266,8 @@
   [data-phase="done"] .bc-flip.flipped .bc-face { visibility: hidden; }
   [data-phase="done"] .bc-back { visibility: hidden; transition: visibility 0s linear 236ms; }
   [data-phase="done"] .bc-flip.flipped .bc-back { visibility: visible; }
-  .bc-foot { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  /* Room between the owner line and the actions (owner review 2026-10-16). */
+  .bc-foot { display: flex; flex-direction: column; align-items: center; gap: 12px; }
   .bc-actions { display: flex; align-items: center; gap: 12px; }
   .bc-owner { margin: 0; color: rgba(250, 250, 250, 0.56); }
   /* A quiet text button under the card; it dims on hover, no underline. */

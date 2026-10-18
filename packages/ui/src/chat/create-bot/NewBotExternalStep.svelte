@@ -3,7 +3,7 @@
    * "Connect it", from the Where step: how a bot that already runs somewhere
    * else joins HQ. It enrolls itself with a one-time code the CLI prints on
    * the machine that runs it, so this screen only shows the code's shape,
-   * never a value. External bots are on paid plans.
+   * never a value. External bots count toward the company's plan.
    */
   import NewBotStepHead from "./NewBotStepHead.svelte";
 
@@ -31,7 +31,7 @@
       <li>It prints a one-time code, like <span class="new-bot-mono" data-testid="chat-bot-external-enroll-mask">••••-••••</span>. Paste it there, not here.</li>
       <li>It joins your company, and its DM opens when it checks in.</li>
     </ol>
-    <p class="new-bot-create-copy" data-testid="chat-bot-external-paid">External bots are part of the paid plans.</p>
+    <p class="new-bot-create-copy" data-testid="chat-bot-external-paid">External bots count toward the company's plan.</p>
   </section>
   <footer class="new-bot-create-foot">
     <button type="button" class="new-bot-create-submit" data-testid="new-bot-external-done" onclick={onback}>Done</button>

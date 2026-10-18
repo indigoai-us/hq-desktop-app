@@ -162,13 +162,13 @@ describe("createErrorCopy", () => {
       { kind: "plan_limit", status: 403, amountMinor: 50000, currency: "usd", checkoutUrl: "https://c/x" },
       { companyLabel: "Indigo" },
     );
-    expect(copy.message).toBe("Cloud bots need the Agents plan ($500 a month). Indigo isn't on it yet.");
+    expect(copy.message).toBe("Cloud bots are not on Indigo's plan yet ($500 a month).");
     expect(copy.fix).toEqual({ kind: "checkout", url: "https://c/x", label: "Upgrade plan" });
   });
 
   it("plan limit without checkout sends the person to an owner", () => {
     const copy = createErrorCopy({ kind: "plan_limit", status: 403 }, { companyLabel: "Indigo" });
-    expect(copy.message).toBe("Cloud bots need the Agents plan. Indigo isn't on it yet. Ask a company owner to upgrade.");
+    expect(copy.message).toBe("Cloud bots are not on Indigo's plan yet. Ask a company owner to upgrade.");
     expect(copy.fix).toEqual({ kind: "ask_admin" });
   });
 
@@ -268,7 +268,7 @@ describe("cloudUnavailableCopy", () => {
         { companies: 1, companyLabel: "Indigo" },
       ),
     ).toEqual({
-      reason: "Cloud bots need the Agents plan ($500 a month). Indigo isn't on it yet.",
+      reason: "Cloud bots are not on Indigo's plan yet ($500 a month).",
       fix: { kind: "checkout", url: "https://c/x", label: "Upgrade plan" },
     });
   });

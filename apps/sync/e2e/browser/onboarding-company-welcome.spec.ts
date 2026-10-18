@@ -121,7 +121,7 @@ test('the company step comes after the setup explainers and before "Open HQ Desk
 
   await page.getByTestId('onboarding-company-field-name').fill('Acme Studio');
   await page.getByTestId('onboarding-company-create').click();
-  await page.getByTestId('onboarding-plan-choose-starter').click();
+  await page.getByTestId('onboarding-plan-choose-free').click();
   // The step's own invite and "<company> is ready." screens come next, still before the ready scene.
   await page.getByTestId('onboarding-company-invite-skip').click();
   await expect(page.locator('.scene[data-scene="ready"]')).not.toHaveClass(/\bon\b/);
@@ -176,25 +176,19 @@ for (const size of SIZES) {
     );
 
     await page.getByTestId('onboarding-company-create').click();
-    await page.getByTestId('onboarding-plan-choose-starter').waitFor();
+    await page.getByTestId('onboarding-plan-choose-free').waitFor();
     await expectCentred(
       page,
       ['.scene.on [data-scene-heading]', '.scene.on .follow-on .cs-pane > .body', '[data-testid="onboarding-plan-options"]', '.plan-custom'],
       '.plan-custom',
     );
-    // Both cards side by side at the welcome window's sizes, equal in height,
-    // with their CTAs on one baseline.
-    const starter = await box(page, '[data-testid="onboarding-plan-card-starter"]');
-    const workforce = await box(page, '[data-testid="onboarding-plan-card-workforce"]');
-    expect(starter.right).toBeLessThan(workforce.left);
-    expect(Math.abs(starter.top - workforce.top)).toBeLessThanOrEqual(1);
-    expect(Math.abs(starter.bottom - workforce.bottom)).toBeLessThanOrEqual(1);
-    expect(
-      Math.abs(
-        (await box(page, '[data-testid="onboarding-plan-choose-starter"]')).top -
-          (await box(page, '[data-testid="onboarding-plan-choose-workforce"]')).top,
-      ),
-    ).toBeLessThanOrEqual(1);
+    // One usage card, centred, with its action inside the card.
+    const card = await box(page, '[data-testid="onboarding-plan-card-free"]');
+    expect(Math.abs(centre(card) - size.width / 2)).toBeLessThanOrEqual(1);
+    const cta = await box(page, '[data-testid="onboarding-plan-choose-free"]');
+    expect(cta.top).toBeGreaterThan(card.top);
+    expect(cta.bottom).toBeLessThan(card.bottom);
+    await expect(page.locator('.plan-card')).toHaveCount(1);
     // It fits: the scene does not scroll.
     expect(
       await page.evaluate(() => {
@@ -221,20 +215,19 @@ test('stays centred when the welcome window is resized on the company step', asy
   }
 });
 
-test('stacks the plan cards in a narrow window and scrolls to the second one', async ({ page }) => {
+test('fits the usage card in a narrow window and scrolls to its action', async ({ page }) => {
   await page.setViewportSize({ width: 560, height: 720 });
   await page.goto(flow);
   await next(page);
   await next(page);
   await page.getByTestId('onboarding-company-field-name').fill('Acme Studio');
   await page.getByTestId('onboarding-company-create').click();
-  await page.getByTestId('onboarding-plan-choose-starter').waitFor();
-  const starter = await box(page, '[data-testid="onboarding-plan-card-starter"]');
-  const workforce = await box(page, '[data-testid="onboarding-plan-card-workforce"]');
-  expect(workforce.top).toBeGreaterThan(starter.bottom);
-  expect(Math.abs(centre(starter) - 280)).toBeLessThanOrEqual(1);
-  // The Workforce CTA is below the fold: the scene scrolls to it, the root does not.
-  await page.getByTestId('onboarding-plan-choose-workforce').scrollIntoViewIfNeeded();
-  await expect(page.getByTestId('onboarding-plan-choose-workforce')).toBeInViewport();
+  await page.getByTestId('onboarding-plan-choose-free').waitFor();
+  const card = await box(page, '[data-testid="onboarding-plan-card-free"]');
+  expect(Math.abs(centre(card) - 280)).toBeLessThanOrEqual(1);
+  expect(card.right - card.left).toBeLessThanOrEqual(400);
+  // If the action is below the fold, the scene scrolls to it; the root does not.
+  await page.getByTestId('onboarding-plan-choose-free').scrollIntoViewIfNeeded();
+  await expect(page.getByTestId('onboarding-plan-choose-free')).toBeInViewport();
   expect(await rootScroll(page)).toEqual({ top: 0, left: 0 });
 });
