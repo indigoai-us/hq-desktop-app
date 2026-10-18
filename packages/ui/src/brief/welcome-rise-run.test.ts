@@ -36,13 +36,13 @@ describe("welcome rise handoff", () => {
     expect(input.userName).toBe("Alex");
     expect(input.calendarSample).toBe(false);
     expect(input.decisions.every((item) => item.sample !== true)).toBe(true);
-    expect(input.sessions).toHaveLength(168 + 244);
+    expect(input.sessions).toHaveLength(168);
     expect(input.companies).toEqual(["northstar"]);
     expect(reveal.countText).toBe("168 sessions read");
     expect(reveal.cards[0]?.text).toBe(WELCOME_RISE_FINDING_CLAUDE);
     expect(reveal.cards[0]?.text).not.toContain("sessions");
-    expect(generateBrief(input).sessions.count).toBe(412);
-    expect(generateBrief(input).provenance.find((row) => row.label === "sessions")?.n).toBe(412);
+    expect(generateBrief(input).sessions.count).toBe(168);
+    expect(generateBrief(input).provenance.find((row) => row.label === "sessions")?.n).toBe(168);
 
     const label = now.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
     expect(label).toContain("Saturday");
@@ -74,7 +74,9 @@ describe("welcome rise handoff", () => {
       row.textContent?.includes(WELCOME_RISE_CALENDAR_LINE),
     );
     expect(calendarRow?.textContent?.match(/Calendar could not be read/g)).toHaveLength(1);
-    expect(text).toContain("412");
+    expect(text).toContain("168");
+    expect(text).not.toContain("412");
+    expect(text).not.toMatch(/no sessions/i);
     expect(text).not.toContain("Corey");
     expect(text).not.toMatch(/SAMPLE|Sample/);
   });

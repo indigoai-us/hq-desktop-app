@@ -57,12 +57,13 @@ export function welcomeRiseNow(): Date {
 }
 
 function sessionsFor(sourceId: "claude" | "codex", n: number, now: Date): BriefSession[] {
-  const start = now.getTime() - 48 * 3_600_000;
+  // Spread across the last 24 hours, so the sunrise card counts the same sessions the rise read.
+  const start = now.getTime() - 20 * 3_600_000;
   const title = sourceId === "claude" ? "Claude Code" : "Codex";
   return Array.from({ length: n }, (_, i) => ({
     id: `${sourceId}-${i}`,
     title,
-    startedAt: new Date(start + i * 1000).toISOString(),
+    startedAt: new Date(start + i * 360_000).toISOString(),
     workstream: title,
     company: COMPANY,
   }));
@@ -114,7 +115,8 @@ export function welcomeRiseBriefInput(now: Date = welcomeRiseNow()): BriefInput 
     shipped: [],
     waitingOn: [],
     team: [],
-    sessions: [...sessionsFor("claude", 168, now), ...sessionsFor("codex", 244, now)],
+    // The brief shows the count the reveal shows, so the handoff never jumps (round 2).
+    sessions: sessionsFor("claude", 168, now),
     lastBriefAt: null,
     calendarSample: false,
     priorities: decisions.map((item, index) => ({
