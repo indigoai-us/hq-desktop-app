@@ -594,6 +594,11 @@
   let blockingPhaseDone = $state(false);
   /** Try again is re-running a required step that already failed. */
   let blockingRetryRunning = $state(false);
+  /** The required step Try again is running now, named by the Ready line. */
+  let retryingStageId = $state<StageId | null>(null);
+  // Bumped by each Try again and by every new or cancelled run, so a retry
+  // that ends after it was superseded does not clear a newer retry's state.
+  let blockingRetryToken = 0;
   let retryFailedBlocking: (() => Promise<void>) | null = null;
   // True while the background phase of backgroundRunId is still running, so
   // unmounting the wizard does not cancel it.
@@ -629,6 +634,11 @@
   // that never comes back) shows the finish-error note's Finish setup button.
   let readyWatchdogFired = $state(false);
   let backgroundRunId = 0;
+  // The run whose background phase finished with every stage ok. Try again
+  // completes setup for it when the retried step settles after that phase.
+  let backgroundOkRunId = 0;
+  // Settles when backgroundRunId's background phase ends.
+  let backgroundPhaseDone: Promise<void> = Promise.resolve();
   const loggedFirstRunPhases = new Set<string>();
   let currentSetupRunId = '';
   let currentDepsAttemptId = '';
@@ -882,10 +892,13 @@
     (setupStarted && !setupCompleted && (!blockingPhaseDone || backgroundPhaseRunning)) ||
       hostQueueRunning,
   );
+  // Try again names its own step, not a background step running beside it.
   const currentInstallItemId = $derived(
-    (installPending || blockingRetryRunning) && currentStageId
-      ? currentStageId
-      : hostQueueRunning && hostQueue?.currentId ? hostQueue.currentId : currentStageId,
+    blockingRetryRunning && retryingStageId
+      ? retryingStageId
+      : installPending && currentStageId
+        ? currentStageId
+        : hostQueueRunning && hostQueue?.currentId ? hostQueue.currentId : currentStageId,
   );
   const failedBlockingStageIds = $derived(
     stages
@@ -909,9 +922,7 @@
   const readyLine = $derived(
     readyProgressLine({
       itemId: currentInstallItemId,
-      retrying: Boolean(
-        setupRetry && setupRetry.stageId === currentStageId && currentInstallItemId === currentStageId,
-      ),
+      retrying: Boolean(setupRetry && setupRetry.stageId === currentInstallItemId),
       elapsedMs: currentInstallItemId !== null && currentInstallItemId === currentStageId ? stageElapsedMs : 0,
     }),
   );
@@ -2205,6 +2216,7 @@
     // Supersession: the previous run may have left a stage mid-retry. This
     // run owns the list now, so nothing may still be waiting on that retry.
     stages = resetRetryingStages(stages);
+    clearBlockingRetry();
     activeDepsLockWaitTimeoutProgress = null;
     activeDepsOutputTimeoutProgress = null;
     activeContentTimeoutProgress = null;
@@ -2212,6 +2224,13 @@
     activeInstallHandles.clear();
     activeContentHandles.clear();
     return currentRunId;
+  }
+
+  /** Ends any Try again state; a retry still in flight can no longer clear it. */
+  function clearBlockingRetry(): void {
+    blockingRetryToken += 1;
+    blockingRetryRunning = false;
+    retryingStageId = null;
   }
 
   function isCurrentRun(runId: number): boolean {
@@ -3102,16 +3121,36 @@
         )
         .map((stage) => stage.id);
       if (ids.length === 0) return;
+      blockingRetryToken += 1;
+      const token = blockingRetryToken;
       blockingRetryRunning = true;
+      retryingStageId = ids[0];
       readyDwellElapsed = false;
       for (const id of ids) {
         retryCounts.delete(id);
         stages = setStageStatus(stages, id, 'pending', null);
       }
       try {
-        await runStageList(ids);
+        // The workspace step rewrites the files the background upload and
+        // index read, so it waits for this run's background phase to end.
+        if (ids.includes('content') && backgroundRunId === runId && backgroundPhaseRunning) {
+          await backgroundPhaseDone;
+        }
+        for (const id of ids) {
+          if (!isCurrentRun(runId)) break;
+          retryingStageId = id;
+          if (!(await runStageList([id]))) break;
+        }
       } finally {
-        if (isCurrentRun(runId)) blockingRetryRunning = false;
+        if (token === blockingRetryToken) {
+          blockingRetryRunning = false;
+          retryingStageId = null;
+        }
+      }
+      // The background phase may have ended while this retry ran; its own
+      // completion check saw the failed step and passed.
+      if (isCurrentRun(runId) && backgroundOkRunId === runId && !backgroundPhaseRunning) {
+        await completeSetup(runId);
       }
     };
 
@@ -3178,6 +3217,10 @@
   ): Promise<void> {
     backgroundRunId = runId;
     backgroundPhaseRunning = true;
+    let markBackgroundPhaseDone = () => {};
+    backgroundPhaseDone = new Promise<void>((resolve) => {
+      markBackgroundPhaseDone = resolve;
+    });
     setBackgroundSetupFlag(true);
     let backgroundOk = false;
     try {
@@ -3188,9 +3231,11 @@
       // A retry or resume starts a new run; only the run that set the flag
       // clears it, so a superseded run cannot release the newer run's hold.
       if (backgroundRunId === runId) {
+        if (backgroundOk) backgroundOkRunId = runId;
         backgroundPhaseRunning = false;
         setBackgroundSetupFlag(false);
       }
+      markBackgroundPhaseDone();
     }
     if (isCurrentRun(runId)) {
       logFirstRunPhaseOnce('background', backgroundOk ? 'ok' : 'failed');
@@ -3740,6 +3785,7 @@
     // next run owns it again.
     stages = resetRetryingStages(stages);
     setupRetry = null;
+    clearBlockingRetry();
     void cancelForegroundWork(currentRunId, { leaveHostInstalls });
   }
 
@@ -5062,9 +5108,12 @@
             ? 'Almost ready.'
             : requiredFailureHeading ?? 'HQ is ready.'}
         </h2>
-        <p class="body">
-          HQ lives in your {setupHostOs === 'macos' ? 'menu bar' : 'system tray'} now and keeps everything in sync.
-        </p>
+        <!-- The menu-bar sentence says setup is done, so it waits for Try again. -->
+        {#if !requiredFailureHeading}
+          <p class="body">
+            HQ lives in your {setupHostOs === 'macos' ? 'menu bar' : 'system tray'} now and keeps everything in sync.
+          </p>
+        {/if}
         {#if requiredFailureHeading}
           <button
             class="btn btn-secondary ready-retry"

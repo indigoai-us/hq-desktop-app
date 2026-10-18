@@ -9,8 +9,10 @@
  *   4 ready     "HQ is ready." + install progress     (wizard step ready)
  *               and the usage-data checkbox. It finishes
  *               by itself, unless a required step failed:
- *               then the heading names that step and
- *               Try again is the one action.
+ *               then the heading names that step, Try
+ *               again re-runs it, and it never finishes by
+ *               itself. Once the watchdog fires, the
+ *               Finish setup note shows beside Try again.
  *
  * The usage-data question is not a screen of its own in the first-run flow:
  * it is one checkbox line on the ready screen, recorded when the flow
