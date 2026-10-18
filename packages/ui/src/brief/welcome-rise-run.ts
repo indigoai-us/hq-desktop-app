@@ -12,8 +12,6 @@ export const WELCOME_RISE_FINDING_CLAUDE = "Keep the offline installer in the fi
 export const WELCOME_RISE_FINDING_CODEX = "PR #248 · Restore offline install is ready for review.";
 export const WELCOME_RISE_FINDING_REPOS = "WelcomeReport.svelte still needs the new empty state.";
 export const WELCOME_RISE_CALENDAR_LINE = "Calendar could not be read.";
-/** Distinct from the failure line, so a priority row does not repeat it. */
-export const WELCOME_RISE_CALENDAR_DETAIL = "This brief has no calls.";
 
 export const WELCOME_RISE_SOURCES: RiseSource[] = [
   {
@@ -71,7 +69,8 @@ function sessionsFor(sourceId: "claude" | "codex", n: number, now: Date): BriefS
 
 /** The brief after this rise. Findings are the rise quotes. Nothing is marked sample. */
 export function welcomeRiseBriefInput(now: Date = welcomeRiseNow()): BriefInput {
-  const origin = { companyUid: COMPANY, repo: "northstar/desktop", product: "Desktop app" };
+  // The welcome edition belongs to the person, so its rows carry no company badge (no "NO" initials).
+  const origin = { companyUid: null, repo: "northstar/desktop", product: "Desktop app" };
   const decisions: BriefDecision[] = [
     {
       id: "rise-claude",
@@ -94,13 +93,6 @@ export function welcomeRiseBriefInput(now: Date = welcomeRiseNow()): BriefInput 
       action: "go",
       origin,
     },
-    {
-      id: "rise-calendar",
-      title: WELCOME_RISE_CALENDAR_LINE,
-      summary: WELCOME_RISE_CALENDAR_DETAIL,
-      action: "go",
-      origin: { companyUid: COMPANY, repo: "Calendar" },
-    },
   ];
   return {
     now: now.toISOString(),
@@ -119,6 +111,8 @@ export function welcomeRiseBriefInput(now: Date = welcomeRiseNow()): BriefInput 
     sessions: sessionsFor("claude", 168, now),
     lastBriefAt: null,
     calendarSample: false,
+    // A source that could not be read is a quiet note, never a priority or a decision.
+    sourceNotes: [WELCOME_RISE_CALENDAR_LINE],
     priorities: decisions.map((item, index) => ({
       n: index + 1,
       text: item.title,

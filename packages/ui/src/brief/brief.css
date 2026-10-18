@@ -680,3 +680,10 @@ html[data-force-theme="light"] .daily-brief .action-card button,
   background: rgba(42, 28, 22, 0.05);
   color: #2a1c16;
 }
+
+/* A source that could not be read: one quiet line, not a card (welcome edition). */
+.daily-brief .b-source-note {
+  margin: 10px 2px 0;
+  font-size: 12px;
+  color: var(--b-t3);
+}

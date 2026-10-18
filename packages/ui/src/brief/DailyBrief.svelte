@@ -302,7 +302,7 @@
       </div>
       <div>
         <h1>Daily Brief</h1>
-        <div class="eyebrow" style="margin-top:4px">{dateLabel} · {timeLabel}</div>
+        <div class="eyebrow" style="margin-top:4px;white-space:nowrap" data-testid="brief-date">{dateLabel} · {timeLabel}</div>
       </div>
     </div>
     <div class="b-prov" title="What this brief was generated from">
@@ -317,6 +317,9 @@
   <BriefTodayStrip events={input.calendarToday} now={input.now} dateLabel={dateLabel.toUpperCase()} sample={input.calendarSample ?? false} {onopenmeetings} />
   {/if}
 
+  {#if !summaryOnly && input.sourceNotes?.length}
+    {#each input.sourceNotes as note (note)}<p class="b-source-note" data-testid="brief-source-note">{note}</p>{/each}
+  {/if}
   {#if !summaryOnly && priorities.length}<BriefPriorities {priorities} decisions={input.decisions} risks={input.risks} prompts={plan.prompts} now={input.now} />{/if}
 
   {#if allCards}<div class="b-review" data-testid="brief-review">Review mode · every card with evidence, by group · Shift+A to go back</div>{/if}

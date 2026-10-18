@@ -6,7 +6,6 @@ import DailyBrief from "./DailyBrief.svelte";
 import { generateBrief } from "./brief-generate.js";
 import { riseFrame, riseRevealAt } from "./brief-rise.js";
 import {
-  WELCOME_RISE_CALENDAR_DETAIL,
   WELCOME_RISE_CALENDAR_LINE,
   WELCOME_RISE_FINDING_CLAUDE,
   WELCOME_RISE_FINDING_CODEX,
@@ -64,16 +63,18 @@ describe("welcome rise handoff", () => {
     expect(text).toContain(WELCOME_RISE_FINDING_CLAUDE);
     expect(text).toContain(WELCOME_RISE_FINDING_CODEX);
     expect(text).toContain(WELCOME_RISE_FINDING_REPOS);
-    const calendar = input.decisions.find((item) => item.id === "rise-calendar");
-    expect(calendar?.title).toBe(WELCOME_RISE_CALENDAR_LINE);
-    expect(calendar?.summary).toBe(WELCOME_RISE_CALENDAR_DETAIL);
-    expect(calendar?.summary).not.toBe(calendar?.title);
-    expect(text).toContain(WELCOME_RISE_CALENDAR_LINE);
-    expect(text).toContain(WELCOME_RISE_CALENDAR_DETAIL);
-    const calendarRow = [...target.querySelectorAll("[data-testid='brief-priority']")].find((row) =>
-      row.textContent?.includes(WELCOME_RISE_CALENDAR_LINE),
-    );
-    expect(calendarRow?.textContent?.match(/Calendar could not be read/g)).toHaveLength(1);
+    // Gate review item 9: the calendar is a quiet source note, not a priority or a decision.
+    expect(input.decisions.find((item) => item.title === WELCOME_RISE_CALENDAR_LINE)).toBeUndefined();
+    const notes = [...target.querySelectorAll("[data-testid='brief-source-note']")].map((el) => el.textContent);
+    expect(notes).toEqual([WELCOME_RISE_CALENDAR_LINE]);
+    expect(text.match(/Calendar could not be read/g)).toHaveLength(1);
+    const rows = [...target.querySelectorAll("[data-testid='brief-priority']")];
+    expect(rows.some((row) => row.textContent?.includes(WELCOME_RISE_CALENDAR_LINE))).toBe(false);
+    // No company initials badge on the person's welcome edition.
+    expect(target.querySelectorAll("[data-testid='brief-priority-logo']")).toHaveLength(0);
+    expect(rows.every((row) => !/\bNO\b/.test(row.textContent ?? ""))).toBe(true);
+    // The time stays on one line.
+    expect((target.querySelector("[data-testid='brief-date']") as HTMLElement).style.whiteSpace).toBe("nowrap");
     expect(text).toContain("168");
     expect(text).not.toContain("412");
     expect(text).not.toMatch(/no sessions/i);
