@@ -234,7 +234,7 @@
 >
   <canvas bind:this={canvas} aria-hidden="true"></canvas>
   <div class="over">
-    <div class="eyebrow" style="color:rgba(255,210,186,.92)">Sunrise · {total ? "decisions cleared" : "nothing owed"}</div>
+    <div class="eyebrow" style="color:rgba(255,210,186,.92)">Sunrise · {total ? (cleared ? "decisions cleared" : "decisions today") : "nothing owed"}</div>
     <div class="greet" class:big>
       Morning{userName ? `, ${userName}` : ""}.<br /><span>{line}</span>
     </div>

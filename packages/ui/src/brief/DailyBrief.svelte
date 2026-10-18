@@ -148,6 +148,9 @@
     // The incident by its plain title ("HQ Cloud main is red"), never the sweep's repo slug.
     if (incident) parts.push(`The one fire: ${watchTitle(incident)}.`);
     else if (!input.decisions.length) parts.push("Nothing needs you right now.");
+    // Never call a day with open decisions "a quiet start" (gate review item 9).
+    else if (!parts.length)
+      parts.push(`${input.decisions.length} decision${input.decisions.length === 1 ? "" : "s"} for you today.`);
     return parts.join(" ") || "A quiet start.";
   });
   const quietLine = $derived(

@@ -212,7 +212,9 @@ describe("BriefConnectApps", () => {
     expect(q("connect-ai-app-chatgpt")?.getAttribute("aria-pressed")).toBe("true");
     expect(q("connect-ai-app-claude")?.getAttribute("aria-pressed")).toBe("false");
     expect(q("connect-ai-quiet-connect")?.textContent?.trim()).toBe("Connect ChatGPT");
-    expect(q("connect-ai-app-claude-anywhere")?.textContent).toBe("HQ Anywhere on");
+    // The quiet strip carries no "HQ Anywhere on" label (gate review item 6).
+    expect(q("connect-ai-app-claude-anywhere")).toBeNull();
+    expect(card?.textContent).not.toContain("HQ Anywhere");
     q("connect-ai-app-claude")!.click();
     await settle();
     expect(q("connect-ai-quiet-connect")?.textContent?.trim()).toBe("Connect Claude");

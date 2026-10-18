@@ -248,6 +248,22 @@ describe("DailyBrief", () => {
     expect(sub).not.toContain("hq-core-staging");
   });
 
+  it("a day with open decisions and nothing else to say never reads as a quiet start, and the eyebrow does not claim them cleared", () => {
+    const input = day();
+    input.merged = undefined as never;
+    input.shipped = [];
+    input.meetingsYesterday = [];
+    input.risks = [];
+    render({ input });
+    const n = input.decisions.length;
+    expect(n).toBeGreaterThan(0);
+    const sunrise = q('[data-testid="brief-sunrise"]')!;
+    expect(sunrise.querySelector(".sub")!.textContent).toBe(`${n} decision${n === 1 ? "" : "s"} for you today.`);
+    expect(sunrise.textContent).not.toContain("A quiet start");
+    expect(sunrise.getAttribute("aria-valuenow")).toBe("0");
+    expect(sunrise.querySelector(".eyebrow")!.textContent).toBe("Sunrise · decisions today");
+  });
+
   it("starts a decision in the chosen engine with its prompt and marks it done locally", async () => {
     const onlaunch = vi.fn(async () => null);
     render({ onlaunch });

@@ -132,9 +132,6 @@
           >
             {copiedId === chosen.id ? "Copied" : `Connect ${chosen.name}`}
           </button>
-          {#if anywhereOnId}
-            <p class="anywhere" data-testid={`connect-ai-app-${anywhereOnId}-anywhere`}>HQ Anywhere on</p>
-          {/if}
           {#if copyFailedId === chosen.id}
             <pre class="manual" data-testid={`connect-ai-app-${chosen.id}-manual`}>{chosen.copyText}</pre>
             <p class="help" role="status">Copy didn't work. Select the text above, or tap the button to try again.</p>
