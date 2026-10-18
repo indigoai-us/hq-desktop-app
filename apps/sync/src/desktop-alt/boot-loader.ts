@@ -49,3 +49,11 @@ export function dismissBootLoader(doc: Document = document): void {
   el.addEventListener('transitionend', onEnd);
   setTimeout(remove, BOOT_LOADER_REMOVE_FALLBACK_MS);
 }
+
+/**
+ * Remove `#hq-boot` at once, with no fade. For a hidden window about to be
+ * revealed: a fade there would run off screen or show half-faded on reveal.
+ */
+export function removeBootLoaderNow(doc: Document = document): void {
+  doc.getElementById(BOOT_LOADER_ID)?.remove();
+}
