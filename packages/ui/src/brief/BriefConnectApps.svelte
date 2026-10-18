@@ -85,6 +85,25 @@
     return apps.find((app) => app.id === pickedId) ?? apps.find((app) => app.id === "chatgpt") ?? apps[0]!;
   });
 
+  /**
+   * The quiet strip (round 11b): the chat and coding apps as a row of marks,
+   * one Connect action under them. Claude Code stays in Settings and the full card.
+   */
+  const QUIET_NAME: Partial<Record<ConnectorApp["id"], string>> = { "grok-bot": "Grok" };
+  const QUIET_HINT: Record<ConnectorApp["id"], string> = {
+    claude: "Bring your Claude chats",
+    chatgpt: "Bring your conversations",
+    codex: "Bring your coding sessions",
+    "grok-bot": "Bring your Grok chats",
+    grok: "Bring your Grok sessions",
+    "claude-code": "",
+  };
+  const quietApps = $derived(apps.filter((app) => app.id !== "claude-code"));
+  const quietChosen = $derived.by(() => {
+    if (quietApps.length === 0) return null;
+    return quietApps.find((app) => app.id === pickedId) ?? quietApps.find((app) => app.id === "chatgpt") ?? quietApps[0]!;
+  });
+
   let copiedId = $state<string | null>(null);
   let copyFailedId = $state<string | null>(null);
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
@@ -102,38 +121,45 @@
   }
 </script>
 
-{#if apps.length || suggesting}
+{#if (quiet ? quietApps.length : apps.length) || suggesting}
   <section class="connect" class:quiet data-testid="connect-ai-apps-card" data-theme={quiet ? appearance : undefined}>
     {#if quiet}
-      {#if apps.length && chosen}
+      {#if quietApps.length && quietChosen}
         <div class="strip">
           <p class="strip-title">Make the next brief more yours.</p>
           <p class="strip-hint">Bring in another tool while your agent keeps reading.</p>
           <div class="tools">
-            {#each apps as app (app.id)}
+            {#each quietApps as app (app.id)}
+              {@const mark = BRAND_ICONS[MARK[app.id]]}
               <button
                 type="button"
                 class="tool"
-                aria-pressed={chosen.id === app.id}
+                aria-pressed={quietChosen.id === app.id}
                 data-testid={`connect-ai-app-${app.id}`}
                 onclick={() => (pickedId = app.id)}
               >
-                <span class="name">{app.name}</span>
-                {#if app.id === "chatgpt"}<span class="rec">Recommended</span>{/if}
+                <span class="tool-logo" aria-hidden="true">
+                  <svg class="mark" class:clay={mark.fill === "clay"} viewBox={mark.viewBox} width="16" height="16"><path fill-rule="evenodd" d={mark.d} /></svg>
+                </span>
+                <span class="name">{QUIET_NAME[app.id] ?? app.name}</span>
               </button>
             {/each}
           </div>
-          <button
-            type="button"
-            class="connect-one"
-            class:copied={copiedId === chosen.id}
-            data-testid="connect-ai-quiet-connect"
-            onclick={() => void copy(chosen)}
-          >
-            {copiedId === chosen.id ? "Copied" : `Connect ${chosen.name}`}
-          </button>
-          {#if copyFailedId === chosen.id}
-            <pre class="manual" data-testid={`connect-ai-app-${chosen.id}-manual`}>{chosen.copyText}</pre>
+          <div class="choice">
+            {#if quietChosen.id === "chatgpt"}<span class="rec" data-testid="connect-ai-quiet-recommended">Recommended</span>{/if}
+            <button
+              type="button"
+              class="connect-one"
+              class:copied={copiedId === quietChosen.id}
+              data-testid="connect-ai-quiet-connect"
+              onclick={() => void copy(quietChosen)}
+            >
+              {copiedId === quietChosen.id ? "Copied" : `Connect ${QUIET_NAME[quietChosen.id] ?? quietChosen.name}`}
+            </button>
+            <span class="choice-hint" data-testid="connect-ai-quiet-hint">{QUIET_HINT[quietChosen.id]}</span>
+          </div>
+          {#if copyFailedId === quietChosen.id}
+            <pre class="manual" data-testid={`connect-ai-app-${quietChosen.id}-manual`}>{quietChosen.copyText}</pre>
             <p class="help" role="status">Copy didn't work. Select the text above, or tap the button to try again.</p>
           {/if}
         </div>
@@ -207,17 +233,18 @@
     text-align: left;
     animation: in 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) both;
   }
+  /* Quiet: no card. A faint ground behind the copy, the round 11b invitation. */
   .connect.quiet {
-    margin-top: 0;
-    padding: 14px 16px 16px;
-    border-radius: 16px;
-    background: rgba(22, 16, 24, 0.88);
+    margin: 0 0 0 -10px;
+    padding: 4px 10px 6px;
+    border-radius: 6px;
+    background: color-mix(in srgb, #121216 55%, transparent);
     color: rgba(255, 236, 220, 0.94);
     box-shadow: none;
     animation: none;
   }
   .connect.quiet[data-theme="light"] {
-    background: rgba(255, 250, 243, 0.94);
+    background: color-mix(in srgb, #fff7e7 90%, transparent);
     color: #2a1c16;
   }
   .strip-title,
@@ -226,8 +253,9 @@
     margin: 0;
   }
   .strip-title {
-    font-size: 14px;
-    font-weight: 500;
+    font-family: "Fraunces", "Iowan Old Style", Georgia, serif;
+    font-size: 19px;
+    font-weight: 400;
     letter-spacing: -0.01em;
   }
   .strip-hint,
@@ -238,34 +266,86 @@
   }
   .strip-hint {
     margin-top: 4px;
-    font-size: 12.5px;
+    font-size: 12px;
   }
   .tools {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
-    margin-top: 12px;
+    gap: 15px;
+    margin-top: 14px;
   }
   .connect.quiet .tool {
+    position: relative;
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 7px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
     background: transparent;
     color: inherit;
-    border: 1px solid currentColor;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
     opacity: 0.72;
   }
   .connect.quiet .tool[aria-pressed="true"] {
     opacity: 1;
   }
+  .connect.quiet .tool[aria-pressed="true"]::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -7px;
+    height: 1.5px;
+    border-radius: 1px;
+    background: currentColor;
+  }
+  .tool-logo {
+    width: 26px;
+    height: 26px;
+    border-radius: 8px;
+    display: inline-grid;
+    place-items: center;
+    background: rgba(255, 255, 255, 0.08);
+  }
+  .connect.quiet[data-theme="light"] .tool-logo {
+    background: rgba(42, 28, 22, 0.06);
+  }
+  .tool-logo .mark {
+    fill: currentColor;
+  }
+  .tool-logo .mark.clay {
+    fill: #d97757;
+  }
+  .choice {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 20px;
+  }
   .rec {
     font-size: 10px;
     letter-spacing: 0.04em;
-    text-transform: uppercase;
+    padding: 2px 6px;
+    border: 1px solid currentColor;
+    border-radius: 4px;
     opacity: 0.72;
   }
-  .connect-one {
-    margin-top: 12px;
+  .choice-hint {
+    font-size: 12px;
+    opacity: 0.72;
+  }
+  .connect.quiet .connect-one {
+    border: 0;
+    border-radius: 999px;
+    padding: 7px 14px;
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 500;
+    cursor: pointer;
   }
   .connect.quiet[data-theme="light"] .connect-one {
     background: #2a1c16;

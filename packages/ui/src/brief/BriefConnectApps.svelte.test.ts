@@ -224,6 +224,39 @@ describe("BriefConnectApps", () => {
     expect(q("connect-ai-quiet-connect")?.textContent?.trim()).toBe("Copied");
   });
 
+  it("quiet mode is an icon strip with one Connect action and no Claude Code (round 11b)", async () => {
+    render(
+      [
+        { bundleId: "com.anthropic.claudefordesktop", name: "Claude" },
+        { bundleId: "com.openai.chat", name: "ChatGPT" },
+      ],
+      { claudeCode: true, codex: true },
+      null,
+      { quiet: true, theme: "light" },
+    );
+    await settle();
+    const card = q("connect-ai-apps-card")!;
+    expect(q("connect-ai-app-claude-code")).toBeNull();
+    expect(card.textContent).not.toContain("Claude Code");
+    const tools = [...card.querySelectorAll<HTMLButtonElement>(".tool")];
+    expect(tools.map((t) => t.querySelector(".name")?.textContent)).toEqual(["Claude", "ChatGPT", "Codex"]);
+    for (const t of tools) expect(t.querySelector(".tool-logo svg")).not.toBeNull();
+    expect(card.querySelectorAll("[data-testid='connect-ai-quiet-connect']")).toHaveLength(1);
+    expect(q("connect-ai-quiet-recommended")?.textContent).toBe("Recommended");
+    expect(q("connect-ai-quiet-hint")?.textContent).toBe("Bring your conversations");
+    q("connect-ai-app-codex")!.click();
+    await settle();
+    expect(q("connect-ai-quiet-connect")?.textContent?.trim()).toBe("Connect Codex");
+    expect(q("connect-ai-quiet-recommended")).toBeNull();
+    expect(q("connect-ai-quiet-hint")?.textContent).toBe("Bring your coding sessions");
+  });
+
+  it("quiet mode is left out when Claude Code is the only app found", async () => {
+    render([], { claudeCode: true, codex: false }, null, { quiet: true });
+    await settle();
+    expect(q("connect-ai-apps-card")).toBeNull();
+  });
+
   it("is left out when no found app matches and there are no suggestions", async () => {
     render([{ bundleId: "com.linear", name: "Linear" }]);
     await settle();
