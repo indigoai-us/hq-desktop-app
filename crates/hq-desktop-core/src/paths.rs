@@ -292,6 +292,33 @@ pub fn settings_path_repair_environment_available(
     }
 }
 
+/// Comparison key for a Windows PATH entry: `/` and `\` are the same
+/// separator, case is ignored, and a trailing separator is dropped.
+fn windows_path_key(path: &str) -> String {
+    let normalized = path.replace('/', "\\");
+    // `C:\\` is a drive root, while `C:` is drive-relative; don't fold
+    // those distinct Windows paths together when trimming separators.
+    let is_drive_root = normalized.len() == 3
+        && normalized.as_bytes()[1] == b':'
+        && normalized.as_bytes()[2] == b'\\';
+    if is_drive_root {
+        normalized.to_lowercase()
+    } else {
+        normalized.trim_end_matches('\\').to_lowercase()
+    }
+}
+
+/// Comparison key for a POSIX PATH entry: a trailing `/` is dropped, and
+/// the root stays `/`.
+fn posix_path_key(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() && !path.is_empty() {
+        "/".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// Compose Windows Claude `env.PATH` with HQ-managed tool directories first.
 /// Windows PATH entries are separated by `;` and compared case-insensitively;
 /// only duplicate entries for the managed directories are removed. All other
@@ -302,20 +329,6 @@ pub fn compose_windows_settings_env_path(
     toolchain_roots: &[PathBuf],
     existing: Option<&str>,
 ) -> String {
-    fn windows_path_key(path: &str) -> String {
-        let normalized = path.replace('/', "\\");
-        // `C:\\` is a drive root, while `C:` is drive-relative; don't fold
-        // those distinct Windows paths together when trimming separators.
-        let is_drive_root = normalized.len() == 3
-            && normalized.as_bytes()[1] == b':'
-            && normalized.as_bytes()[2] == b'\\';
-        if is_drive_root {
-            normalized.to_lowercase()
-        } else {
-            normalized.trim_end_matches('\\').to_lowercase()
-        }
-    }
-
     let managed_dirs = managed_windows_settings_path_dirs_for_roots(toolchain_roots);
     let mut managed_keys = std::collections::HashSet::new();
     let mut entries = Vec::with_capacity(managed_dirs.len());
@@ -354,6 +367,83 @@ pub fn managed_npm_bin_in(root: &Path) -> PathBuf {
     {
         prefix.join("bin")
     }
+}
+
+/// Directory holding the managed Node executable under a toolchain root:
+/// `node/bin` on unix, the flat `node` directory on Windows.
+fn managed_node_bin_dir_in(root: &Path) -> PathBuf {
+    let node_dir = managed_node_dir_in(root);
+
+    #[cfg(target_os = "windows")]
+    {
+        node_dir
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        node_dir.join("bin")
+    }
+}
+
+/// Directories a coding session the app opens (Claude Code, Codex, Grok in a
+/// terminal) needs on PATH to run the managed `hq` CLI, and `qmd` and
+/// `claude`, which the installer puts in the same npm prefix. npm's global
+/// bin comes first so its shims win; the managed Node bin follows so a
+/// node-shebanged shim finds its runtime. One pair per root, in root order.
+/// Pure: [`managed_cli_session_dirs`] filters to directories that exist.
+pub fn managed_cli_session_dirs_for_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+    roots
+        .iter()
+        .flat_map(|root| [managed_npm_bin_in(root), managed_node_bin_dir_in(root)])
+        .collect()
+}
+
+/// [`managed_cli_session_dirs_for_roots`] for this machine's toolchain roots,
+/// keeping only directories that exist.
+pub fn managed_cli_session_dirs() -> Vec<PathBuf> {
+    let mut dirs = managed_cli_session_dirs_for_roots(&managed_toolchain_roots());
+    dirs.retain(|dir| dir.is_dir());
+    dirs
+}
+
+/// `existing` PATH with each `managed` directory it does not already contain
+/// put in front, in `managed` order. Every existing entry is kept, with its
+/// spelling and order; a managed directory already on PATH, or listed twice in
+/// `managed`, is not added again. `windows` selects `;` and Windows path
+/// comparison (case, `/` versus `\` and a trailing separator are ignored);
+/// otherwise entries are `:`-separated and only a trailing `/` is ignored.
+/// Platform-independent so both shapes run in every unit-test lane.
+pub fn path_with_managed_cli(existing: Option<&str>, managed: &[PathBuf], windows: bool) -> String {
+    let (sep, key): (char, fn(&str) -> String) = if windows {
+        (';', windows_path_key)
+    } else {
+        (':', posix_path_key)
+    };
+    let existing = existing.unwrap_or_default();
+    let mut seen: std::collections::HashSet<String> = existing
+        .split(sep)
+        .filter(|entry| !entry.is_empty())
+        .map(key)
+        .collect();
+    let mut entries = Vec::with_capacity(managed.len() + 1);
+    for dir in managed {
+        let mut entry = dir.to_string_lossy().into_owned();
+        if windows {
+            entry = entry.replace('/', "\\");
+        }
+        // An empty entry would mean the current directory, and one holding the
+        // separator would split into two; neither belongs on PATH.
+        if entry.is_empty() || entry.contains(sep) {
+            continue;
+        }
+        if seen.insert(key(&entry)) {
+            entries.push(entry);
+        }
+    }
+    if !existing.is_empty() {
+        entries.push(existing.to_string());
+    }
+    entries.join(&sep.to_string())
 }
 
 /// Whether `path` is `root` itself or lives inside it, compared by path
@@ -3019,6 +3109,120 @@ pub fn discover_hq_folder_via_core_yaml() -> Option<PathBuf> {
     hq_discovery_candidates()
         .into_iter()
         .find(|p| is_valid_hq_root(p))
+}
+
+#[cfg(test)]
+mod managed_cli_session_path_tests {
+    use super::*;
+
+    #[test]
+    fn session_dirs_put_the_managed_npm_bin_first_then_the_node_bin() {
+        let root = PathBuf::from("/fixture/toolchain");
+        assert_eq!(
+            managed_cli_session_dirs_for_roots(std::slice::from_ref(&root)),
+            vec![managed_npm_bin_in(&root), managed_node_bin_dir_in(&root)]
+        );
+    }
+
+    /// qmd and hq are installed by the same managed npm into the same prefix,
+    /// so the npm bin the sessions get is where both CLIs live.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn session_dirs_include_the_npm_bin_that_holds_hq_and_qmd() {
+        let root = PathBuf::from("/fixture/toolchain");
+        let dirs = managed_cli_session_dirs_for_roots(std::slice::from_ref(&root));
+        assert_eq!(dirs[0], root.join("npm-global").join("bin"));
+        assert_eq!(dirs[1], root.join("node").join("bin"));
+    }
+
+    #[test]
+    fn session_dirs_cover_every_root_in_order() {
+        let roots = vec![PathBuf::from("/a/toolchain"), PathBuf::from("/b/toolchain")];
+        let dirs = managed_cli_session_dirs_for_roots(&roots);
+        assert_eq!(dirs.len(), 4);
+        assert_eq!(dirs[0], managed_npm_bin_in(&roots[0]));
+        assert_eq!(dirs[2], managed_npm_bin_in(&roots[1]));
+    }
+
+    #[test]
+    fn unix_child_path_includes_the_managed_dirs_ahead_of_the_existing_path() {
+        let managed = [
+            PathBuf::from("/h/Library/Application Support/Indigo HQ/toolchain/npm-global/bin"),
+            PathBuf::from("/h/Library/Application Support/Indigo HQ/toolchain/node/bin"),
+        ];
+        assert_eq!(
+            path_with_managed_cli(Some("/usr/bin:/bin"), &managed, false),
+            "/h/Library/Application Support/Indigo HQ/toolchain/npm-global/bin:\
+             /h/Library/Application Support/Indigo HQ/toolchain/node/bin:/usr/bin:/bin"
+        );
+    }
+
+    #[test]
+    fn unix_child_path_preserves_every_existing_entry_in_order() {
+        let managed = [PathBuf::from("/m/npm-global/bin")];
+        let existing = "/opt/homebrew/bin:/usr/bin::/bin:/Users/me/.cargo/bin";
+        let out = path_with_managed_cli(Some(existing), &managed, false);
+        assert_eq!(out, format!("/m/npm-global/bin:{existing}"));
+    }
+
+    #[test]
+    fn unix_child_path_does_not_add_a_dir_already_on_path() {
+        let managed = [
+            PathBuf::from("/m/npm-global/bin"),
+            PathBuf::from("/m/node/bin"),
+        ];
+        assert_eq!(
+            path_with_managed_cli(Some("/usr/bin:/m/npm-global/bin/:/bin"), &managed, false),
+            "/m/node/bin:/usr/bin:/m/npm-global/bin/:/bin"
+        );
+        let once = path_with_managed_cli(Some("/usr/bin"), &managed, false);
+        assert_eq!(path_with_managed_cli(Some(&once), &managed, false), once);
+        let repeated = [managed[0].clone(), managed[0].clone()];
+        assert_eq!(
+            path_with_managed_cli(Some("/usr/bin"), &repeated, false),
+            "/m/npm-global/bin:/usr/bin"
+        );
+    }
+
+    #[test]
+    fn unix_child_path_without_an_existing_path_is_just_the_managed_dirs() {
+        let managed = [
+            PathBuf::from("/m/npm-global/bin"),
+            PathBuf::from("/m/node/bin"),
+        ];
+        assert_eq!(
+            path_with_managed_cli(None, &managed, false),
+            "/m/npm-global/bin:/m/node/bin"
+        );
+        assert_eq!(
+            path_with_managed_cli(Some(""), &managed, false),
+            "/m/npm-global/bin:/m/node/bin"
+        );
+    }
+
+    #[test]
+    fn windows_child_path_includes_the_managed_prefix_and_keeps_the_rest() {
+        let managed = [
+            PathBuf::from(r"C:\Users\me\AppData\Local\IndigoHQ\toolchain\npm-prefix"),
+            PathBuf::from(r"C:\Users\me\AppData\Local\IndigoHQ\toolchain\node"),
+        ];
+        assert_eq!(
+            path_with_managed_cli(Some(r"C:\Windows\system32;C:\Windows"), &managed, true),
+            r"C:\Users\me\AppData\Local\IndigoHQ\toolchain\npm-prefix;C:\Users\me\AppData\Local\IndigoHQ\toolchain\node;C:\Windows\system32;C:\Windows"
+        );
+    }
+
+    #[test]
+    fn windows_child_path_does_not_add_a_case_or_separator_variant_again() {
+        let managed = [PathBuf::from(
+            r"C:\Users\me\AppData\Local\IndigoHQ\toolchain\npm-prefix",
+        )];
+        let existing = r"c:/users/ME/appdata/local/indigohq/toolchain/NPM-PREFIX\;C:\Windows";
+        assert_eq!(
+            path_with_managed_cli(Some(existing), &managed, true),
+            existing
+        );
+    }
 }
 
 #[cfg(test)]

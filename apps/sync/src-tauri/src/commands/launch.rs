@@ -125,6 +125,119 @@ pub(crate) fn unix_terminal_shell_command(
     }
 }
 
+/// The shell family Terminal runs the launch line in. fish has its own
+/// syntax for the PATH prepend; every other login shell takes POSIX sh.
+#[cfg_attr(windows, allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalShell {
+    Posix,
+    Fish,
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+impl TerminalShell {
+    pub(crate) fn from_shell_path(shell: Option<&std::ffi::OsStr>) -> Self {
+        let is_fish = shell
+            .map(std::path::Path::new)
+            .and_then(std::path::Path::file_name)
+            .is_some_and(|name| name == "fish");
+        if is_fish {
+            TerminalShell::Fish
+        } else {
+            TerminalShell::Posix
+        }
+    }
+
+    /// The shell Terminal opens for this user: the account's login shell,
+    /// falling back to `$SHELL`.
+    #[cfg(not(windows))]
+    fn current() -> Self {
+        Self::from_shell_path(
+            login_shell()
+                .or_else(|| std::env::var_os("SHELL"))
+                .as_deref(),
+        )
+    }
+}
+
+/// The login shell in the user's account record, which is what Terminal runs.
+#[cfg(not(windows))]
+fn login_shell() -> Option<std::ffi::OsString> {
+    use std::ffi::CStr;
+    use std::os::unix::ffi::OsStrExt as _;
+    // SAFETY: getpwuid returns NULL or a pointer to static storage that stays
+    // valid until the next getpw* call; the shell is copied out at once.
+    unsafe {
+        let pw = libc::getpwuid(libc::getuid());
+        if pw.is_null() || (*pw).pw_shell.is_null() {
+            return None;
+        }
+        let shell = CStr::from_ptr((*pw).pw_shell).to_bytes();
+        (!shell.is_empty()).then(|| std::ffi::OsStr::from_bytes(shell).to_os_string())
+    }
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+/// fish single-quoting: inside `'…'` only `\\` and `\'` are escapes.
+fn fish_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+/// Shell text that puts each managed CLI dir (the npm bin holding hq, qmd
+/// and claude, then the managed node bin) at the front of the session's
+/// PATH unless it is already there. It runs after the user's rc files, so
+/// their PATH is kept; it writes no file. Dirs are prepended last to first so
+/// they end up in `managed` order. A dir that is empty, holds a `:` or a
+/// control character cannot go on PATH or into the Terminal line and is
+/// skipped. No usable dir gives an empty prefix.
+pub(crate) fn unix_terminal_path_prefix(shell: TerminalShell, managed: &[PathBuf]) -> String {
+    let mut dirs: Vec<String> = Vec::new();
+    for dir in managed {
+        let dir = dir.to_string_lossy();
+        if dir.is_empty() || dir.contains(':') || dir.chars().any(char::is_control) {
+            continue;
+        }
+        if !dirs.iter().any(|seen| seen.as_str() == dir) {
+            dirs.push(dir.into_owned());
+        }
+    }
+    if dirs.is_empty() {
+        return String::new();
+    }
+    let mut prefix = String::new();
+    for dir in dirs.iter().rev() {
+        match shell {
+            TerminalShell::Posix => prefix.push_str(&format!(
+                "case \":$PATH:\" in *{}*|*{}*) ;; *) PATH={}\"${{PATH:+:$PATH}}\" ;; esac; ",
+                posix_single_quote(&format!(":{dir}:")),
+                posix_single_quote(&format!(":{dir}/:")),
+                posix_single_quote(dir),
+            )),
+            TerminalShell::Fish => {
+                let quoted = fish_single_quote(dir);
+                prefix.push_str(&format!(
+                    "contains -- {quoted} $PATH; or set -gx PATH {quoted} $PATH; "
+                ));
+            }
+        }
+    }
+    if shell == TerminalShell::Posix {
+        prefix.push_str("export PATH; ");
+    }
+    prefix
+}
+
+/// `base` PATH for a child the app spawns, with the managed CLI dirs that
+/// exist on this machine put in front unless already present.
+fn managed_cli_child_path(base: &str) -> String {
+    hq_desktop_core::paths::path_with_managed_cli(
+        Some(base),
+        &hq_desktop_core::paths::managed_cli_session_dirs(),
+        cfg!(windows),
+    )
+}
+
 /// Wrap a shell line in the AppleScript that opens it in Terminal. Inside an
 /// AppleScript string literal only `\` and `"` are special; both are escaped.
 /// A sanitized prompt has no newlines, so the literal stays on one line.
@@ -469,15 +582,18 @@ fn launch_codex_workspace_impl(path: String, prompt: Option<String>) -> Result<(
             target.display()
         ));
     }
+    let child_path = managed_cli_child_path(&crate::commands::install_deps::extended_search_path());
     let output = match bundled_codex_bin() {
         Some(bin) => Command::new(bin)
             .args(["app", &target.to_string_lossy()])
+            .env("PATH", &child_path)
             .output(),
         None => {
             let escaped = target.to_string_lossy().replace('\'', "'\\''");
             let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
             Command::new(shell)
                 .args(["-lc", &format!("codex app '{escaped}'")])
+                .env("PATH", &child_path)
                 .output()
         }
     }
@@ -528,7 +644,7 @@ fn launch_codex_workspace_impl(path: String, prompt: Option<String>) -> Result<(
         .args(["/C", "codex", "app", &target.to_string_lossy()])
         .env(
             "PATH",
-            crate::commands::install_deps::extended_search_path(),
+            managed_cli_child_path(&crate::commands::install_deps::extended_search_path()),
         )
         .output()
         .map_err(|e| format!("failed to run codex app: {e}"))?;
@@ -640,7 +756,14 @@ fn spawn_cli_terminal_unix_with_prompt(
     binary: &str,
     prompt: Option<&str>,
 ) -> Result<(), String> {
-    let script = terminal_applescript(&unix_terminal_shell_command(path, binary, prompt));
+    let path_prefix = unix_terminal_path_prefix(
+        TerminalShell::current(),
+        &hq_desktop_core::paths::managed_cli_session_dirs(),
+    );
+    let script = terminal_applescript(&format!(
+        "{path_prefix}{}",
+        unix_terminal_shell_command(path, binary, prompt)
+    ));
 
     let output = Command::new("osascript")
         .arg("-e")
@@ -777,7 +900,7 @@ fn spawn_cli_terminal_windows_command(
     prompt: Option<&str>,
 ) -> Result<(), String> {
     let escaped = powershell_single_quote_escape(path);
-    let search_path = extended_search_path();
+    let search_path = managed_cli_child_path(&extended_search_path());
     find_in_search_path(binary, &search_path)
         .ok_or_else(|| format!("Could not find {binary} on PATH"))?;
     let wt = find_in_search_path("wt.exe", &search_path)
@@ -1277,6 +1400,184 @@ end tell"#
     fn applescript_literal_round_trips_to_the_shell_line() {
         let prompt = sanitize_terminal_prompt(Some(HOSTILE)).unwrap();
         let shell_cmd = unix_terminal_shell_command("/Users/me/HQ", "grok", Some(&prompt));
+        let script = terminal_applescript(&shell_cmd);
+        let literal = script
+            .split("do script ")
+            .nth(1)
+            .unwrap()
+            .split("\nend tell")
+            .next()
+            .unwrap();
+        let out = Command::new("osascript")
+            .arg("-e")
+            .arg(format!("return {literal}"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(out.stdout)
+                .unwrap()
+                .trim_end_matches('\n'),
+            shell_cmd
+        );
+    }
+
+    /// Runs `prefix` then prints PATH in a clean `/bin/sh`, the way Terminal
+    /// runs the launch line after the user's rc files. `path` of `None` means
+    /// PATH is unset.
+    #[cfg(unix)]
+    fn sh_path_after(prefix: &str, path: Option<&str>) -> String {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.env_clear()
+            .arg("-c")
+            .arg(format!("{prefix}printf %s \"$PATH\""));
+        if let Some(path) = path {
+            cmd.env("PATH", path);
+        }
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    #[cfg(unix)]
+    fn managed_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let npm = dir.path().join("it's a toolchain/npm-global/bin");
+        let node = dir.path().join("it's a toolchain/node/bin");
+        (dir, npm, node)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_path_includes_the_managed_cli_dirs_first() {
+        let (_dir, npm, node) = managed_fixture();
+        let prefix = unix_terminal_path_prefix(TerminalShell::Posix, &[npm.clone(), node.clone()]);
+        assert_eq!(
+            sh_path_after(&prefix, Some("/usr/bin:/bin")),
+            format!("{}:{}:/usr/bin:/bin", npm.display(), node.display())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_path_keeps_the_existing_path_in_order() {
+        let (_dir, npm, _node) = managed_fixture();
+        let prefix = unix_terminal_path_prefix(TerminalShell::Posix, &[npm.clone()]);
+        let existing = "/opt/homebrew/bin:/Users/me/.cargo/bin:/usr/bin:/bin";
+        assert_eq!(
+            sh_path_after(&prefix, Some(existing)),
+            format!("{}:{existing}", npm.display())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_path_does_not_add_a_dir_that_is_already_there() {
+        let (_dir, npm, node) = managed_fixture();
+        let prefix = unix_terminal_path_prefix(TerminalShell::Posix, &[npm.clone(), node.clone()]);
+        let existing = format!("/usr/bin:{}:/bin:{}/", npm.display(), node.display());
+        assert_eq!(sh_path_after(&prefix, Some(&existing)), existing);
+
+        // Running the prefix twice (a nested shell) adds nothing the second time.
+        let once = sh_path_after(&prefix, Some("/usr/bin"));
+        assert_eq!(
+            sh_path_after(&format!("{prefix}{prefix}"), Some("/usr/bin")),
+            once
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_path_without_a_path_has_no_empty_entry() {
+        let (_dir, npm, node) = managed_fixture();
+        let prefix = unix_terminal_path_prefix(TerminalShell::Posix, &[npm.clone(), node.clone()]);
+        // An empty PATH, not an unset one: sh fills in its own default when PATH is unset.
+        assert_eq!(
+            sh_path_after(&prefix, Some("")),
+            format!("{}:{}", npm.display(), node.display())
+        );
+    }
+
+    #[test]
+    fn session_path_prefix_skips_dirs_that_cannot_go_on_path() {
+        let managed = [
+            PathBuf::from(""),
+            PathBuf::from("/a:b/bin"),
+            PathBuf::from("/a\nb/bin"),
+            PathBuf::from("/ok/bin"),
+            PathBuf::from("/ok/bin"),
+        ];
+        let prefix = unix_terminal_path_prefix(TerminalShell::Posix, &managed);
+        assert_eq!(prefix.matches("/ok/bin").count(), 3, "{prefix}");
+        assert!(
+            !prefix.contains("a:b") && !prefix.contains('\n'),
+            "{prefix}"
+        );
+    }
+
+    #[test]
+    fn session_path_prefix_is_empty_without_managed_dirs() {
+        assert_eq!(unix_terminal_path_prefix(TerminalShell::Posix, &[]), "");
+        assert_eq!(unix_terminal_path_prefix(TerminalShell::Fish, &[]), "");
+    }
+
+    #[test]
+    fn fish_session_path_prefix_uses_fish_syntax() {
+        let managed = [
+            PathBuf::from("/m/npm-global/bin"),
+            PathBuf::from("/m/it's\\node/bin"),
+        ];
+        assert_eq!(
+            unix_terminal_path_prefix(TerminalShell::Fish, &managed),
+            r"contains -- '/m/it\'s\\node/bin' $PATH; or set -gx PATH '/m/it\'s\\node/bin' $PATH; contains -- '/m/npm-global/bin' $PATH; or set -gx PATH '/m/npm-global/bin' $PATH; "
+        );
+    }
+
+    #[test]
+    fn terminal_shell_is_fish_only_for_a_fish_login_shell() {
+        use std::ffi::OsStr;
+        assert_eq!(
+            TerminalShell::from_shell_path(Some(OsStr::new("/opt/homebrew/bin/fish"))),
+            TerminalShell::Fish
+        );
+        assert_eq!(
+            TerminalShell::from_shell_path(Some(OsStr::new("fish"))),
+            TerminalShell::Fish
+        );
+        for shell in ["/bin/zsh", "/bin/bash", "/bin/sh", "/usr/bin/fishy", ""] {
+            assert_eq!(
+                TerminalShell::from_shell_path(Some(OsStr::new(shell))),
+                TerminalShell::Posix,
+                "{shell}"
+            );
+        }
+        assert_eq!(TerminalShell::from_shell_path(None), TerminalShell::Posix);
+    }
+
+    /// The full prefixed launch line survives AppleScript escaping.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn applescript_literal_round_trips_the_prefixed_line() {
+        let managed = [PathBuf::from(
+            "/Users/me/Library/Application Support/Indigo HQ/toolchain/npm-global/bin",
+        )];
+        let shell_cmd = format!(
+            "{}{}",
+            unix_terminal_path_prefix(TerminalShell::Posix, &managed),
+            unix_terminal_shell_command("/Users/me/HQ", "codex", None)
+        );
+        assert!(
+            shell_cmd.contains("Indigo HQ/toolchain/npm-global/bin"),
+            "{shell_cmd}"
+        );
         let script = terminal_applescript(&shell_cmd);
         let literal = script
             .split("do script ")
