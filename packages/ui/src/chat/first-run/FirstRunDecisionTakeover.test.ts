@@ -730,6 +730,47 @@ describe("FirstRunDecisionTakeover sign-in", () => {
     expect(timing).toContain("kind=signin event=done tool=codex");
   });
 
+  it("shows Google's phone check after Claude Code's browser wait passes 10 seconds, and not for Codex", async () => {
+    const COPY = "Google may ask you to confirm it's you on your phone. That is Google's own check.";
+    const claude = fakeSignIn(false);
+    render({
+      signin: claude.signin,
+      installed: { claude: false, codex: true },
+      scanTools: [{ tool: "claude-code", sessions_total: 12, sessions_last_30d: 4, last_active_at: NOW }],
+    });
+    await waitForDecision();
+    vi.useFakeTimers();
+    await continuePastCallout();
+    expect(text("first-run-signin-waiting")).toBe("Signing in to Claude Code…");
+    expect(byId("google-device-check")).toBeNull();
+    await vi.advanceTimersByTimeAsync(9_000);
+    flushSync();
+    expect(byId("google-device-check")).toBeNull();
+    await vi.advanceTimersByTimeAsync(1_000);
+    flushSync();
+    expect(text("google-device-check")).toBe(COPY);
+    claude.runs[0]!.finish(true);
+    await settle();
+    expect(byId("google-device-check")).toBeNull();
+    vi.useRealTimers();
+
+    if (component) await unmount(component);
+    component = null;
+    host?.remove();
+
+    const codex = fakeSignIn(false);
+    render({ signin: codex.signin, installed: SIGNED_OUT });
+    await waitForDecision();
+    vi.useFakeTimers();
+    await continuePastCallout();
+    expect(text("first-run-signin-waiting")).toBe("Signing in to Codex…");
+    await vi.advanceTimersByTimeAsync(15_000);
+    flushSync();
+    expect(byId("google-device-check")).toBeNull();
+    expect(byId("first-run-takeover")?.textContent ?? "").not.toContain(COPY);
+    vi.useRealTimers();
+  });
+
   it("signed out, Continue in Claude Code names Claude Code while it waits", async () => {
     const { signin, runs } = fakeSignIn(false);
     const { handlers } = render({
