@@ -118,6 +118,15 @@
 
 <style>
   .runbar {
+    /* The shared dropdown otherwise inherits shell colors against brief surfaces. */
+    --v4-text-1: var(--b-t1);
+    --v4-text-2: var(--b-t2);
+    --v4-text-3: var(--b-t2);
+    --v4-control-bg: var(--b-card-hi);
+    --v4-hairline: var(--b-line);
+    --overlay-bg: var(--b-card);
+    --overlay-border: var(--b-line);
+    --overlay-hover: var(--b-card-hi);
     display: flex;
     flex-wrap: wrap;
     align-items: center;

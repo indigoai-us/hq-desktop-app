@@ -157,7 +157,9 @@
   const view = params.get('view') ?? 'shell';
   // A real brief run read from the HQ root (see the brief view below).
   const briefRun = params.get('briefRun');
-  const briefCompanies = [
+  const briefCompanies = params.has('briefCompanies')
+    ? (params.get('briefCompanies') ?? '').split(',').filter(Boolean).map(slug => ({ uid: `cmp_${slug}`, slug, label: slug }))
+    : [
     {
       uid: params.get('briefCompanyUid') ?? 'cmp_indigo',
       slug: params.get('briefCompany') ?? 'indigo',
@@ -269,7 +271,7 @@
   {#await loadBrief() then mod}
     <div style="height:100vh;overflow:auto">
       {#if briefRun}
-        <mod.BriefRunsPage adapter={{}} companies={briefCompanies} source={briefRunSource} initialRunId={briefRun} />
+        <mod.BriefRunsPage adapter={{}} companies={briefCompanies} source={briefRunSource} initialRunId={briefRun} onconnectcompany={() => window.dispatchEvent(new Event('brief-connect-company'))} />
       {:else}
         <mod.BriefRunsPage adapter={{}} companies={[]} source={null} />
       {/if}

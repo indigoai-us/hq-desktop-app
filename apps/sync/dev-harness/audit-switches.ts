@@ -586,7 +586,12 @@ export async function withReadsSwitch<T>(
 }
 
 type Emit = (event: string, payload?: unknown) => Promise<void> | void;
-type Push = (input: { title: string; detail: string; tone: 'ok' | 'err' | 'neutral' }) => unknown;
+type Push = (input: {
+  title: string;
+  detail: string;
+  tone: 'ok' | 'err' | 'neutral';
+  actions?: { label: string; onAction: () => void }[];
+}) => unknown;
 
 /**
  * Raise the toasts named by `?toast=` through the paths the product uses:
@@ -603,7 +608,12 @@ export function raiseToasts(kind: string | null, emit: Emit, push: Push): void {
       void emit('sync:plan', { company: 'indigo', filesToDownload: 12, filesToUpload: 4, filesToDelete: 0 });
       for (let i = 0; i < 6; i += 1) void emit('sync:progress', { company: 'indigo' });
     } else if (k === 'info') {
-      push({ title: 'Open a company first', detail: '', tone: 'neutral' });
+      push({
+        title: 'Open a company first',
+        detail: '',
+        tone: 'neutral',
+        actions: [{ label: 'New company', onAction: () => undefined }],
+      });
     } else if (k === 'error') {
       push({ title: 'Could not copy the link', detail: 'https://hq.computer/m/abc123', tone: 'err' });
     }
