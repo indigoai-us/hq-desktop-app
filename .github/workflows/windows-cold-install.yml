@@ -9,7 +9,14 @@ name: Windows cold install
 on:
   workflow_dispatch:
   schedule:
+    # 08:17 UTC. GitHub runs this only from the default branch.
     - cron: "17 8 * * *"
+  # workflow_dispatch cannot see a workflow file that is not yet on the
+  # default branch. This branch filter lets the check run on the PR branch
+  # and does not match main, so merging it does not install on every push.
+  push:
+    branches:
+      - lane/windows-cold-install
 
 permissions:
   contents: read
