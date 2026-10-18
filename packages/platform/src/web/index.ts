@@ -247,6 +247,9 @@ export const WEB_PATHS = {
   /** GET, owner-gated: this calendar month's usage statement. */
   companyUsageStatement: (companyUid: string) =>
     `/v1/billing/usage?companyUid=${encodeURIComponent(companyUid)}&window=month`,
+  /** GET, owner-gated: the monthly spend limit and this month's measured spend. */
+  companySpendLimit: (companyUid: string) =>
+    `/v1/billing/spend-limit?companyUid=${encodeURIComponent(companyUid)}`,
   /** GET, public price list. */
   pricing: "/v1/pricing",
   firstWeekReturnNudge: (companyUid: string) =>
@@ -1211,6 +1214,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
     getUsageStatement: (companyUid) =>
       this.get(WEB_PATHS.companyUsageStatement(companyUid)),
     getPricing: () => this.get(WEB_PATHS.pricing),
+    getSpendLimit: (companyUid) =>
+      this.get(WEB_PATHS.companySpendLimit(companyUid)),
     getFirstWeekReturnNudge: (companyUid) =>
       this.get(WEB_PATHS.firstWeekReturnNudge(companyUid)),
   };

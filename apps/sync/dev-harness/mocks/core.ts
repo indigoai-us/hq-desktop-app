@@ -2107,9 +2107,10 @@ function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; b
     const uid = typeof body?.companyUid === 'string' ? body.companyUid : 'cmp_unknown';
     return { status: 200, body: JSON.stringify({ url: `https://billing.stripe.com/p/session/test_harness_${uid}` }) };
   }
-  // Core menu "Usage this month" (hq-pro owner-gated billing reads).
-  // `?usage=forbidden` previews a non-owner, `?usage=fail` a failed lookup,
-  // `?usage=paid` a company with a card on file.
+  // Core menu "Usage this month" and Settings > Usage (hq-pro owner-gated
+  // billing reads, US-018). `?usage=forbidden` previews a non-owner,
+  // `?usage=fail` a failed lookup, `?usage=paid` a company with a card on
+  // file, `?usage=trial` a company 12 days from the end of its trial.
   const usageMode = new URLSearchParams(window.location.search).get('usage');
   // Visual QA with captured hq-pro bodies: a script sets this before load.
   const captured = (window as Window & { __hqHarnessBilling?: { summary?: unknown; usage?: unknown } }).__hqHarnessBilling;
@@ -2118,17 +2119,25 @@ function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; b
   if (url.startsWith('/v1/billing/summary?')) {
     if (usageMode === 'forbidden') return { status: 403, body: JSON.stringify({ error: 'Requires owner role on this company', code: 'FORBIDDEN' }) };
     if (usageMode === 'fail') return { status: 500, body: JSON.stringify({ error: 'Internal Server Error' }) };
+    const trialEndsAt = new Date(Date.now() + 11.5 * 86_400_000).toISOString();
     return {
       status: 200,
       body: JSON.stringify({
         billingConfigured: true,
         pricingPlan: 'usage-only',
         defaultPaymentMethod: { present: usageMode === 'paid', brand: null },
-        usageTrial: { status: 'active', allowanceCents: 1000, cardOnFile: usageMode === 'paid' },
+        usageTrial:
+          usageMode === 'trial'
+            ? { status: 'active', endsAt: trialEndsAt, capCents: 50000, usedCents: 42000, allowanceCents: 1000, cardOnFile: false }
+            : { status: 'ended', allowanceCents: 1000, cardOnFile: usageMode === 'paid' },
       }),
     };
   }
   if (url.startsWith('/v1/billing/usage?')) {
+    const line = (key: string, displayName: string, unit: string, unitCents: number, units: number, costCents: number, extra: Record<string, unknown> = {}) => ({
+      key, displayName, unit, unitCents, kind: 'counter', status: 'measured', billed: true, interim: false,
+      units, usage: units, costCents, projectedUnits: units * 2, projectedCostCents: costCents * 2, ...extra,
+    });
     return {
       status: 200,
       body: JSON.stringify({
@@ -2136,20 +2145,53 @@ function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; b
         window: 'month',
         periodStart: '2026-10-01',
         periodEnd: '2026-10-31',
+        asOf: '2026-10-17',
         complete: true,
         allowanceCents: 1000,
         usageCents: 800,
         allowanceLeftCents: 200,
         billCents: 0,
+        projectedUsageCents: 1600,
+        projectedBillCents: 600,
         lines: [
-          { key: 'member-sync', status: 'measured', billed: true, costCents: 60 },
-          { key: 'integration-call', status: 'measured', billed: true, costCents: 200 },
-          { key: 'hq-mcp-call', status: 'measured', billed: true, costCents: 0 },
-          { key: 'agent-run', status: 'measured', billed: true, costCents: 310 },
-          { key: 'storage', status: 'measured', billed: true, costCents: 0 },
-          { key: 'secret', status: 'measured', billed: true, costCents: 40 },
-          { key: 'vault', status: 'measured', billed: true, costCents: 0, waived: true },
+          line('member-sync', 'Sync', 'sync', 10, 19, 190),
+          line('integration-call', 'Gateway call', 'call', 5, 40, 200),
+          line('hq-mcp-call', 'HQ MCP call', 'call', 5, 0, 0),
+          line('agent-run', 'Agent run', 'run', 5, 62, 310),
+          line('storage', 'Storage', 'GB-month', 200, 0.3, 60, { kind: 'gauge' }),
+          line('secret', 'Secret', 'secret-month', 50, 0.8, 40, { kind: 'gauge' }),
+          line('vault', 'Vault', 'vault-month', 500, 0, 0, { kind: 'gauge', waived: true }),
         ],
+        free: [{ key: 'free', text: 'Deploys, DMs and background AI are free.' }],
+      }),
+    };
+  }
+  if (url.startsWith('/v1/billing/spend-limit?')) {
+    return {
+      status: 200,
+      body: JSON.stringify({ limitCents: 10000, custom: false, defaultLimitCents: 10000, paused: false, spend: null }),
+    };
+  }
+  if (url === '/v1/pricing') {
+    return {
+      status: 200,
+      body: JSON.stringify({
+        usage: {
+          version: '2026-10-16',
+          includedUsd: 10,
+          trial: { days: 30, capUsd: 500 },
+          meters: [
+            { id: 'member-sync', label: 'Sync', unit: 'sync', unitUsd: 0.1 },
+            { id: 'integration-call', label: 'Gateway call', unit: 'call', unitUsd: 0.05 },
+            { id: 'hq-mcp-call', label: 'HQ MCP call', unit: 'call', unitUsd: 0.05 },
+            { id: 'agent-run', label: 'Agent run', unit: 'run', unitUsd: 0.05 },
+            { id: 'storage', label: 'Storage', unit: 'GB-month', unitUsd: 2 },
+            { id: 'secret', label: 'Secret', unit: 'secret-month', unitUsd: 0.5 },
+            { id: 'vault', label: 'Vault', unit: 'vault-month', unitUsd: 5, waivedInTrial: true },
+          ],
+          boxes: [{ size: 'small', instanceType: 't3.small', monthlyUsd: 100 }],
+          free: ['deploys', 'dms', 'background-ai'],
+        },
       }),
     };
   }

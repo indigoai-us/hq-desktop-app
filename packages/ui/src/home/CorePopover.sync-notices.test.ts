@@ -99,7 +99,7 @@ describe("CorePopover sync status header (PL-01)", () => {
     const header = host.querySelector('[data-testid="core-popover-sync-status"]');
     expect(header?.getAttribute("data-tone")).toBe("ok");
     expect(text(host.querySelector('[data-testid="core-popover-sync-state"]'))).toContain(
-      "All synced",
+      "HQ is synced",
     );
     expect(host.querySelector('[data-testid="core-popover-sync-caption"]')).toBeNull();
     expect(host.querySelector('[data-testid="core-popover-notice"]')).toBeNull();

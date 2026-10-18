@@ -111,6 +111,8 @@
     workspaces?: readonly Record<string, unknown>[] | null;
     /** Company whose month-to-date usage the Core menu shows. */
     usageCompany?: import("./core-usage-model.js").UsageCompany | null;
+    /** Core menu usage panel "Usage details": opens Settings > Usage. */
+    onopenUsage?: () => void;
     oncloudtoggle?: (paused: boolean) => void;
     onopendrift?: () => void | Promise<void>;
     onopenLibrary?: () => void;
@@ -175,6 +177,7 @@
     cloudError = null,
     workspaces = null,
     usageCompany = null,
+    onopenUsage,
     onopendrift,
     onopenLibrary,
     onopenMarketplace,
@@ -943,6 +946,18 @@
             {cloudError}
             {workspaces}
             {usageCompany}
+            onopenusage={onopenUsage
+              ? () => {
+                  coreOpen = false;
+                  onopenUsage?.();
+                }
+              : undefined}
+            onopensync={onopenSync
+              ? () => {
+                  coreOpen = false;
+                  onopenSync?.();
+                }
+              : undefined}
             {hqFolderPath}
             useFixtures={coreUseFixtures}
             recovery={recoveryCard}

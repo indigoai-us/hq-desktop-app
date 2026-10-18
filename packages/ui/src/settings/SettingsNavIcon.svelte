@@ -5,6 +5,7 @@
       | "profile"
       | "public-profile"
       | "billing"
+      | "usage"
       | "companies"
       | "general"
       | "agents"
@@ -41,6 +42,8 @@
   {:else if name === "billing"}
     <rect x="2" y="4" width="12" height="8" rx="1.5" stroke="currentColor" stroke-width="1.3" />
     <path d="M2 7h12M5 10h2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+  {:else if name === "usage"}
+    <path d="M3 13.5V9M6.5 13.5V6M10 13.5V8M13.5 13.5V3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
   {:else if name === "companies"}
     <path
       d="M2.5 13.5V6.5L8 3l5.5 3.5v7H2.5Z"

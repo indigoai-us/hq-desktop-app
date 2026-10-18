@@ -14306,6 +14306,7 @@
     brand={brandState}
     {brandCompanyName}
     onopenSync={() => openSettings("sync")}
+    onopenUsage={() => openSettings("usage")}
     {sidebarCollapsed}
     sidebarToggleHidden={pageHasNoSidepane}
     coreUseFixtures={coreFixtures}

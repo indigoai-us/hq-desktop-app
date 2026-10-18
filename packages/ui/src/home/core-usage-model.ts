@@ -1,46 +1,52 @@
 /**
- * "Usage this month" panel in the Core menu.
+ * "Usage this month" panel in the Core menu (usage-only-pricing US-018).
  *
  * Every number comes from hq-pro, never from this file:
  * - `GET /v1/billing/summary?companyUid=` (owner-gated) says whether the
  *   company is usage-priced (`pricingPlan: "usage-only"`), its coarse plan,
- *   and whether a card is on file.
+ *   whether a card is on file, and the trial (`usageTrial`: end date, the
+ *   trial cap and trial usage so far).
  * - `GET /v1/billing/usage?companyUid=&window=month` (owner-gated) is the
  *   month-to-date statement hq-pro prices from the daily usage rollup: usage
- *   so far, the included allowance, the period, and one line per meter.
+ *   so far, the included allowance, the period, and one line per meter. The
+ *   console usage view (US-006) reads the same endpoint.
  *
- * This module only groups the statement's meter lines under plain labels and
- * turns the reads into a view. A meter hq-pro could not measure
- * (`costCents: null`) is "not reported", never $0. A failed read is
- * "unavailable", never zero usage.
+ * This module only groups the statement's meter lines under the three
+ * owner-approved labels (2026-10-18) and turns the reads into a view. A meter
+ * hq-pro could not measure (`costCents: null`) is "not reported", never $0. A
+ * failed read is "unavailable", never zero usage. No price lives here.
  */
 
 import type { AdapterResult, Json } from "@hq/platform";
 import { isUsageOnlySummary } from "../company/usage-billing.js";
 
-export const COMPARE_PLANS_URL = "https://hqforwork.com/pricing";
-
 export interface UsageGroupDef {
-  id: "assistant" | "meetings" | "storage";
+  id: "agents" | "sync" | "storage";
   label: string;
   /** Rate-card meter keys (`UsageMeterKey` in hq-pro usage-rate-card.ts). */
   keys: readonly string[];
-  /** Matches meter keys the card adds later (e.g. a `meeting-*` meter). */
-  prefix?: string;
 }
 
 /**
- * Plain labels for the rate card's meters, in display order. The card has no
- * meeting meter today, so "Meeting notes" shows only once hq-pro reports one.
+ * The three meter groups, in display order (owner decision 2026-10-18). Each
+ * rate-card meter belongs to exactly one group, so the groups add up to the
+ * total. A meter the card adds later lands in "Other usage" until it is
+ * given a group, so it is never dropped from the sum.
  */
 export const USAGE_GROUPS: readonly UsageGroupDef[] = [
-  { id: "assistant", label: "Assistant and bots", keys: ["agent-run", "hq-mcp-call", "integration-call"] },
-  { id: "meetings", label: "Meeting notes", keys: [], prefix: "meeting" },
-  { id: "storage", label: "Storage and sync", keys: ["member-sync", "storage", "secret", "vault"] },
+  { id: "agents", label: "Agents and AI", keys: ["agent-run", "hq-mcp-call", "integration-call"] },
+  { id: "sync", label: "Sync", keys: ["member-sync"] },
+  { id: "storage", label: "Storage and vaults", keys: ["storage", "secret", "vault"] },
 ];
 
 /** Label for meter keys no group claims, so new meters are never dropped. */
 export const OTHER_USAGE_LABEL = "Other usage";
+
+/** Share of the limit at which the bar turns amber (US-009 warns at the same 80%). */
+export const NEAR_LIMIT_RATIO = 0.8;
+
+/** The panel re-reads at most this often while the menu stays open. */
+export const USAGE_REFRESH_MS = 3 * 60_000;
 
 export type UsageLineStatus = "measured" | "partial" | "unavailable" | "not-billed-yet";
 
@@ -70,15 +76,35 @@ export interface UsageGroupRow {
   amount: UsageAmount;
 }
 
+/** `ok` under 80% of the limit, `near` from 80%, `at` once the limit is reached. */
+export type UsageBarTone = "ok" | "near" | "at";
+
 export interface UsageMeterView {
-  /** 0..1 share of the included usage used, for the bar's `--fill`. */
+  /** `allowance`: this month against the included usage; `trial`: trial usage against the trial cap. */
+  mode: "allowance" | "trial";
+  /** 0..1 share of the limit used, for the bar's `--fill`. */
   fill: number;
+  tone: UsageBarTone;
+  /** Kept for callers that only need "past the limit". */
   over: boolean;
   usedLine: string;
   resetLine: string | null;
   partial: boolean;
   rows: UsageGroupRow[];
+  /** Trial mode only: why the per-group rows are not shown. */
+  rowsNote: string | null;
 }
+
+/** The trial as the summary reports it, when it is running. */
+export interface RunningTrial {
+  endsAt: string;
+  daysLeft: number;
+  capCents: number | null;
+  usedCents: number | null;
+}
+
+/** Caller's billing role: owners read usage; owners and admins add the card. */
+export type BillingRole = "owner" | "admin" | "member" | "unknown";
 
 export type CoreUsageView =
   | { kind: "loading"; companyName: string }
@@ -140,7 +166,7 @@ export function monthStatementFromBody(body: unknown): MonthStatement | null {
 }
 
 function groupFor(key: string): UsageGroupDef | null {
-  return USAGE_GROUPS.find((g) => g.keys.includes(key) || (g.prefix ? key.startsWith(g.prefix) : false)) ?? null;
+  return USAGE_GROUPS.find((g) => g.keys.includes(key)) ?? null;
 }
 
 /**
@@ -180,6 +206,10 @@ export function formatUsd(cents: number): string {
   return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" });
 }
 
+function shortDate(date: Date): string {
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+}
+
 /** "Resets Nov 1": the UTC day after the period ends. */
 export function resetLine(statement: Pick<MonthStatement, "periodStart" | "periodEnd">): string | null {
   let next: Date | null = null;
@@ -191,14 +221,26 @@ export function resetLine(statement: Pick<MonthStatement, "periodStart" | "perio
     next = new Date(Date.UTC(y!, m!, 1));
   }
   if (!next || Number.isNaN(next.getTime())) return null;
-  const label = next.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
-  return `Resets ${label}`;
+  return `Resets ${shortDate(next)}`;
 }
 
+/** Bar tone for `used` against `limit`: amber from 80%, red at the limit. */
+export function barTone(usedCents: number, limitCents: number): UsageBarTone {
+  if (limitCents <= 0) return usedCents > 0 ? "at" : "ok";
+  if (usedCents >= limitCents) return "at";
+  if (usedCents >= limitCents * NEAR_LIMIT_RATIO) return "near";
+  return "ok";
+}
+
+function fillOf(usedCents: number, limitCents: number): number {
+  if (limitCents > 0) return Math.min(1, Math.max(0, usedCents / limitCents));
+  return usedCents > 0 ? 1 : 0;
+}
+
+/** The month against the included usage (no trial running). */
 export function meterView(statement: MonthStatement): UsageMeterView {
   const { allowanceCents, usageCents } = statement;
   const over = usageCents > allowanceCents;
-  const fill = allowanceCents > 0 ? Math.min(1, Math.max(0, usageCents / allowanceCents)) : usageCents > 0 ? 1 : 0;
   const usedLine = allowanceCents > 0
     ? over
       ? `${formatUsd(usageCents)} used · ${formatUsd(allowanceCents)} free`
@@ -207,23 +249,97 @@ export function meterView(statement: MonthStatement): UsageMeterView {
   const rows = groupUsageLines(statement.lines);
   const partial = !statement.complete || rows.some((r) => r.amount.kind !== "amount" || r.amount.partial);
   return {
-    fill,
+    mode: "allowance",
+    fill: fillOf(usageCents, allowanceCents),
+    tone: barTone(usageCents, allowanceCents),
     over,
     // A partial total can only rise as missing days and meters arrive.
     usedLine: partial ? `At least ${usedLine}` : usedLine,
     resetLine: resetLine(statement),
     partial,
     rows,
+    rowsNote: null,
   };
 }
 
+/** Days are free during the trial, so the statement has no per-meter costs yet. */
+export const TRIAL_ROWS_NOTE = "Costs by meter start when the trial ends.";
+
 /**
- * Customer-facing plan name. A usage-priced company is on the Free plan until
- * it adds a card; then it pays as it goes (hqforwork.com/pricing wording).
+ * Trial usage against the trial cap. hq-pro reports trial usage as one total
+ * (`usageTrial.usedCents`, from the same daily rollup); the month statement
+ * leaves trial days out, so there are no per-group rows to show yet.
  */
-export function planLabelFromSummary(summary: unknown): string | null {
+export function trialMeterView(trial: RunningTrial): UsageMeterView {
+  const ends = new Date(trial.endsAt);
+  const resetText = Number.isNaN(ends.getTime()) ? null : `Trial ends ${shortDate(ends)}`;
+  if (trial.usedCents === null || trial.capCents === null) {
+    return {
+      mode: "trial",
+      fill: 0,
+      tone: "ok",
+      over: false,
+      usedLine: "Trial usage isn't measured yet",
+      resetLine: resetText,
+      partial: true,
+      rows: [],
+      rowsNote: TRIAL_ROWS_NOTE,
+    };
+  }
+  return {
+    mode: "trial",
+    fill: fillOf(trial.usedCents, trial.capCents),
+    tone: barTone(trial.usedCents, trial.capCents),
+    over: trial.usedCents >= trial.capCents,
+    usedLine: `${formatUsd(trial.usedCents)} of ${formatUsd(trial.capCents)} trial usage`,
+    resetLine: resetText,
+    partial: false,
+    rows: [],
+    rowsNote: TRIAL_ROWS_NOTE,
+  };
+}
+
+const DAY_MS = 86_400_000;
+
+/** Whole days left in the trial, rounded up; 0 once it has ended (the console's rule). */
+export function trialDaysLeft(endsAt: string, now: Date = new Date()): number {
+  const ms = Date.parse(endsAt) - now.getTime();
+  if (!Number.isFinite(ms) || ms <= 0) return 0;
+  return Math.ceil(ms / DAY_MS);
+}
+
+/** The running trial from a billing summary, or null when none is running. */
+export function runningTrialFromSummary(summary: unknown, now: Date = new Date()): RunningTrial | null {
+  if (!isRecord(summary) || !isRecord(summary.usageTrial)) return null;
+  const trial = summary.usageTrial;
+  const endsAt = str(trial.endsAt);
+  if (trial.status !== "active" || !endsAt) return null;
+  const daysLeft = trialDaysLeft(endsAt, now);
+  if (daysLeft <= 0) return null;
+  return {
+    endsAt,
+    daysLeft,
+    capCents: finite(trial.capCents),
+    usedCents: finite(trial.usedCents),
+  };
+}
+
+/** "Trial, 1 day left" / "Trial, 12 days left". */
+export function trialPlanLabel(daysLeft: number): string {
+  return `Trial, ${daysLeft} ${daysLeft === 1 ? "day" : "days"} left`;
+}
+
+/**
+ * Customer-facing plan name (owner decision 2026-10-18): a usage-priced
+ * company is on the one "Usage plan", or "Trial, N days left" while its
+ * trial runs. There are no plan tiers to compare.
+ */
+export function planLabelFromSummary(summary: unknown, now: Date = new Date()): string | null {
   if (!isRecord(summary)) return null;
-  if (isUsageOnlySummary(summary)) return billingIsSetUp(summary) ? "Pay as you go" : "Free plan";
+  if (isUsageOnlySummary(summary)) {
+    const trial = runningTrialFromSummary(summary, now);
+    return trial ? trialPlanLabel(trial.daysLeft) : "Usage plan";
+  }
   if (summary.plan === "team") return "Workforce plan";
   return null;
 }
@@ -250,12 +366,14 @@ export interface CoreUsageSource {
 /**
  * Read the panel for one company. Never throws. A summary the caller may not
  * read (403) is "owner-only"; any other failure is "unavailable". The
- * statement is read only for a usage-priced company.
+ * statement is read only for a usage-priced company with no trial running
+ * (during the trial the meter is the trial total from the summary).
  */
 export async function readCoreUsage(
   source: CoreUsageSource | null | undefined,
   companyUid: string,
   companyName: string,
+  now: () => Date = () => new Date(),
 ): Promise<CoreUsageView> {
   if (!source?.getBillingSummary) return { kind: "unavailable", companyName };
   let summary: AdapterResult<Json>;
@@ -268,13 +386,16 @@ export async function readCoreUsage(
   if (!summary.ok) {
     return isForbidden(summary) ? { kind: "owner-only", companyName } : { kind: "unavailable", companyName };
   }
+  const at = now();
   const base = {
     kind: "ready" as const,
     companyName,
-    planLabel: planLabelFromSummary(summary.value),
+    planLabel: planLabelFromSummary(summary.value, at),
     paid: billingIsSetUp(summary.value),
   };
   if (!isUsageOnlySummary(summary.value)) return { ...base, usage: null, usageUnavailable: false };
+  const trial = runningTrialFromSummary(summary.value, at);
+  if (trial) return { ...base, usage: trialMeterView(trial), usageUnavailable: false };
   let statement: MonthStatement | null = null;
   if (source.getUsageStatement) {
     try {
@@ -288,6 +409,36 @@ export async function readCoreUsage(
   return statement
     ? { ...base, usage: meterView(statement), usageUnavailable: false }
     : { ...base, usage: null, usageUnavailable: true };
+}
+
+/** Waits between automatic retries of a failed read (about three tries in all). */
+export const USAGE_RETRY_DELAYS_MS: readonly number[] = [1_000, 3_000];
+
+/**
+ * {@link readCoreUsage} with quiet automatic retries: an "unavailable" answer
+ * is tried again after each delay. Owner-only and ready answers return at once.
+ */
+export async function readCoreUsageWithRetry(
+  source: CoreUsageSource | null | undefined,
+  companyUid: string,
+  companyName: string,
+  opts: {
+    delays?: readonly number[];
+    sleep?: (ms: number) => Promise<void>;
+    cancelled?: () => boolean;
+    now?: () => Date;
+  } = {},
+): Promise<CoreUsageView> {
+  const delays = opts.delays ?? USAGE_RETRY_DELAYS_MS;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let view = await readCoreUsage(source, companyUid, companyName, opts.now);
+  for (const delay of delays) {
+    if (view.kind !== "unavailable" || opts.cancelled?.()) break;
+    await sleep(delay);
+    if (opts.cancelled?.()) break;
+    view = await readCoreUsage(source, companyUid, companyName, opts.now);
+  }
+  return view;
 }
 
 /** Last good view per company, so a reopened menu paints at once. */
@@ -343,9 +494,29 @@ export function resolveUsageCompany(
   return firstCloud ? toView(firstCloud) : null;
 }
 
-/** Roles the summary read is owner-gated on: anything else gets a 403. */
+/** The caller's billing role from a roster or membership role string. */
+export function billingRole(role: string | null | undefined): BillingRole {
+  const r = (role ?? "").trim().toLowerCase();
+  if (r === "owner") return "owner";
+  if (r === "admin") return "admin";
+  if (!r) return "unknown";
+  return "member";
+}
+
+/** Roles the usage reads are owner-gated on: anything else gets a 403. */
 export function canReadBilling(role: string | null | undefined): boolean {
-  return role == null || role.trim() === "" || role.trim().toLowerCase() === "owner";
+  const r = billingRole(role);
+  return r === "owner" || r === "unknown";
+}
+
+/**
+ * Owners and admins may add the company's card (US-004). hq-pro's card
+ * capture route admits admins once hq-pro #5063 lands; until then an admin's
+ * click gets the plain owner-only hint, never a raw error.
+ */
+export function canSetUpBilling(role: string | null | undefined): boolean {
+  const r = billingRole(role);
+  return r === "owner" || r === "admin" || r === "unknown";
 }
 
 export function __resetCoreUsageCacheForTests(): void {

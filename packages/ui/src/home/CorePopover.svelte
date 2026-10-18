@@ -109,6 +109,10 @@
      * fixture mode) hides the panel.
      */
     usageCompany?: import("./core-usage-model.js").UsageCompany | null;
+    /** Usage panel "Usage details": opens Settings > Usage. */
+    onopenusage?: () => void;
+    /** Usage panel "Turn off sync": opens the Sync section of Settings. */
+    onopensync?: () => void;
   }
 
   interface CoreStateWire {
@@ -143,6 +147,8 @@
     uploadsPaused = null,
     onopenurl,
     usageCompany = null,
+    onopenusage,
+    onopensync,
   }: Props = $props();
 
   let packsExpanded = $state(true);
@@ -551,6 +557,8 @@
       companyName={usageCompany.name}
       role={usageCompany.role}
       {onopenurl}
+      {onopenusage}
+      {onopensync}
     />
   {/if}
 

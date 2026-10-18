@@ -1265,6 +1265,12 @@ export interface CompanyApi {
   getUsageStatement?(companyUid: string): AdapterPromise<Json>;
   /** Public price list (`GET /v1/pricing`), including the `usage` block. */
   getPricing?(): AdapterPromise<Json>;
+  /**
+   * Owner-gated monthly spend limit (`GET /v1/billing/spend-limit?companyUid=`,
+   * usage-only-pricing US-009): the limit in force, whether it is the default,
+   * this month's measured spend and whether metered work is paused.
+   */
+  getSpendLimit?(companyUid: string): AdapterPromise<Json>;
   /** Membership-scoped, aggregate eligibility for the first-week return nudge. */
   getFirstWeekReturnNudge(companyUid: string): AdapterPromise<Json>;
 }

@@ -1,6 +1,7 @@
 <script lang="ts">
   import RailIcon from "../common/button/RailIcon.svelte";
   import BillingSettingsPane from "./BillingSettingsPane.svelte";
+  import UsageSettingsPane from "./UsageSettingsPane.svelte";
   import CompaniesSettingsPane from "./CompaniesSettingsPane.svelte";
   /**
    * ShellSettings — the FULL-WINDOW, Profile-first Settings destination for the
@@ -48,6 +49,7 @@
     | "profile"
     | "public-profile"
     | "billing"
+    | "usage"
     | "companies"
     | "general"
     | "agents"
@@ -66,6 +68,8 @@
       // OWNER-R23: the marketplace creator profile, moved here from Library.
       { id: "public-profile", label: "Public profile" },
       { id: "billing", label: "Billing" },
+      // Owner-approved 2026-10-18 (usage-only-pricing US-018): usage per meter.
+      { id: "usage", label: "Usage" },
       // Owner-approved 2026-10-11: roles, cloud vs local, and per-company sync.
       { id: "companies", label: "Companies" },
       { id: "sep", label: "" },
@@ -717,6 +721,8 @@
         {/if}
       {:else if active === "billing"}
         <BillingSettingsPane {openExternal} company={adapter?.company ?? null} companies={profileCompanies} {selectedCompanyUid} />
+      {:else if active === "usage"}
+        <UsageSettingsPane company={adapter?.company ?? null} companies={profileCompanies} {selectedCompanyUid} />
       {:else if active === "companies"}
         <CompaniesSettingsPane
           {adapter}

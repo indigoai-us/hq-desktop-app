@@ -1450,6 +1450,8 @@ export function createSyncPlatformAdapter(
       getUsageStatement: (companyUid) =>
         hqProJson('GET', WEB_PATHS.companyUsageStatement(companyUid)),
       getPricing: () => hqProJson('GET', WEB_PATHS.pricing),
+      getSpendLimit: (companyUid) =>
+        hqProJson('GET', WEB_PATHS.companySpendLimit(companyUid)),
       ensureHomeChannel: async (companyUid) => {
         const res = await call<string>('ensure_company_home_channel', {
           companyUid,

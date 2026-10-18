@@ -1,9 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Core menu "Usage this month" panel. The harness answers hq-pro's billing
- * summary and month statement (dev-harness/mocks/core.ts); `?usage=` switches
- * to a non-owner, a failed lookup, or a company with a card on file.
+ * Core menu "Usage this month" panel (usage-only-pricing US-018). The harness
+ * answers hq-pro's billing summary, month statement, spend limit and price
+ * list (dev-harness/mocks/core.ts); `?usage=` switches to a non-owner, a
+ * failed lookup, a company with a card on file, or a running trial.
  */
 
 async function openCoreMenu(page: Page, query = ''): Promise<void> {
@@ -26,17 +27,21 @@ test('shows month-to-date usage under the sync row', async ({ page }) => {
   });
   expect(order.slice(0, 2)).toEqual(['core-popover-sync-status', 'core-usage']);
 
-  await expect(page.getByTestId('core-usage-plan')).toHaveText('Free plan');
+  await expect(page.getByTestId('core-popover-sync-state')).toContainText('HQ is synced');
+  await expect(page.getByTestId('core-usage-plan')).toHaveText('Usage plan');
   await expect(panel.getByText('Usage this month')).toBeVisible();
   await expect(page.getByTestId('core-usage-used')).toHaveText('$8.00 of $10.00 free');
   await expect(page.getByTestId('core-usage-reset')).toHaveText('Resets Nov 1');
 
   const rows = page.getByTestId('core-usage-row');
-  await expect(rows).toHaveCount(2);
-  await expect(rows.nth(0)).toContainText('Assistant and bots');
+  await expect(rows).toHaveCount(3);
+  await expect(rows.nth(0)).toContainText('Agents and AI');
   await expect(rows.nth(0)).toContainText('$5.10');
-  await expect(rows.nth(1)).toContainText('Storage and sync');
-  await expect(rows.nth(1)).toContainText('$1.00');
+  await expect(rows.nth(1)).toContainText('Sync');
+  await expect(rows.nth(1)).toContainText('$1.90');
+  await expect(rows.nth(2)).toContainText('Storage and vaults');
+  await expect(rows.nth(2)).toContainText('$1.00');
+  await expect(page.getByTestId('core-usage-bar')).toHaveAttribute('data-tone', 'near');
 
   // The bar animates with transform scaleX, never width.
   const fill = await page.evaluate(() => {
@@ -49,7 +54,37 @@ test('shows month-to-date usage under the sync row', async ({ page }) => {
   expect(fill.transform).toMatch(/^matrix\(0\.8, 0, 0, 1/);
 
   await expect(page.getByTestId('core-usage-billing')).toContainText('Set up billing');
-  await expect(page.getByTestId('core-usage-compare')).toContainText('Compare plans');
+  await expect(page.getByTestId('core-usage-details')).toContainText('Usage details');
+  await expect(page.getByTestId('core-usage-sync-off')).toHaveText('Turn off sync');
+});
+
+test('during the trial the meter shows days left and trial usage against the cap', async ({ page }) => {
+  await openCoreMenu(page, '&usage=trial');
+  await expect(page.getByTestId('core-usage')).toHaveAttribute('data-state', 'ready', { timeout: 10_000 });
+  await expect(page.getByTestId('core-usage-plan')).toHaveText('Trial, 12 days left');
+  await expect(page.getByTestId('core-usage-used')).toHaveText('$420.00 of $500.00 trial usage');
+  await expect(page.getByTestId('core-usage-bar')).toHaveAttribute('data-mode', 'trial');
+});
+
+test('Usage details opens Settings > Usage with the same numbers', async ({ page }) => {
+  await openCoreMenu(page);
+  await expect(page.getByTestId('core-usage')).toHaveAttribute('data-state', 'ready', { timeout: 10_000 });
+  await page.getByTestId('core-usage-details').click();
+  await expect(page.getByTestId('settings-usage-pane')).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId('settings-nav-usage')).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByTestId('settings-usage-pane')).toHaveAttribute('data-state', 'ready', { timeout: 10_000 });
+  await expect(page.getByTestId('usage-total')).toHaveText('$8.00');
+  await expect(page.getByTestId('usage-allowance-left')).toHaveText('$2.00 left');
+  await expect(page.getByTestId('usage-projected')).toHaveText('$6.00');
+  await expect(page.getByTestId('usage-spend-limit')).toHaveText('$100.00 a month (default)');
+  await expect(page.getByTestId('usage-line')).toHaveCount(7);
+});
+
+test('Turn off sync opens the Sync section of Settings', async ({ page }) => {
+  await openCoreMenu(page);
+  await expect(page.getByTestId('core-usage')).toHaveAttribute('data-state', 'ready', { timeout: 10_000 });
+  await page.getByTestId('core-usage-sync-off').click();
+  await expect(page.getByTestId('settings-nav-sync')).toHaveAttribute('aria-current', 'page', { timeout: 10_000 });
 });
 
 test('a company with a card on file shows Manage billing', async ({ page }) => {
@@ -68,6 +103,8 @@ test('a non-owner sees a quiet note, not numbers', async ({ page }) => {
 test('a failed lookup says unavailable and never shows $0', async ({ page }) => {
   await openCoreMenu(page, '&usage=fail');
   const panel = page.getByTestId('core-usage');
-  await expect(panel).toHaveAttribute('data-state', 'unavailable', { timeout: 10_000 });
+  await expect(panel).toHaveAttribute('data-state', 'unavailable', { timeout: 15_000 });
   await expect(panel).not.toContainText('$0.00');
+  await expect(panel).not.toContainText('Internal Server Error');
+  await expect(page.getByTestId('core-usage-retry')).toBeVisible();
 });

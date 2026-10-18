@@ -16,6 +16,7 @@ export const EMBEDDED_SETTINGS_SECTIONS = [
   'profile',
   'public-profile',
   'billing',
+  'usage',
   'companies',
   'general',
   'agents',

@@ -2,10 +2,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Json } from "@hq/platform";
 import {
   OTHER_USAGE_LABEL,
+  USAGE_GROUPS,
   __resetCoreUsageCacheForTests,
+  barTone,
   billingIsSetUp,
+  billingRole,
   cachedCoreUsage,
   canReadBilling,
+  canSetUpBilling,
+  readCoreUsageWithRetry,
+  runningTrialFromSummary,
+  trialDaysLeft,
+  trialMeterView,
+  trialPlanLabel,
   resolveUsageCompany,
   groupAmount,
   groupUsageLines,
@@ -63,18 +72,28 @@ afterEach(() => {
 });
 
 describe("meter mapping", () => {
-  it("groups the rate card's meters under the plain labels, in display order", () => {
+  it("groups the seven meters into Agents and AI, Sync, Storage and vaults, in that order", () => {
     const rows = groupUsageLines(monthStatementFromBody(statementBody())!.lines);
     expect(rows.map((r) => [r.label, r.amount])).toEqual([
-      ["Assistant and bots", { kind: "amount", cents: 510, partial: false }],
-      ["Storage and sync", { kind: "amount", cents: 100, partial: false }],
+      ["Agents and AI", { kind: "amount", cents: 510, partial: false }],
+      ["Sync", { kind: "amount", cents: 40, partial: false }],
+      ["Storage and vaults", { kind: "amount", cents: 60, partial: false }],
     ]);
   });
 
-  it("shows Meeting notes only when hq-pro reports a meeting meter", () => {
-    expect(groupUsageLines([line("agent-run", 5)]).some((r) => r.id === "meetings")).toBe(false);
-    const rows = groupUsageLines([line("agent-run", 5), line("meeting-note", 190)]);
-    expect(rows.map((r) => r.label)).toEqual(["Assistant and bots", "Meeting notes"]);
+  it("puts each rate-card meter in exactly one group", () => {
+    const meters = ["agent-run", "hq-mcp-call", "integration-call", "member-sync", "storage", "secret", "vault"];
+    for (const key of meters) {
+      expect(USAGE_GROUPS.filter((g) => g.keys.includes(key))).toHaveLength(1);
+    }
+    expect(USAGE_GROUPS.flatMap((g) => g.keys).sort()).toEqual([...meters].sort());
+  });
+
+  it("the groups add up to the statement total", () => {
+    const body = statementBody({ usageCents: 610 });
+    const rows = groupUsageLines(monthStatementFromBody(body)!.lines);
+    const sum = rows.reduce((acc, r) => acc + (r.amount.kind === "amount" ? r.amount.cents : 0), 0);
+    expect(sum).toBe(body.usageCents);
   });
 
   it("keeps an unknown meter under Other usage instead of dropping it", () => {
@@ -105,7 +124,7 @@ describe("not reported is not $0", () => {
     const view = meterView(monthStatementFromBody(statementBody({
       lines: [{ key: "agent-run", status: "unavailable", billed: true, costCents: null }],
     }))!);
-    expect(view.rows).toEqual([{ id: "assistant", label: "Assistant and bots", amount: { kind: "not-reported" } }]);
+    expect(view.rows).toEqual([{ id: "agents", label: "Agents and AI", amount: { kind: "not-reported" } }]);
     expect(view.partial).toBe(true);
   });
 });
@@ -117,12 +136,24 @@ describe("meter view", () => {
     expect(view.fill).toBeCloseTo(0.8);
     expect(view.over).toBe(false);
     expect(view.resetLine).toBe("Resets Nov 1");
+    expect(view.mode).toBe("allowance");
+    expect(view.tone).toBe("near");
+  });
+
+  it("tones the bar: neutral under 80%, amber from 80%, red at the limit", () => {
+    expect(barTone(799, 1000)).toBe("ok");
+    expect(barTone(800, 1000)).toBe("near");
+    expect(barTone(999, 1000)).toBe("near");
+    expect(barTone(1000, 1000)).toBe("at");
+    expect(barTone(1500, 1000)).toBe("at");
+    expect(barTone(0, 0)).toBe("ok");
   });
 
   it("caps the bar at full and says so once usage passes the allowance", () => {
     const view = meterView(monthStatementFromBody(statementBody({ usageCents: 1420 }))!);
     expect(view.fill).toBe(1);
     expect(view.over).toBe(true);
+    expect(view.tone).toBe("at");
     expect(view.usedLine).toBe("$14.20 used · $10.00 free");
   });
 
@@ -173,13 +204,36 @@ describe("which company the panel shows", () => {
     expect(canReadBilling("owner")).toBe(true);
     expect(canReadBilling(null)).toBe(true);
     expect(canReadBilling("member")).toBe(false);
+    expect(canReadBilling("admin")).toBe(false);
+  });
+
+  it("owners and admins may set up billing; members may not", () => {
+    expect(canSetUpBilling("Owner")).toBe(true);
+    expect(canSetUpBilling("admin")).toBe(true);
+    expect(canSetUpBilling("member")).toBe(false);
+    expect(billingRole(" ADMIN ")).toBe("admin");
+    expect(billingRole("")).toBe("unknown");
   });
 });
 
 describe("plan and billing state", () => {
-  it("usage-priced companies are on the Free plan until they add a card", () => {
-    expect(planLabelFromSummary({ pricingPlan: "usage-only" })).toBe("Free plan");
-    expect(planLabelFromSummary({ pricingPlan: "usage-only", usageTrial: { cardOnFile: true } })).toBe("Pay as you go");
+  it("usage-priced companies read Usage plan, or Trial, N days left while the trial runs", () => {
+    const now = new Date("2026-10-18T12:00:00Z");
+    expect(planLabelFromSummary({ pricingPlan: "usage-only" }, now)).toBe("Usage plan");
+    expect(planLabelFromSummary({ pricingPlan: "usage-only", usageTrial: { cardOnFile: true } }, now)).toBe("Usage plan");
+    expect(
+      planLabelFromSummary({ pricingPlan: "usage-only", usageTrial: { status: "active", endsAt: "2026-10-30T18:00:00Z" } }, now),
+    ).toBe("Trial, 13 days left");
+    expect(
+      planLabelFromSummary({ pricingPlan: "usage-only", usageTrial: { status: "active", endsAt: "2026-10-19T00:00:00Z" } }, now),
+    ).toBe("Trial, 1 day left");
+    // An ended trial, or one past its end date, is the usage plan.
+    expect(
+      planLabelFromSummary({ pricingPlan: "usage-only", usageTrial: { status: "ended", endsAt: "2026-10-01T00:00:00Z" } }, now),
+    ).toBe("Usage plan");
+    expect(
+      planLabelFromSummary({ pricingPlan: "usage-only", usageTrial: { status: "active", endsAt: "2026-10-17T00:00:00Z" } }, now),
+    ).toBe("Usage plan");
     expect(planLabelFromSummary({ pricingPlan: "current", plan: "team" })).toBe("Workforce plan");
     expect(planLabelFromSummary({ pricingPlan: "current" })).toBeNull();
   });
@@ -202,7 +256,7 @@ describe("readCoreUsage states", () => {
     }, "cmp_northwind", "Northwind");
     expect(view.kind).toBe("ready");
     if (view.kind !== "ready") return;
-    expect(view.planLabel).toBe("Free plan");
+    expect(view.planLabel).toBe("Usage plan");
     expect(view.paid).toBe(false);
     expect(view.usage?.usedLine).toBe("$8.00 of $10.00 free");
   });
@@ -246,5 +300,87 @@ describe("readCoreUsage states", () => {
     const ready = { kind: "ready" as const, companyName: "A", planLabel: null, paid: false, usage: null, usageUnavailable: false };
     rememberCoreUsage("cmp_a", ready);
     expect(cachedCoreUsage("cmp_a")).toEqual(ready);
+  });
+});
+
+describe("trial meter", () => {
+  const now = new Date("2026-10-18T12:00:00Z");
+
+  it("counts whole days left, rounded up, and 0 once ended", () => {
+    expect(trialDaysLeft("2026-10-19T12:00:00Z", now)).toBe(1);
+    expect(trialDaysLeft("2026-10-19T12:00:01Z", now)).toBe(2);
+    expect(trialDaysLeft("2026-10-18T11:00:00Z", now)).toBe(0);
+    expect(trialDaysLeft("not a date", now)).toBe(0);
+    expect(trialPlanLabel(1)).toBe("Trial, 1 day left");
+  });
+
+  it("reads the running trial's cap and usage from the summary", () => {
+    const trial = runningTrialFromSummary(
+      { usageTrial: { status: "active", endsAt: "2026-11-03T00:00:00Z", capCents: 50000, usedCents: 1234 } },
+      now,
+    );
+    expect(trial).toEqual({ endsAt: "2026-11-03T00:00:00Z", daysLeft: 16, capCents: 50000, usedCents: 1234 });
+    expect(runningTrialFromSummary({ usageTrial: { status: "owner-trial-used" } }, now)).toBeNull();
+  });
+
+  it("shows trial usage against the cap, amber near it and red at it", () => {
+    const base = { endsAt: "2026-11-03T00:00:00Z", daysLeft: 16, capCents: 50000 };
+    const view = trialMeterView({ ...base, usedCents: 12000 });
+    expect(view.mode).toBe("trial");
+    expect(view.usedLine).toBe("$120.00 of $500.00 trial usage");
+    expect(view.resetLine).toBe("Trial ends Nov 3");
+    expect(view.tone).toBe("ok");
+    expect(view.rows).toEqual([]);
+    expect(view.rowsNote).not.toBeNull();
+    expect(trialMeterView({ ...base, usedCents: 40000 }).tone).toBe("near");
+    expect(trialMeterView({ ...base, usedCents: 50000 }).tone).toBe("at");
+  });
+
+  it("says trial usage is not measured yet rather than $0", () => {
+    const view = trialMeterView({ endsAt: "2026-11-03T00:00:00Z", daysLeft: 16, capCents: 50000, usedCents: null });
+    expect(view.usedLine).toBe("Trial usage isn't measured yet");
+    expect(view.usedLine).not.toContain("$0");
+  });
+
+  it("readCoreUsage shows the trial meter and skips the statement while the trial runs", async () => {
+    const source = {
+      getBillingSummary: vi.fn(async () =>
+        ok({ pricingPlan: "usage-only", usageTrial: { status: "active", endsAt: "2026-11-03T00:00:00Z", capCents: 50000, usedCents: 500 } }),
+      ),
+      getUsageStatement: vi.fn(async () => ok(statementBody())),
+    };
+    const view = await readCoreUsage(source, "cmp_northwind", "Northwind", () => now);
+    expect(view.kind).toBe("ready");
+    if (view.kind !== "ready") return;
+    expect(view.planLabel).toBe("Trial, 16 days left");
+    expect(view.usage?.mode).toBe("trial");
+    expect(source.getUsageStatement).not.toHaveBeenCalled();
+  });
+});
+
+describe("quiet retries", () => {
+  it("retries an unavailable read, then returns the good answer", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const getBillingSummary = vi
+      .fn()
+      .mockResolvedValueOnce(fail("http-500"))
+      .mockResolvedValueOnce(fail("network"))
+      .mockResolvedValueOnce(ok({ pricingPlan: "current" }));
+    const sleep = vi.fn(async () => {});
+    const view = await readCoreUsageWithRetry({ getBillingSummary }, "cmp_n", "N", { delays: [1000, 3000], sleep });
+    expect(view.kind).toBe("ready");
+    expect(getBillingSummary).toHaveBeenCalledTimes(3);
+    expect(sleep.mock.calls.map((c) => (c as unknown[])[0])).toEqual([1000, 3000]);
+  });
+
+  it("stops after the last retry and never retries an owner-only answer", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const failing = vi.fn(async () => fail("http-500"));
+    const sleep = vi.fn(async () => {});
+    expect((await readCoreUsageWithRetry({ getBillingSummary: failing }, "c", "C", { delays: [1, 1], sleep })).kind).toBe("unavailable");
+    expect(failing).toHaveBeenCalledTimes(3);
+    const forbidden = vi.fn(async () => fail("FORBIDDEN"));
+    expect((await readCoreUsageWithRetry({ getBillingSummary: forbidden }, "c", "C", { delays: [1, 1], sleep })).kind).toBe("owner-only");
+    expect(forbidden).toHaveBeenCalledTimes(1);
   });
 });

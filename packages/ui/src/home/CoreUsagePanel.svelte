@@ -1,12 +1,14 @@
 <script lang="ts">
   /**
-   * "Usage this month" in the Core menu, under the sync row.
+   * "Usage this month" in the Core menu, under the sync row (US-018).
    *
-   * Company name and plan, this month's usage against the included
-   * allowance, one row per plain-language meter group, and the billing
-   * buttons. All numbers come from hq-pro (core-usage-model.ts); this file
-   * renders and routes clicks. Owner-gated reads: a non-owner sees a quiet
-   * note, a failed read says usage is unavailable (never $0).
+   * Company name and plan ("Usage plan" or "Trial, N days left"), this
+   * month's usage against the included allowance (or trial usage against the
+   * trial cap), one row per meter group, and the actions: Set up billing,
+   * Usage details (Settings > Usage) and Turn off sync (Settings > Sync). All
+   * numbers come from hq-pro (core-usage-model.ts); this file renders and
+   * routes clicks. A failed read retries quietly, then offers Try again; it
+   * never shows $0 or server text.
    */
   import { untrack } from "svelte";
   import type { AdapterResult } from "@hq/platform";
@@ -19,11 +21,13 @@
     type BillingPortalOutcome,
   } from "../account/billing-portal.js";
   import {
-    COMPARE_PLANS_URL,
+    USAGE_REFRESH_MS,
+    billingRole,
     cachedCoreUsage,
     canReadBilling,
+    canSetUpBilling,
     formatUsd,
-    readCoreUsage,
+    readCoreUsageWithRetry,
     rememberCoreUsage,
     type CoreUsageView,
   } from "./core-usage-model.js";
@@ -45,22 +49,46 @@
     role?: string | null;
     /** Open an external link in the system browser. */
     onopenurl?: (url: string) => void;
+    /** Open Settings > Usage. */
+    onopenusage?: () => void;
+    /** Open the Sync section of Settings (repointed to US-016's per-vault section when it lands). */
+    onopensync?: () => void;
+    /** Test seam: waits between automatic retries. */
+    retryDelays?: readonly number[];
+    /** Test seam: the refresh interval while the menu is open. */
+    refreshMs?: number;
   }
 
-  let { source, companyUid, companyName, role = null, onopenurl }: Props = $props();
+  let {
+    source,
+    companyUid,
+    companyName,
+    role = null,
+    onopenurl,
+    onopenusage,
+    onopensync,
+    retryDelays,
+    refreshMs = USAGE_REFRESH_MS,
+  }: Props = $props();
 
   let view = $state<CoreUsageView>({ kind: "loading", companyName: "" });
   let pending = $state(false);
+  let retrying = $state(false);
   let outcome = $state<BillingPortalOutcome | null>(null);
-  /** Bumped to re-read after the person returns from Stripe. */
+  /** Bumped to re-read: after Stripe, on Try again, and on the refresh timer. */
   let refreshNonce = $state(0);
+
+  const roleKind = $derived(billingRole(role));
 
   $effect(() => {
     void refreshNonce;
     const uid = companyUid;
     const name = companyName;
     const api = source;
-    outcome = null;
+    const delays = retryDelays;
+    untrack(() => {
+      outcome = null;
+    });
     if (!uid) {
       view = { kind: "no-usage", companyName: name };
       return;
@@ -74,8 +102,12 @@
     const shown = untrack(() => view);
     view = cachedCoreUsage(uid) ?? (shown.kind === "ready" && shown.companyName === name ? shown : { kind: "loading", companyName: name });
     let cancelled = false;
-    void readCoreUsage(api as never, uid, name).then((next) => {
+    void readCoreUsageWithRetry(api as never, uid, name, {
+      ...(delays ? { delays } : {}),
+      cancelled: () => cancelled,
+    }).then((next) => {
       if (cancelled) return;
+      retrying = false;
       // Keep the last good numbers on screen when a refresh fails.
       if (next.kind === "unavailable" && view.kind === "ready") return;
       view = next;
@@ -86,11 +118,25 @@
     };
   });
 
+  // Opening the menu mounts this panel, which reads once; while it stays
+  // open it re-reads at most every few minutes.
+  $effect(() => {
+    if (!companyUid || refreshMs <= 0) return;
+    const timer = setInterval(() => {
+      refreshNonce += 1;
+    }, refreshMs);
+    return () => clearInterval(timer);
+  });
+
   const paid = $derived(view.kind === "ready" && view.paid);
   const billingLabel = $derived(paid ? "Manage billing" : "Set up billing");
   const hint = $derived(billingPortalHint(outcome, companyName));
+  const mayBill = $derived(canSetUpBilling(role));
   const canBill = $derived(
     Boolean(onopenurl) && (paid || typeof source.createBillingCheckoutSession === "function"),
+  );
+  const showBilling = $derived(
+    mayBill && (view.kind === "ready" || (view.kind === "owner-only" && roleKind === "admin")),
   );
 
   /**
@@ -105,6 +151,12 @@
       refreshNonce += 1;
     };
     window.addEventListener("focus", onFocus);
+  }
+
+  function retry(): void {
+    if (retrying) return;
+    retrying = true;
+    refreshNonce += 1;
   }
 
   async function openBilling(): Promise<void> {
@@ -150,24 +202,40 @@
   {:else if view.kind === "loading"}
     <p class="core-usage-note" role="status" data-testid="core-usage-loading">Loading usage…</p>
   {:else if view.kind === "owner-only"}
-    <p class="core-usage-note" data-testid="core-usage-owner-only">Only a company owner can see usage and billing.</p>
+    {#if roleKind === "admin"}
+      <p class="core-usage-note" data-testid="core-usage-owner-only">Only a company owner can see usage. You can still set up billing.</p>
+    {:else if roleKind === "member"}
+      <p class="core-usage-note" data-testid="core-usage-owner-only">Ask an owner or admin of {companyName} to set up billing. Only owners can see usage.</p>
+    {:else}
+      <p class="core-usage-note" data-testid="core-usage-owner-only">Only a company owner can see usage and billing. Ask an owner or admin of {companyName}.</p>
+    {/if}
   {:else if view.kind === "unavailable"}
-    <p class="core-usage-note" data-testid="core-usage-unavailable">Usage isn't available right now. Try again later.</p>
+    <p class="core-usage-note" data-testid="core-usage-unavailable">Usage isn't available right now.</p>
+    <button
+      type="button"
+      class="core-usage-link"
+      data-testid="core-usage-retry"
+      disabled={retrying}
+      aria-busy={retrying}
+      onclick={retry}
+    >{retrying ? "Checking…" : "Try again"}</button>
   {:else if view.usageUnavailable}
     <p class="core-usage-note" data-testid="core-usage-unavailable">This month's usage isn't available yet.</p>
   {:else if view.usage}
     {@const usage = view.usage}
-    <span class="core-usage-label">Usage this month</span>
+    <span class="core-usage-label" data-testid="core-usage-label">{usage.mode === "trial" ? "Trial usage" : "Usage this month"}</span>
     <div
       class="core-usage-track"
       role="meter"
-      aria-label="Included usage used"
+      aria-label={usage.mode === "trial" ? "Trial usage used" : "Included usage used"}
       aria-valuemin="0"
       aria-valuemax="100"
       aria-valuenow={Math.round(usage.fill * 100)}
       data-testid="core-usage-bar"
+      data-tone={usage.tone}
+      data-mode={usage.mode}
     >
-      <span class="core-usage-fill" class:over={usage.over} style={`--fill: ${usage.fill};`}></span>
+      <span class="core-usage-fill" data-tone={usage.tone} style={`--fill: ${usage.fill};`}></span>
     </div>
     <div class="core-usage-totals">
       <span data-testid="core-usage-used" data-partial={usage.partial ? "true" : undefined}>{usage.usedLine}</span>
@@ -192,33 +260,48 @@
           </li>
         {/each}
       </ul>
+    {:else if usage.rowsNote}
+      <p class="core-usage-note small" data-testid="core-usage-rows-note">{usage.rowsNote}</p>
     {/if}
-    {#if usage.partial}
+    {#if usage.partial && usage.mode === "allowance"}
       <p class="core-usage-note small" data-testid="core-usage-partial">Some usage isn't reported yet, so this total can still go up.</p>
     {/if}
   {/if}
 
-  {#if view.kind === "ready"}
+  {#if showBilling || view.kind === "ready"}
     <div class="core-usage-actions">
-      <button
-        type="button"
-        class="core-usage-btn primary"
-        data-testid="core-usage-billing"
-        disabled={pending || !canBill}
-        aria-busy={pending}
-        onclick={() => void openBilling()}
-      ><RailIcon name="credit-card" />{pending ? "Opening Stripe…" : billingLabel}</button>
-      <button
-        type="button"
-        class="core-usage-btn secondary"
-        data-testid="core-usage-compare"
-        disabled={!onopenurl}
-        onclick={() => onopenurl?.(COMPARE_PLANS_URL)}
-      ><RailIcon name="arrow-right" />Compare plans</button>
+      {#if showBilling}
+        <button
+          type="button"
+          class="core-usage-btn primary"
+          data-testid="core-usage-billing"
+          disabled={pending || !canBill}
+          aria-busy={pending}
+          onclick={() => void openBilling()}
+        ><RailIcon name="credit-card" />{pending ? "Opening Stripe…" : billingLabel}</button>
+      {/if}
+      {#if view.kind === "ready"}
+        <button
+          type="button"
+          class="core-usage-btn secondary"
+          data-testid="core-usage-details"
+          disabled={!onopenusage}
+          onclick={() => onopenusage?.()}
+        ><RailIcon name="arrow-right" />Usage details</button>
+      {/if}
     </div>
     {#if hint}
       <p class="core-usage-note" role="status" data-testid="core-usage-billing-hint">{hint}</p>
     {/if}
+  {/if}
+
+  {#if view.kind !== "no-usage" && onopensync}
+    <button
+      type="button"
+      class="core-usage-link"
+      data-testid="core-usage-sync-off"
+      onclick={() => onopensync?.()}
+    >Turn off sync</button>
   {/if}
 </section>
 
@@ -303,8 +386,12 @@
     transition: transform 300ms ease;
   }
 
-  /* Past the included usage the bar turns to the error tone. */
-  .core-usage-fill.over {
+  /* Under 80% of the limit the bar is neutral, amber from 80%, red at it. */
+  .core-usage-fill[data-tone="ok"] {
+    background: var(--t2);
+  }
+
+  .core-usage-fill[data-tone="at"] {
     background: var(--v4-error, var(--red));
   }
 
@@ -376,6 +463,29 @@
   .core-usage-btn.secondary:hover:not(:disabled) {
     background: var(--v4-hover, var(--hover));
     color: var(--t1);
+  }
+
+  .core-usage-link {
+    appearance: none;
+    align-self: flex-start;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--t3);
+    font: inherit;
+    font-size: 12px;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+
+  .core-usage-link:hover:not(:disabled) {
+    color: var(--t1);
+  }
+
+  .core-usage-link:disabled {
+    cursor: default;
+    opacity: 0.6;
   }
 
   .core-usage-btn:disabled {
