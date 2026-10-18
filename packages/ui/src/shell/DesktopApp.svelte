@@ -614,6 +614,8 @@
     type NavigationScrollState,
     type ProjectsFocusTab,
   } from "./navigation-history.js";
+  import { settleThreadSidebarClose } from "./thread-sidebar-close.js";
+  import { resetThreadComposerDrafts } from "../chat/messaging/thread-composer-draft.js";
   import {
     createNavigationScrollTracker,
     scheduleNavigationScrollRestore,
@@ -10710,7 +10712,37 @@
     pendingReplyRootId = null;
     pendingReplyForRowId = null;
     replyApplyInFlight = null;
-    void leaveCurrentDestination();
+    const row = selectedRow;
+    if (!row) {
+      openReplyRootId = null;
+      return;
+    }
+    // X and Escape both call this. Replace the open thread with the same
+    // conversation, then drop every earlier thread in that conversation.
+    // Going back would show the previous thread, so the sidebar looks stuck.
+    // The thread is captured now. If a newer thread wins before this
+    // navigation settles, the fallback must not overwrite it.
+    const closingThread = navigationHistory.current()?.destination ?? null;
+    const closed = destinationFromConversation(row, {
+      ...currentConversationNested(),
+      replyRootEventId: null,
+    });
+    openReplyRootId = null;
+    const settled = navigate(closed, "replace");
+    const finish = (result: { committed: boolean }): void => {
+      settleThreadSidebarClose(
+        navigationHistory,
+        closed,
+        result.committed,
+        closingThread,
+      );
+      syncNavigationChrome();
+    };
+    if (settled instanceof Promise) {
+      void settled.then(finish);
+      return;
+    }
+    finish(settled);
   }
 
   function queueReplyForRow(
@@ -12843,6 +12875,7 @@
   });
 
   async function signOutWithImageCleanup(): Promise<void> {
+    resetThreadComposerDrafts();
     navigation.clear();
     stopScrollRestore();
     pendingRestoreScroll = null;
@@ -16241,6 +16274,7 @@
                     withPersonUid={selectedRow.personUid}
                     withPersonName={selectedRow.title}
                     channelName={selectedRow.kind === "channel" ? selectedRow.title : null}
+                    accountId={self?.uid ?? tenantAccountId ?? null}
                     companyUid={selectedRow.companyUid}
                     {seedRoot}
                     {wakes}
