@@ -22,7 +22,7 @@ const errors = [];
 
 for (const theme of ['dark', 'light']) {
   const page = await browser.newPage({
-    viewport: { width: 1280, height: 900 },
+    viewport: { width: 1320, height: 900 },
     colorScheme: theme,
   });
   page.on('pageerror', (error) => errors.push(`${theme} ${error.message}`));
@@ -43,9 +43,9 @@ for (const theme of ['dark', 'light']) {
   const dir = join(clipsDir, `raw-${theme}`);
   mkdirSync(dir, { recursive: true });
   const context = await browser.newContext({
-    viewport: { width: 1280, height: 900 },
+    viewport: { width: 1320, height: 900 },
     colorScheme: theme,
-    recordVideo: { dir, size: { width: 1280, height: 900 } },
+    recordVideo: { dir, size: { width: 1320, height: 900 } },
   });
   const page = await context.newPage();
   page.on('pageerror', (error) => errors.push(`clip ${theme} ${error.message}`));

@@ -4,6 +4,7 @@
    * ?phase=opening|reveal|brief|record &theme=dark|light &t=<seconds>
    * opening and reveal freeze the real BriefRise. brief is the ready report.
    * record plays the rise and cross-fades into the brief. In-page answers only.
+   * The pane sits in a mockup window frame (title bar and rail) as in round 11b.
    */
   import type { FoundWorkApps } from '@hq/platform';
   import BriefRise from '../../../packages/ui/src/brief/BriefRise.svelte';
@@ -55,6 +56,24 @@
   const briefInput = welcomeRiseBriefInput(welcomeRiseNow());
 </script>
 
+<div class="window" data-testid="rise-window" data-theme={theme}>
+<header class="titlebar" aria-hidden="true">
+  <span class="lights"><i></i><i></i><i></i></span>
+  <span class="title">HQ</span>
+</header>
+<nav class="rail" aria-hidden="true">
+  <span class="mark">HQ</span>
+  <span class="tab on">
+    <svg viewBox="0 0 20 20"><path d="M3.5 9 10 3.5 16.5 9v7.5h-4.5V12H8v4.5H3.5z" /></svg>
+  </span>
+  <span class="tab">
+    <svg viewBox="0 0 20 20"><path d="M3 11.5 5 4h10l2 7.5V16H3zM3 11.5h4.5l1 2h3l1-2H17" /></svg>
+  </span>
+  <span class="tab">
+    <svg viewBox="0 0 20 20"><path d="M3.5 3.5h5v5h-5zM11.5 3.5h5v5h-5zM3.5 11.5h5v5h-5zM11.5 11.5h5v5h-5z" /></svg>
+  </span>
+  <span class="avatar">AL</span>
+</nav>
 <div class="shot" data-testid="rise-shot" data-phase={phase} data-theme={theme}>
   {#if showRise}
     <BriefRise
@@ -92,11 +111,136 @@
     </div>
   {/if}
 </div>
+</div>
 
 <style>
-  .shot {
+  .window {
+    --chrome: #1d1820;
+    --rail-top: #18151c;
+    --rail-bottom: #20171f;
+    --chrome-line: rgba(255, 236, 220, 0.08);
+    --title-ink: #a29ca4;
+    --ring: #68656a;
+    --glyph: #ebebeb;
+    --tab-on: #2f2c33;
+    --rail-dot: #3a2a33;
+    --avatar-ring: #383037;
     position: relative;
     height: 100vh;
+    overflow: hidden;
+    background: var(--chrome);
+  }
+  .window[data-theme="light"] {
+    --chrome: #f5e9d8;
+    --rail-top: #f7ecda;
+    --rail-bottom: #f6e7d2;
+    --chrome-line: #d8c7af;
+    --title-ink: #645f59;
+    --ring: #bab1a4;
+    --glyph: #171616;
+    --tab-on: #e9decc;
+    --rail-dot: #e6d2bf;
+    --avatar-ring: #dbcebb;
+  }
+  .titlebar {
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 46px;
+    display: flex;
+    align-items: center;
+    gap: 30px;
+    border-bottom: 1px solid var(--chrome-line);
+    box-sizing: border-box;
+  }
+  .lights {
+    display: flex;
+    gap: 8px;
+    padding-left: 20px;
+  }
+  .lights i {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 1px solid var(--ring);
+    box-sizing: border-box;
+  }
+  .title {
+    margin-left: 3px;
+    font: 600 13px/1 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+    color: var(--title-ink);
+  }
+  .rail {
+    position: absolute;
+    top: 46px;
+    bottom: 0;
+    left: 0;
+    width: 76px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-top: 29px;
+    background: linear-gradient(180deg, var(--rail-top), var(--rail-bottom));
+  }
+  /* The reference lets the backdrop's dot grid show through the lower rail. */
+  .rail::after {
+    content: "";
+    position: absolute;
+    left: 6px;
+    right: 5px;
+    top: 330px;
+    height: 216px;
+    background: radial-gradient(circle, var(--rail-dot) 1.1px, transparent 1.6px) 0 0 / 12px 12px;
+    pointer-events: none;
+  }
+  .mark {
+    margin-bottom: 26px;
+    font: 600 21px/1 "Fraunces", Georgia, serif;
+    color: var(--glyph);
+  }
+  .tab {
+    width: 40px;
+    height: 44px;
+    display: grid;
+    place-items: center;
+    border-radius: 10px;
+    margin-bottom: 0;
+  }
+  .tab:nth-of-type(3) {
+    margin-top: 8px;
+  }
+  .tab:nth-of-type(4) {
+    margin-top: -1px;
+  }
+  .tab.on {
+    background: var(--tab-on);
+  }
+  .tab svg {
+    width: 20px;
+    height: 20px;
+    fill: none;
+    stroke: var(--glyph);
+    stroke-width: 1.6;
+    stroke-linejoin: round;
+  }
+  .avatar {
+    margin-top: auto;
+    margin-bottom: 25px;
+    width: 31px;
+    height: 31px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    border: 1.5px solid var(--avatar-ring);
+    box-sizing: border-box;
+    font: 600 11px/1 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+    color: var(--title-ink);
+  }
+  .shot {
+    position: absolute;
+    top: 46px;
+    left: 76px;
+    right: 0;
+    bottom: 0;
     overflow: hidden;
     background: #121216;
   }
