@@ -14,6 +14,7 @@
   } from "@hq/platform";
 
   const HQ_ANYWHERE_UNAVAILABLE_LINE = "HQ Anywhere is turned off for your account right now.";
+  const HQ_ANYWHERE_ADOPTED_OFF_LINE = "Turning this off removes that install.";
 
   interface Props {
     adapter?: PlatformAdapter | null;
@@ -33,6 +34,8 @@
   let setupPending = $state(false);
   let retryKind = $state<"read" | "write" | "setup" | "reconcile" | null>(null);
   let retryValue = $state<boolean | null>(null);
+  // The desktop adopted an install that is still the one it recorded.
+  let adoptedInstall = $state(false);
   let runtimeStatus: HqAnywhereGlobalRuntimeStatus = { state: "idle" };
 
   onMount(() => {
@@ -111,6 +114,7 @@
         enabled = result.value;
         loaded = true;
         applyGlobalRuntimeStatus(runtimeStatus);
+        void loadAdoptedInstall();
       } else {
         console.warn("[hq-anywhere] setting read failed:", result);
         retryKind = "read";
@@ -149,7 +153,25 @@
     } finally {
       saving = false;
     }
-    if (saved) await configureGlobalRuntime(value);
+    if (saved) {
+      await configureGlobalRuntime(value);
+      await loadAdoptedInstall();
+    }
+  }
+
+  async function loadAdoptedInstall(): Promise<void> {
+    const read = adapter?.settings.hqAnywhereAdoptedInstall;
+    if (!read) {
+      adoptedInstall = false;
+      return;
+    }
+    try {
+      const result = await read();
+      adoptedInstall = result.ok && result.value === true;
+    } catch (error) {
+      console.warn("[hq-anywhere] adopted install read failed:", error);
+      adoptedInstall = false;
+    }
   }
 
   async function configureGlobalRuntime(value: boolean): Promise<void> {
@@ -215,6 +237,9 @@
     <div class="copy">
       <div class="label">HQ Anywhere</div>
       <div class="hint">Use your HQ context in Claude Code, Codex, ChatGPT and Grok</div>
+      {#if enabled && adoptedInstall}
+        <div class="hint" data-testid="hq-anywhere-setting-adopted-off">{HQ_ANYWHERE_ADOPTED_OFF_LINE}</div>
+      {/if}
     </div>
     <button
       type="button"

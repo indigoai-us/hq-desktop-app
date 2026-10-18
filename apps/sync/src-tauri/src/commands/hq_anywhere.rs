@@ -2,8 +2,10 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::{Duration, UNIX_EPOCH};
 
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use crate::util::{logfile::log, paths};
@@ -14,6 +16,10 @@ const CODEX_BLOCK_BEGIN: &str =
     "<!-- hq-anywhere:begin (managed by `hq install --global --runtime codex`";
 const MANAGED_BLOCK_END: &str = "<!-- hq-anywhere:end -->";
 const HQ_MCP_PACK: &str = "hq-anywhere";
+/// The same wait Continue uses for the Enable step. A hung `hq install` must
+/// not hold [`global_install_lock`] past it, or a later toggle or launch sync
+/// waits until the process ends.
+const HQ_ANYWHERE_COMMAND_DEADLINE: Duration = Duration::from_secs(20);
 
 fn safe_renderer_failure(_details: &str) -> String {
     "HQ Anywhere setup failed. Tap to retry.".to_string()
@@ -202,22 +208,150 @@ fn global_runtime_has_any_install(home: &Path, runtime: GlobalRuntime) -> bool {
 }
 
 /// Written by HQ Desktop when it installs or adopts the HQ Anywhere setup for
-/// `runtime`: `~/.hq/anywhere/<runtime>-desktop-enabled`. An uninstall request
-/// (the setting is off, or was never turned on) removes only a setup that has
-/// this marker. A setup made with `hq install --global` and never turned on in
-/// the desktop has no marker, so launch sync leaves it in place.
+/// `runtime`: `~/.hq/anywhere/<runtime>-desktop-enabled`. The file names the
+/// install it recorded (path, mtime and content of the files that install
+/// wrote). An uninstall request removes a setup only when the files still
+/// match. A setup made with `hq install --global` and never turned on in the
+/// desktop has no marker, so launch sync leaves it in place. A marker left
+/// behind by `hq uninstall --global` then `hq install --global` does not match
+/// the fresh install, so launch sync drops the marker and leaves the install.
 fn desktop_marker_file(home: &Path, runtime: GlobalRuntime) -> PathBuf {
     home.join(".hq/anywhere")
         .join(format!("{}-desktop-enabled", runtime.as_str()))
 }
 
-fn write_desktop_marker(home: &Path, runtime: GlobalRuntime) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MarkerOrigin {
+    Adopted,
+    Installed,
+}
+
+impl MarkerOrigin {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Adopted => "adopted",
+            Self::Installed => "installed",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "adopted" => Some(Self::Adopted),
+            "installed" => Some(Self::Installed),
+            _ => None,
+        }
+    }
+}
+
+fn file_stamp(path: &Path) -> Option<String> {
+    let meta = fs::metadata(path).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let bytes = fs::read(path).ok()?;
+    let modified = meta.modified().ok()?;
+    let stamp = modified.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let digest = Sha256::digest(&bytes);
+    Some(format!(
+        "{}:{}:{}:{digest:x}",
+        stamp.as_secs(),
+        stamp.subsec_nanos(),
+        bytes.len()
+    ))
+}
+
+/// Identity of the HQ Anywhere files currently on disk for `runtime`. A CLI
+/// reinstall rewrites those files, so the stamp changes even when the managed
+/// text is the same.
+fn install_fingerprint(home: &Path, runtime: GlobalRuntime) -> String {
+    let state = file_stamp(&install_state_file(home, runtime)).unwrap_or_default();
+    let (managed_path, mcp_path, mcp_present) = match runtime {
+        GlobalRuntime::Claude => (
+            home.join(".claude/CLAUDE.md"),
+            home.join(".claude.json"),
+            claude_mcp_is_hq_anywhere(home),
+        ),
+        GlobalRuntime::Codex => (
+            home.join(".codex/AGENTS.md"),
+            home.join(".codex/config.toml"),
+            codex_mcp_is_hq_anywhere(home),
+        ),
+    };
+    let managed = if has_managed_block(
+        &managed_path,
+        match runtime {
+            GlobalRuntime::Claude => CLAUDE_BLOCK_BEGIN,
+            GlobalRuntime::Codex => CODEX_BLOCK_BEGIN,
+        },
+    ) {
+        file_stamp(&managed_path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let mcp = if mcp_present {
+        file_stamp(&mcp_path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    format!("v1\nstate={state}\nmanaged={managed}\nmcp={mcp}")
+}
+
+fn fingerprint_identifies_install(fingerprint: &str) -> bool {
+    fingerprint.lines().skip(1).any(|line| {
+        line.split_once('=')
+            .is_some_and(|(_, value)| !value.is_empty())
+    })
+}
+
+fn read_desktop_record(home: &Path, runtime: GlobalRuntime) -> Option<Value> {
+    let raw = fs::read_to_string(desktop_marker_file(home, runtime)).ok()?;
+    serde_json::from_str(raw.trim()).ok()
+}
+
+fn marker_origin(home: &Path, runtime: GlobalRuntime) -> Option<MarkerOrigin> {
+    read_desktop_record(home, runtime)
+        .and_then(|record| {
+            record
+                .get("origin")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .as_deref()
+        .and_then(MarkerOrigin::parse)
+}
+
+/// True when the record was written for the files that are on disk now.
+/// A legacy `1\n` marker, or a record whose files were replaced, does not match.
+fn marker_matches(home: &Path, runtime: GlobalRuntime) -> bool {
+    let Some(record) = read_desktop_record(home, runtime) else {
+        return false;
+    };
+    if record.get("v").and_then(Value::as_u64) != Some(1) {
+        return false;
+    }
+    let Some(stored) = record.get("fingerprint").and_then(Value::as_str) else {
+        return false;
+    };
+    fingerprint_identifies_install(stored) && stored == install_fingerprint(home, runtime)
+}
+
+fn write_desktop_marker(home: &Path, runtime: GlobalRuntime, origin: MarkerOrigin) {
     let marker = desktop_marker_file(home, runtime);
-    let written = marker
-        .parent()
-        .map(fs::create_dir_all)
-        .unwrap_or(Ok(()))
-        .and_then(|()| fs::write(&marker, b"1\n"));
+    let body = serde_json::json!({
+        "v": 1,
+        "origin": origin.as_str(),
+        "fingerprint": install_fingerprint(home, runtime),
+    });
+    let written = serde_json::to_vec(&body)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| {
+            marker
+                .parent()
+                .map(fs::create_dir_all)
+                .unwrap_or(Ok(()))
+                .and_then(|()| fs::write(&marker, bytes))
+                .map_err(|error| error.to_string())
+        });
     if let Err(error) = written {
         log(
             LOG_TAG,
@@ -227,6 +361,18 @@ fn write_desktop_marker(home: &Path, runtime: GlobalRuntime) {
             ),
         );
     }
+}
+
+/// True when the desktop adopted an existing install and that install is still
+/// the one it recorded. Settings uses this to say that turning the switch off
+/// removes that install.
+pub fn desktop_adopted_install(home: &Path) -> bool {
+    [GlobalRuntime::Claude, GlobalRuntime::Codex]
+        .into_iter()
+        .any(|runtime| {
+            marker_origin(home, runtime) == Some(MarkerOrigin::Adopted)
+                && marker_matches(home, runtime)
+        })
 }
 
 fn clear_desktop_marker(home: &Path, runtime: GlobalRuntime) {
@@ -315,8 +461,16 @@ pub fn hq_anywhere_runtime_installed(runtime: String) -> Result<bool, String> {
     runtime_installed_for_tool(&home, &runtime)
 }
 
+/// Whether Settings should say that turning HQ Anywhere off removes an install
+/// the desktop adopted. Does not install or uninstall.
+#[tauri::command]
+pub fn hq_anywhere_adopted_install() -> Result<bool, String> {
+    let home =
+        dirs::home_dir().ok_or_else(|| "Could not resolve the home directory.".to_string())?;
+    Ok(desktop_adopted_install(&home))
+}
+
 async fn run_global_install(enabled: bool, only: Option<GlobalRuntime>) -> Result<(), String> {
-    let _guard = global_install_lock().lock().await;
     let identity = crate::scratch_build::LaunchIdentity::current();
     // A disallowed one-tool install is an error. A disallowed startup
     // reconcile stays Ok and must return here, before any home lookup.
@@ -328,17 +482,50 @@ async fn run_global_install(enabled: bool, only: Option<GlobalRuntime>) -> Resul
         dirs::home_dir().ok_or_else(|| "Could not resolve the home directory.".to_string())?;
     let path_env = paths::child_path();
     let path_entries = std::env::split_paths(OsStr::new(&path_env)).collect::<Vec<_>>();
-    apply_global_install(
+    apply_global_install_locked(
         &identity,
         enabled,
         only,
         &home,
         &path_entries,
+        HQ_ANYWHERE_COMMAND_DEADLINE,
         || crate::commands::install_directory::resolve_hq_path().map(PathBuf::from),
         |args, hq_root| async move {
             let args = args.iter().map(String::as_str).collect::<Vec<_>>();
             crate::commands::install_stages::run_hq_global_runtime_plain(&args, &hq_root).await
         },
+    )
+    .await
+}
+
+/// Holds [`global_install_lock`] around [`apply_global_install`]. The command
+/// deadline is inside the lock, so a hung `hq` releases it when the deadline
+/// fires instead of blocking the next toggle or launch sync.
+async fn apply_global_install_locked<R, F, Fut>(
+    identity: &crate::scratch_build::LaunchIdentity,
+    enabled: bool,
+    only: Option<GlobalRuntime>,
+    home: &Path,
+    path_entries: &[PathBuf],
+    command_deadline: Duration,
+    resolve_hq_root: R,
+    run_hq: F,
+) -> Result<(), String>
+where
+    R: FnOnce() -> Result<PathBuf, String>,
+    F: FnMut(Vec<String>, PathBuf) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    let _guard = global_install_lock().lock().await;
+    apply_global_install(
+        identity,
+        enabled,
+        only,
+        home,
+        path_entries,
+        command_deadline,
+        resolve_hq_root,
+        run_hq,
     )
     .await
 }
@@ -352,6 +539,7 @@ async fn apply_global_install<R, F, Fut>(
     only: Option<GlobalRuntime>,
     home: &Path,
     path_entries: &[PathBuf],
+    command_deadline: Duration,
     resolve_hq_root: R,
     mut run_hq: F,
 ) -> Result<(), String>
@@ -385,7 +573,16 @@ where
     let mut pending = Vec::new();
     for runtime in runtimes {
         if enabled && global_runtime_is_installed(home, runtime) {
-            write_desktop_marker(home, runtime);
+            // A later launch with the switch still on must not relabel an
+            // install HQ Desktop created. Settings only says that turning the
+            // switch off removes the install when the desktop took on one
+            // that was already there.
+            let desktop_made_this_install = marker_origin(home, runtime)
+                == Some(MarkerOrigin::Installed)
+                && marker_matches(home, runtime);
+            if !desktop_made_this_install {
+                write_desktop_marker(home, runtime, MarkerOrigin::Adopted);
+            }
             log(
                 LOG_TAG,
                 &format!(
@@ -410,6 +607,15 @@ where
                     runtime.as_str()
                 ),
             );
+        } else if !enabled && !marker_matches(home, runtime) {
+            clear_desktop_marker(home, runtime);
+            log(
+                LOG_TAG,
+                &format!(
+                    "{} desktop record does not match the current install; leaving it",
+                    runtime.as_str()
+                ),
+            );
         } else {
             pending.push(runtime);
         }
@@ -423,10 +629,10 @@ where
     for runtime in pending {
         let argv = global_runtime_args(action, runtime);
         log(LOG_TAG, &format!("running hq {}", argv.join(" ")));
-        match run_hq(argv, hq_root.clone()).await {
-            Ok(()) => {
+        match tokio::time::timeout(command_deadline, run_hq(argv, hq_root.clone())).await {
+            Ok(Ok(())) => {
                 if enabled {
-                    write_desktop_marker(home, runtime);
+                    write_desktop_marker(home, runtime, MarkerOrigin::Installed);
                 } else {
                     clear_desktop_marker(home, runtime);
                 }
@@ -435,12 +641,28 @@ where
                     &format!("{} global setup completed", runtime.as_str()),
                 );
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 log(
                     LOG_TAG,
                     &format!("{} global setup failed: {error}", runtime.as_str()),
                 );
                 failures.push(format!("{} global setup failed: {error}", runtime.as_str()));
+            }
+            Err(_elapsed) => {
+                log(
+                    LOG_TAG,
+                    &format!(
+                        "{} global setup hit the shared deadline; releasing the HQ Anywhere lock",
+                        runtime.as_str()
+                    ),
+                );
+                failures.push(format!(
+                    "{} global setup failed: timed out",
+                    runtime.as_str()
+                ));
+                // This command already used the whole deadline. Stop here so
+                // the lock drops instead of starting another `hq`.
+                break;
             }
         }
     }
@@ -456,15 +678,16 @@ where
 mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     use super::{
-        apply_global_install, detect_present_runtimes, disallowed_install_result,
-        global_runtime_args, global_runtime_is_installed, parse_tool_runtime,
-        runtime_installed_for_tool, safe_renderer_failure, GlobalRuntime, RuntimeAction,
+        apply_global_install, apply_global_install_locked, desktop_adopted_install,
+        detect_present_runtimes, disallowed_install_result, global_runtime_args,
+        global_runtime_is_installed, parse_tool_runtime, runtime_installed_for_tool,
+        safe_renderer_failure, write_desktop_marker, GlobalRuntime, MarkerOrigin, RuntimeAction,
         HQ_ANYWHERE_NOT_INSTALLED,
     };
     use crate::scratch_build::LaunchIdentity;
@@ -524,12 +747,8 @@ mod tests {
     }
 
     fn write_desktop_marker_for(home: &Path, runtime: &str) {
-        fs::create_dir_all(home.join(".hq/anywhere")).unwrap();
-        fs::write(
-            home.join(format!(".hq/anywhere/{runtime}-desktop-enabled")),
-            "1\n",
-        )
-        .unwrap();
+        let runtime = GlobalRuntime::parse(runtime).expect("test runtime name");
+        write_desktop_marker(home, runtime, MarkerOrigin::Installed);
     }
 
     /// Runs [`apply_global_install`] against a temporary home that `seed`
@@ -546,6 +765,7 @@ mod tests {
         let calls = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
         let resolved = Arc::new(Mutex::new(false));
         let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("test runtime");
         let result = runtime.block_on(apply_global_install(
@@ -554,6 +774,7 @@ mod tests {
             only,
             home.path(),
             &[],
+            Duration::from_secs(20),
             {
                 let resolved = resolved.clone();
                 move || {
@@ -711,6 +932,66 @@ mod tests {
         assert!(calls.is_empty(), "removed a CLI-made install: {calls:?}");
     }
 
+    /// `hq uninstall --global` then `hq install --global`, with no desktop
+    /// launch in between, leaves the desktop's record pointing at an install
+    /// that is gone. The fresh CLI install must survive the next launch with
+    /// the setting off, and the stale record must be dropped.
+    #[test]
+    fn launch_sync_does_not_remove_a_fresh_cli_install_after_a_stale_desktop_record() {
+        let home = TempHome::new();
+        write_claude_install(home.path());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let calls = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+        let run = |enabled: bool| {
+            let calls = calls.clone();
+            runtime.block_on(apply_global_install(
+                &production(),
+                enabled,
+                None,
+                home.path(),
+                &[],
+                Duration::from_secs(20),
+                || Ok(PathBuf::from("/tmp/hq-root-for-test")),
+                move |argv: Vec<String>, _hq_root: PathBuf| {
+                    calls.lock().unwrap().push(argv);
+                    async { Ok(()) }
+                },
+            ))
+        };
+
+        assert_eq!(run(true), Ok(()));
+        let marker = home.path().join(".hq/anywhere/claude-desktop-enabled");
+        assert!(
+            marker.is_file(),
+            "desktop did not record the install it adopted"
+        );
+
+        fs::remove_file(home.path().join(".claude/CLAUDE.md")).unwrap();
+        fs::remove_file(home.path().join(".claude.json")).unwrap();
+        fs::write(
+            home.path().join(".claude/CLAUDE.md"),
+            "<!-- hq-anywhere:begin managed -->\nHQ fresh\n<!-- hq-anywhere:end -->\n",
+        )
+        .unwrap();
+        fs::write(
+            home.path().join(".claude.json"),
+            r#"{"mcpServers":{"hq":{"_hqPack":"hq-anywhere","installed":"fresh"}}}"#,
+        )
+        .unwrap();
+
+        calls.lock().unwrap().clear();
+        assert_eq!(run(false), Ok(()));
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "removed a fresh CLI install: {:?}",
+            calls.lock().unwrap()
+        );
+        assert!(!marker.exists(), "stale desktop record was kept");
+    }
+
     #[test]
     fn launch_sync_removes_only_the_runtime_the_desktop_turned_on() {
         let (result, calls, _) = run_global_install_in(production(), false, None, |home| {
@@ -734,19 +1015,28 @@ mod tests {
         write_claude_install(home.path());
         fs::create_dir_all(home.path().join(".codex")).unwrap();
         let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("test runtime");
         let calls = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+        let home_path = home.path().to_path_buf();
         let run = |enabled: bool| {
             let calls = calls.clone();
+            let home_path = home_path.clone();
             runtime.block_on(apply_global_install(
                 &production(),
                 enabled,
                 None,
                 home.path(),
                 &[],
+                Duration::from_secs(20),
                 || Ok(PathBuf::from("/tmp/hq-root-for-test")),
                 move |argv: Vec<String>, _hq_root: PathBuf| {
+                    if argv.first().map(String::as_str) == Some("install")
+                        && argv.iter().any(|arg| arg == "codex")
+                    {
+                        write_codex_install(&home_path);
+                    }
                     calls.lock().unwrap().push(argv);
                     async { Ok(()) }
                 },
@@ -759,6 +1049,10 @@ mod tests {
             "did not adopt the existing claude setup"
         );
         assert!(
+            desktop_adopted_install(home.path()),
+            "an adopted install was not reported to Settings"
+        );
+        assert!(
             marker("codex").is_file(),
             "did not record the codex install"
         );
@@ -768,7 +1062,6 @@ mod tests {
         );
 
         calls.lock().unwrap().clear();
-        write_codex_install(home.path());
         assert_eq!(run(false), Ok(()));
         assert_eq!(
             calls.lock().unwrap().clone(),
@@ -787,6 +1080,7 @@ mod tests {
         write_claude_install(home.path());
         write_desktop_marker_for(home.path(), "claude");
         let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .expect("test runtime");
         let result = runtime.block_on(apply_global_install(
@@ -795,6 +1089,7 @@ mod tests {
             Some(GlobalRuntime::Claude),
             home.path(),
             &[],
+            Duration::from_secs(20),
             || Ok(PathBuf::from("/tmp/hq-root-for-test")),
             |_argv: Vec<String>, _hq_root: PathBuf| async { Err("boom".to_string()) },
         ));
@@ -803,6 +1098,167 @@ mod tests {
             .path()
             .join(".hq/anywhere/claude-desktop-enabled")
             .is_file());
+    }
+
+    /// Installing writes origin "installed". The next launch with the switch
+    /// still on must leave that label alone, or Settings would claim the
+    /// person had an install HQ Desktop only took on.
+    #[test]
+    fn a_later_launch_does_not_relabel_a_desktop_install_as_adopted() {
+        let home = TempHome::new();
+        fs::create_dir_all(home.path().join(".claude")).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let home_path = home.path().to_path_buf();
+        let calls = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+        let run = |enabled: bool| {
+            let calls = calls.clone();
+            let home_path = home_path.clone();
+            runtime.block_on(apply_global_install(
+                &production(),
+                enabled,
+                Some(GlobalRuntime::Claude),
+                home.path(),
+                &[],
+                Duration::from_secs(20),
+                || Ok(PathBuf::from("/tmp/hq-root-for-test")),
+                move |argv: Vec<String>, _hq_root: PathBuf| {
+                    if argv.first().map(String::as_str) == Some("install") {
+                        write_claude_install(&home_path);
+                    }
+                    calls.lock().unwrap().push(argv);
+                    async { Ok(()) }
+                },
+            ))
+        };
+
+        assert_eq!(run(true), Ok(()));
+        let marker_path = home.path().join(".hq/anywhere/claude-desktop-enabled");
+        let marker = fs::read_to_string(&marker_path).unwrap();
+        assert!(
+            marker.contains("\"origin\":\"installed\""),
+            "desktop install was not recorded as its own: {marker}"
+        );
+        assert!(
+            !desktop_adopted_install(home.path()),
+            "a desktop install was reported as adopted"
+        );
+
+        calls.lock().unwrap().clear();
+        assert_eq!(run(true), Ok(()));
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "relaunched install: {:?}",
+            calls.lock().unwrap()
+        );
+        let marker = fs::read_to_string(&marker_path).unwrap();
+        assert!(
+            marker.contains("\"origin\":\"installed\""),
+            "a later launch relabeled the desktop install: {marker}"
+        );
+        assert!(!desktop_adopted_install(home.path()));
+
+        calls.lock().unwrap().clear();
+        assert_eq!(run(false), Ok(()));
+        assert_eq!(
+            calls.lock().unwrap().clone(),
+            [["uninstall", "--global", "--runtime", "claude"]]
+        );
+        assert!(!marker_path.exists());
+    }
+
+    /// A matching record still authorises uninstall. The files are the ones
+    /// the desktop adopted, so turning the setting off removes that install.
+    #[test]
+    fn a_matching_desktop_record_still_uninstalls_when_the_setting_is_turned_off() {
+        let (result, calls, _) = run_global_install_in(production(), false, None, |home| {
+            write_claude_install(home);
+            write_desktop_marker_for(home, "claude");
+        });
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls, [["uninstall", "--global", "--runtime", "claude"]]);
+    }
+
+    /// A hung `hq install` must drop the shared lock when the 20s deadline
+    /// fires. The test uses a short deadline so it does not wait 20s. A later
+    /// call has to acquire that same lock.
+    #[test]
+    fn a_hung_install_releases_the_lock_when_the_deadline_fires() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        runtime.block_on(async {
+            let home = TempHome::new();
+            fs::create_dir_all(home.path().join(".claude")).unwrap();
+            let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+            let entered = Arc::new(Mutex::new(Some(entered_tx)));
+            let home_path = home.path().to_path_buf();
+            let hung = tokio::spawn(async move {
+                apply_global_install_locked(
+                    &production(),
+                    true,
+                    Some(GlobalRuntime::Claude),
+                    &home_path,
+                    &[],
+                    Duration::from_millis(80),
+                    || Ok(PathBuf::from("/tmp/hq-root-for-test")),
+                    move |_argv: Vec<String>, _hq_root: PathBuf| {
+                        let entered = entered.clone();
+                        async move {
+                            if let Some(tx) = entered.lock().unwrap().take() {
+                                let _ = tx.send(());
+                            }
+                            std::future::pending::<Result<(), String>>().await
+                        }
+                    },
+                )
+                .await
+            });
+
+            tokio::time::timeout(Duration::from_secs(2), entered_rx)
+                .await
+                .expect("hung install never took the lock")
+                .expect("entered channel closed");
+
+            let started = std::time::Instant::now();
+            let second = tokio::time::timeout(
+                Duration::from_secs(2),
+                apply_global_install_locked(
+                    &production(),
+                    false,
+                    Some(GlobalRuntime::Claude),
+                    home.path(),
+                    &[],
+                    Duration::from_secs(5),
+                    || Ok(PathBuf::from("/tmp/hq-root-for-test")),
+                    |_argv: Vec<String>, _hq_root: PathBuf| async { Ok(()) },
+                ),
+            )
+            .await;
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "later sync waited on the hung install"
+            );
+            assert_eq!(
+                second.expect("lock was still held after the deadline"),
+                Ok(())
+            );
+            let hung_result = tokio::time::timeout(Duration::from_secs(2), hung)
+                .await
+                .expect("hung install did not finish when the deadline fired")
+                .expect("hung task panicked");
+            assert!(hung_result.is_err(), "a timed-out install reported success");
+            assert!(
+                !home
+                    .path()
+                    .join(".hq/anywhere/claude-desktop-enabled")
+                    .exists(),
+                "a timed-out install recorded itself"
+            );
+        });
     }
 
     #[test]
@@ -832,7 +1288,10 @@ mod tests {
                 write_claude_install(home);
             });
         assert_eq!(result, Ok(()));
-        assert!(calls.is_empty(), "reinstalled an installed runtime: {calls:?}");
+        assert!(
+            calls.is_empty(),
+            "reinstalled an installed runtime: {calls:?}"
+        );
 
         let (result, calls, _) = run_global_install_in(
             bundle(Some(SCRATCH_BUNDLE_ID)),
