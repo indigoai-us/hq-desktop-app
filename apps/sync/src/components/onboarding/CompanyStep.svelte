@@ -4,15 +4,14 @@
    * First-run company step. Shown after the setup explainers and before the
    * ready ("Open HQ Desktop") screen, while the install runs, to a person with
    * no active company: join a pending invite, or name a company (optional
-   * website), pick Starter or Workforce, invite the team, and land on a
+   * website), see the usage card and sign up free, invite the team, and land on a
    * "<company> is ready." moment before the ready screen. Invites are their own
    * screen, sent only once the company is ready, with every address's outcome
    * on show. The company handle (slug) is
    * made from the name and checked in the background; nobody types it. When
-   * the person already picked a plan on the website (`priorPlan`), the plan
-   * screen is skipped and that plan is used. Workforce opens the
-   * Stripe checkout in the browser; the `hq-desktop://setup` return comes back
-   * through the deep-link handler as `messages:open-setup`.
+   * the person already picked the free start on the website (`priorPlan`),
+   * the plan screen is skipped. The card is usage pricing from hq-pro's
+   * GET /v1/pricing (`plan-cards.ts`); there is no checkout in this step.
    *
    * The company form is the server's own `create_company` card, so the fields
    * shown are whatever hq-pro declares (today: name, handle, website).
@@ -34,23 +33,15 @@
     COMPANY_NAME_UNUSABLE,
     createFirstRunCompanyApi,
     deriveCompanyHandle,
-    isCheckoutReturnFor,
     requestCompanyProvisioning,
     waitForProvisioning,
     parseInviteEmails,
-    startWorkforceCheckout,
     type FirstRunCompanyPath,
     type FirstRunPlan,
     type InvokeFn,
     type PlanLimitRefusal,
   } from '../../lib/first-run-company';
-  import {
-    PLAN_CARDS,
-    PLAN_PICKER_COPY,
-    loadStarterAllowances,
-    planCardsFor,
-    type PlanRowState,
-  } from '../../lib/plan-cards';
+  import { PLAN_PICKER_COPY, USAGE_CARD, loadUsageCard, type PlanRowState } from '../../lib/plan-cards';
   import PlanUpgradeAction from '../PlanUpgradeAction.svelte';
   import { flushPendingCompanyInvites, queuePendingCompanyInvites } from '../../lib/pending-company-invites';
   import type { ProvisioningState } from '../../lib/onboarding-company-route';
@@ -81,9 +72,7 @@
     | { action: 'invite_other_email' }
     | { action: 'switch_account' }
     | { action: 'plan_chosen'; companyUid: string; plan: FirstRunPlan }
-    | { action: 'checkout_opened'; companyUid: string }
-    | { action: 'checkout_failed'; companyUid: string }
-    | { action: 'checkout_returned'; companyUid: string }
+    | { action: 'plan_link_opened'; companyUid: string; link: 'enterprise' | 'self_hosted' }
     | {
         action: 'invites_sent';
         companyUid: string;
@@ -94,7 +83,7 @@
     | { action: 'invites_skipped'; companyUid: string };
 
   export type CompanyStepResult =
-    | { outcome: 'created'; companyUid: string; plan: FirstRunPlan; paid: boolean }
+    | { outcome: 'created'; companyUid: string; plan: FirstRunPlan }
     | { outcome: 'joined'; slugs: string[]; companyUid: string | null }
     | { outcome: 'used_existing'; companyUid: string; slug: string | null }
     /**
@@ -112,14 +101,15 @@
     /** Test seam: provisioning poll timing. */
     provisioningPoll?: { intervalMs?: number; timeoutMs?: number };
     openUrl: (url: string) => Promise<void>;
-    listen: (event: string, handler: (payload: unknown) => void) => Promise<() => void>;
+    /** Unused since the Workforce checkout left this step; hosts may still pass it. */
+    listen?: (event: string, handler: (payload: unknown) => void) => Promise<() => void>;
     onTelemetry?: (event: CompanyStepEvent) => void;
     oncomplete: (result: CompanyStepResult) => void;
     namePrefillEnabled?: boolean;
     signedInEmail?: string | null;
     /**
      * The plan the person already picked on the website. When set, the plan
-     * screen is skipped: Starter finishes, Workforce opens checkout.
+     * screen is skipped and the step goes on to the invites.
      */
     priorPlan?: FirstRunPlan | null;
     /**
@@ -135,7 +125,6 @@
     onswitchaccount,
     provisioningPoll,
     openUrl,
-    listen,
     onTelemetry,
     oncomplete,
     namePrefillEnabled = false,
@@ -153,7 +142,6 @@
     | 'provisioning'
     | 'provision-failed'
     | 'plan'
-    | 'checkout'
     | 'invite'
     | 'done';
 
@@ -203,11 +191,7 @@
 
   // svelte-ignore state_referenced_locally
   let companyUid = $state<string | null>(path.kind === 'resume' ? path.company.companyUid : null);
-  let plan = $state<FirstRunPlan>('starter');
-  /** The plan the company ended up on, and whether checkout was finished. */
-  let paid = $state(false);
-  let checkoutUrl = $state<string | null>(null);
-  let stopCheckoutListen: (() => void) | null = null;
+  let plan = $state<FirstRunPlan>('free');
 
   /** One invite on the invite screen and what happened to it. */
   type InviteStatus = 'new' | 'sending' | 'sent' | 'queued' | 'failed';
@@ -232,8 +216,8 @@
   );
   const companyInitial = $derived(Array.from(companyName.trim())[0]?.toUpperCase() ?? 'H');
 
-  /** A plan was picked on this screen (not on the website, not paid for): Back can return to it. */
-  const planPickedHere = $derived(!priorPlan && !paid);
+  /** A plan was picked on this screen (not on the website): Back can return to it. */
+  const planPickedHere = $derived(!priorPlan);
   /**
    * Back is offered where going back undoes nothing that was made: the first
    * question (Back leaves the step), the invite screen (back to the plans,
@@ -609,7 +593,7 @@
     }
     if (priorPlan) {
       // Already picked on the website: use it, never ask twice.
-      await confirmPlan(priorPlan);
+      confirmPlan(priorPlan);
       return;
     }
     phase = 'plan';
@@ -742,7 +726,7 @@
   /** "<company> is ready.": the end of the step. */
   function finishCompany(): void {
     if (!companyUid) return;
-    oncomplete({ outcome: 'created', companyUid, plan: paid ? 'workforce' : plan, paid });
+    oncomplete({ outcome: 'created', companyUid, plan });
   }
 
   function useExisting(): void {
@@ -767,64 +751,19 @@
     return state === 'on' ? 'included' : state === 'off' ? 'not included' : 'included with limits';
   }
 
-  async function confirmPlan(choice: FirstRunPlan): Promise<void> {
+  function confirmPlan(choice: FirstRunPlan): void {
     if (!companyUid || busy) return;
     plan = choice;
     onTelemetry?.({ action: 'plan_chosen', companyUid, plan });
-    if (plan === 'starter') {
-      goToInvite();
-      return;
-    }
-    await openCheckout();
-  }
-
-  async function openCheckout(): Promise<void> {
-    if (!companyUid) return;
-    busy = true;
-    error = null;
-    const result = await startWorkforceCheckout(invoke, companyUid);
-    if (!result.ok) {
-      busy = false;
-      error = result.reason;
-      onTelemetry?.({ action: 'checkout_failed', companyUid });
-      // A skipped plan screen comes back so Starter is still one click away.
-      phase = 'plan';
-      return;
-    }
-    checkoutUrl = result.url;
-    await watchCheckoutReturn(companyUid);
-    try {
-      await openUrl(result.url);
-    } catch (err) {
-      console.warn('onboarding: could not open checkout in the browser', err);
-      error = 'HQ could not open your browser. Use the link below to finish checkout.';
-    }
-    busy = false;
-    onTelemetry?.({ action: 'checkout_opened', companyUid });
-    phase = 'checkout';
-  }
-
-  async function watchCheckoutReturn(uid: string): Promise<void> {
-    if (stopCheckoutListen) return;
-    try {
-      stopCheckoutListen = await listen('messages:open-setup', (payload) => {
-        if (!isCheckoutReturnFor(payload, uid)) return;
-        onTelemetry?.({ action: 'checkout_returned', companyUid: uid });
-        finish(true);
-      });
-    } catch (err) {
-      // Without the event the person still has the "I finished checkout" button.
-      console.warn('onboarding: could not watch for the checkout return', err);
-    }
-  }
-
-  /** Back from checkout (finished, or Starter for now): on to the invites. */
-  function finish(checkoutDone: boolean): void {
-    stopCheckoutListen?.();
-    stopCheckoutListen = null;
-    if (!companyUid) return;
-    paid = checkoutDone;
     goToInvite();
+  }
+
+  /** The enterprise demo and self-hosted guide links under the card. */
+  function openPlanLink(link: 'enterprise' | 'self_hosted', url: string): void {
+    if (companyUid) onTelemetry?.({ action: 'plan_link_opened', companyUid, link });
+    void openUrl(url).catch((err: unknown) => {
+      console.warn('onboarding: could not open the plan link in the browser', err);
+    });
   }
 
   async function joinInvite(slug: string | null): Promise<void> {
@@ -868,16 +807,17 @@
   });
 
   /**
-   * Plan cards. Starter's ceilings come from hq-pro's GET /v1/pricing once the
-   * picker opens; until then (or if the read fails) the built-in fallback.
+   * The usage card. Rates, credit, trial and boxes come from hq-pro's
+   * GET /v1/pricing once the picker opens; until then (or if the read fails)
+   * the bundled copy of the published card.
    */
-  let planCards = $state(PLAN_CARDS);
+  let usageCard = $state(USAGE_CARD);
   let pricingRequested = false;
   $effect(() => {
     if (phase !== 'plan' || pricingRequested) return;
     pricingRequested = true;
-    void loadStarterAllowances(invoke).then((starter) => {
-      if (starter) planCards = planCardsFor(starter);
+    void loadUsageCard(invoke).then((card) => {
+      if (!destroyed) usageCard = card;
     });
   });
 
@@ -894,7 +834,6 @@
   onDestroy(() => {
     destroyed = true;
     slugWatcher?.cancel();
-    stopCheckoutListen?.();
   });
 
   /**
@@ -1092,71 +1031,52 @@
         {#if note}<p class="cs-alert" role="status">{note}</p>{/if}
         {#if error}<p class="cs-alert" role="alert" data-testid="onboarding-company-error">{error}</p>{/if}
         <div class="plan-cards" data-testid="onboarding-plan-options">
-          {#each planCards as card (card.plan)}
-            <section
-              class="plan-card"
-              class:featured={card.featured}
-              data-testid={`onboarding-plan-card-${card.plan}`}
-              aria-labelledby={`onboarding-plan-name-${card.plan}`}
-            >
-              <div class="plan-head">
-                <h3 class="plan-name" id={`onboarding-plan-name-${card.plan}`}>{card.name}</h3>
-                {#if card.badge}<span class="plan-badge" data-testid="onboarding-plan-badge">{card.badge}</span>{/if}
-              </div>
-              <p class="plan-price"><span class="plan-amount">{card.price}</span> <span class="plan-suffix">{card.suffix}</span></p>
-              <p class="plan-blurb">{card.blurb}</p>
-              <ul class="plan-rows">
-                {#each card.rows as row (row.label)}
-                  <li class="plan-row" data-state={row.state}>
-                    <span class="plan-mark" aria-hidden="true">{@render mark(row.state)}</span>
-                    <span class="plan-row-text">
-                      <span class="sr-only">{row.label}, {markLabel(row.state)}: </span><span class="plan-value">{row.value}</span>{#if row.detail}<span class="plan-row-detail">{` · ${row.detail}`}</span>{/if}
-                    </span>
-                  </li>
-                {/each}
-              </ul>
-              <div class="plan-spacer" aria-hidden="true"></div>
+          <section
+            class="plan-card featured"
+            data-testid={`onboarding-plan-card-${usageCard.plan}`}
+            aria-labelledby={`onboarding-plan-name-${usageCard.plan}`}
+          >
+            <div class="plan-head">
+              <h3 class="plan-name" id={`onboarding-plan-name-${usageCard.plan}`}>{usageCard.name}</h3>
+            </div>
+            <p class="plan-price"><span class="plan-amount">{usageCard.price}</span> <span class="plan-suffix">{usageCard.suffix}</span></p>
+            <p class="plan-blurb">{usageCard.blurb}</p>
+            <ul class="plan-rows">
+              {#each usageCard.rows as row (row.label)}
+                <li class="plan-row" class:wide={row.wide} data-state={row.state} data-testid="onboarding-plan-row">
+                  <span class="plan-mark" aria-hidden="true">{@render mark(row.state)}</span>
+                  <span class="plan-row-text">
+                    <span class="sr-only">{markLabel(row.state)}: </span><span class="plan-label">{row.label}</span> <span class="plan-value">{row.value}</span>{#if row.detail}<span class="plan-row-detail">{` · ${row.detail}`}</span>{/if}
+                  </span>
+                </li>
+              {/each}
+            </ul>
+            <div class="plan-spacer" aria-hidden="true"></div>
+            <div class="plan-actions">
               <button
-                class="btn plan-cta"
-                class:btn-primary={card.featured}
-                class:btn-secondary={!card.featured}
+                class="btn btn-primary plan-cta"
                 type="button"
-                data-testid={`onboarding-plan-choose-${card.plan}`}
+                data-testid={`onboarding-plan-choose-${usageCard.plan}`}
                 disabled={busy}
-                aria-busy={busy && plan === card.plan}
-                onclick={() => void confirmPlan(card.plan)}
-              >{busy && plan === card.plan && card.plan === 'workforce' ? PLAN_PICKER_COPY.checkoutBusy : card.cta}</button>
-              <p class="plan-cta-note">{card.ctaNote}</p>
-            </section>
-          {/each}
+                onclick={() => confirmPlan(usageCard.plan)}
+              >{usageCard.cta}</button>
+              {#if usageCard.enterprise}
+                {@const enterprise = usageCard.enterprise}
+                <button
+                  class="btn btn-secondary plan-cta"
+                  type="button"
+                  data-testid="onboarding-plan-enterprise"
+                  onclick={() => openPlanLink('enterprise', enterprise.url)}
+                >{enterprise.label}</button>
+              {/if}
+            </div>
+            <p class="plan-cta-note" data-testid="onboarding-plan-trial">{usageCard.ctaNote}</p>
+          </section>
         </div>
         <p class="plan-custom">
-          {PLAN_PICKER_COPY.customSetupLead}
-          <button class="link" type="button" data-testid="onboarding-plan-book-call" onclick={() => void openUrl(PLAN_PICKER_COPY.customSetupUrl)}>{PLAN_PICKER_COPY.customSetupCta}</button>
+          {PLAN_PICKER_COPY.selfHostedLead}
+          <button class="link" type="button" data-testid="onboarding-plan-self-hosted" onclick={() => openPlanLink('self_hosted', usageCard.selfHosted.url)}>{usageCard.selfHosted.label}</button>
         </p>
-      {:else if phase === 'checkout'}
-        {@render heading('Finish checkout in your browser')}
-        <p class="body cs-body">
-          Checkout is open in your browser. When you finish, HQ comes back here and turns on Workforce for {companyName}.
-        </p>
-        {#if error}<p class="cs-alert" role="alert" data-testid="onboarding-company-error">{error}</p>{/if}
-        <div class="cs-actions">
-          <button class="btn btn-primary" type="button" data-testid="onboarding-checkout-done" onclick={() => finish(false)}><RailIcon name="check-circle" />I finished checkout</button>
-          <button
-            class="btn btn-secondary"
-            type="button"
-            data-testid="onboarding-checkout-starter"
-            onclick={() => {
-              plan = 'starter';
-              finish(false);
-            }}
-          >Start on Starter for now</button>
-        </div>
-        {#if checkoutUrl}
-          <p class="cs-fine">
-            <button class="link" type="button" data-testid="onboarding-checkout-reopen" onclick={() => checkoutUrl && void openUrl(checkoutUrl)}>Open checkout again</button>
-          </p>
-        {/if}
       {:else if phase === 'invite'}
         {@render heading('Invite your team')}
         <p class="body cs-body">HQ is better together. Everyone you invite gets an email to join {companyName}.</p>
@@ -1247,7 +1167,7 @@
         <h2 class="h cs-title" id="onboarding-title-company" tabindex="-1" data-scene-heading data-testid="onboarding-company-ready">{companyName} is ready.</h2>
         <p class="body cs-body">Your team has a home in HQ. Files, bots and work you add there are shared with everyone in it.</p>
         <ul class="cs-summary">
-          <li><span class="cs-summary-mark">{@render mark('on')}</span>{paid ? 'Workforce plan' : plan === 'workforce' ? 'Workforce after checkout' : 'Starter plan, free'}</li>
+          <li><span class="cs-summary-mark">{@render mark('on')}</span>Usage pricing, {usageCard.price} included every month</li>
           <li>
             <span class="cs-summary-mark" class:muted={deliveredInvites === 0}>{#if deliveredInvites > 0}{@render mark('on')}{:else}<RailIcon name="user-plus" size={12} />{/if}</span>
             {deliveredInvites === 0
@@ -1296,8 +1216,7 @@
   .cs-pane > .cs-alert {
     animation-delay: calc(var(--cs-wait, 0s) + 0.7s);
   }
-  .cs-pane > .plan-custom,
-  .cs-pane > .cs-fine {
+  .cs-pane > .plan-custom {
     animation-delay: calc(var(--cs-wait, 0s) + 0.84s);
   }
   /* The leaving copy holds still while it fades. */
@@ -1382,12 +1301,6 @@
     color: #fff;
     font-size: 13px;
     line-height: 18px;
-  }
-  .cs-fine {
-    margin: 14px 0 0;
-    font-size: 12px;
-    line-height: 16px;
-    color: rgba(255, 255, 255, 0.55);
   }
 
   /* ---- the company's mark: a tile with its initial ---------------------- */
@@ -1619,25 +1532,38 @@
   }
 
   /*
-   * "Choose how your HQ runs.": the website's two company cards side by side
-   * inside the company panel (wide enough for both), stacked when the window
-   * is too narrow. Nothing hangs outside the panel.
+   * "Choose how your HQ runs.": one usage card, centred inside the company
+   * panel. Its rate rows run in two columns while the window is wide enough.
+   * Nothing hangs outside the panel.
    */
   .plan-cards {
     box-sizing: border-box;
     width: 100%;
-    margin: 36px 0 0;
+    max-width: 560px;
+    margin: 28px auto 0;
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 16px;
+    grid-template-columns: minmax(0, 1fr);
     text-align: left;
+  }
+  .plan-cards .plan-rows {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 16px;
+  }
+  .plan-row.wide {
+    grid-column: 1 / -1;
+  }
+  .plan-actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+    gap: 10px;
   }
   @media (max-width: 720px) {
     .plan-cards {
-      grid-template-columns: minmax(0, 1fr);
       max-width: 400px;
-      margin-left: auto;
-      margin-right: auto;
+    }
+    .plan-cards .plan-rows,
+    .plan-actions {
+      grid-template-columns: minmax(0, 1fr);
     }
   }
   .plan-card {
@@ -1653,7 +1579,7 @@
   .plan-card:hover {
     background: rgba(255, 255, 255, 0.11);
   }
-  /* Workforce: the website's peach fill and orange accent. */
+  /* The usage card: the website's peach fill and orange accent. */
   .plan-card.featured {
     background: rgba(255, 204, 178, 0.14);
     --plan-accent: #f96;
@@ -1675,19 +1601,6 @@
     line-height: 16px;
     font-weight: 600;
     letter-spacing: 0.12em;
-    text-transform: uppercase;
-  }
-  /* The website's "Most popular" orange (indigo-marketing ChoosePlan
-     TAG_FEATURED): #f96 at 60%, so full white text reads on it. */
-  .plan-badge {
-    padding: 3px 10px;
-    border-radius: 999px;
-    background: rgba(255, 153, 102, 0.6);
-    color: #fff;
-    font-size: 9px;
-    line-height: 14px;
-    font-weight: 400;
-    letter-spacing: 0.16em;
     text-transform: uppercase;
   }
   .plan-price {
@@ -1745,10 +1658,13 @@
   .plan-row[data-state='on'] .plan-value {
     color: #fff;
   }
+  .plan-label {
+    color: rgba(255, 255, 255, 0.6);
+  }
   .plan-row-detail {
     color: rgba(255, 255, 255, 0.5);
   }
-  /* Takes up the height difference so both CTAs share a baseline. */
+  /* Keeps the action at the bottom of the card. */
   .plan-spacer {
     flex: 1 1 auto;
     min-height: 16px;
@@ -1783,7 +1699,7 @@
     .plan-rows {
       margin-top: 10px;
       padding-top: 8px;
-      gap: 6px;
+      gap: 4px;
     }
     .plan-spacer {
       min-height: 8px;

@@ -37,6 +37,10 @@ export type GrantFilter = (typeof GRANT_FILTERS)[number];
 export const GRANT_LEVELS = ["read", "write"] as const;
 export type GrantLevel = (typeof GRANT_LEVELS)[number];
 
+// The seats-view Upgrade for companies on a current (pre-2026-10-16) plan.
+// Usage-priced companies never reach it: their Billing pane shows usage and
+// has no Upgrade button (CompanySettingsPage, `readUsageBilling`), and new
+// companies have no Workforce choice (new-company.ts).
 export const WORKFORCE_CHECKOUT_URL = "https://checkout.stripe.com/c/pay/hq-workforce";
 // The customer portal has no fixed URL: hq-pro mints a session per company
 // (see ../account/billing-portal.ts). A constant portal link 404'd for everyone.

@@ -15,8 +15,8 @@ async function openJobs(page: Page): Promise<void> {
   await expect(page.getByTestId('app-rail')).toBeVisible({ timeout: 30_000 });
   await page.locator('[data-testid="rail-company"]').first().click();
   await page.locator('[data-row-id="bots"]').first().click();
-  await expect(page.getByTestId('bot-pane-tab-jobs')).toContainText('Jobs5');
-  await page.getByTestId('bot-pane-tab-jobs').click();
+  await expect(page.getByTestId('bot-pane-tab-routines')).toContainText('Routines5');
+  await page.getByTestId('bot-pane-tab-routines').click();
   await expect(page.getByTestId('bot-job-row').first()).toBeVisible();
 }
 

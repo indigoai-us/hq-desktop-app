@@ -82,9 +82,10 @@
     if (!onpause || pausing) return;
     pausing = true;
     pauseError = null;
-    const ok = await onpause(id);
-    pausing = false;
-    if (!ok) pauseError = "Could not pause the job. Try again.";
+    try {
+      if (!await onpause(id)) pauseError = "Could not pause the job. Try again.";
+    } catch { pauseError = "Could not pause the job. Try again."; }
+    finally { pausing = false; }
   }
 </script>
 
@@ -97,7 +98,7 @@
         <span class="state" class:off={!open.enabled}><i class="mk" class:off={!open.enabled} aria-hidden="true"></i><span data-testid="bot-job-detail-state">{open.enabled ? "On" : "Paused"}</span></span>
       </div>
       <section class="g">
-        <div class="k">Prompt <button type="button" class="link" data-testid="bot-job-copy" onclick={() => void copyPrompt(open.prompt)}><RailIcon name="copy" />{copied ? "Copied" : "Copy"}</button></div>
+        <div class="k">Instructions <button type="button" class="link" data-testid="bot-job-copy" onclick={() => void copyPrompt(open.prompt)}><RailIcon name="copy" />{copied ? "Copied" : "Copy"}</button></div>
         <pre class="prompt" data-testid="bot-job-prompt">{open.prompt}</pre>
       </section>
       <section class="g">
@@ -105,7 +106,6 @@
         <div class="kv">
           <b>When</b><span data-testid="bot-job-detail-schedule">{open.schedule}</span>
           <b>Time zone</b><span>{open.timezone ?? "UTC"}</span>
-          {#if open.expression}<b>Expression</b><span class="quiet">{open.expression}</span>{/if}
           {#if open.enabled && open.nextRunAt}<b>Next run</b><span>{absolute(open.nextRunAt, open.timezone)}</span>{/if}
         </div>
       </section>
@@ -115,9 +115,8 @@
           <div class="hist" data-testid="bot-job-history-row">
             <span class="mk" class:ok={open.lastOutcomeKind === "succeeded"} class:err={open.lastOutcomeKind === "failed"}></span>
             <span>{absolute(open.lastRunAt, open.timezone)}</span>
-            <span class="trail" class:err={open.lastOutcomeKind === "failed"}>{open.lastOutcome ?? ""}</span>
+            <span class="trail" class:err={open.lastOutcomeKind === "failed"}>{open.lastOutcomeKind === "succeeded" ? "Completed" : open.lastOutcomeKind === "failed" ? "Needs attention" : ""}</span>
           </div>
-          <p class="note">Only the latest run is reported for now.</p>
         {:else}
           <p class="note">Not run yet.</p>
         {/if}

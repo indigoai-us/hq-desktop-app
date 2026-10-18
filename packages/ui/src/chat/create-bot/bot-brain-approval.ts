@@ -51,11 +51,15 @@ function trustedUrl(value: unknown, brain: BrainProvider): string | null {
 }
 
 /** Pull only the pairing contract the new-bot waking screen needs. */
-export function brainApprovalFromStatus(payload: unknown): BrainApproval | null {
+export function brainApprovalFromStatus(payload: unknown, requestedProvider?: BrainProvider): BrainApproval | null {
   const root = record(payload);
   const agent = record(root?.agent);
   const pairing = record(root?.pairing);
-  const brain = provider(agent?.provider) ?? providerFromUrl(pairing?.url);
+  // A multi-provider bot retains its active agent.provider while authorizing
+  // a different brain. Scoped status polls do not always repeat root.brain.
+  const explicitBrain = provider(root?.brain);
+  if (requestedProvider && explicitBrain && requestedProvider !== explicitBrain) return null;
+  const brain = requestedProvider ?? explicitBrain ?? provider(agent?.provider) ?? providerFromUrl(pairing?.url);
   if (!pairing || !brain) return null;
   const url = trustedUrl(pairing.url, brain);
   const code = typeof pairing.code === "string" ? pairing.code : "";

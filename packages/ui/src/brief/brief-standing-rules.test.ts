@@ -83,12 +83,13 @@ describe("standing rules (spec section 12)", () => {
     }
   });
 
-  it("the Priorities section renders above the grid whenever it has rows, and not at all when it has none", () => {
+  it("the priorities lead the main card whenever there are any, and the card says Needs you when there are none", () => {
     render(load(oct11Json));
     const card = q('[data-testid="brief-priorities"]')!;
     expect(card).not.toBeNull();
-    expect(qa('[data-testid="brief-priority"]')).toHaveLength(5);
-    expect(card.compareDocumentPosition(q("main.b-grid")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(qa("[data-priority]")).toHaveLength(5);
+    // In the grid, in the priorities card.
+    expect(card.closest('[data-widget="needs"]')).not.toBeNull();
     unmount(app!);
     app = null;
     target.remove();
@@ -101,7 +102,7 @@ describe("standing rules (spec section 12)", () => {
     const day = load(oct11Json);
     day.priorities = Array.from({ length: 7 }, (_, i) => ({ n: i + 1, text: `Priority ${i + 1}`, because: null, itemId: i < 5 ? day.decisions[i]!.id : null }));
     render(day);
-    expect(qa('[data-testid="brief-priority"]')).toHaveLength(5);
+    expect(qa("[data-priority]")).toHaveLength(5);
     // Needs you with seven calls: five rows, then "+2 more".
     unmount(app!);
     app = null;
@@ -112,8 +113,12 @@ describe("standing rules (spec section 12)", () => {
       { ...busy.decisions[1]!, id: "d7", title: "Answer Blake on the roadmap" },
     );
     render(busy);
-    expect(qa('[data-testid="brief-need"]')).toHaveLength(5);
-    expect(q('[data-testid="brief-need-more"]')!.textContent!.trim()).toBe("+2 more");
+    expect(qa("[data-brief-row]")).toHaveLength(5);
+    // Every priority row plus every call no priority opens, less the five shown.
+    const linked = new Set(busy.priorities!.slice(0, 5).map((p) => p.itemId).filter((id) => busy.decisions.some((d) => d.id === id)));
+    const total = Math.min(5, busy.priorities!.length) + busy.decisions.filter((d) => !linked.has(d.id)).length;
+    expect(total).toBeGreaterThan(5);
+    expect(q('[data-testid="brief-need-more"]')!.textContent!.trim()).toBe(`+${total - 5} more`);
   });
 
   it("owner feedback reaches the picker only through prefs: the writer's keys map to pinned, hidden and weights", () => {
@@ -162,13 +167,17 @@ describe("standing rules (spec section 12)", () => {
     expect(plan.dropped.filter((d) => d.why === "hidden by you")).toEqual([]);
   });
 
-  it("hiding Incident is the owner's call: its priority loses its card and the dropped list says so (the Priorities section still shows it)", () => {
+  it("hiding Incident is the owner's call: its priority loses its card and the dropped list says so (the priorities card still shows it)", () => {
     const day = load(oct11Json);
     const plan = generateBrief({ ...day, prefs: { density: "auto", pinned: [], hidden: ["incident"], weights: {} } });
     expect(plan.widgets.map((w) => w.kind)).not.toContain("incident");
-    expect(plan.dropped).toEqual(expect.arrayContaining([{ kind: "incident", why: "hidden by you" }, { kind: "priority-5", why: "priority 5 has no card; shown in the list above" }]));
+    expect(plan.dropped).toEqual(expect.arrayContaining([{ kind: "incident", why: "hidden by you" }, { kind: "priority-5", why: "priority 5 has no card; shown in Today's priorities" }]));
     render({ ...day, prefs: { density: "auto", pinned: [], hidden: ["incident"], weights: {} } });
-    expect(qa('[data-testid="brief-priority"]')).toHaveLength(5);
+    expect(qa("[data-priority]")).toHaveLength(5);
+    // Priority 5 is the incident: a row in the priorities card with the incident's own launch.
+    const fifth = q('[data-priority="5"]')!;
+    expect(fifth.getAttribute("data-testid")).toBe("brief-need-priority");
+    expect(fifth.querySelector('[data-testid="brief-start"]')).not.toBeNull();
     expect(q('[data-widget="incident"]')).toBeNull();
   });
 

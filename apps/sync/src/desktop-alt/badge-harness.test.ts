@@ -82,6 +82,10 @@ describe('sample badges span the tiers', () => {
     );
     for (const name of ['Ada Lovelace', 'Maya Chen', 'Jacob Moore']) {
       expect(ids(name)).not.toEqual(expect.arrayContaining(['og']));
+      expect(ids(name)).not.toEqual(expect.arrayContaining(['ecomrat']));
     }
+    expect(sampleBadges({ kind: 'person', name: 'Spencer' })).toEqual(
+      expect.arrayContaining([{ id: 'ecomrat', tier: 'L', earnedAt: '2026-10-16' }]),
+    );
   });
 });

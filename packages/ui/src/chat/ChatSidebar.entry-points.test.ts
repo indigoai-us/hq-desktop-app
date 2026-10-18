@@ -553,7 +553,7 @@ describe("ChatSidebar lifecycle entry points", () => {
       expect(q('[data-testid="new-bot-waking-screen"]')).toBeNull();
       expect(q('[data-testid="chat-waking-bot-ring"]')).toBeNull();
       const upgrade = q<HTMLElement>('[data-testid="new-bot-upgrade"]');
-      expect(upgrade?.textContent).toContain("Starter plan");
+      expect(upgrade?.textContent).toContain("plan does not include cloud bots yet");
       expect(upgrade?.textContent).toContain("create Nova");
 
       click('[data-testid="new-bot-upgrade-open"]');

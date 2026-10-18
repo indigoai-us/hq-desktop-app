@@ -158,7 +158,7 @@ function planRequiredToast(err: unknown): ToastDescriptor {
   const upgradeUrl = planRequiredUpgradeUrl(err);
   return {
     kind: "warn",
-    text: "Meetings need HQ Workforce ($500/mo) to record. Upgrade in HQ Console.",
+    text: "Recording meetings is not on this company's plan yet. Upgrade in HQ Console.",
     ...(upgradeUrl ? { upgradeUrl } : {}),
   };
 }

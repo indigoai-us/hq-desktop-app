@@ -292,7 +292,7 @@ describe("BriefCarry", () => {
     expect(q('[data-testid="brief-carry"]')).toBeNull();
   });
 
-  it("rings carry age only: white under a day, amber past one, red past two, grey when a card continues it", () => {
+  it("tones carry age only: plain under a day, warm past one or two, set back when a card continues it", () => {
     render({ carry: [CARRY[0]!, CARRY[1]!, CARRY[2]!, CARRY[3]!] });
     const tone = Object.fromEntries(qa('[data-testid="brief-carry-row"]').map((r) => [r.getAttribute("aria-label"), r.getAttribute("data-tone")]));
     expect(tone).toEqual({
@@ -304,9 +304,15 @@ describe("BriefCarry", () => {
     const grey = qa('[data-testid="brief-carry-row"]').find((r) => r.getAttribute("data-tone") === "grey")!;
     expect(grey.getAttribute("data-linked")).toBe("true");
     expect(grey.classList.contains("linked")).toBe(true);
-    expect(grey.querySelector("circle")!.getAttribute("fill")).not.toBe("none");
-    const white = qa('[data-testid="brief-carry-row"]').find((r) => r.getAttribute("data-tone") === "white")!;
-    expect(white.querySelector("circle")!.getAttribute("fill")).toBe("none");
+    // The age pill carries the tone: warm (old) past a day, plain under one and on a continued row.
+    const pill = (tone: string) =>
+      qa('[data-testid="brief-carry-row"]').find((r) => r.getAttribute("data-tone") === tone)!.querySelector('[data-testid="brief-carry-tag"]')!;
+    expect(pill("white").classList.contains("old")).toBe(false);
+    expect(pill("warn").classList.contains("old")).toBe(true);
+    expect(pill("red").classList.contains("old")).toBe(true);
+    expect(pill("grey").classList.contains("old")).toBe(false);
+    // Every row leads with its company's logo circle.
+    expect(qa('[data-testid="brief-carry-row"]').every((r) => r.querySelector('.lg [data-testid="brief-logo"]'))).toBe(true);
     // Tags: briefs running, else the day first seen.
     expect(qa('[data-testid="brief-carry-tag"]').map((t) => t.textContent)).toEqual(["3 briefs", "2 briefs", "since Sat", "since Sat"]);
   });

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { LocalBotRow } from "@hq/platform";
 import { ACTIVE_RUN_KEY, BriefCreateRun, type BriefCreator } from "./brief-create.svelte.js";
-import { BRIEF_POLL_MS } from "./brief-runs.js";
+import { BRIEF_BOT_FAILURE_POLL_MS, BRIEF_DISPATCH_TIMEOUT_MESSAGE, BRIEF_DISPATCH_TIMEOUT_MS, BRIEF_POLL_MS } from "./brief-runs.js";
 
 const BOT = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
 const RUN = "brief-20261008-090000";
@@ -9,6 +9,7 @@ const RUN = "brief-20261008-090000";
 function harness(over: Partial<BriefCreator> = {}, files: Record<string, string> = {}) {
   let clock = new Date(2026, 9, 8, 9, 0, 0).getTime();
   const timers: (() => void)[] = [];
+  const deadlines: ((() => void) | null)[] = [];
   const creator: BriefCreator = {
     company: () => "indigo",
     check: vi.fn(async () => ({ ok: true as const, bot: BOT })),
@@ -40,6 +41,14 @@ function harness(over: Partial<BriefCreator> = {}, files: Record<string, string>
       return timers.length;
     },
     clearTimer: () => {},
+    setDeadline: (fn, ms) => {
+      expect(ms).toBe(BRIEF_DISPATCH_TIMEOUT_MS);
+      deadlines.push(fn);
+      return deadlines.length - 1;
+    },
+    clearDeadline: (h) => {
+      deadlines[h as number] = null;
+    },
     log: () => {},
   });
   return {
@@ -52,6 +61,7 @@ function harness(over: Partial<BriefCreator> = {}, files: Record<string, string>
     storage,
     setClock: (ms: number) => (clock = ms),
     timers,
+    deadlines,
     tick: async (ms = BRIEF_POLL_MS) => {
       clock += ms;
       const fn = timers.shift();
@@ -220,5 +230,78 @@ describe("BriefCreateRun", () => {
     await h.tick();
     off();
     expect(seen).toEqual(["failed"]);
+  });
+
+  it("a bot check that never answers ends 'Waking your bot…' with a plain message after the deadline", async () => {
+    // Owner report, 2026-10-16: the page sat on "Waking your bot…" with no way out.
+    const h = harness({ check: vi.fn(() => new Promise<never>(() => {})) });
+    const started = h.run.start();
+    expect(h.run.phase).toMatchObject({ kind: "dispatching", runId: RUN });
+    expect(h.run.busy).toBe(true);
+    expect(h.deadlines).toHaveLength(1);
+    h.deadlines[0]!();
+    await started;
+    expect(h.run.phase).toEqual({ kind: "failed", runId: null, message: BRIEF_DISPATCH_TIMEOUT_MESSAGE });
+    expect(h.run.busy).toBe(false);
+    expect(h.creator.dispatch).not.toHaveBeenCalled();
+    expect(h.onfinish).toHaveBeenCalledTimes(1);
+  });
+
+  it("a send that never answers ends the run the same way, and a late answer does not revive it", async () => {
+    let answer: (v: string | null) => void = () => {};
+    const h = harness({ dispatch: vi.fn(() => new Promise<string | null>((r) => (answer = r))) });
+    const started = h.run.start();
+    await Promise.resolve();
+    await Promise.resolve();
+    h.deadlines[0]!();
+    await started;
+    expect(h.run.phase).toEqual({ kind: "failed", runId: null, message: BRIEF_DISPATCH_TIMEOUT_MESSAGE });
+    answer(null);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(h.run.phase).toEqual({ kind: "failed", runId: null, message: BRIEF_DISPATCH_TIMEOUT_MESSAGE });
+    expect(h.timers).toHaveLength(0);
+  });
+
+  it("a dispatch that answers in time clears its deadline", async () => {
+    const h = harness();
+    await h.run.start();
+    expect(h.run.phase).toMatchObject({ kind: "waiting", runId: RUN });
+    expect(h.deadlines).toEqual([null]);
+  });
+
+  it("ends a waiting run as soon as the bot reports its turn failed", async () => {
+    // Owner report, 2026-10-16: the assistant's Claude turn failed in under a
+    // second, wrote no status.json, and the page kept waiting.
+    const said = "Your assistant could not start your brief because Claude Code ran into a problem. Try again in a moment.";
+    const botFailure = vi.fn(async () => said);
+    const h = harness({ botFailure });
+    await h.run.start();
+    expect(h.run.phase).toMatchObject({ kind: "waiting" });
+    // Asked at most once per BRIEF_BOT_FAILURE_POLL_MS.
+    await h.tick();
+    expect(botFailure).not.toHaveBeenCalled();
+    expect(h.run.phase).toMatchObject({ kind: "waiting" });
+    await h.tick(BRIEF_BOT_FAILURE_POLL_MS);
+    expect(botFailure).toHaveBeenCalledWith(BOT, new Date(2026, 9, 8, 9, 0, 0).getTime());
+    expect(h.run.phase).toEqual({ kind: "failed", runId: RUN, message: said });
+    expect(h.run.busy).toBe(false);
+    expect(h.store.get(ACTIVE_RUN_KEY)).toBeUndefined();
+    expect(h.creator.notify).not.toHaveBeenCalled();
+  });
+
+  it("keeps waiting while the bot reports nothing, and stops asking once the run reports progress", async () => {
+    const botFailure = vi.fn(async () => null);
+    const h = harness({ botFailure });
+    await h.run.start();
+    await h.tick(BRIEF_BOT_FAILURE_POLL_MS);
+    expect(botFailure).toHaveBeenCalledTimes(1);
+    expect(h.run.phase).toMatchObject({ kind: "waiting" });
+    h.files[`workspace/brief/${RUN}/status.json`] = JSON.stringify({ run_id: RUN, state: "running", step: "Sweeping", progress: 0.2 });
+    await h.tick(BRIEF_BOT_FAILURE_POLL_MS);
+    expect(h.run.phase).toMatchObject({ kind: "running" });
+    const asked = botFailure.mock.calls.length;
+    await h.tick(BRIEF_BOT_FAILURE_POLL_MS);
+    expect(botFailure).toHaveBeenCalledTimes(asked);
   });
 });
