@@ -1,3 +1,5 @@
+import { FIRST_LAUNCH_CACHE_WAIT_CAPTION } from "./core-popover-model.js";
+
 /**
  * Sync state for the title bar, reduced from the runner's event stream.
  *
@@ -28,6 +30,13 @@ export interface SyncStatusState {
   company: string | null;
   /** Set on auth-error / error; cleared when a run starts. */
   message: string | null;
+  /** `sync:error` kind. Null for every other phase. */
+  errorKind: string | null;
+  /**
+   * Quiet caption while first-launch setup is still waiting. Not a file count.
+   * Null unless the event carried the approved setup sentence.
+   */
+  caption: string | null;
 }
 
 export function emptySyncStatus(): SyncStatusState {
@@ -37,6 +46,8 @@ export function emptySyncStatus(): SyncStatusState {
     progressed: 0,
     company: null,
     message: null,
+    errorKind: null,
+    caption: null,
   };
 }
 
@@ -86,6 +97,8 @@ export function reduceSyncEvent(
         planTotal: state.planTotal + planned,
         company: asText(data.company) ?? state.company,
         message: null,
+        errorKind: null,
+        caption: null,
       };
     }
 
@@ -96,6 +109,20 @@ export function reduceSyncEvent(
         progressed: state.progressed + 1,
         company: asText(data.company) ?? state.company,
         message: null,
+        errorKind: null,
+        caption: null,
+      };
+    }
+
+    case "sync:waiting": {
+      // A missing message is this event's own caption. Any other sentence
+      // is ignored so a stray payload cannot put new copy on screen.
+      const caption = asText(data.message) ?? FIRST_LAUNCH_CACHE_WAIT_CAPTION;
+      if (caption !== FIRST_LAUNCH_CACHE_WAIT_CAPTION) return state;
+      return {
+        ...emptySyncStatus(),
+        phase: "syncing",
+        caption,
       };
     }
 
@@ -106,6 +133,8 @@ export function reduceSyncEvent(
         message:
           asText(data.message) ??
           "Your HQ session needs a refresh. Sign in again to keep sync moving.",
+        errorKind: null,
+        caption: null,
       };
 
     case "sync:error":
@@ -113,6 +142,8 @@ export function reduceSyncEvent(
         ...state,
         phase: "error",
         message: asText(data.message) ?? "Sync ran into a problem.",
+        errorKind: asText(data.kind),
+        caption: null,
       };
 
     case "sync:all-complete":
@@ -130,6 +161,7 @@ export function reduceSyncEvent(
 export const SYNC_STATUS_EVENTS = [
   "sync:plan",
   "sync:progress",
+  "sync:waiting",
   "sync:auth-error",
   "sync:error",
   "sync:all-complete",
@@ -160,6 +192,9 @@ export interface SyncStatusLabel {
 export function syncStatusLabel(state: SyncStatusState): SyncStatusLabel {
   switch (state.phase) {
     case "syncing": {
+      if (state.caption) {
+        return { text: state.caption, detail: state.caption, tone: "busy" };
+      }
       // A plan of 0 means no plan arrived yet (or an older runner sent none).
       // Counting up without a denominator is honest; inventing one is not.
       const text =

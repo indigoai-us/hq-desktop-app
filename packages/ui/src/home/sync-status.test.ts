@@ -5,6 +5,7 @@ import {
   syncStatusLabel,
   SYNC_STATUS_EVENTS,
 } from "./sync-status.js";
+import { FIRST_LAUNCH_CACHE_WAIT_CAPTION } from "./core-popover-model.js";
 
 const plan = (company: string, down = 0, up = 0, del = 0, skip = 0) => ({
   company,
@@ -86,6 +87,16 @@ describe("sync-status reducer", () => {
     s = reduceSyncEvent(s, "sync:progress", { company: "acme" });
     expect(reduceSyncEvent(s, "sync:conflict", { path: "a.md" })).toBe(s);
     expect(SYNC_STATUS_EVENTS as readonly string[]).not.toContain("sync:conflict");
+  });
+
+  it("shows the existing setup caption while the first-launch cache wait runs", () => {
+    const s = reduceSyncEvent(emptySyncStatus(), "sync:waiting", {
+      message: FIRST_LAUNCH_CACHE_WAIT_CAPTION,
+    });
+    expect(s.phase).toBe("syncing");
+    expect(syncStatusLabel(s).text).toBe(FIRST_LAUNCH_CACHE_WAIT_CAPTION);
+    expect(syncStatusLabel(s).tone).toBe("busy");
+    expect(SYNC_STATUS_EVENTS as readonly string[]).toContain("sync:waiting");
   });
 
   it("says nothing at all when idle", () => {

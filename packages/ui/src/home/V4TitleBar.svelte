@@ -511,11 +511,14 @@
    * title bar already reduces the run (`syncStatusLabel`); the popover reuses
    * that sentence rather than counting files a second time.
    */
-  const syncCaptionText = $derived(
-    syncLabel?.tone === "busy"
-      ? [syncLabel.detail, syncLabel.text].filter(Boolean).join(" · ")
-      : null,
-  );
+  const syncCaptionText = $derived.by(() => {
+    if (syncStatus?.caption) return syncStatus.caption;
+    if (syncLabel?.tone !== "busy") return null;
+    const detail = syncLabel.detail;
+    const text = syncLabel.text;
+    if (detail && text && detail !== text) return `${detail} · ${text}`;
+    return text || detail || null;
+  });
 
   /** Message behind an `error` phase — the reduced run carries it. */
   const syncErrorMessage = $derived(
@@ -934,6 +937,7 @@
             {lastSyncLabel}
             syncCaption={syncCaptionText}
             errorMessage={syncErrorMessage}
+            errorKind={syncStatus?.phase === "error" ? (syncStatus.errorKind ?? null) : null}
             errorCompany={errorCompany ?? null}
             {manifestError}
             {cloudReachable}

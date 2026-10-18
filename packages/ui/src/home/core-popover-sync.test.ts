@@ -7,11 +7,16 @@
 // changing a string here is changing what users read.
 
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   buildCoreNoticeRows,
   buildCorePopoverViewModel,
   buildCoreSyncHeader,
   corePillDotTone,
+  FIRST_LAUNCH_CACHE_WAIT_CAPTION,
+  FIRST_LAUNCH_SYNC_ACTION,
+  FIRST_LAUNCH_SYNC_ERROR_KIND,
+  FIRST_LAUNCH_SYNC_PLAIN_LINE,
   lastSyncLine,
   syncStateTone,
   syncStateWord,
@@ -108,7 +113,7 @@ describe("first-launch npm cache bail (US-014)", () => {
   it("replaces the raw npm message with one plain line and Sync now", () => {
     const model = buildCorePopoverViewModel({
       syncState: "error",
-      notices: { errorMessage: raw },
+      notices: { errorMessage: raw, errorKind: FIRST_LAUNCH_SYNC_ERROR_KIND },
     });
     expect(model.syncOffer).toEqual({
       line: "Your files have not synced yet.",
@@ -128,12 +133,79 @@ describe("first-launch npm cache bail (US-014)", () => {
   it("keeps Sync now when the backend already sent the plain line", () => {
     const model = buildCorePopoverViewModel({
       syncState: "error",
-      notices: { errorMessage: "Your files have not synced yet." },
+      notices: {
+        errorMessage: "Your files have not synced yet.",
+        errorKind: FIRST_LAUNCH_SYNC_ERROR_KIND,
+      },
     });
     expect(model.syncOffer).toEqual({
       line: "Your files have not synced yet.",
       action: "Sync now",
     });
+  });
+
+  it("offers Sync now only in the error phase", () => {
+    const model = buildCorePopoverViewModel({
+      syncState: "syncing",
+      notices: {
+        errorMessage: FIRST_LAUNCH_SYNC_PLAIN_LINE,
+        errorKind: FIRST_LAUNCH_SYNC_ERROR_KIND,
+      },
+    });
+    expect(model.syncOffer).toBeNull();
+  });
+
+  it("does not rewrite a later sync error that still mentions the npm cache", () => {
+    const model = buildCorePopoverViewModel({
+      syncState: "error",
+      lastSyncLabel: "3m ago",
+      notices: { errorMessage: raw },
+    });
+    expect(model.syncOffer).toBeNull();
+    expect(model.notices.some((row) => row.kind === "sync-failed")).toBe(true);
+    expect(JSON.stringify(model.syncOffer)).not.toContain(FIRST_LAUNCH_SYNC_PLAIN_LINE);
+  });
+
+  it("shows the approved line from the first-launch kind, not the raw sentence", () => {
+    const model = buildCorePopoverViewModel({
+      syncState: "error",
+      notices: {
+        errorMessage: raw,
+        errorKind: FIRST_LAUNCH_SYNC_ERROR_KIND,
+      },
+    });
+    expect(model.syncOffer).toEqual({
+      line: FIRST_LAUNCH_SYNC_PLAIN_LINE,
+      action: FIRST_LAUNCH_SYNC_ACTION,
+    });
+    expect(JSON.stringify(model.notices)).not.toContain("npm");
+  });
+});
+
+describe("first-launch copy contract", () => {
+  it("ties the Rust and TypeScript customer strings and the error kind", () => {
+    const rust = readFileSync(
+      new URL(
+        "../../../../crates/hq-desktop-core/src/prewarm.rs",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const rustConst = (name: string): string => {
+      const match = rust.match(
+        new RegExp(`pub const ${name}: &str = "([^"]+)";`),
+      );
+      if (!match) throw new Error(`missing ${name}`);
+      return match[1];
+    };
+    expect(rustConst("FIRST_LAUNCH_SYNC_UNSYNCED_LINE")).toBe(
+      FIRST_LAUNCH_SYNC_PLAIN_LINE,
+    );
+    expect(rustConst("FIRST_LAUNCH_SYNC_NOW_ACTION")).toBe(FIRST_LAUNCH_SYNC_ACTION);
+    expect(rustConst("FIRST_LAUNCH_SYNC_ERROR_KIND")).toBe(FIRST_LAUNCH_SYNC_ERROR_KIND);
+    expect(rustConst("FIRST_LAUNCH_CACHE_WAIT_CAPTION")).toBe(
+      FIRST_LAUNCH_CACHE_WAIT_CAPTION,
+    );
   });
 });
 

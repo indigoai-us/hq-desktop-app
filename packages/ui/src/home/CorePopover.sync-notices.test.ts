@@ -116,6 +116,7 @@ describe("CorePopover first-launch cache bail (US-014)", () => {
       adapter,
       syncState: "error",
       errorMessage: raw,
+      errorKind: "first-launch-unsynced",
     });
     const status = host.querySelector('[data-testid="core-popover-sync-status"]');
     expect(text(host.querySelector('[data-testid="core-popover-sync-plain"]'))).toBe(
@@ -134,6 +135,52 @@ describe("CorePopover first-launch cache bail (US-014)", () => {
     await vi.waitFor(() => {
       expect(adapter.sync.startSync).toHaveBeenCalledOnce();
     });
+  });
+
+  it("does not start a sync while Cloud is off", async () => {
+    const adapter = makeAdapter();
+    mountPopover({
+      adapter,
+      cloudPaused: true,
+      syncState: "error",
+      errorMessage: "Your files have not synced yet.",
+      errorKind: "first-launch-unsynced",
+    });
+    const button = host.querySelector(
+      '[data-testid="core-popover-sync-now"]',
+    ) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    button.click();
+    await Promise.resolve();
+    expect(adapter.sync.startSync).not.toHaveBeenCalled();
+  });
+
+  it("keeps the plain line on screen when Sync now hits the cache bail again", async () => {
+    const raw =
+      "HQ Sync is still preparing its npm cache in another window. Wait a moment, then try Sync again.";
+    const adapter = makeAdapter();
+    adapter.sync.startSync = vi.fn(async () => ({
+      ok: false as const,
+      reason: "error" as const,
+      message: raw,
+    }));
+    mountPopover({
+      adapter,
+      syncState: "error",
+      errorMessage: "Your files have not synced yet.",
+      errorKind: "first-launch-unsynced",
+    });
+    (host.querySelector('[data-testid="core-popover-sync-now"]') as HTMLButtonElement).click();
+    await vi.waitFor(() => {
+      expect(adapter.sync.startSync).toHaveBeenCalledOnce();
+    });
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="core-popover-sync-retry-failed"]')).not.toBeNull();
+    });
+    const visible = host.querySelector('[data-testid="core-popover-sync-status"]')?.textContent ?? "";
+    expect(visible).toContain("Your files have not synced yet.");
+    expect(visible.toLowerCase()).not.toContain("npm");
+    expect(visible).not.toContain("another window");
   });
 });
 

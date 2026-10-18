@@ -262,6 +262,7 @@
           path: '',
           message:
             'HQ Sync is still preparing its npm cache in another window. Wait a moment, then try Sync again.',
+          kind: 'first-launch-unsynced',
         });
       }, 2500);
     }

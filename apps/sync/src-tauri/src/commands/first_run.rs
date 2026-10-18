@@ -396,94 +396,143 @@ pub async fn show_main_window_at_tray(
     Ok(())
 }
 
-/// The first-launch sync bailed. A busy npm cache is retried once the lock
-/// is free. Anything else keeps today's log-and-report path. The customer
-/// never sees the raw npm sentence.
-async fn recover_first_launch_sync_after_start_error(handle: AppHandle, error: &str) {
-    use hq_desktop_core::prewarm::{
-        recover_first_launch_cache_bail, wait_for_npm_cache_lock_free, FirstLaunchCacheBail,
-        FIRST_LAUNCH_CACHE_LOCK_WAIT,
-    };
+#[derive(serde::Serialize, Clone)]
+struct FirstLaunchUnsyncedEvent<'a> {
+    path: &'a str,
+    message: &'a str,
+    kind: &'a str,
+}
+
+/// The first-launch sync bailed. A busy npm cache waits, then retries once.
+/// The plain line is emitted only when that wait times out or the retry hits
+/// the cache bail again. Every other error is reported as itself.
+async fn recover_first_launch_sync_start<W, WF, S, SF, E, R, C, T>(
+    error: &str,
+    wait_for_lock: W,
+    retry_sync: S,
+    emit_plain_line: E,
+    report: R,
+    show_waiting: C,
+    on_started: T,
+) where
+    W: FnOnce() -> WF,
+    WF: std::future::Future<Output = Result<(), String>>,
+    S: FnOnce() -> SF,
+    SF: std::future::Future<Output = Result<(), String>>,
+    E: FnOnce(&str),
+    R: FnOnce(&str),
+    C: FnOnce(),
+    T: FnOnce(),
+{
+    use hq_desktop_core::prewarm::{recover_first_launch_cache_bail, FirstLaunchCacheBail};
 
     if !hq_desktop_core::prewarm::is_npm_cache_still_preparing(error) {
-        log(
-            "first-run",
-            &format!("first-launch sync did not start: {error}"),
-        );
-        report_first_launch_sync_start_failure(error);
+        report(error);
         return;
     }
 
-    log(
-        "first-run",
-        "first-launch sync waiting for the npm cache lock",
-    );
-    let waited = tauri::async_runtime::spawn_blocking(|| {
-        wait_for_npm_cache_lock_free(FIRST_LAUNCH_CACHE_LOCK_WAIT)
-    })
-    .await;
-    let wait_result = match waited {
-        Ok(inner) => inner,
-        Err(join_error) => Err(format!("npm cache wait task failed: {join_error}")),
-    };
+    show_waiting();
+    let wait_result = wait_for_lock().await;
+    let wait_error = wait_result.as_ref().err().cloned();
     let retry_result = if wait_result.is_ok() {
-        Some(
+        Some(retry_sync().await)
+    } else {
+        None
+    };
+    let retry_error = retry_result
+        .as_ref()
+        .and_then(|result| result.as_ref().err().cloned());
+    let outcome = recover_first_launch_cache_bail(
+        error,
+        || wait_result.clone(),
+        || match &retry_result {
+            Some(Ok(())) => Ok(()),
+            Some(Err(message)) => Err(message.clone()),
+            None => Err(wait_error.clone().unwrap_or_else(|| error.to_string())),
+        },
+    );
+    match outcome {
+        FirstLaunchCacheBail::Started => on_started(),
+        FirstLaunchCacheBail::NeedsSyncNow { line, .. } => {
+            emit_plain_line(line);
+            let real = retry_error
+                .or(wait_error)
+                .unwrap_or_else(|| error.to_string());
+            report(&real);
+        }
+        FirstLaunchCacheBail::Unrelated => {
+            let real = retry_error
+                .or(wait_error)
+                .unwrap_or_else(|| error.to_string());
+            report(&real);
+        }
+    }
+}
+
+async fn recover_first_launch_sync_after_start_error(handle: AppHandle, error: &str) {
+    let handle_retry = handle.clone();
+    let handle_emit = handle.clone();
+    let handle_waiting = handle.clone();
+    recover_first_launch_sync_start(
+        error,
+        || async {
+            let waited = tauri::async_runtime::spawn_blocking(|| {
+                hq_desktop_core::prewarm::wait_for_npm_cache_lock_free(
+                    hq_desktop_core::prewarm::FIRST_LAUNCH_CACHE_LOCK_WAIT,
+                )
+            })
+            .await;
+            match waited {
+                Ok(inner) => inner,
+                Err(join_error) => Err(format!("npm cache wait task failed: {join_error}")),
+            }
+        },
+        || async move {
             crate::commands::sync::start_sync_with_trigger(
-                handle.clone(),
+                handle_retry,
                 None,
                 crate::commands::cdp_mirror::SyncTrigger::First,
             )
             .await
-            .map(|_| ()),
-        )
-    } else {
-        None
-    };
-    let wait_for_decision = wait_result.clone();
-    let outcome = recover_first_launch_cache_bail(
-        error,
-        || wait_for_decision,
-        || match &retry_result {
-            Some(Ok(())) => Ok(()),
-            Some(Err(message)) => Err(message.clone()),
-            None => Err("npm cache lock was still held".to_string()),
+            .map(|_| ())
         },
-    );
-    match outcome {
-        FirstLaunchCacheBail::Started => {
+        |line| {
+            let _ = handle_emit.emit(
+                crate::events::EVENT_SYNC_ERROR,
+                FirstLaunchUnsyncedEvent {
+                    path: "",
+                    message: line,
+                    kind: hq_desktop_core::prewarm::FIRST_LAUNCH_SYNC_ERROR_KIND,
+                },
+            );
+        },
+        |reported| {
+            log(
+                "first-run",
+                &format!("first-launch sync did not start: {reported}"),
+            );
+            report_first_launch_sync_start_failure(reported);
+        },
+        || {
+            log(
+                "first-run",
+                "first-launch sync waiting for the npm cache lock",
+            );
+            let _ = handle_waiting.emit(
+                crate::events::EVENT_SYNC_WAITING,
+                hq_desktop_core::events::SyncWaitingEvent {
+                    message: hq_desktop_core::prewarm::FIRST_LAUNCH_CACHE_WAIT_CAPTION.to_string(),
+                },
+            );
+        },
+        || {
             log(
                 "first-run",
                 "first-launch sync started after the npm cache was ready",
             );
-        }
-        FirstLaunchCacheBail::NeedsSyncNow { line, .. } => {
-            let detail = match (&retry_result, &wait_result) {
-                (Some(Err(message)), _) => message.clone(),
-                (_, Err(message)) => message.clone(),
-                _ => "npm cache lock was still held".to_string(),
-            };
-            log(
-                "first-run",
-                &format!("first-launch sync did not start after the cache wait: {detail}"),
-            );
-            let _ = handle.emit(
-                crate::events::EVENT_SYNC_ERROR,
-                hq_desktop_core::events::SyncErrorEvent {
-                    company: None,
-                    path: String::new(),
-                    message: line.to_string(),
-                },
-            );
-            report_first_launch_sync_start_failure(line);
-        }
-        FirstLaunchCacheBail::Unrelated => {
-            log(
-                "first-run",
-                &format!("first-launch sync did not start: {error}"),
-            );
-            report_first_launch_sync_start_failure(error);
-        }
-    }
+        },
+    )
+    .await;
 }
 
 /// Mark the one-time auto-sync notice as shown for an updating user. Also sets
@@ -534,6 +583,146 @@ mod first_launch_sync_start_capture_tests {
         let serialized = serde_json::to_string(&event).expect("serialize event");
         assert!(!serialized.contains("first-run user-specific path"));
         assert!(!serialized.contains("token-bearing server detail"));
+    }
+
+    fn sample_effects() -> (
+        std::sync::Mutex<Vec<String>>,
+        std::sync::Mutex<Vec<String>>,
+        std::sync::Mutex<u32>,
+        std::sync::Mutex<u32>,
+    ) {
+        (
+            std::sync::Mutex::new(Vec::new()),
+            std::sync::Mutex::new(Vec::new()),
+            std::sync::Mutex::new(0),
+            std::sync::Mutex::new(0),
+        )
+    }
+
+    #[tokio::test]
+    async fn cache_bail_retry_ok_emits_nothing() {
+        let (emits, reports, waiting, started) = sample_effects();
+        recover_first_launch_sync_start(
+            "HQ Sync is still preparing its npm cache in another window. Wait a moment, then try Sync again.",
+            || async { Ok(()) },
+            || async { Ok(()) },
+            |line| emits.lock().expect("emits").push(line.to_string()),
+            |error| reports.lock().expect("reports").push(error.to_string()),
+            || {
+                *waiting.lock().expect("waiting") += 1;
+            },
+            || {
+                *started.lock().expect("started") += 1;
+            },
+        )
+        .await;
+        assert!(
+            emits.lock().expect("emits").is_empty(),
+            "a started retry emits no plain line"
+        );
+        assert!(
+            reports.lock().expect("reports").is_empty(),
+            "a started retry is not a failure"
+        );
+        assert_eq!(*waiting.lock().expect("waiting"), 1);
+        assert_eq!(*started.lock().expect("started"), 1);
+    }
+
+    #[tokio::test]
+    async fn already_running_retry_emits_nothing_and_reports_the_real_error() {
+        let (emits, reports, _, _) = sample_effects();
+        recover_first_launch_sync_start(
+            "HQ Sync is still preparing its npm cache in another window. Wait a moment, then try Sync again.",
+            || async { Ok(()) },
+            || async { Err("Sync is already running".to_string()) },
+            |line| emits.lock().expect("emits").push(line.to_string()),
+            |error| reports.lock().expect("reports").push(error.to_string()),
+            || {},
+            || {},
+        )
+        .await;
+        assert!(emits.lock().expect("emits").is_empty());
+        assert_eq!(
+            reports.lock().expect("reports").as_slice(),
+            ["Sync is already running"]
+        );
+    }
+
+    #[tokio::test]
+    async fn cloud_paused_retry_emits_nothing_and_reports_the_real_error() {
+        let (emits, reports, _, _) = sample_effects();
+        recover_first_launch_sync_start(
+            "HQ Sync is still preparing its npm cache in another window. Wait a moment, then try Sync again.",
+            || async { Ok(()) },
+            || async { Err(hq_desktop_core::daemon::CLOUD_PAUSED_MESSAGE.to_string()) },
+            |line| emits.lock().expect("emits").push(line.to_string()),
+            |error| reports.lock().expect("reports").push(error.to_string()),
+            || {},
+            || {},
+        )
+        .await;
+        assert!(emits.lock().expect("emits").is_empty());
+        assert_eq!(
+            reports.lock().expect("reports").as_slice(),
+            [hq_desktop_core::daemon::CLOUD_PAUSED_MESSAGE]
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_timeout_emits_the_plain_line_once_and_reports_the_wait_error() {
+        let (emits, reports, _, started) = sample_effects();
+        let timeout = "HQ Sync is still preparing its npm cache in another window. Wait a moment, then try Sync again.";
+        recover_first_launch_sync_start(
+            timeout,
+            || async { Err(timeout.to_string()) },
+            || async {
+                panic!("retry must not run after the wait times out");
+            },
+            |line| emits.lock().expect("emits").push(line.to_string()),
+            |error| reports.lock().expect("reports").push(error.to_string()),
+            || {},
+            || {
+                *started.lock().expect("started") += 1;
+            },
+        )
+        .await;
+        assert_eq!(
+            emits.lock().expect("emits").as_slice(),
+            [hq_desktop_core::prewarm::FIRST_LAUNCH_SYNC_UNSYNCED_LINE]
+        );
+        assert_eq!(reports.lock().expect("reports").as_slice(), [timeout]);
+        assert_eq!(*started.lock().expect("started"), 0);
+    }
+
+    #[tokio::test]
+    async fn unrelated_error_keeps_todays_report_path() {
+        let (emits, reports, waiting, _) = sample_effects();
+        let mut waited = false;
+        recover_first_launch_sync_start(
+            "daemon pending",
+            || {
+                waited = true;
+                async { Ok(()) }
+            },
+            || async { Ok(()) },
+            |line| emits.lock().expect("emits").push(line.to_string()),
+            |error| reports.lock().expect("reports").push(error.to_string()),
+            || {
+                *waiting.lock().expect("waiting") += 1;
+            },
+            || {},
+        )
+        .await;
+        assert!(
+            !waited,
+            "an unrelated error must not wait on the cache lock"
+        );
+        assert_eq!(*waiting.lock().expect("waiting"), 0);
+        assert!(emits.lock().expect("emits").is_empty());
+        assert_eq!(
+            reports.lock().expect("reports").as_slice(),
+            ["daemon pending"]
+        );
     }
 
     #[test]

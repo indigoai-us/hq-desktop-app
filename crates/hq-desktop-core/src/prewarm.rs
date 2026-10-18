@@ -84,6 +84,10 @@ pub const FIRST_LAUNCH_CACHE_LOCK_WAIT: Duration = Duration::from_secs(180);
 /// Sentence case, no raw npm text.
 pub const FIRST_LAUNCH_SYNC_UNSYNCED_LINE: &str = "Your files have not synced yet.";
 pub const FIRST_LAUNCH_SYNC_NOW_ACTION: &str = "Sync now";
+/// Wire kind on the first-launch `sync:error`. The popover matches this, not the sentence.
+pub const FIRST_LAUNCH_SYNC_ERROR_KIND: &str = "first-launch-unsynced";
+/// Existing Ready-screen sentence, shown while the first-launch cache wait runs.
+pub const FIRST_LAUNCH_CACHE_WAIT_CAPTION: &str = "Still setting up your workspace";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FirstLaunchCacheBail {
@@ -103,8 +107,11 @@ pub fn is_npm_cache_still_preparing(message: &str) -> bool {
 }
 
 /// On the npm-cache bail, wait for the lock (the closure is the bound) and
-/// retry sync once. Any other error is left alone. A failed wait or retry
-/// never returns the raw npm message.
+/// retry sync once. Any other error is left alone.
+///
+/// `NeedsSyncNow` is only the wait timing out, or the retry hitting the cache
+/// bail again. Already-running, Cloud off, and every other retry error stay
+/// `Unrelated` so the caller can report the real error.
 pub fn recover_first_launch_cache_bail(
     error: &str,
     wait_for_lock: impl FnOnce() -> Result<(), String>,
@@ -113,12 +120,17 @@ pub fn recover_first_launch_cache_bail(
     if !is_npm_cache_still_preparing(error) {
         return FirstLaunchCacheBail::Unrelated;
     }
-    if wait_for_lock().is_err() {
-        return first_launch_needs_sync_now();
+    match wait_for_lock() {
+        Err(message) if is_npm_cache_still_preparing(&message) => {
+            return first_launch_needs_sync_now();
+        }
+        Err(_) => return FirstLaunchCacheBail::Unrelated,
+        Ok(()) => {}
     }
     match retry_sync() {
         Ok(()) => FirstLaunchCacheBail::Started,
-        Err(_) => first_launch_needs_sync_now(),
+        Err(message) if is_npm_cache_still_preparing(&message) => first_launch_needs_sync_now(),
+        Err(_) => FirstLaunchCacheBail::Unrelated,
     }
 }
 
@@ -141,7 +153,27 @@ pub fn wait_for_npm_cache_lock_free_at(
 }
 
 pub fn wait_for_npm_cache_lock_free(wait: Duration) -> Result<(), String> {
-    wait_for_npm_cache_lock_free_at(&materialization_lock_path()?, wait)
+    wait_for_first_launch_cache_locks_at(
+        &materialization_lock_path()?,
+        &runner_cache_use_lock_path()?,
+        wait,
+    )
+}
+
+/// Wait until both the materialize lock and the runner-use lock can be taken,
+/// then release them. `wait` is the bound for the pair, not each lock.
+/// Tests pass temp paths. Production goes through [`wait_for_npm_cache_lock_free`].
+pub fn wait_for_first_launch_cache_locks_at(
+    materialize_lock: &std::path::Path,
+    runner_use_lock: &std::path::Path,
+    wait: Duration,
+) -> Result<(), String> {
+    let started = Instant::now();
+    wait_for_npm_cache_lock_free_at(materialize_lock, wait)?;
+    let remaining = wait.saturating_sub(started.elapsed());
+    let lock = acquire_runner_cache_use_lock_in(runner_use_lock, remaining)?;
+    drop(lock);
+    Ok(())
 }
 
 /// Maximum time an automatic Core update waits for this process's startup
@@ -1427,6 +1459,48 @@ mod tests {
         );
         assert!(steps.borrow().is_empty());
         assert_eq!(outcome, FirstLaunchCacheBail::Unrelated);
+    }
+
+    #[test]
+    fn already_running_retry_is_not_shown_as_unsynced() {
+        let outcome = recover_first_launch_cache_bail(
+            MATERIALIZATION_LOCK_TIMEOUT_MESSAGE,
+            || Ok(()),
+            || Err("Sync is already running".to_string()),
+        );
+        assert_eq!(outcome, FirstLaunchCacheBail::Unrelated);
+    }
+
+    #[test]
+    fn cloud_paused_retry_is_not_shown_as_unsynced() {
+        let outcome = recover_first_launch_cache_bail(
+            MATERIALIZATION_LOCK_TIMEOUT_MESSAGE,
+            || Ok(()),
+            || Err(crate::daemon::CLOUD_PAUSED_MESSAGE.to_string()),
+        );
+        assert_eq!(outcome, FirstLaunchCacheBail::Unrelated);
+    }
+
+    #[test]
+    fn first_launch_wait_includes_the_runner_cache_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let materialize = tmp.path().join("npx-hq-cloud-materialize.lock");
+        let runner = tmp.path().join("npx-hq-cloud-runner-use.lock");
+        let held = try_acquire_runner_cache_refresh_lock_in(&runner)
+            .unwrap()
+            .expect("exclusive runner lock");
+        let blocked = wait_for_first_launch_cache_locks_at(&materialize, &runner, Duration::ZERO);
+        assert!(
+            blocked.is_err(),
+            "a held runner-cache lock must keep the first-launch wait waiting, got {blocked:?}"
+        );
+        drop(held);
+        assert!(wait_for_first_launch_cache_locks_at(
+            &materialize,
+            &runner,
+            Duration::from_secs(2)
+        )
+        .is_ok());
     }
 
     #[test]

@@ -115,7 +115,15 @@ export interface CorePopoverViewModel {
 export const FIRST_LAUNCH_SYNC_PLAIN_LINE = "Your files have not synced yet.";
 export const FIRST_LAUNCH_SYNC_ACTION = "Sync now";
 
-const NPM_CACHE_PREPARING_MARK = "still preparing its npm cache";
+/**
+ * Wire kind on the first-launch `sync:error`. The popover keys off this,
+ * not a copied sentence, so a reworded Rust string cannot bring the raw
+ * npm line back.
+ */
+export const FIRST_LAUNCH_SYNC_ERROR_KIND = "first-launch-unsynced";
+
+/** Existing Ready-screen sentence, reused while the cache wait is in progress. */
+export const FIRST_LAUNCH_CACHE_WAIT_CAPTION = "Still setting up your workspace";
 
 export interface FirstLaunchSyncOffer {
   line: string;
@@ -123,24 +131,25 @@ export interface FirstLaunchSyncOffer {
 }
 
 /**
- * The raw npm-cache bail must never reach the screen. Both that message and
- * the backend's already-plain line become one sentence plus Sync now.
+ * The first-launch cache bail is one sentence plus Sync now.
+ *
+ * The offer is only the first-launch event (`kind`) in the error phase.
+ * A later sync that happens to carry the raw npm sentence keeps the
+ * ordinary notice. The sentence shown is the approved line, not the
+ * payload text, so a reworded backend string cannot leak onto the screen.
  */
 export function firstLaunchSyncOffer(
   message: string | null | undefined,
+  options?: { phase?: string | null; kind?: string | null },
 ): FirstLaunchSyncOffer | null {
-  const text = (message ?? "").trim();
-  if (!text) return null;
-  if (
-    text === FIRST_LAUNCH_SYNC_PLAIN_LINE ||
-    text.includes(NPM_CACHE_PREPARING_MARK)
-  ) {
-    return {
-      line: FIRST_LAUNCH_SYNC_PLAIN_LINE,
-      action: FIRST_LAUNCH_SYNC_ACTION,
-    };
-  }
-  return null;
+  const phase = (options?.phase ?? "").toLowerCase();
+  if (phase !== "error") return null;
+  if (options?.kind !== FIRST_LAUNCH_SYNC_ERROR_KIND) return null;
+  if (!(message ?? "").trim()) return null;
+  return {
+    line: FIRST_LAUNCH_SYNC_PLAIN_LINE,
+    action: FIRST_LAUNCH_SYNC_ACTION,
+  };
 }
 
 export interface CoreUploadsPausedRow {
@@ -354,7 +363,10 @@ export function buildCorePopoverViewModel(
     cloudPaused,
     pausedNotice: cloudPaused ? CLOUD_PAUSED_NOTICE : null,
     syncNowAllowed: isSyncNowAllowed(cloudPaused),
-    syncOffer: firstLaunchSyncOffer(input.notices?.errorMessage),
+    syncOffer: firstLaunchSyncOffer(input.notices?.errorMessage, {
+      phase: input.syncState,
+      kind: input.notices?.errorKind,
+    }),
     syncHeader: buildCoreSyncHeader({
       syncState: input.syncState,
       lastSyncLabel: input.lastSyncLabel,
@@ -543,6 +555,8 @@ export interface BuildCoreNoticeRowsInput {
    *  the tray popover, which required `errorMessage` to render it). */
   errorMessage?: string | null;
   errorCompany?: string | null;
+  /** `sync:error` kind. First-launch cache bail is `first-launch-unsynced`. */
+  errorKind?: string | null;
   /** Non-null → companies/manifest.yaml could not be read. */
   manifestError?: string | null;
   /** False → the cloud listing fell back to local folders. */
@@ -568,7 +582,11 @@ export function buildCoreNoticeRows(
   // The cache bail has its own one-line status and Sync now action. The
   // Claude Code notice would show a second sentence and could carry the
   // raw npm text in its tooltip.
-  if (phase === "error" && errorMessage && !firstLaunchSyncOffer(errorMessage)) {
+  if (
+    phase === "error" &&
+    errorMessage &&
+    !firstLaunchSyncOffer(errorMessage, { phase, kind: input.errorKind })
+  ) {
     rows.push({
       kind: "sync-failed",
       tone: "alert",

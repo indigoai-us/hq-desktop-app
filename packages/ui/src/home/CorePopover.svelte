@@ -67,6 +67,8 @@
      * the row, matching the tray popover.
      */
     errorMessage?: string | null;
+    /** `sync:error` kind. First-launch cache bail is `first-launch-unsynced`. */
+    errorKind?: string | null;
     errorCompany?: string | null;
     /** Non-null → companies/manifest.yaml could not be read. */
     manifestError?: string | null;
@@ -121,6 +123,7 @@
     lastSyncLabel = null,
     syncCaption = null,
     errorMessage = null,
+    errorKind = null,
     errorCompany = null,
     manifestError = null,
     cloudReachable = true,
@@ -151,6 +154,7 @@
   let returnNudge = $state<{ companyUid: string; slug?: string; dayIndex: number } | null>(null);
   let returnNudgeBusy = $state(false);
   let cacheOfferBusy = $state(false);
+  let cacheOfferFailed = $state(false);
   const modelPacks = $derived.by((): CorePopoverPack[] => {
     if (packs.length > 0) return packs;
     return useFixtures ? CORE_POPOVER_FIXTURE_PACKS : [];
@@ -239,6 +243,7 @@
       uploadsPaused: uploadsPaused ?? [],
       notices: {
         errorMessage,
+        errorKind,
         errorCompany,
         manifestError,
         cloudReachable,
@@ -396,17 +401,20 @@
   }
 
   async function runCacheOfferSync(): Promise<void> {
-    if (cacheOfferBusy || !model.syncOffer) return;
+    if (cacheOfferBusy || !model.syncOffer || !model.syncNowAllowed) return;
     cacheOfferBusy = true;
+    cacheOfferFailed = false;
     try {
       const result = await adapter.sync.startSync();
       if (!result.ok) {
+        cacheOfferFailed = true;
         console.error(
           "core-popover: sync now failed",
           result.code ?? result.reason,
         );
       }
     } catch (error) {
+      cacheOfferFailed = true;
       console.error(
         "core-popover: sync now failed",
         error instanceof Error ? error.name : "unknown",
@@ -538,11 +546,20 @@
       <span class="core-status-plain" data-testid="core-popover-sync-plain">
         {model.syncOffer.line}
       </span>
+      {#if cacheOfferFailed}
+        <span
+          class="core-status-plain"
+          role="status"
+          data-testid="core-popover-sync-retry-failed"
+        >
+          {model.syncOffer.line}
+        </span>
+      {/if}
       <button
         type="button"
         class="core-btn"
         data-testid="core-popover-sync-now"
-        disabled={cacheOfferBusy}
+        disabled={cacheOfferBusy || !model.syncNowAllowed}
         aria-busy={cacheOfferBusy}
         onclick={() => void runCacheOfferSync()}
       >
