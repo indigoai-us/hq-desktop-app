@@ -44,7 +44,7 @@
     type FirstRunToolUsage,
   } from "./visual-first-run.js";
   import { createScreenTimer, formatSignIn, writeFirstRunLine, type FirstRunTimingSink, type SignInEvent } from "./first-run-timing.js";
-  import { FIRST_RUN_SIGNIN_COPY, type FirstRunSignInHost } from "./first-run-signin.js";
+  import { FIRST_RUN_SIGNIN_COPY, type FirstRunInstallWait, type FirstRunSignInHost } from "./first-run-signin.js";
   import "../create-bot/new-bot-takeover.css";
 
   interface Props {
@@ -198,8 +198,8 @@
   }
 
   // ── the coding tool's sign-in (owner, 2026-10-16) ──────────────────────
-  /** The sign-in on screen: waiting on the browser, or did not finish. */
-  let signinView = $state<{ runtime: FirstRunRuntime; state: "waiting" | "failed" } | null>(null);
+  /** The sign-in on screen: installing the tool, waiting on the browser, or failed. */
+  let signinView = $state<{ runtime: FirstRunRuntime; state: "installing" | "waiting" | "failed" } | null>(null);
   /** Lets the action that asked for the sign-in go on (signed in or skipped). */
   let signinGoOn: (() => void) | null = null;
   /** Bumped by Skip and by leaving: an older attempt's answer is dropped. */
@@ -239,19 +239,51 @@
     });
   }
 
-  async function attemptSignIn(runtime: FirstRunRuntime): Promise<void> {
+  async function attemptSignIn(runtime: FirstRunRuntime, retry = false): Promise<void> {
     const host = signin;
     if (!host) return;
     const mine = ++signinAttempt;
-    signinView = { runtime, state: "waiting" };
+    const cancelled = () => mine !== signinAttempt;
+    signinView = { runtime, state: host.waitForInstall ? "installing" : "waiting" };
     logSignIn("start", runtime);
+    // The tool picked can still be installing in the background queue: wait
+    // for its item to settle before the login, which needs the binary.
+    if (host.waitForInstall) {
+      let install: FirstRunInstallWait = "present";
+      try {
+        install = await host.waitForInstall(runtime, { cancelled, retry });
+      } catch (error) {
+        console.warn("[first-run] install wait failed", error);
+      }
+      if (cancelled()) return;
+      if (install === "failed") {
+        logSignIn("failed", runtime);
+        signinView = { runtime, state: "failed" };
+        return;
+      }
+      if (install === "installed") {
+        let signedIn = false;
+        try {
+          signedIn = await host.signedIn(runtime);
+        } catch (error) {
+          console.warn("[first-run] sign-in check failed", error);
+        }
+        if (cancelled()) return;
+        if (signedIn) {
+          logSignIn("done", runtime);
+          goOnAfterSignIn();
+          return;
+        }
+      }
+    }
+    signinView = { runtime, state: "waiting" };
     let connected = false;
     try {
-      connected = await host.run(runtime, { cancelled: () => mine !== signinAttempt });
+      connected = await host.run(runtime, { cancelled });
     } catch (error) {
       console.warn("[first-run] sign-in failed", error);
     }
-    if (mine !== signinAttempt) return;
+    if (cancelled()) return;
     if (connected) {
       logSignIn("done", runtime);
       focusHq();
@@ -298,7 +330,7 @@
   }
 
   function retrySignIn(): void {
-    if (signinView?.state === "failed") void attemptSignIn(signinView.runtime);
+    if (signinView?.state === "failed") void attemptSignIn(signinView.runtime, true);
   }
 
   /**
@@ -332,9 +364,11 @@
   const signinText = $derived(
     signinView === null
       ? ""
-      : signinView.state === "waiting"
-        ? FIRST_RUN_SIGNIN_COPY.waiting(runtimeLabel(signinView.runtime))
-        : FIRST_RUN_SIGNIN_COPY.failed,
+      : signinView.state === "installing"
+        ? FIRST_RUN_SIGNIN_COPY.installing(runtimeLabel(signinView.runtime))
+        : signinView.state === "waiting"
+          ? FIRST_RUN_SIGNIN_COPY.waiting(runtimeLabel(signinView.runtime))
+          : FIRST_RUN_SIGNIN_COPY.failed,
   );
   const liveText = $derived(
     signinText
@@ -359,7 +393,7 @@
   <div class="fr-decision" data-testid="first-run-decision" data-screen={screen} data-path={showBot ? "bot" : "tool"}>
     {#if signinView}
       <div class="fr-decision-head">
-        {#if signinView.state === "waiting"}
+        {#if signinView.state !== "failed"}
           <p class="fr-decision-lead" data-testid="first-run-signin-waiting" aria-busy="true">{signinText}</p>
         {:else}
           <p class="fr-decision-lead fr-decision-failed" data-testid="first-run-signin-failed">{signinText}</p>

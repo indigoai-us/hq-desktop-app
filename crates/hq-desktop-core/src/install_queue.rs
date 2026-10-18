@@ -531,6 +531,12 @@ pub struct QueueStatus {
     pub done: usize,
     pub total: usize,
     pub failed: Vec<String>,
+    /// Items a caller waiting on them would still wait for (see
+    /// [`is_settled`]). The sign-in step waits on its tool's item here.
+    pub unsettled: Vec<String>,
+    /// Items not done or skipped: with `unsettled`, tells an item that
+    /// settled installed from one that failed or is blocked by a failure.
+    pub unfinished: Vec<String>,
 }
 
 pub fn idle_status() -> QueueStatus {
@@ -541,6 +547,8 @@ pub fn idle_status() -> QueueStatus {
         done: 0,
         total: QueueItemId::ALL.len(),
         failed: Vec::new(),
+        unsettled: Vec::new(),
+        unfinished: Vec::new(),
     }
 }
 
@@ -552,6 +560,18 @@ pub fn status(manifest: &QueueManifest, active: bool) -> QueueStatus {
         .items
         .iter()
         .filter(|record| record.state == ItemState::Failed)
+        .map(|record| record.id.as_str().to_string())
+        .collect();
+    let unsettled: Vec<String> = manifest
+        .items
+        .iter()
+        .filter(|record| !is_settled(manifest, record.id))
+        .map(|record| record.id.as_str().to_string())
+        .collect();
+    let unfinished: Vec<String> = manifest
+        .items
+        .iter()
+        .filter(|record| !record.state.satisfied())
         .map(|record| record.id.as_str().to_string())
         .collect();
     let running: Vec<QueueItemId> = manifest
@@ -581,6 +601,8 @@ pub fn status(manifest: &QueueManifest, active: bool) -> QueueStatus {
         done,
         total,
         failed,
+        unsettled,
+        unfinished,
     }
 }
 
@@ -589,6 +611,18 @@ pub fn status(manifest: &QueueManifest, active: bool) -> QueueStatus {
 /// setup card.
 pub fn has_unfinished_items(manifest: &QueueManifest) -> bool {
     manifest.items.iter().any(|record| !record.state.satisfied())
+}
+
+/// Launch resume rule. With no wizard left to run the gated items (a quit
+/// after the ready screen kills the wizard's background stages), an
+/// unfinished queue releases them so the queue runs them itself. Returns
+/// true when the queue has work to resume. Run after [`reconcile_on_resume`].
+pub fn prepare_launch_resume(manifest: &mut QueueManifest) -> bool {
+    if !has_unfinished_items(manifest) {
+        return false;
+    }
+    manifest.release_all_gated();
+    true
 }
 
 /// True when the manifest says `id` will still be installed by the queue,
@@ -908,6 +942,17 @@ mod tests {
     }
 
     #[test]
+    fn status_reports_a_tool_blocked_by_a_failed_prerequisite_as_settled_but_unfinished() {
+        let mut manifest = manifest_with(QueueChoices::default());
+        finish(&mut manifest, QueueItemId::Node, ItemOutcome::Failed("download failed".into()));
+        assert!(is_blocked(&manifest, QueueItemId::ClaudeCode));
+        let chip = status(&manifest, true);
+        assert!(!chip.unsettled.contains(&"claude-code".to_string()));
+        assert!(chip.unfinished.contains(&"claude-code".to_string()));
+        assert!(!chip.failed.contains(&"claude-code".to_string()));
+    }
+
+    #[test]
     fn a_failed_item_blocks_dependents_and_independent_items_continue() {
         let mut manifest = manifest_with(QueueChoices::default());
         finish(&mut manifest, QueueItemId::Node, ItemOutcome::Done);
@@ -983,6 +1028,60 @@ mod tests {
         let chip = status(&loaded, true);
         assert_eq!(chip.done, 4); // node, hq-cli, gh, codex (not chosen)
         assert_eq!(chip.total, 12);
+    }
+
+    #[test]
+    fn quit_after_ready_screen_resumes_vault_upload_and_index_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = manifest_path_in(tmp.path());
+        // The ready screen has finished: every install item is settled, the
+        // wizard's initial-sync stage has claimed the vault upload, and
+        // indexing has not started. Neither gated item was released.
+        let mut manifest = manifest_with(QueueChoices::default());
+        for id in INSTALL_ITEMS {
+            if manifest.state(id) == ItemState::Pending {
+                finish(&mut manifest, id, ItemOutcome::Done);
+            }
+        }
+        manifest.mark_running(QueueItemId::VaultUpload);
+        save_manifest(&path, &manifest).unwrap();
+
+        // The legacy stage journal still reports initial-sync Running. That
+        // must not reopen welcome after the person has reached the desktop.
+        let verdict = crate::lifecycle::classify_lifecycle(crate::lifecycle::LifecycleInputs {
+            install_completed: false,
+            first_run_completed: true,
+            had_machine_id: true,
+            config_valid: true,
+            hq_root_valid: true,
+            has_auth: true,
+            install_in_progress: true,
+            consent_answered: true,
+            evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: true,
+        });
+        assert_eq!(verdict.state, crate::lifecycle::LifecycleState::SteadyState);
+
+        // Quit, then relaunch.
+        let LoadOutcome::Loaded(mut relaunch) = load_manifest(&path) else {
+            panic!("manifest did not load");
+        };
+        reconcile_on_resume(&mut relaunch, |_| Presence::Present);
+        assert!(prepare_launch_resume(&mut relaunch));
+        let rounds = run_all(&mut relaunch);
+        let started: Vec<QueueItemId> = rounds.into_iter().flatten().collect();
+        for id in GATED_ITEMS {
+            assert_eq!(started.iter().filter(|&&s| s == id).count(), 1, "{id:?} runs once");
+        }
+        save_manifest(&path, &relaunch).unwrap();
+
+        // A second relaunch has nothing left to resume.
+        let LoadOutcome::Loaded(mut again) = load_manifest(&path) else {
+            panic!("manifest did not load");
+        };
+        assert!(reconcile_on_resume(&mut again, |_| Presence::Unknown).is_empty());
+        assert!(!prepare_launch_resume(&mut again));
+        assert!(plan_next(&again).is_empty());
     }
 
     #[test]
@@ -1112,6 +1211,14 @@ mod tests {
         let json = serde_json::to_value(&chip).unwrap();
         assert_eq!(json["currentId"], "codex");
         assert_eq!(json["state"], "running");
+        let unsettled = json["unsettled"].as_array().unwrap();
+        assert!(unsettled.contains(&serde_json::json!("codex")));
+        assert!(unsettled.contains(&serde_json::json!("qmd")));
+        assert!(!unsettled.contains(&serde_json::json!("claude-code")));
+        assert!(!unsettled.contains(&serde_json::json!("hq-cli")));
+        let unfinished = json["unfinished"].as_array().unwrap();
+        assert!(unfinished.contains(&serde_json::json!("codex")));
+        assert!(!unfinished.contains(&serde_json::json!("claude-code")));
     }
 
     #[test]
