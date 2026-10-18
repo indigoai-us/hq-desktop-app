@@ -1167,6 +1167,19 @@ export interface CompanyApi {
    */
   listIntegrations?(companyUid: string): AdapterPromise<Json>;
   /**
+   * One connection's redaction presets, hq-pro `GET
+   * /v1/integrations/admin/redaction` (US-004). A refusal keeps the HTTP
+   * status and the server code (`REDACTION_ADMIN_REQUIRED`,
+   * `CONNECTION_NOT_FOUND`, `REDACTION_REQUEST_INVALID`). Desktop only.
+   */
+  getRedaction?(companyUid: string, connectionId: string): AdapterPromise<Json>;
+  /**
+   * Replace one connection's list of presets that are on (`[]` = all off),
+   * hq-pro `PUT /v1/integrations/admin/redaction`. Same answer and refusals
+   * as {@link getRedaction}. Desktop only.
+   */
+  putRedaction?(companyUid: string, connectionId: string, presets: readonly string[]): AdapterPromise<Json>;
+  /**
    * Raw hq-deploy `/api/apps` rows for one scope (company slug or
    * `personal`): `{ scope, callerSub, apps }`. Desktop only.
    */
@@ -1236,6 +1249,37 @@ export interface CompanyApi {
    * slug) since callers already have it from the workspace roster.
    */
   ensureHomeChannel(companyUid: string): AdapterPromise<{ homeChannelId: string }>;
+  /**
+   * Mint a Stripe customer-portal session for a company
+   * (`POST /v1/billing/portal`, body `{ companyUid }`). hq-pro owner-gates the
+   * call and verifies the Stripe customer belongs to that company before it
+   * mints; a non-owner gets 403 (`FORBIDDEN`), a mislinked customer 409
+   * (`BILLING_CUSTOMER_CONFLICT`). The `url` is short-lived: mint one per
+   * click and never cache it.
+   */
+  createBillingPortalSession(companyUid: string): AdapterPromise<{ url: string }>;
+  /**
+   * Mint a Stripe-hosted card-capture Checkout session for a company
+   * (`POST /v1/billing/checkout/org`, body `{ companyUid }`), the same route
+   * the console's usage plan "Add a card" uses. Owner-gated; a non-owner gets
+   * 403. The `url` is short-lived: mint one per click and never cache it.
+   */
+  createBillingCheckoutSession?(companyUid: string): AdapterPromise<{ url: string }>;
+  /**
+   * Owner-gated billing summary (`GET /v1/billing/summary?companyUid=`).
+   * `pricingPlan: "usage-only"` marks a usage-priced company; `usageTrial`
+   * carries the trial and allowance. A non-owner gets 403. Optional: hosts
+   * without hq-pro leave it out and the billing pane keeps the seats view.
+   */
+  getBillingSummary?(companyUid: string): AdapterPromise<Json>;
+  /**
+   * Owner-gated usage statement for this calendar month
+   * (`GET /v1/billing/usage?companyUid=&window=month`): usage so far,
+   * allowance left, bill so far and one line per meter.
+   */
+  getUsageStatement?(companyUid: string): AdapterPromise<Json>;
+  /** Public price list (`GET /v1/pricing`), including the `usage` block. */
+  getPricing?(): AdapterPromise<Json>;
   /** Membership-scoped, aggregate eligibility for the first-week return nudge. */
   getFirstWeekReturnNudge(companyUid: string): AdapterPromise<Json>;
 }
@@ -1376,6 +1420,12 @@ export interface FilesApi {
   vault?: VaultApi;
   getFileContent(path: string): AdapterPromise<string>;
   /**
+   * Append one JSON line to the Daily Brief preference log
+   * (`personal/brief/brief-log.jsonl`). The host fixes the path and refuses
+   * anything but a single JSON object. Desktop only; hosts without it omit it.
+   */
+  appendBriefLog?(line: string): AdapterPromise<void>;
+  /**
    * Create a new text file at an HQ-relative path in the synced HQ folder
    * (QA-072). Refuses an existing file. `cloudSync` is true when the company
    * is cloud-backed and syncing, so HQ Sync carries the file to the vault.
@@ -1474,6 +1524,11 @@ export const OUTPOST_PATHS = {
  * `cron.pause|resume|trigger|delete|create|update` actions; `params.jobId`
  * names the routine and `body` carries the create/update fields.
  */
+export type ManagedBotChannel = "telegram" | "teams";
+export type TelegramConnectInput =
+  | { managed: true; suggestedUsername: string; suggestedName?: string; allowedCallerGroupId?: string }
+  | { token: string; allowedCallerGroupId?: string };
+
 export interface AgentRuntimeActionInput {
   actionId: string;
   idempotencyKey: string;
@@ -1490,6 +1545,11 @@ export interface AgentRuntimeActionInput {
 export const SLACK_ATTACH_BODY = { returnTo: "desktop" } as const;
 
 export const AGENT_PATHS = {
+  channelStatus: (uid: string, channel: ManagedBotChannel) => `/v1/agents/${encodeURIComponent(uid)}/${channel}/status`,
+  channelContacts: (uid: string, channel: ManagedBotChannel, personUid?: string) => `/v1/agents/${encodeURIComponent(uid)}/${channel}/contacts${personUid ? `/${encodeURIComponent(personUid)}` : ''}`,
+  telegramChannel: (uid: string) => `/v1/agents/${encodeURIComponent(uid)}/channels/telegram`,
+  emailChannel: (uid: string) => `/v1/agents/${encodeURIComponent(uid)}/channels/email`,
+  emailAddress: (uid: string) => `/v1/agents/${encodeURIComponent(uid)}/email`,
   provisionOptions: (companyUid: string) =>
     `/v1/agents/provision-options?companyUid=${encodeURIComponent(companyUid)}`,
   status: (agentUid: string, brain?: "grok" | "codex" | "claude") => {
@@ -1557,6 +1617,18 @@ export function localIanaZone(): string | undefined {
 export const COMPANY_INTEGRATION_PATHS = {
   list: (companyUid: string) =>
     `/v1/integrations/admin?companyUid=${encodeURIComponent(companyUid)}`,
+} as const;
+
+/**
+ * US-004 (hq-pro #4915): the "Hidden from AI" redaction presets of one
+ * connection. GET reads them; PUT replaces the whole list of presets that are
+ * on (`[]` = all off). Both answer `{ companyUid, connectionId, presets,
+ * availablePresets, isDefault, updatedAt, updatedBy, canEdit }`.
+ */
+export const REDACTION_PATHS = {
+  read: (companyUid: string, connectionId: string) =>
+    `/v1/integrations/admin/redaction?companyUid=${encodeURIComponent(companyUid)}&connectionId=${encodeURIComponent(connectionId)}`,
+  write: "/v1/integrations/admin/redaction",
 } as const;
 
 /** The caller's personal integrations, as read by the console's Personal Integrations page. */
@@ -1636,6 +1708,16 @@ export interface AgentsApi {
    * none) and `upstreamCode` when the server sent one.
    */
   attachSlack(agentUid: string): AdapterPromise<Json>;
+  channelStatus?(agentUid: string, channel: ManagedBotChannel): AdapterPromise<Json>;
+  channelContacts?(agentUid: string, channel: ManagedBotChannel): AdapterPromise<Json>;
+  addChannelContact?(agentUid: string, channel: ManagedBotChannel, personUid: string): AdapterPromise<Json>;
+  removeChannelContact?(agentUid: string, channel: ManagedBotChannel, personUid: string): AdapterPromise<Json>;
+  connectTelegram?(agentUid: string, input: TelegramConnectInput): AdapterPromise<Json>;
+  disconnectTelegram?(agentUid: string): AdapterPromise<Json>;
+  disconnectSlack?(agentUid: string): AdapterPromise<Json>;
+  connectEmail?(agentUid: string): AdapterPromise<Json>;
+  disconnectEmail?(agentUid: string): AdapterPromise<Json>;
+  updateEmailAddress?(agentUid: string, localPart: string): AdapterPromise<Json>;
   /**
    * POST /v1/agents/{uid}/channels/slack/app-token with `{ appToken }`: hand
    * the server the app-level token a person made on Slack's site.
@@ -1748,6 +1830,8 @@ export const INTEGRATION_PATHS = {
     `&query=${encodeURIComponent(query)}` +
     (typeof limit === "number" && Number.isFinite(limit) ? `&limit=${Math.trunc(limit)}` : ""),
   oauthStart: "/v1/integrations/factory/oauth/start",
+  /** The public browser page the provider redirects to; it finishes the sign-in from the stored state. */
+  oauthCallback: "/v1/integrations/factory/oauth/callback",
   install: "/v1/integrations/factory/install",
   blueprint: "/v1/integrations/factory/blueprint",
   /** Which of a fixed list of domains are in the catalog (first-run "Your apps"). */
@@ -1794,6 +1878,38 @@ export function integrationAppRefBody(input: IntegrationAppRef): {
   };
 }
 
+/**
+ * Names the app for OAuth start, plus an optional `redirectUri`. HQ Desktop
+ * passes the hq-pro public callback (`INTEGRATION_PATHS.oauthCallback` on its
+ * API base) so the provider's redirect lands on a page that finishes the
+ * sign-in without a session. Absent, the server's default redirect applies.
+ */
+export type IntegrationOAuthStartInput = IntegrationAppRef & {
+  redirectUri?: string; mcpUrl?: string; provider?: string; displayName?: string; pullAllHistory?: boolean;
+};
+
+/** The OAuth start body: {@link integrationAppRefBody} plus `redirectUri` when one is given. */
+export function integrationOAuthStartBody(input: IntegrationOAuthStartInput): {
+  companyUid: string;
+  domain?: string;
+  catalogEntryId?: string;
+  redirectUri?: string;
+  mcpUrl?: string;
+  provider?: string;
+  displayName?: string;
+  pullAllHistory?: boolean;
+} {
+  const redirectUri = typeof input.redirectUri === "string" ? input.redirectUri.trim() : "";
+  return {
+    ...integrationAppRefBody(input),
+    ...(redirectUri ? { redirectUri } : {}),
+    ...(input.mcpUrl ? { mcpUrl: input.mcpUrl } : {}),
+    ...(input.provider ? { provider: input.provider } : {}),
+    ...(input.displayName ? { displayName: input.displayName } : {}),
+    ...(typeof input.pullAllHistory === 'boolean' ? { pullAllHistory: input.pullAllHistory } : {}),
+  };
+}
+
 /** What `POST /v1/integrations/factory/oauth/start` answers. */
 export interface IntegrationOAuthStart {
   provider: string;
@@ -1821,6 +1937,8 @@ export interface IntegrationOAuthStart {
  */
 export interface IntegrationInstallInput {
   companyUid: string;
+  /** Preserve the existing history preference when replacing credentials. */
+  pullAllHistory?: boolean;
   domain?: string;
   catalogEntryId?: string;
   mcpUrl?: string;
@@ -1930,14 +2048,20 @@ export interface IntegrationsApi {
   uninstall?(input: { companyUid: string; installationId: string }): AdapterPromise<Json>;
   /**
    * POST /v1/integrations/factory/oauth/start with `{ companyUid, domain }`
-   * or `{ companyUid, catalogEntryId }` and no `redirectUri`: the server's
-   * default redirect lands the browser on the console's callback. Answers
-   * {@link IntegrationOAuthStart}. A failure carries `status`, `code` (e.g.
-   * `OAUTH_DISCOVERY_FAILED`, `CLIENT_REGISTRATION_REFUSED`,
-   * `OAUTH_REGISTRATION_FAILED`, `INTEGRATION_FACTORY_FORBIDDEN`) and
-   * `upstreamCode` when the server sent one.
+   * or `{ companyUid, catalogEntryId }`, plus `redirectUri` when one is
+   * given. Without it the server's default redirect lands the browser on the
+   * console's callback. Answers {@link IntegrationOAuthStart}. A failure
+   * carries `status`, `code` (e.g. `OAUTH_DISCOVERY_FAILED`,
+   * `CLIENT_REGISTRATION_REFUSED`, `OAUTH_REGISTRATION_FAILED`,
+   * `INTEGRATION_FACTORY_FORBIDDEN`) and `upstreamCode` when the server sent one.
    */
-  startOAuth(input: IntegrationAppRef): AdapterPromise<IntegrationOAuthStart>;
+  startOAuth(input: IntegrationOAuthStartInput): AdapterPromise<IntegrationOAuthStart>;
+  /**
+   * The hq-pro public OAuth callback URL on this app's API base
+   * (`INTEGRATION_PATHS.oauthCallback`). Desktop only: a desktop app has no
+   * web callback page of its own. Optional.
+   */
+  oauthCallbackUrl?(): AdapterPromise<string>;
   /**
    * POST /v1/integrations/factory/install with the body passed through (see
    * {@link IntegrationInstallInput} for the three forms). A `bearerToken` is
@@ -2007,6 +2131,29 @@ export interface SyncApi {
   restoreFromUpstream(args: Json): AdapterPromise<void>;
   beginReauth(): AdapterPromise<Json>;
   listSyncableWorkspaces(): AdapterPromise<Json[]>;
+  /**
+   * Per-company download footprint (`get_sync_mode`; CLI `hq sync mode`).
+   * `isDefault: true` means no saved choice, so the effective mode is `all`.
+   * Footprint only: access is unchanged by either mode.
+   */
+  getCompanySyncMode?(slug: string): AdapterPromise<CompanySyncModeConfig>;
+  /** Set a company's footprint to `all` or `shared` (`set_sync_mode`). */
+  setCompanySyncMode?(
+    slug: string,
+    mode: CompanySyncMode,
+  ): AdapterPromise<CompanySyncModeConfig>;
+}
+
+/** Download footprint choices the desktop exposes; `custom` stays CLI-only. */
+export type CompanySyncMode = 'all' | 'shared';
+
+/** Wire shape of `get_sync_mode` / `set_sync_mode` (`MembershipSyncConfig`). */
+export interface CompanySyncModeConfig {
+  membershipId: string;
+  syncMode: 'all' | 'shared' | 'custom';
+  isDefault: boolean;
+  customPaths?: string[] | null;
+  updatedBy?: string | null;
 }
 
 /** One installed app, as `detect_work_apps` reports it. */
@@ -2044,6 +2191,15 @@ export interface FoundWorkApps {
 }
 
 /** Desktop-only group (capability: canLaunchApps). */
+/** Claude Code permission modes a launch may ask for. */
+export type ClaudePermissionMode = "default" | "acceptEdits" | "plan" | "bypassPermissions";
+
+export interface ClaudeLaunchOptions {
+  permissionMode?: ClaudePermissionMode;
+  /** Initial prompt, passed to `claude` as its positional prompt argument. */
+  prompt?: string;
+}
+
 export interface ShellApi {
   openInEditor(path: string): AdapterPromise<void>;
   openClaudeCodeLink(url: string): AdapterPromise<void>;
@@ -2057,7 +2213,12 @@ export interface ShellApi {
    */
   openCodexDeepLink(url: string): AdapterPromise<void>;
   openFileInClaude(path: string): AdapterPromise<void>;
-  launchClaudeCode(path: string): AdapterPromise<void>;
+  /**
+   * Open a terminal at `path` running `claude`. `permissionMode` adds
+   * `--permission-mode <mode>` (the Daily Brief asks for bypassPermissions);
+   * omitted, the launch is unchanged.
+   */
+  launchClaudeCode(path: string, opts?: ClaudeLaunchOptions): AdapterPromise<void>;
   /** Open the Codex desktop app (the ChatGPT app's Codex surface) with the
    *  folder loaded as the workspace and an optional pre-typed composer prompt.
    *  Backed by the `launch_codex_workspace` command (ChatGPT-bundled CLI's
@@ -3007,6 +3168,52 @@ export interface CallsApi {
 }
 
 // ---------------------------------------------------------------------------
+// Personal apps: MCP servers configured in one cloud bot's own runtime
+// ---------------------------------------------------------------------------
+
+export interface BotPersonalApp {
+  name: string;
+  url: string | null;
+  auth: "oauth" | "header" | "none" | string;
+  enabled: boolean;
+  /** For sign-in apps, whether the bot holds a saved login. */
+  connected: boolean;
+  tools: number | null;
+}
+
+export interface BotPersonalAppSignIn {
+  flowId: string;
+  authorizationUrl: string;
+}
+
+export interface BotPersonalAppSignInStatus {
+  status: "authorization_required" | "approved" | "error" | "expired" | string;
+  error: string | null;
+  tools: number;
+}
+
+/** An entry in the bot runtime's own MCP catalog. */
+export interface BotPersonalCatalogEntry {
+  name: string;
+  description: string;
+  url: string | null;
+  transport: string;
+  auth: "oauth" | "none" | "api_key" | string;
+  installed: boolean;
+  /** Whether this desktop flow can add it (remote, browser sign-in or no sign-in). */
+  supported: boolean;
+}
+
+export interface BotPersonalAppsApi {
+  list(agentUid: string): AdapterPromise<{ apps: BotPersonalApp[] }>;
+  catalog(agentUid: string): AdapterPromise<{ entries: BotPersonalCatalogEntry[] }>;
+  add(agentUid: string, input: { name: string; url: string; auth?: "oauth" | "none" }): AdapterPromise<Json>;
+  remove(agentUid: string, name: string): AdapterPromise<Json>;
+  startSignIn(agentUid: string, name: string): AdapterPromise<BotPersonalAppSignIn>;
+  signInStatus(agentUid: string, flowId: string): AdapterPromise<BotPersonalAppSignInStatus>;
+}
+
+// ---------------------------------------------------------------------------
 // The adapter
 // ---------------------------------------------------------------------------
 
@@ -3045,6 +3252,8 @@ export interface PlatformAdapter {
   readonly contextImport?: ContextImportApi;
   /** Optional: only the desktop host can read and prune local HQ backups. */
   readonly storage?: StorageApi;
+  /** Optional: a cloud bot's own runtime MCPs. */
+  readonly personalApps?: BotPersonalAppsApi;
   readonly settings: SettingsApi;
   readonly workMesh: WorkMeshApi;
   /** Native calling (US-014). Unsupported hosts implement it as refusals. */

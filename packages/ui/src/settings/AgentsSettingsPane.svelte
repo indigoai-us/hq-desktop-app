@@ -4,6 +4,7 @@
   import { hostComputerNoun } from "@hq/platform";
   import "./settings-chrome.css";
   import { announceRuntimeSignedIn } from "../chat/messaging/runtime-repair.svelte.js";
+  import { CONNECTOR_APPS, INDIGO_MCP_URL } from "./hq-connector-setup.js";
 
   interface Props {
     adapter?: PlatformAdapter | null;
@@ -195,6 +196,28 @@
     await load();
   }
 
+  // Connect-AI-apps copy buttons. On a denied clipboard the setup text is
+  // revealed inline so the person can select it by hand, and the button stays
+  // live to retry.
+  let copiedId = $state<string | null>(null);
+  let copyFailedId = $state<string | null>(null);
+  let copyTimer: ReturnType<typeof setTimeout> | undefined;
+
+  async function copySetup(app: { id: string; copyText: string }) {
+    clearTimeout(copyTimer);
+    copiedId = null;
+    copyFailedId = null;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard API is unavailable");
+      await navigator.clipboard.writeText(app.copyText);
+      copiedId = app.id;
+      copyTimer = setTimeout(() => (copiedId = null), 1500);
+    } catch (err) {
+      console.warn("[agents-settings] copy connector setup failed", err);
+      copyFailedId = app.id;
+    }
+  }
+
   $effect(() => {
     void adapter;
     void load();
@@ -254,4 +277,50 @@
       <p class="ss-lede" aria-live="polite">{line}</p>
     {/if}
   </div>
+
+  <div class="ss-section" data-testid="settings-hq-connector">
+    <p class="ss-section-label">Connect AI apps to HQ</p>
+    <p class="ss-lede">
+      Let Grok Bot, Claude, ChatGPT, Codex, or the Grok CLI read and write your HQ files and use your secrets and connected apps. Copy the setup for your app, paste it there, and sign in to HQ when the browser opens. One sign-in covers every company you belong to.
+    </p>
+    {#each [{ id: "url", name: "Connector URL", help: INDIGO_MCP_URL, copyText: INDIGO_MCP_URL }, ...CONNECTOR_APPS] as app (app.id)}
+      <div class="ss-field" data-testid={`settings-hq-connector-${app.id}`}>
+        <div class="ss-field-text">
+          <div class="ss-field-label">{app.name}</div>
+          <div class="ss-field-help">{app.help}</div>
+          {#if "steps" in app && app.steps}
+            <ol class="ss-field-help hq-connector-steps" data-testid={`settings-hq-connector-${app.id}-steps`}>
+              {#each app.steps as step}<li>{step}</li>{/each}
+            </ol>
+          {/if}
+          {#if copyFailedId === app.id}
+            <pre class="ss-field-help hq-connector-manual" data-testid={`settings-hq-connector-${app.id}-manual`}>{app.copyText}</pre>
+            <div class="ss-field-help" role="status">Copy didn't work. Select the text above, or tap the button to try again.</div>
+          {/if}
+        </div>
+        <button
+          type="button"
+          class="ss-btn"
+          data-testid={`settings-hq-connector-${app.id}-copy`}
+          onclick={() => void copySetup(app)}
+        >{copiedId === app.id ? "Copied" : ("copyLabel" in app && app.copyLabel) || "Copy"}</button>
+      </div>
+    {/each}
+  </div>
 </div>
+
+<style>
+  .hq-connector-steps {
+    margin: 6px 0 0;
+    padding-left: 18px;
+  }
+  .hq-connector-steps li + li {
+    margin-top: 2px;
+  }
+  .hq-connector-manual {
+    margin: 6px 0 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    user-select: text;
+  }
+</style>

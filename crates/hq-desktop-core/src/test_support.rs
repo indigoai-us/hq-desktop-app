@@ -18,6 +18,13 @@ impl ScopedEnv {
         std::env::set_var(name, value);
         Self { name, previous }
     }
+
+    /// Removes the variable for the scope and restores it afterwards.
+    pub fn unset(name: &'static str) -> Self {
+        let previous = std::env::var_os(name);
+        std::env::remove_var(name);
+        Self { name, previous }
+    }
 }
 
 impl Drop for ScopedEnv {

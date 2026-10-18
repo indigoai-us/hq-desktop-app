@@ -59,7 +59,8 @@ async function openJobsTab(agents = agentsApi()) {
     props: { kind: "bot", name: "scout", agentUid: "agt_scout", runtimeKind: "cloud", companyUid: "cmp_a", agents: agents as never },
   });
   await settle();
-  click('[data-testid="bot-pane-tab-jobs"]');
+  click('[data-testid="bot-pane-tab-routines"]');
+  await settle();
   return agents;
 }
 
@@ -70,7 +71,7 @@ afterEach(async () => {
 });
 
 describe("bot pane Jobs tab", () => {
-  it("has Profile and Jobs tabs with the job count, and the profile links to Jobs", async () => {
+  it("has management tabs with the routine count, and details link to routines", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);
     component = mount(ProfilePaneHost, {
@@ -78,10 +79,11 @@ describe("bot pane Jobs tab", () => {
       props: { kind: "bot", name: "scout", agentUid: "agt_scout", runtimeKind: "cloud", companyUid: "cmp_a", agents: agentsApi() as never },
     });
     await settle();
-    expect(q('[data-testid="bot-pane-tab-profile"]')?.getAttribute("aria-selected")).toBe("true");
-    expect(q('[data-testid="bot-pane-tab-jobs"]')?.textContent).toBe("Jobs3");
+    expect(q('[data-testid="bot-pane-tab-channels"]')?.getAttribute("aria-selected")).toBe("true");
+    expect(q('[data-testid="bot-pane-tab-routines"]')?.textContent).toBe("Routines3");
     click('[data-testid="bot-profile-open-jobs"]');
-    expect(q('[data-testid="bot-pane-tab-jobs"]')?.getAttribute("aria-selected")).toBe("true");
+    await settle();
+    expect(q('[data-testid="bot-pane-tab-routines"]')?.getAttribute("aria-selected")).toBe("true");
     expect(q('[data-testid="bot-jobs"]')).not.toBeNull();
   });
 
@@ -114,7 +116,7 @@ describe("bot pane Jobs tab", () => {
     expect(q('[data-testid="bot-job-prompt"]')?.textContent).toBe(PROMPT);
     expect(q('[data-testid="bot-job-detail-schedule"]')?.textContent).toMatch(/^Weekdays at 9:00 AM/);
     expect(q('[data-testid="bot-job-detail"]')?.textContent).toContain("Time zoneUTC");
-    expect(q('[data-testid="bot-job-history-row"]')?.textContent).toContain("failed");
+    expect(q('[data-testid="bot-job-history-row"]')?.textContent).toContain("Needs attention");
     click('[data-testid="bot-job-copy"]');
     await settle();
     expect(writeText).toHaveBeenCalledWith(PROMPT);

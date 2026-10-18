@@ -135,6 +135,8 @@ export const PACK_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   crm: "CRM",
   // Brand casing: the generic prettifier would produce "Imessage".
   imessage: "iMessage",
+  // Product name keeps its "HQ" prefix; the prettifier strips it to "Capture".
+  "hq-capture": "HQ Capture",
 };
 
 /** Words we keep lowercased when title-casing a derived name (unless leading). */
@@ -171,6 +173,23 @@ export function listingDisplayName(listing: MarketplaceListing): string {
   const curated = PACK_DISPLAY_NAMES[listing.slug];
   if (curated) return curated;
   return prettifyPackName(listing.name) || listing.name;
+}
+
+/** Public marketing site that hosts a shareable page for every approved listing. */
+export const MARKETPLACE_PUBLIC_BASE = "https://hqforwork.com";
+
+/**
+ * The listing's public, shareable page on hqforwork.com: `/packs/{slug}`
+ * (indigo-marketing route `app/packs/[slug]`, built from the same approved
+ * listings feed this panel reads). Clean canonical URL, no UTM tags: this is
+ * an in-product link. Null when the listing has no usable slug.
+ */
+export function listingPublicUrl(
+  listing: Pick<MarketplaceListing, "slug">,
+): string | null {
+  const slug = listing.slug?.trim();
+  if (!slug) return null;
+  return `${MARKETPLACE_PUBLIC_BASE}/packs/${encodeURIComponent(slug)}`;
 }
 
 /** Listing detail (`get_marketplace_listing`) — adds the presigned download URL. */

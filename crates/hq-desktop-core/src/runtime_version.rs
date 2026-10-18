@@ -104,18 +104,79 @@ pub fn resolve_from(
     (compile_time_fallback.to_string(), VersionSource::CompileTime)
 }
 
+/// The host platform the resource-dir rules are evaluated for. Explicit so
+/// every platform's rule is unit-testable from any host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostOs {
+    MacOs,
+    Linux,
+    Windows,
+}
+
+impl HostOs {
+    /// The platform this binary was compiled for.
+    pub const fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            HostOs::MacOs
+        } else if cfg!(target_os = "linux") {
+            HostOs::Linux
+        } else {
+            HostOs::Windows
+        }
+    }
+}
+
 /// Best-effort resource-dir guess from the running executable's own path, for
 /// use before a Tauri `AppHandle` exists. macOS bundles put resources at
 /// `<App>.app/Contents/Resources` relative to `Contents/MacOS/<exe>`;
 /// Windows/NSIS installs place resources next to the exe. Returns `None` if
 /// `current_exe()` fails (callers fall through to the compile-time value).
+///
+/// Linux callers should use [`resources_dir_for_product`] instead: an
+/// installed `.deb` keeps resources under `/usr/lib/<productName>`, which this
+/// product-agnostic form cannot see, so here Linux resolves to the exe dir.
 pub fn resources_dir_from_current_exe() -> Option<PathBuf> {
+    resources_dir_for_product("")
+}
+
+/// [`resources_dir_from_current_exe`] with the Tauri `productName`, so the
+/// Linux package layout (`/usr/lib/<productName>`) is resolved too. macOS and
+/// Windows ignore `product_name`.
+pub fn resources_dir_for_product(product_name: &str) -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
+    resources_dir_from_exe(&exe, product_name)
+}
+
+/// Resource dir for the executable at `exe` on the current platform.
+pub fn resources_dir_from_exe(exe: &Path, product_name: &str) -> Option<PathBuf> {
+    resources_dir_from_exe_on(exe, product_name, HostOs::current())
+}
+
+/// Resource dir for the executable at `exe` as `os` would lay it out.
+///
+/// - macOS: `<exe_dir>/../Resources` (`Contents/MacOS` → `Contents/Resources`).
+/// - Linux: `<exe_dir>/../lib/<product_name>` when that directory exists (the
+///   `.deb`/AppImage layout Tauri's own `resource_dir` uses for an exe outside
+///   a cargo target dir), else `<exe_dir>` (bare `cargo build`, `tauri dev`).
+/// - Windows: `<exe_dir>`.
+pub fn resources_dir_from_exe_on(exe: &Path, product_name: &str, os: HostOs) -> Option<PathBuf> {
     let exe_dir = exe.parent()?;
-    if cfg!(target_os = "macos") {
-        exe_dir.parent().map(|contents| contents.join("Resources"))
-    } else {
-        Some(exe_dir.to_path_buf())
+    match os {
+        HostOs::MacOs => exe_dir.parent().map(|contents| contents.join("Resources")),
+        HostOs::Linux => {
+            if !product_name.is_empty() {
+                if let Some(lib) = exe_dir
+                    .parent()
+                    .map(|prefix| prefix.join("lib").join(product_name))
+                {
+                    if lib.is_dir() {
+                        return Some(lib);
+                    }
+                }
+            }
+            Some(exe_dir.to_path_buf())
+        }
+        HostOs::Windows => Some(exe_dir.to_path_buf()),
     }
 }
 
@@ -250,6 +311,96 @@ mod tests {
         );
         std::env::remove_var("HQ_APP_VERSION");
         cleanup(&all);
+    }
+
+    /// A scratch directory tree for exe-relative resource-dir tests.
+    fn scratch(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "hq-runtime-resources-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn linux_resources_dir_is_the_lib_product_dir_of_an_installed_package() {
+        // `.deb` layout: /usr/bin/<exe> with resources in /usr/lib/<productName>
+        // (Tauri's `resource_dir_from` rule for a non-cargo exe dir).
+        let root = scratch("linux-installed");
+        let exe = root.join("usr").join("bin").join("hq-sync-menubar");
+        let lib = root.join("usr").join("lib").join("HQ");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&lib).unwrap();
+        assert_eq!(
+            resources_dir_from_exe_on(&exe, "HQ", HostOs::Linux),
+            Some(lib)
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn linux_resources_dir_falls_back_to_the_exe_dir_without_a_lib_dir() {
+        // Bare `cargo build` / `tauri dev`: target/release/<exe>, no lib dir.
+        let root = scratch("linux-bare");
+        let exe_dir = root.join("target").join("release");
+        let exe = exe_dir.join("hq-sync-menubar");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        assert_eq!(
+            resources_dir_from_exe_on(&exe, "HQ", HostOs::Linux),
+            Some(exe_dir)
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn linux_resources_dir_resolves_inside_a_mounted_appimage() {
+        // AppImage layout once mounted: /tmp/.mount_HQxxxx/usr/bin/<exe> with
+        // the bundle resources in /tmp/.mount_HQxxxx/usr/lib/<productName>,
+        // the same `../lib/<productName>` rule as the installed .deb.
+        let root = scratch("linux-appimage").join(".mount_HQabc123");
+        let exe = root.join("usr").join("bin").join("hq-sync-menubar");
+        let lib = root.join("usr").join("lib").join("HQ");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(lib.join("ui")).unwrap();
+        assert_eq!(
+            resources_dir_from_exe_on(&exe, "HQ", HostOs::Linux),
+            Some(lib)
+        );
+        cleanup(root.parent().unwrap());
+    }
+
+    #[test]
+    fn linux_resources_dir_ignores_an_empty_product_name() {
+        let root = scratch("linux-no-name");
+        let exe = root.join("usr").join("bin").join("hq-sync-menubar");
+        std::fs::create_dir_all(root.join("usr").join("lib")).unwrap();
+        assert_eq!(
+            resources_dir_from_exe_on(&exe, "", HostOs::Linux),
+            Some(root.join("usr").join("bin"))
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn macos_resources_dir_is_contents_resources_regardless_of_lib_dirs() {
+        // No directories are created: the macOS rule is purely path-based.
+        let root = PathBuf::from("/Applications/HQ.app");
+        let exe = root.join("Contents").join("MacOS").join("HQ");
+        assert_eq!(
+            resources_dir_from_exe_on(&exe, "HQ", HostOs::MacOs),
+            Some(root.join("Contents").join("Resources"))
+        );
+    }
+
+    #[test]
+    fn windows_resources_dir_is_the_exe_dir() {
+        let exe = PathBuf::from("C:/Program Files/HQ/HQ.exe");
+        assert_eq!(
+            resources_dir_from_exe_on(&exe, "HQ", HostOs::Windows),
+            Some(PathBuf::from("C:/Program Files/HQ"))
+        );
     }
 
     #[test]

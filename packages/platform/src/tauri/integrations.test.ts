@@ -304,6 +304,60 @@ describe("createDesktopAdapter integrations", () => {
   });
 });
 
+describe("OAuth redirect to the hq-pro browser callback (first-run Your apps)", () => {
+  const CALLBACK = "https://hqapi.test/v1/integrations/factory/oauth/callback";
+
+  it("adds a given redirectUri to the OAuth start body only, on both Tauri adapters", async () => {
+    for (const make of [makeTauri, makeSync]) {
+      const { adapter, calls } = make();
+      await adapter.integrations.startOAuth({ companyUid: "cmp_acme", domain: "linear.app", redirectUri: ` ${CALLBACK} ` });
+      await adapter.integrations.blueprint({ companyUid: "cmp_acme", catalogEntryId: "cat_1" });
+      expect(calls.map((c) => c.args?.body)).toEqual([
+        JSON.stringify({ companyUid: "cmp_acme", domain: "linear.app", redirectUri: CALLBACK }),
+        JSON.stringify({ companyUid: "cmp_acme", catalogEntryId: "cat_1" }),
+      ]);
+    }
+  });
+
+  it("leaves a blank redirectUri out, so the server's default applies", async () => {
+    for (const make of [makeTauri, makeSync]) {
+      const { adapter, calls } = make();
+      await adapter.integrations.startOAuth({ companyUid: "cmp_acme", domain: "linear.app", redirectUri: "  " });
+      expect(calls.map((c) => c.args?.body)).toEqual([JSON.stringify({ companyUid: "cmp_acme", domain: "linear.app" })]);
+    }
+  });
+
+  it("builds the callback URL from the native API base on both Tauri adapters", async () => {
+    const makers = [
+      (invoke: (cmd: string) => Promise<unknown>) => new TauriPlatformAdapter({ invoke: invoke as never }),
+      (invoke: (cmd: string) => Promise<unknown>) => createSyncPlatformAdapter({ invoke: invoke as never }),
+    ];
+    for (const make of makers) {
+      const invoked: string[] = [];
+      const adapter = make(async (cmd) => {
+        invoked.push(cmd);
+        return "https://hqapi.test";
+      });
+      expect(await adapter.integrations.oauthCallbackUrl!()).toEqual({ ok: true, value: CALLBACK });
+      expect(invoked).toEqual(["hq_pro_api_base"]);
+    }
+  });
+
+  it("returns a failed API base lookup as a failure", async () => {
+    const adapter = createSyncPlatformAdapter({
+      invoke: (async () => {
+        throw new Error("no command");
+      }) as never,
+    });
+    const result = await adapter.integrations.oauthCallbackUrl!();
+    expect(result.ok).toBe(false);
+  });
+
+  it("names the hq-pro route", () => {
+    expect(INTEGRATION_PATHS.oauthCallback).toBe("/v1/integrations/factory/oauth/callback");
+  });
+});
+
 describe("catalog lookup (first-run Your apps)", () => {
   const DOMAINS = ["linear.app", "zoom.us"] as const;
   const EXPECTED_LOOKUP: Invocation[] = [

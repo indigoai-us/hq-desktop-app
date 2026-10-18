@@ -21,6 +21,24 @@ fn main() {
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
     println!("cargo:rustc-env=APP_VERSION={}", version);
 
+    // Emit the resolved `productName` as `APP_PRODUCT_NAME`. Linux packages
+    // install resources under `/usr/lib/<productName>` (Tauri's
+    // `resource_dir` rule), and the app needs that directory before an
+    // `AppHandle` exists (runtime version, UI protocol root, shell key).
+    // The Tauri CLI hands `--config` overlays (e.g. tauri.dev.conf.json's
+    // "HQ Dev") to the build as `TAURI_CONFIG`, merged over tauri.conf.json;
+    // an overlay's name wins, as it does for the bundle.
+    println!("cargo:rerun-if-changed=tauri.conf.json");
+    println!("cargo:rerun-if-env-changed=TAURI_CONFIG");
+    let tauri_conf = std::fs::read_to_string("tauri.conf.json")
+        .expect("build.rs: failed to read tauri.conf.json");
+    let product_name = std::env::var("TAURI_CONFIG")
+        .ok()
+        .and_then(|overlay| extract_json_string_field(&overlay, "productName"))
+        .or_else(|| extract_json_string_field(&tauri_conf, "productName"))
+        .expect("build.rs: tauri.conf.json has no productName");
+    println!("cargo:rustc-env=APP_PRODUCT_NAME={}", product_name);
+
     // Pin the `wry` version this crate actually resolves to.
     //
     // `util::webview2_automation::WRY_DEFAULT_BROWSER_ARGS` is a hand

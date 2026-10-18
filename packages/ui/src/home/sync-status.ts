@@ -16,7 +16,6 @@ export type SyncPhase =
   | "idle"
   | "syncing"
   | "auth-error"
-  | "conflict"
   | "error";
 
 export interface SyncStatusState {
@@ -27,7 +26,7 @@ export interface SyncStatusState {
   progressed: number;
   /** Company whose files are moving right now, for the caption. */
   company: string | null;
-  /** Set on auth-error / conflict / error; cleared when a run starts. */
+  /** Set on auth-error / error; cleared when a run starts. */
   message: string | null;
 }
 
@@ -109,9 +108,6 @@ export function reduceSyncEvent(
           "Your HQ session needs a refresh. Sign in again to keep sync moving.",
       };
 
-    case "sync:conflict":
-      return { ...state, phase: "conflict", message: asText(data.message) };
-
     case "sync:error":
       return {
         ...state,
@@ -135,7 +131,6 @@ export const SYNC_STATUS_EVENTS = [
   "sync:plan",
   "sync:progress",
   "sync:auth-error",
-  "sync:conflict",
   "sync:error",
   "sync:all-complete",
 ] as const;
@@ -151,7 +146,7 @@ export interface SyncStatusLabel {
 /**
  * Title-bar label.
  *
- * Progress ONLY. Attention states (auth-error, conflict, error) are already
+ * Progress ONLY. Attention states (auth-error, error) are already
  * owned by the Core pill's dot tone and the sentence inside the Core popover
  * (`corePillDotTone`, `getV4TitleBarModel`), so repeating them here would give
  * the same problem two warning lights in one bar and make it ambiguous which
@@ -180,7 +175,6 @@ export function syncStatusLabel(state: SyncStatusState): SyncStatusLabel {
       };
     }
     case "auth-error":
-    case "conflict":
     case "error":
       // Deliberately silent: the Core pill's dot already carries these, and its
       // popover carries the sentence and the recovery action.

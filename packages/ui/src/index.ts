@@ -40,6 +40,9 @@ export * from "./chat/setup-channel.js";
 export * from "./chat/create-company/create-company-flow.js";
 export * from "./chat/create-company/slug-availability.js";
 export * from "./chat/setup-run.js";
+// Usage pricing (GET /v1/pricing `usage` and `signup`) and the usage billing pane reads.
+export * from "./company/usage-pricing.js";
+export * from "./company/usage-billing.js";
 export * from "./chat/setup-agent.svelte.js";
 // Agent "thinking" indicator state machine. Explicit list: `isAgentUid` is
 // intentionally NOT re-exported here — the barrel already ships the
@@ -343,18 +346,25 @@ export { VISUAL_FIRST_RUN_DONE_KEY } from "./chat/first-run/visual-first-run.js"
 export { loadAtlas } from "./shell/atlas-lazy.js";
 // Personal telemetry (US-032): lazy door only — never re-export ./telemetry statically.
 export { loadTelemetry } from "./shell/telemetry-lazy.js";
+// Daily Brief: lazy door plus the dependency-free dev-harness seed seam and fixture.
+export { loadBrief } from "./shell/brief-lazy.js";
+export { configureBriefSeed } from "./brief/brief-seed.js";
+export { octoberEightBrief } from "./brief/brief-fixture.js";
 // Accomplishment badges: profile panes read earned badges from this source.
 export {
   setBadgeSource,
   setBadgeProgressSource,
+  setBadgesEnabledSource,
   type BadgeSource,
   type BadgeSubject,
   type BadgeProgress,
   type BadgeProgressSource,
 } from "./badges/badge-source.js";
 export type { EarnedBadge } from "./badges/badge-catalog.js";
+// The launch announcement: the design harness shows it with ?launch.
+export { setLaunchPreview } from "./badges/badge-launch.js";
 // The rule for the tiers a badge can be earned at, which the loader reads
 // hq-pro's badges by; the design harness's ?earn= switch follows it too.
 export { BADGE_BY_ID, earnedTier } from "./badges/badge-catalog.js";
 // The "You earned" notice and the Gold / Legendary card reveal. No earning events call it yet.
-export { announceBadgeEarned } from "./badges/badge-announce.js";
+export { announceBadgeEarned, announceBadgesEarned } from "./badges/badge-announce.js";

@@ -1,6 +1,6 @@
 <script lang="ts">
   import "./rail-type.css";
-  import { BRAND_ICONS, LINE_ICONS, isBrandIcon, type RailIconName } from "./rail-icons.js";
+  import { BRAND_ICONS, LINE_ICONS, LINE_ICON_VIEWBOX, isBrandIcon, type RailIconName } from "./rail-icons.js";
 
   interface Props {
     name: RailIconName;
@@ -17,7 +17,7 @@
   data-rail-icon={name}
   width={size}
   height={size}
-  viewBox={brand ? brand.viewBox : "0 0 16 16"}
+  viewBox={brand ? brand.viewBox : LINE_ICON_VIEWBOX}
   aria-hidden="true"
   focusable="false"
 >
@@ -29,14 +29,8 @@
       fill-rule="evenodd"
     />
   {:else}
-    <path
-      d={LINE_ICONS[name as keyof typeof LINE_ICONS]}
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.5"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    />
+    <!-- Phosphor regular: a filled outline glyph, no stroke. -->
+    <path d={LINE_ICONS[name as keyof typeof LINE_ICONS]} fill="currentColor" />
   {/if}
 </svg>
 

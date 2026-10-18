@@ -33,7 +33,7 @@ use crate::commands::windows_teardown_probe::{
     sample_shuttingdown, spawn_teardown_log_sweep, TeardownSweepHandle,
 };
 use crate::events::{
-    SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_CONFLICT, EVENT_SYNC_PLAN_LIMIT,
+    SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_PLAN_LIMIT,
 };
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -367,13 +367,9 @@ pub(crate) fn handle_watch_stdout_line<R: tauri::Runtime>(
     if let SyncEvent::Progress(payload) = &event {
         crate::commands::activity::record_progress(app, payload);
     }
-    // Auto-sync hits the same divergences a manual run does, and the shell
-    // clears its conflict rows on `sync:all-complete` (emitted below), so the
-    // watcher forwards the per-file detail too. Without this the rows would
-    // only ever appear after a hand-pressed "Sync Now".
-    if let SyncEvent::Conflict(payload) = &event {
-        let _ = app.emit(EVENT_SYNC_CONFLICT, payload.clone());
-    }
+    // A `conflict` line is read (it refreshes the watchdog) but never
+    // forwarded: parked conflict copies have no desktop surface (owner
+    // decision 2026-10-13).
     // hard-stop-readiness US-019: the registry behind the status header and
     // the menu bar records the notice before the desktop window hears it.
     if let SyncEvent::PlanLimit(payload) = &event {
@@ -8241,11 +8237,12 @@ mod tests {
         assert!(!supervisor_tick_may_run(HostPhase::Daemon, true));
     }
 
-    /// Auto-sync is the path most conflicts arrive on — the user never
-    /// presses "Sync Now". The watcher must forward the runner's per-file
-    /// `conflict` line so the shell's conflict rows appear there too.
+    /// Owner decision 2026-10-13: a parked conflict copy has no desktop
+    /// surface. The watcher still reads the runner's `conflict` line (it is a
+    /// real protocol record and refreshes the watchdog) but never hands it to
+    /// a window.
     #[test]
-    fn handle_watch_stdout_line_emits_a_per_file_conflict_event() {
+    fn handle_watch_stdout_line_never_forwards_a_conflict_line_to_the_window() {
         use std::sync::Arc;
         use tauri::Listener;
 
@@ -8255,13 +8252,10 @@ mod tests {
         let totals = Mutex::new(RunTotals::default());
         let phase = Mutex::new(WatcherPhaseContext::default());
 
-        let seen = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let seen = Arc::new(Mutex::new(0usize));
         let seen_w = seen.clone();
-        handle.listen(EVENT_SYNC_CONFLICT, move |event| {
-            seen_w
-                .lock()
-                .unwrap()
-                .push(serde_json::from_str(event.payload()).unwrap());
+        handle.listen("sync:conflict", move |_| {
+            *seen_w.lock().unwrap() += 1;
         });
 
         let line = r#"{"type":"conflict","company":"indigo","path":"knowledge/readme.md","direction":"pull","resolution":"keep"}"#;
@@ -8274,9 +8268,7 @@ mod tests {
         ));
         std::thread::sleep(std::time::Duration::from_millis(30));
 
-        let seen = seen.lock().unwrap();
-        assert_eq!(seen.len(), 1);
-        assert_eq!(seen[0]["path"], "knowledge/readme.md");
+        assert_eq!(*seen.lock().unwrap(), 0);
     }
 
     #[test]

@@ -16,6 +16,7 @@ import {
   connectionGrantBody,
   failure,
   integrationAppRefBody,
+  integrationOAuthStartBody,
   normalizeReplyThreadValue,
   normalizeNotificationsFeed,
   ok,
@@ -34,6 +35,7 @@ import {
 } from "../adapter.js";
 import { TAURI_CAPABILITIES, type Capability } from "../capabilities.js";
 import { WEB_PATHS } from "../web/index.js";
+import { claudeLaunchArgs } from "./claude-launch.js";
 import { parseBadgesPayload } from "../badges.js";
 import { localBotSettingsArgs } from "./local-bot-settings.js";
 import { withCreateAgentsAdmins } from "./provision-refusal.js";
@@ -619,6 +621,16 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       this.hqProJson("POST", AGENT_PATHS.reauth(agentUid), { brain }),
     submitClaudeLoginCode: (agentUid, code) =>
       this.hqProJson("POST", AGENT_PATHS.loginCode(agentUid), { code }),
+    disconnectSlack: (uid) => this.hqProRequestWithStatus("DELETE", AGENT_PATHS.slackChannel(uid)),
+    connectEmail: (uid) => this.hqProRequestWithStatus("POST", AGENT_PATHS.emailChannel(uid), {}),
+    disconnectEmail: (uid) => this.hqProRequestWithStatus("DELETE", AGENT_PATHS.emailChannel(uid)),
+    updateEmailAddress: (uid, localPart) => this.hqProRequestWithStatus("PATCH", AGENT_PATHS.emailAddress(uid), { localPart }),
+    channelStatus: (uid, channel) => this.hqProRequestWithStatus("GET", AGENT_PATHS.channelStatus(uid, channel)),
+    channelContacts: (uid, channel) => this.hqProRequestWithStatus("GET", AGENT_PATHS.channelContacts(uid, channel)),
+    addChannelContact: (uid, channel, personUid) => this.hqProRequestWithStatus("POST", AGENT_PATHS.channelContacts(uid, channel), { personUid }),
+    removeChannelContact: (uid, channel, personUid) => this.hqProRequestWithStatus("DELETE", AGENT_PATHS.channelContacts(uid, channel, personUid)),
+    connectTelegram: async (uid, input) => withoutSecret(await this.hqProRequestWithStatus<Json>("POST", AGENT_PATHS.telegramChannel(uid), input), "token" in input ? input.token : ""),
+    disconnectTelegram: (uid) => this.hqProRequestWithStatus("DELETE", AGENT_PATHS.telegramChannel(uid)),
     attachSlack: (agentUid) =>
       this.hqProPostWithStatus(AGENT_PATHS.slackChannel(agentUid), { ...SLACK_ATTACH_BODY }),
     // The token goes in the body only. The path names the bot, nothing else.
@@ -664,9 +676,15 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       this.hqProJson("POST", INTEGRATION_PATHS.revokeAccess, connectionGrantBody(input)),
     catalogSearch: (companyUid, query, limit) =>
       this.hqProRequestWithStatus("GET", INTEGRATION_PATHS.catalog(companyUid, query, limit)),
-    // No redirectUri: the server's default lands on the console's callback.
+    // redirectUri only when the caller passes one; without it the server's
+    // default lands on the console's callback.
     startOAuth: (input) =>
-      this.hqProPostWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationAppRefBody(input)),
+      this.hqProPostWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationOAuthStartBody(input)),
+    // The API base comes from the native side, the same one hq_pro_fetch uses.
+    oauthCallbackUrl: async () => {
+      const base = await this.call<string>("hq_pro_api_base");
+      return base.ok ? ok(`${base.value}${INTEGRATION_PATHS.oauthCallback}`) : base;
+    },
     // The key goes in the body only, and is taken out of any failure's text.
     install: async (input) =>
       withoutSecret(await this.hqProPostWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ""),
@@ -692,6 +710,15 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     getActivity: (slug) => this.call("get_activity", { slug }),
     ensureHomeChannel: (companyUid) =>
       this.hqProJson("POST", `/v1/companies/${companyUid}/home-channel`),
+    createBillingPortalSession: (companyUid) =>
+      this.hqProJson("POST", WEB_PATHS.companyBillingPortal(), { companyUid }),
+    createBillingCheckoutSession: (companyUid) =>
+      this.hqProJson("POST", WEB_PATHS.companyBillingCheckout(), { companyUid }),
+    getBillingSummary: (companyUid) =>
+      this.hqProJson("GET", WEB_PATHS.companyBillingSummary(companyUid)),
+    getUsageStatement: (companyUid) =>
+      this.hqProJson("GET", WEB_PATHS.companyUsageStatement(companyUid)),
+    getPricing: () => this.hqProJson("GET", WEB_PATHS.pricing),
     getFirstWeekReturnNudge: (companyUid) =>
       this.hqProJson("GET", WEB_PATHS.firstWeekReturnNudge(companyUid)),
   };
@@ -783,7 +810,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     openClaudeCodeLink: (url) => this.call("open_claude_code_link", { url }),
     openCodexDeepLink: (url) => this.call("open_codex_deep_link", { url }),
     openFileInClaude: (path) => this.call("open_file_in_claude", { path }),
-    launchClaudeCode: (path) => this.call("launch_claude_code", { path }),
+    launchClaudeCode: (path, opts) =>
+      this.call("launch_claude_code", claudeLaunchArgs(path, opts)),
     launchCodexWorkspace: (path, prompt) =>
       this.call("launch_codex_workspace", { path, prompt: prompt ?? null }),
     launchCliInTerminal: (args) =>

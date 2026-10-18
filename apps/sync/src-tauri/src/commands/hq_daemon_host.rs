@@ -8,7 +8,7 @@
 //! it exits; the daemon runs sync, mesh, bots, search indexing and updates.
 //! Until the choice is made neither side starts, so the two never overlap.
 //!
-//! The app's per-pass work (journal, conflict and plan-limit notices, client
+//! The app's per-pass work (journal, plan-limit notices, client
 //! health, git mirror, Recent Changes) is driven from hq-cloud's
 //! `sync-last-pass.json` through the same handler the watch runner's stdout
 //! feeds (see `sync_progress_watch`).
@@ -372,8 +372,13 @@ pub fn daemon_mode_active() -> bool {
     current_phase() == HostPhase::Daemon
 }
 
-pub fn daemon_sync_now_args() -> Vec<&'static str> {
-    vec!["daemon", "sync", "now", "--json"]
+pub fn daemon_sync_now_args(company_slug: Option<&str>) -> Vec<&str> {
+    let mut args = vec!["daemon", "sync", "now"];
+    if let Some(company_slug) = company_slug {
+        args.extend(["--company", company_slug]);
+    }
+    args.push("--json");
+    args
 }
 
 pub(crate) fn daemon_sync_now_for_phase<F>(
@@ -382,17 +387,12 @@ pub(crate) fn daemon_sync_now_for_phase<F>(
     request: F,
 ) -> Option<Result<String, String>>
 where
-    F: FnOnce() -> Result<(), String>,
+    F: FnOnce(Option<&str>) -> Result<(), String>,
 {
     if phase != HostPhase::Daemon {
         return None;
     }
-    if company_slug.is_some() {
-        return Some(Err(
-            "Company-specific Sync Now is unavailable while HQ daemon owns sync.".to_string(),
-        ));
-    }
-    Some(request().map(|_| "hq-daemon-sync".to_string()))
+    Some(request(company_slug).map(|_| "hq-daemon-sync".to_string()))
 }
 
 pub fn daemon_sync_pause_args(pause: bool) -> Vec<&'static str> {
@@ -514,6 +514,13 @@ pub(crate) fn request_daemon_instant_sync_enabled(enabled: bool) -> Result<(), S
 
 /// Run one daemon control and keep transport details in the local log.
 pub fn run_daemon_sync_command(args: &[&str]) -> Result<String, String> {
+    run_daemon_sync_command_with_pass_request_source(args, None)
+}
+
+fn run_daemon_sync_command_with_pass_request_source(
+    args: &[&str],
+    pass_request_source: Option<&str>,
+) -> Result<String, String> {
     #[cfg(test)]
     if TEST_DAEMON_COMMANDS_ENABLED.load(Ordering::Acquire) {
         TEST_DAEMON_COMMANDS
@@ -550,10 +557,15 @@ pub fn run_daemon_sync_command(args: &[&str]) -> Result<String, String> {
         return Ok("Services enabled".to_string());
     }
     let hq = local_hq().ok_or_else(|| HQ_CLI_MISSING_MESSAGE.to_string())?;
-    let output = hq_desktop_core::paths::spawn_command(&hq, args)
+    let mut command = hq_desktop_core::paths::spawn_command(&hq, args);
+    command
         .env("PATH", hq_desktop_core::paths::child_path())
         .env("HQ_NO_UPDATE_CHECK", "1")
-        .stdin(Stdio::null())
+        .stdin(Stdio::null());
+    if let Some(pass_request_source) = pass_request_source {
+        command.env("HQ_SYNC_PASS_REQUEST_SOURCE", pass_request_source);
+    }
+    let output = command
         .output()
         .map_err(|error| {
             log(
@@ -575,6 +587,12 @@ pub fn run_daemon_sync_command(args: &[&str]) -> Result<String, String> {
     }
     let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
     log(LOG_TAG, &format!("daemon sync control failed: {detail}"));
+    // The caller needs this specific CLI parse error to make one backwards-
+    // compatible unscoped retry. All other command errors remain normalized
+    // before they can reach the UI.
+    if is_unknown_company_option(&detail) {
+        return Err(detail);
+    }
     Err(daemon_sync_command_error(&detail).to_string())
 }
 
@@ -591,292 +609,6 @@ pub(crate) async fn run_daemon_sync_command_blocking(args: Vec<String>) -> Resul
         );
         "HQ daemon could not complete that action. Tap to retry.".to_string()
     })?
-}
-
-#[derive(serde::Deserialize)]
-struct ConflictNoticeFile {
-    schema: u8,
-    notices: Vec<serde_json::Value>,
-}
-
-#[tauri::command]
-pub fn get_pending_conflict_notices() -> Result<Vec<serde_json::Value>, String> {
-    let state_dir = conflict_notice_state_dir()?;
-    read_pending_conflict_notices_from_state_dir(&state_dir)
-}
-
-fn read_pending_conflict_notices_from_state_dir(
-    state_dir: &Path,
-) -> Result<Vec<serde_json::Value>, String> {
-    let notices_path = state_dir.join("conflict-notices.json");
-    let notices: ConflictNoticeFile = match std::fs::read_to_string(&notices_path) {
-        Ok(raw) => match serde_json::from_str(&raw) {
-            Ok(notices) => notices,
-            Err(error) => {
-                log(
-                    LOG_TAG,
-                    &format!(
-                        "conflict notice file could not be parsed; treating as empty: {error}"
-                    ),
-                );
-                return Ok(Vec::new());
-            }
-        },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(_) => return Err("Conflict notices could not be read.".to_string()),
-    };
-    if notices.schema != 1 {
-        log(
-            LOG_TAG,
-            &format!(
-                "conflict notice schema {} is unsupported; treating as empty",
-                notices.schema
-            ),
-        );
-        return Ok(Vec::new());
-    }
-    let acks_path = state_dir.join("conflict-notice-acks.jsonl");
-    let mut acknowledged = std::collections::HashSet::new();
-    match std::fs::read_to_string(acks_path) {
-        Ok(raw) => {
-            let (ids, malformed_lines) = parse_conflict_notice_ack_ids(&raw);
-            acknowledged = ids;
-            if malformed_lines > 0 {
-                log(
-                    LOG_TAG,
-                    &format!(
-                        "skipped {malformed_lines} malformed conflict acknowledgement line(s)"
-                    ),
-                );
-            }
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            log(
-                LOG_TAG,
-                &format!("conflict acknowledgement file could not be read: {error}"),
-            );
-        }
-    }
-    Ok(notices
-        .notices
-        .into_iter()
-        .filter(|notice| {
-            notice
-                .get("id")
-                .and_then(|value| value.as_str())
-                .is_some_and(|id| !acknowledged.contains(id))
-        })
-        .collect())
-}
-
-fn parse_conflict_notice_ack_ids(raw: &str) -> (std::collections::HashSet<String>, usize) {
-    let mut ids = std::collections::HashSet::new();
-    let mut malformed_lines = 0;
-    for line in raw.lines() {
-        if line.is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<serde_json::Value>(line) {
-            Ok(row) => match row.get("id").and_then(|value| value.as_str()) {
-                Some(id)
-                    if id.len() == 64
-                        && id
-                            .bytes()
-                            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-                        && row
-                            .get("acknowledgedAt")
-                            .and_then(|value| value.as_str())
-                            .is_some() =>
-                {
-                    ids.insert(id.to_string());
-                }
-                None => malformed_lines += 1,
-                Some(_) => malformed_lines += 1,
-            },
-            Err(_) => malformed_lines += 1,
-        }
-    }
-    (ids, malformed_lines)
-}
-
-fn conflict_notice_state_dir() -> Result<PathBuf, String> {
-    if let Some(dir) = std::env::var_os("HQ_STATE_DIR").filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(dir));
-    }
-    let home = hq_desktop_core::paths::home_dir()
-        .ok_or_else(|| "HQ state directory could not be resolved.".to_string())?;
-    Ok(home.join(".hq"))
-}
-
-/// Announce a new batch of parked conflict copies once through the OS
-/// notification path. Runs on every change to the pending list; the batch
-/// bookkeeping and the preference gate (`systemNotifications` and the
-/// only-when-unfocused rule) live in `hq_desktop_core::conflict_notify`.
-/// A click opens the desktop window on the conflict Review list.
-pub(crate) fn notify_new_conflict_batch(app: &AppHandle, notices: &[serde_json::Value]) {
-    use hq_desktop_core::conflict_notify::{
-        decide_conflict_notification, ConflictNotifyDecision, CONFLICT_NOTIFY_KIND,
-    };
-    let Ok(state_dir) = conflict_notice_state_dir() else {
-        return;
-    };
-    let decision = decide_conflict_notification(&state_dir, notices, || {
-        let focused = crate::commands::notifications::app_is_focused(app);
-        hq_desktop_core::native_notify::should_native_notify(CONFLICT_NOTIFY_KIND, focused)
-    });
-    let notification = match decision {
-        ConflictNotifyDecision::NoNewBatch => return,
-        ConflictNotifyDecision::Suppressed => {
-            log(
-                LOG_TAG,
-                &format!(
-                    "CONFLICT_NOTIFY_SUPPRESSED {} notice(s) (settings gate)",
-                    notices.len()
-                ),
-            );
-            return;
-        }
-        ConflictNotifyDecision::Send(notification) => notification,
-    };
-    log(
-        LOG_TAG,
-        &format!("CONFLICT_NOTIFY_SEND {} notice(s)", notices.len()),
-    );
-
-    #[cfg(target_os = "macos")]
-    {
-        std::thread::spawn(move || {
-            crate::commands::un_notify::deliver_message(
-                &notification.title,
-                &notification.body,
-                CONFLICT_NOTIFY_KIND,
-                &crate::commands::un_notify::MessageUserInfo {
-                    route: hq_desktop_core::conflict_notify::CONFLICT_REVIEW_ROUTE.to_string(),
-                    ..Default::default()
-                },
-            );
-        });
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        use tauri_plugin_notification::NotificationExt;
-        if let Err(error) = app
-            .notification()
-            .builder()
-            .title(&notification.title)
-            .body(&notification.body)
-            .show()
-        {
-            log(LOG_TAG, &format!("CONFLICT_NOTIFY_SEND_FAILED err={error}"));
-        }
-    }
-}
-
-#[tauri::command]
-pub async fn acknowledge_conflict_notice(app: AppHandle, notice_id: String) -> Result<(), String> {
-    run_daemon_sync_command_blocking(vec![
-        "daemon".into(),
-        "sync".into(),
-        "conflicts".into(),
-        "acknowledge".into(),
-        notice_id,
-    ])
-    .await?;
-    let pending = get_pending_conflict_notices()?;
-    app.emit_to(
-        crate::commands::desktop_alt::WINDOW_LABEL,
-        "sync:conflict-notices",
-        &pending,
-    )
-    .map_err(|_| "Conflict notice update could not be delivered.".to_string())
-}
-
-fn safe_conflict_backup_path(value: &str) -> bool {
-    let normalized = value.replace('\\', "/");
-    normalized.starts_with(".hq/conflict-backups/")
-        && Path::new(&normalized)
-            .components()
-            .all(|part| matches!(part, std::path::Component::Normal(_)))
-}
-
-fn conflict_backup_root(
-    hq_root: &Path,
-    scope: &str,
-    company_slug: Option<&str>,
-) -> Result<PathBuf, String> {
-    match scope {
-        "personal" if company_slug.is_none() => Ok(hq_root.to_path_buf()),
-        "company" => {
-            let slug = company_slug
-                .filter(|value| {
-                    value
-                        .chars()
-                        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
-                })
-                .ok_or_else(|| "Conflict company is invalid.".to_string())?;
-            match hq_desktop_core::workspaces::read_manifest(hq_root) {
-                hq_desktop_core::workspaces::ManifestLoad::Present(entries) => Ok(entries
-                    .into_iter()
-                    .find(|entry| entry.slug == slug)
-                    .map(|entry| entry.path)
-                    .unwrap_or_else(|| hq_root.join("companies").join(slug))),
-                hq_desktop_core::workspaces::ManifestLoad::Absent => {
-                    Ok(hq_root.join("companies").join(slug))
-                }
-                hq_desktop_core::workspaces::ManifestLoad::Failed(error) => {
-                    log(
-                        LOG_TAG,
-                        &format!("could not resolve conflict company from manifest: {error}"),
-                    );
-                    Err("Company folder could not be resolved.".to_string())
-                }
-            }
-        }
-        _ => Err("Conflict scope is invalid.".to_string()),
-    }
-}
-
-#[tauri::command]
-pub fn show_conflict_backup(
-    scope: String,
-    company_slug: Option<String>,
-    backup_path: String,
-) -> Result<(), String> {
-    if !safe_conflict_backup_path(&backup_path) {
-        return Err("Conflict backup path is invalid.".to_string());
-    }
-    let hq_root = PathBuf::from(hq_desktop_core::daemon::resolve_hq_folder_path()?);
-    let company_root = conflict_backup_root(&hq_root, &scope, company_slug.as_deref())?;
-    let candidate = company_root.join(&backup_path);
-    let root = company_root
-        .canonicalize()
-        .map_err(|_| "Company folder could not be found.".to_string())?;
-    let backup = candidate
-        .canonicalize()
-        .map_err(|_| "Conflict backup could not be found.".to_string())?;
-    if !backup.starts_with(&root) || !backup.is_file() {
-        return Err("Conflict backup could not be found.".to_string());
-    }
-    #[cfg(target_os = "macos")]
-    let result = std::process::Command::new("open")
-        .arg("-R")
-        .arg(&backup)
-        .status();
-    #[cfg(target_os = "windows")]
-    let result = std::process::Command::new("explorer")
-        .arg(format!("/select,{}", backup.display()))
-        .status();
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let result = std::process::Command::new("xdg-open")
-        .arg(backup.parent().unwrap_or(&root))
-        .status();
-    result
-        .map_err(|_| "File manager could not open the conflict backup.".to_string())?
-        .success()
-        .then_some(())
-        .ok_or_else(|| "File manager could not open the conflict backup.".to_string())
 }
 
 pub fn parse_daemon_sync_mode(
@@ -1580,12 +1312,33 @@ pub fn set_daemon_sync(enable: bool) -> Result<(), String> {
     Ok(())
 }
 
-pub fn request_daemon_sync_now() -> Result<(), String> {
-    let output = run_daemon_sync_command(&daemon_sync_now_args())?;
+fn is_unknown_company_option(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("unknown option") && error.contains("--company")
+}
+
+fn request_daemon_sync_now_with<F>(company_slug: Option<&str>, mut request: F) -> Result<(), String>
+where
+    F: FnMut(&[&str]) -> Result<String, String>,
+{
+    let args = daemon_sync_now_args(company_slug);
+    let output = match request(&args) {
+        Err(error) if company_slug.is_some() && is_unknown_company_option(&error) => {
+            let unscoped_args = daemon_sync_now_args(None);
+            request(&unscoped_args)?
+        }
+        result => result?,
+    };
     if let Some(message) = daemon_sync_action_error(&output) {
         return Err(message.to_string());
     }
     Ok(())
+}
+
+pub fn request_daemon_sync_now(company_slug: Option<&str>) -> Result<(), String> {
+    request_daemon_sync_now_with(company_slug, |args| {
+        run_daemon_sync_command_with_pass_request_source(args, Some("desktop"))
+    })
 }
 
 /// `start_daemon` / `stop_daemon` in daemon mode.
@@ -1789,76 +1542,8 @@ mod tests {
     use tauri::Listener;
     use tempfile::TempDir;
 
-    #[test]
-    fn conflict_backup_root_uses_manifest_path_and_personal_scope() {
-        let hq = TempDir::new().unwrap();
-        fs::create_dir_all(hq.path().join("companies")).unwrap();
-        fs::write(
-            hq.path().join("companies/manifest.yaml"),
-            "companies:\n  indigo:\n    name: Indigo\n    path: workspace/indigo-data\n",
-        )
-        .unwrap();
-
-        assert_eq!(
-            conflict_backup_root(hq.path(), "company", Some("indigo")).unwrap(),
-            hq.path().join("workspace/indigo-data"),
-        );
-        assert_eq!(
-            conflict_backup_root(hq.path(), "personal", None).unwrap(),
-            hq.path(),
-        );
-    }
-
-    use crate::events::{EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_CONFLICT};
+    use crate::events::EVENT_SYNC_ALL_COMPLETE;
     use hq_desktop_core::hq_daemon::{DaemonState, LastPass};
-
-    #[test]
-    fn pending_conflict_ack_parser_keeps_valid_rows_after_a_torn_line() {
-        let valid_id = "a".repeat(64);
-        let raw = format!(
-            "{{\"id\":\"torn\n{{\"id\":\"{valid_id}\",\"acknowledgedAt\":\"2026-10-08T15:00:00Z\"}}\n"
-        );
-
-        let (ids, malformed_lines) = parse_conflict_notice_ack_ids(&raw);
-
-        assert_eq!(malformed_lines, 1);
-        assert!(ids.contains(&valid_id));
-    }
-
-    #[test]
-    fn pending_conflict_notices_survive_a_torn_final_ack_line() {
-        let state_dir = TempDir::new().unwrap();
-        let notice_id = "b".repeat(64);
-        std::fs::write(
-            state_dir.path().join("conflict-notices.json"),
-            serde_json::json!({
-                "schema": 1,
-                "notices": [{"id": notice_id.clone(), "companySlug": "indigo", "relativePath": "boards/a.md"}]
-            }).to_string(),
-        ).unwrap();
-        std::fs::write(
-            state_dir.path().join("conflict-notice-acks.jsonl"),
-            "{\"id\":\"torn",
-        )
-        .unwrap();
-
-        let pending = read_pending_conflict_notices_from_state_dir(state_dir.path()).unwrap();
-
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0]["id"], notice_id);
-    }
-
-    #[test]
-    fn corrupt_conflict_notice_file_is_treated_as_empty() {
-        let state_dir = TempDir::new().unwrap();
-        std::fs::write(state_dir.path().join("conflict-notices.json"), "{torn").unwrap();
-
-        assert!(
-            read_pending_conflict_notices_from_state_dir(state_dir.path())
-                .unwrap()
-                .is_empty()
-        );
-    }
 
     // ── which services run ───────────────────────────────────────────────
 
@@ -2067,8 +1752,12 @@ mod tests {
     #[test]
     fn desktop_sync_controls_use_daemon_sync_commands() {
         assert_eq!(
-            daemon_sync_now_args(),
+            daemon_sync_now_args(None),
             vec!["daemon", "sync", "now", "--json"]
+        );
+        assert_eq!(
+            daemon_sync_now_args(Some("acme")),
+            vec!["daemon", "sync", "now", "--company", "acme", "--json"]
         );
         assert_eq!(
             daemon_sync_pause_args(true),
@@ -2271,20 +1960,46 @@ mod tests {
     }
 
     #[test]
-    fn daemon_sync_now_rejects_company_scope_instead_of_syncing_every_company() {
-        let mut request_called = false;
-        let result = daemon_sync_now_for_phase(HostPhase::Daemon, Some("acme"), || {
-            request_called = true;
-            request_daemon_sync_now()
+    fn daemon_sync_now_passes_company_scope_to_the_daemon_command() {
+        let mut requested_scope = None;
+        let result = daemon_sync_now_for_phase(HostPhase::Daemon, Some("acme"), |scope| {
+            requested_scope = scope.map(str::to_string);
+            Ok(())
         });
 
-        assert_eq!(
-            result,
-            Some(Err(
-                "Company-specific Sync Now is unavailable while HQ daemon owns sync.".to_string()
-            ))
-        );
-        assert!(!request_called);
+        assert_eq!(result, Some(Ok("hq-daemon-sync".to_string())));
+        assert_eq!(requested_scope.as_deref(), Some("acme"));
+    }
+
+    #[test]
+    fn scoped_daemon_sync_retries_once_without_company_for_an_older_cli() {
+        let mut calls = Vec::new();
+        let result = request_daemon_sync_now_with(Some("acme"), |args| {
+            calls.push(args.iter().map(|value| (*value).to_string()).collect::<Vec<_>>());
+            if calls.len() == 1 {
+                Err("error: unknown option '--company'".to_string())
+            } else {
+                Ok(r#"{"accepted":true,"action":"restart-sync-runner","daemonRunning":true}"#.to_string())
+            }
+        });
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls, vec![
+            vec!["daemon", "sync", "now", "--company", "acme", "--json"],
+            vec!["daemon", "sync", "now", "--json"],
+        ]);
+    }
+
+    #[test]
+    fn unscoped_daemon_sync_uses_one_unchanged_command() {
+        let mut calls = Vec::new();
+        let result = request_daemon_sync_now_with(None, |args| {
+            calls.push(args.iter().map(|value| (*value).to_string()).collect::<Vec<_>>());
+            Ok(r#"{"accepted":true,"action":"restart-sync-runner","daemonRunning":true}"#.to_string())
+        });
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls, vec![vec!["daemon", "sync", "now", "--json"]]);
     }
 
     #[test]
@@ -2435,9 +2150,9 @@ mod tests {
         let handle = app.handle().clone();
         let mut sync_now_called = false;
         assert_eq!(
-            daemon_sync_now_for_phase(HostPhase::Daemon, None, || {
+            daemon_sync_now_for_phase(HostPhase::Daemon, None, |_| {
                 sync_now_called = true;
-                request_daemon_sync_now()
+                request_daemon_sync_now(None)
             }),
             Some(Ok("hq-daemon-sync".to_string()))
         );
@@ -2545,19 +2260,18 @@ mod tests {
 
     #[test]
     fn a_finished_pass_emits_the_same_events_the_watch_runner_output_did() {
+        // Owner decision 2026-10-13: a conflict line in the pass is read but
+        // never forwarded to a window; the rest of the pass still is.
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
         let hq_folder = TempDir::new().unwrap();
 
-        let conflicts = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let conflicts = Arc::new(Mutex::new(0usize));
         let completes = Arc::new(Mutex::new(0usize));
         {
             let conflicts = conflicts.clone();
-            handle.listen(EVENT_SYNC_CONFLICT, move |event| {
-                conflicts
-                    .lock()
-                    .unwrap()
-                    .push(serde_json::from_str(event.payload()).unwrap());
+            handle.listen("sync:conflict", move |_| {
+                *conflicts.lock().unwrap() += 1;
             });
             let completes = completes.clone();
             handle.listen(EVENT_SYNC_ALL_COMPLETE, move |_| {
@@ -2575,9 +2289,7 @@ mod tests {
         replay_last_pass(&handle, hq_folder.path().to_str().unwrap(), &pass);
         std::thread::sleep(std::time::Duration::from_millis(30));
 
-        let conflicts = conflicts.lock().unwrap();
-        assert_eq!(conflicts.len(), 1);
-        assert_eq!(conflicts[0]["path"], "knowledge/readme.md");
+        assert_eq!(*conflicts.lock().unwrap(), 0);
         assert_eq!(*completes.lock().unwrap(), 1);
     }
 }

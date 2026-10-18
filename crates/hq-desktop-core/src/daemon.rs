@@ -4111,9 +4111,9 @@ mod tests {
         let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let git_dir = home.join("Library/Application Support/Indigo HQ/toolchain/git");
+        let git_dir = crate::paths::managed_toolchain_dir_in(&home).join("git");
         write_unix_exec(&git_dir.join("bin/git"));
-        write_unix_exec(&home.join("Library/Application Support/Indigo HQ/toolchain/git-shim/git"));
+        write_unix_exec(&crate::paths::managed_toolchain_dir_in(&home).join("git-shim/git"));
         std::fs::create_dir_all(home.join(".hq")).unwrap();
         std::fs::write(
             home.join(".hq/menubar.json"),
@@ -4170,10 +4170,10 @@ mod tests {
         let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let git_dir = home.join("Library/Application Support/Indigo HQ/toolchain/git");
+        let git_dir = crate::paths::managed_toolchain_dir_in(&home).join("git");
         let foreign = tmp.path().join("foreign").join("git");
         write_unix_exec(&git_dir.join("bin/git"));
-        write_unix_exec(&home.join("Library/Application Support/Indigo HQ/toolchain/git-shim/git"));
+        write_unix_exec(&crate::paths::managed_toolchain_dir_in(&home).join("git-shim/git"));
         write_unix_exec(&foreign);
         let settings = home.join("HQ/.claude/settings.local.json");
         std::fs::create_dir_all(settings.parent().unwrap()).unwrap();

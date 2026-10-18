@@ -391,7 +391,7 @@
       if (link.kind === 'missing' || link.kind === 'invalid') {
         console.error('Meeting plan refusal did not include a valid server upgrade URL.');
       }
-      flashToast('warn', 'Meeting bot recording requires a paid plan for this account.', {
+      flashToast('warn', "Meeting bot recording is not on this account's plan yet.", {
         ...(link.kind === 'available' ? { upgradeUrl: link.url } : {}),
       });
       return;

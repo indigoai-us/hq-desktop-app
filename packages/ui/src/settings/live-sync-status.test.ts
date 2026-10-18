@@ -205,7 +205,10 @@ describe("readLiveSyncStatus daemon projection", () => {
 });
 
 describe("syncStateFromLive", () => {
-  it("surfaces conflicts and otherwise stays idle", () => {
+  it("never turns parked conflicts into a sync state", () => {
+    // Owner decision 2026-10-13: a parked conflict copy has no desktop
+    // surface. The journal still counts them for diagnostics; the state the
+    // shell draws from must not change.
     expect(
       syncStateFromLive({
         lastSyncAt: null,
@@ -219,7 +222,7 @@ describe("syncStateFromLive", () => {
         daemonErrors: [],
         daemonLogPath: null,
       }),
-    ).toBe("conflict");
+    ).toBe("idle");
     expect(
       syncStateFromLive({
         lastSyncAt: "2026-08-16T12:00:00Z",

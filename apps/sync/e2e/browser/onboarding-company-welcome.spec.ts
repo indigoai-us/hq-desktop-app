@@ -38,6 +38,20 @@ async function next(page: Page): Promise<void> {
   await page.locator('.scene.on button.btn-primary', { hasText: 'Next' }).first().click();
 }
 
+/**
+ * Resize the window the way a person does: the new size, then the frame that
+ * shows it. Layout reads see the new size at once, but the panel's vertical
+ * position is set by the window "resize" handler, which the browser only runs
+ * in its next rendering frame. Measuring in between read the old window's
+ * position about 40% of the time (the later steps were usually slow enough to
+ * hide it), so wait for two frames: by the second one the resize handler has
+ * run.
+ */
+async function resizeWindow(page: Page, size: { width: number; height: number }): Promise<void> {
+  await page.setViewportSize(size);
+  await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+}
+
 async function rootScroll(page: Page): Promise<{ top: number; left: number }> {
   return page.evaluate(() => {
     const root = document.querySelector('.hq-welcome')!;
@@ -53,6 +67,26 @@ async function expectCentred(page: Page, parts: string[], bottomSelector: string
   for (const selector of parts) {
     expect(Math.abs(centre(await box(page, selector)) - axis), selector).toBeLessThanOrEqual(1);
   }
+  // Measure the panel once its own screen change (the new screen rising in) has
+  // finished; mid-entrance its box still carries the rise transform. Endless
+  // decorative animations (spinners, caret) are left out, and a change that does
+  // not settle in 5s fails the test.
+  await page.locator('.scene.on .panel-block').evaluate(async (el) => {
+    const settling = el
+      .getAnimations({ subtree: true })
+      .filter((animation) => Number.isFinite(animation.effect?.getComputedTiming().endTime ?? Infinity))
+      // A cancelled animation (its screen was replaced) rejects; it is settled too.
+      .map((animation) => animation.finished.catch(() => undefined));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('panel screen change did not finish within 5s')), 5000);
+    });
+    try {
+      await Promise.race([Promise.all(settling), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  });
   const panel = await box(page, '.scene.on .panel-block');
   const last = await box(page, bottomSelector);
   expect(panel.top).toBeGreaterThanOrEqual(0);
@@ -61,11 +95,16 @@ async function expectCentred(page: Page, parts: string[], bottomSelector: string
   expect(Math.abs(panel.top - (viewport.height - panel.bottom))).toBeLessThanOrEqual(2);
 }
 
-async function buttonGroupCentre(page: Page, actions: string): Promise<number> {
-  const buttons = page.locator(`${actions} .btn`);
-  const first = (await buttons.first().boundingBox())!;
-  const last = (await buttons.last().boundingBox())!;
-  return (first.x + last.x + last.width) / 2;
+/** Horizontal centre of every button in the group ("Skip for now" stacks under the main button). */
+async function buttonCentres(page: Page, actions: string): Promise<number[]> {
+  const centres = await page.locator(`${actions} .btn`).evaluateAll((buttons) =>
+    buttons.map((button) => {
+      const rect = button.getBoundingClientRect();
+      return rect.left + rect.width / 2;
+    }),
+  );
+  expect(centres.length).toBeGreaterThanOrEqual(2);
+  return centres;
 }
 
 test('the company step comes after the setup explainers and before "Open HQ Desktop"', async ({ page }) => {
@@ -82,7 +121,11 @@ test('the company step comes after the setup explainers and before "Open HQ Desk
 
   await page.getByTestId('onboarding-company-field-name').fill('Acme Studio');
   await page.getByTestId('onboarding-company-create').click();
-  await page.getByTestId('onboarding-plan-choose-starter').click();
+  await page.getByTestId('onboarding-plan-choose-free').click();
+  // The step's own invite and "<company> is ready." screens come next, still before the ready scene.
+  await page.getByTestId('onboarding-company-invite-skip').click();
+  await expect(page.locator('.scene[data-scene="ready"]')).not.toHaveClass(/\bon\b/);
+  await page.getByTestId('onboarding-company-ready-continue').click();
   // Then the ready screen, with the install still running.
   await expect(page.locator('.scene[data-scene="ready"]')).toHaveClass(/\bon\b/);
 });
@@ -97,14 +140,30 @@ for (const size of SIZES) {
 
     await expectCentred(
       page,
-      ['.scene.on [data-scene-heading]', '.scene.on .follow-on > .body', 'form.company-form'],
+      ['.scene.on [data-scene-heading]', '.scene.on .follow-on .cs-pane > .body', 'form.cs-form'],
       '[data-testid="onboarding-company-actions"]',
     );
-    expect(Math.abs((await buttonGroupCentre(page, '[data-testid="onboarding-company-actions"]')) - size.width / 2)).toBeLessThanOrEqual(1);
-    // The line under the heading is no wider than the form column.
-    expect((await box(page, '.scene.on .follow-on > .body')).width).toBeLessThanOrEqual(
-      (await box(page, 'form.company-form')).width,
-    );
+    for (const buttonCentre of await buttonCentres(page, '[data-testid="onboarding-company-actions"]')) {
+      expect(Math.abs(buttonCentre - size.width / 2)).toBeLessThanOrEqual(1);
+    }
+    // The line under the heading is centred with the heading and stays on one line
+    // (it may be wider than the form column by design).
+    // The name screen's own pane (the fading "Getting things ready…" pane may still be in the DOM).
+    const subtitle = await page.locator('.scene.on .follow-on .cs-pane:has(form.cs-form) > .body').evaluate((el) => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const rects = [...range.getClientRects()].filter((rect) => rect.width > 0);
+      const text = range.getBoundingClientRect();
+      const pane = el.closest('.cs-pane')!.getBoundingClientRect();
+      return {
+        lineTops: new Set(rects.map((rect) => Math.round(rect.top))).size,
+        centre: text.left + text.width / 2,
+        paneCentre: pane.left + pane.width / 2,
+      };
+    });
+    expect(subtitle.lineTops).toBe(1);
+    expect(Math.abs(subtitle.centre - subtitle.paneCentre)).toBeLessThanOrEqual(1);
+    expect(Math.abs(subtitle.centre - centre(await box(page, '.scene.on [data-scene-heading]')))).toBeLessThanOrEqual(1);
 
     // Typing and moving through the fields (focus, caret) leaves it in place.
     await page.getByTestId('onboarding-company-field-name').fill('Acme Studio');
@@ -112,30 +171,24 @@ for (const size of SIZES) {
     await page.keyboard.press('Tab');
     await expectCentred(
       page,
-      ['.scene.on [data-scene-heading]', 'form.company-form'],
+      ['.scene.on [data-scene-heading]', 'form.cs-form'],
       '[data-testid="onboarding-company-actions"]',
     );
 
     await page.getByTestId('onboarding-company-create').click();
-    await page.getByTestId('onboarding-plan-choose-starter').waitFor();
+    await page.getByTestId('onboarding-plan-choose-free').waitFor();
     await expectCentred(
       page,
-      ['.scene.on [data-scene-heading]', '.scene.on .follow-on > .body', '[data-testid="onboarding-plan-options"]', '.plan-custom'],
+      ['.scene.on [data-scene-heading]', '.scene.on .follow-on .cs-pane > .body', '[data-testid="onboarding-plan-options"]', '.plan-custom'],
       '.plan-custom',
     );
-    // Both cards side by side at the welcome window's sizes, equal in height,
-    // with their CTAs on one baseline.
-    const starter = await box(page, '[data-testid="onboarding-plan-card-starter"]');
-    const workforce = await box(page, '[data-testid="onboarding-plan-card-workforce"]');
-    expect(starter.right).toBeLessThan(workforce.left);
-    expect(Math.abs(starter.top - workforce.top)).toBeLessThanOrEqual(1);
-    expect(Math.abs(starter.bottom - workforce.bottom)).toBeLessThanOrEqual(1);
-    expect(
-      Math.abs(
-        (await box(page, '[data-testid="onboarding-plan-choose-starter"]')).top -
-          (await box(page, '[data-testid="onboarding-plan-choose-workforce"]')).top,
-      ),
-    ).toBeLessThanOrEqual(1);
+    // One usage card, centred, with its action inside the card.
+    const card = await box(page, '[data-testid="onboarding-plan-card-free"]');
+    expect(Math.abs(centre(card) - size.width / 2)).toBeLessThanOrEqual(1);
+    const cta = await box(page, '[data-testid="onboarding-plan-choose-free"]');
+    expect(cta.top).toBeGreaterThan(card.top);
+    expect(cta.bottom).toBeLessThan(card.bottom);
+    await expect(page.locator('.plan-card')).toHaveCount(1);
     // It fits: the scene does not scroll.
     expect(
       await page.evaluate(() => {
@@ -153,32 +206,28 @@ test('stays centred when the welcome window is resized on the company step', asy
   await next(page);
   await page.getByTestId('onboarding-company-field-name').waitFor();
   for (const size of [SIZES[1]!, SIZES[2]!, SIZES[0]!]) {
-    await page.setViewportSize(size);
-    await expect
-      .poll(async () => Math.abs(centre(await box(page, 'form.company-form')) - size.width / 2))
-      .toBeLessThanOrEqual(1);
+    await resizeWindow(page, size);
     await expectCentred(
       page,
-      ['.scene.on [data-scene-heading]', '.scene.on .follow-on > .body', 'form.company-form'],
+      ['.scene.on [data-scene-heading]', '.scene.on .follow-on .cs-pane > .body', 'form.cs-form'],
       '[data-testid="onboarding-company-actions"]',
     );
   }
 });
 
-test('stacks the plan cards in a narrow window and scrolls to the second one', async ({ page }) => {
+test('fits the usage card in a narrow window and scrolls to its action', async ({ page }) => {
   await page.setViewportSize({ width: 560, height: 720 });
   await page.goto(flow);
   await next(page);
   await next(page);
   await page.getByTestId('onboarding-company-field-name').fill('Acme Studio');
   await page.getByTestId('onboarding-company-create').click();
-  await page.getByTestId('onboarding-plan-choose-starter').waitFor();
-  const starter = await box(page, '[data-testid="onboarding-plan-card-starter"]');
-  const workforce = await box(page, '[data-testid="onboarding-plan-card-workforce"]');
-  expect(workforce.top).toBeGreaterThan(starter.bottom);
-  expect(Math.abs(centre(starter) - 280)).toBeLessThanOrEqual(1);
-  // The Workforce CTA is below the fold: the scene scrolls to it, the root does not.
-  await page.getByTestId('onboarding-plan-choose-workforce').scrollIntoViewIfNeeded();
-  await expect(page.getByTestId('onboarding-plan-choose-workforce')).toBeInViewport();
+  await page.getByTestId('onboarding-plan-choose-free').waitFor();
+  const card = await box(page, '[data-testid="onboarding-plan-card-free"]');
+  expect(Math.abs(centre(card) - 280)).toBeLessThanOrEqual(1);
+  expect(card.right - card.left).toBeLessThanOrEqual(400);
+  // If the action is below the fold, the scene scrolls to it; the root does not.
+  await page.getByTestId('onboarding-plan-choose-free').scrollIntoViewIfNeeded();
+  await expect(page.getByTestId('onboarding-plan-choose-free')).toBeInViewport();
   expect(await rootScroll(page)).toEqual({ top: 0, left: 0 });
 });

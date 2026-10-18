@@ -8,10 +8,9 @@
  * (`openCreateCompanyDraft` / `submitCreateCompany` from `@hq/ui`). There is no
  * second create route to drift from.
  *
- * Workforce is a Stripe checkout minted by `POST /v1/billing/checkout/team`
- * with the strict `hq-desktop://setup` return pair hq-pro accepts
- * (src/billing/team-return-url.ts). The success URL lands on the existing
- * deep-link handler, which opens #setup for the company.
+ * New companies get usage pricing (one card, `plan-cards.ts`). There is no
+ * checkout in this step: Workforce closed to new signups on 2026-10-16, and
+ * existing companies keep their plans without passing through here.
  *
  * Everything here is headless so each branch is unit-testable.
  */
@@ -500,88 +499,8 @@ export function parseInviteEmails(raw: string): { valid: string[]; invalid: stri
   return { valid, invalid };
 }
 
-export type FirstRunPlan = 'starter' | 'workforce';
-
-/** The return pair hq-pro's team checkout accepts for the desktop app. */
-export function workforceCheckoutBody(companyUid: string): Record<string, string> {
-  return {
-    companyUid,
-    successUrl: `hq-desktop://setup?checkout=done&company=${encodeURIComponent(companyUid)}`,
-    cancelUrl: 'hq-desktop://setup',
-  };
-}
-
-/** Only a Stripe-hosted https checkout page is opened in the browser. */
-export function approvedCheckoutUrl(raw: unknown): string | null {
-  if (typeof raw !== 'string') return null;
-  try {
-    const url = new URL(raw);
-    if (url.protocol !== 'https:') return null;
-    if (url.hostname !== 'checkout.stripe.com') return null;
-    return url.toString();
-  } catch {
-    return null;
-  }
-}
-
-export type WorkforceCheckoutResult =
-  | { ok: true; url: string }
-  | { ok: false; reason: string };
-
-export const CHECKOUT_DISABLED_REASON =
-  'Workforce sign-up is paused right now. You can start on Starter and upgrade later from #setup.';
-export const CHECKOUT_FAILED_REASON =
-  'HQ could not open checkout. Try again, or start on Starter and upgrade later from #setup.';
-
-/** Mint the Workforce checkout for a company the person owns. */
-export async function startWorkforceCheckout(
-  invoke: InvokeFn,
-  companyUid: string,
-): Promise<WorkforceCheckoutResult> {
-  let response: unknown;
-  try {
-    response = await invoke<unknown>('hq_pro_fetch', {
-      url: '/v1/billing/checkout/team',
-      method: 'POST',
-      body: JSON.stringify(workforceCheckoutBody(companyUid)),
-    });
-  } catch (error) {
-    console.warn('onboarding: workforce checkout request failed', error);
-    return { ok: false, reason: CHECKOUT_FAILED_REASON };
-  }
-  if (!isRecord(response) || typeof response.status !== 'number') {
-    console.warn('onboarding: workforce checkout returned an invalid response');
-    return { ok: false, reason: CHECKOUT_FAILED_REASON };
-  }
-  let payload: unknown = null;
-  try {
-    payload = typeof response.body === 'string' && response.body.trim() ? JSON.parse(response.body) : null;
-  } catch (error) {
-    console.warn('onboarding: workforce checkout body was not JSON', error);
-  }
-  if (response.status === 503 && isRecord(payload) && payload.code === 'team_signup_disabled') {
-    return { ok: false, reason: CHECKOUT_DISABLED_REASON };
-  }
-  if (response.status < 200 || response.status >= 300) {
-    console.warn(`onboarding: workforce checkout failed with status ${response.status}`);
-    return { ok: false, reason: CHECKOUT_FAILED_REASON };
-  }
-  const url = approvedCheckoutUrl(isRecord(payload) ? payload.url : null);
-  if (!url) {
-    console.warn('onboarding: workforce checkout answered without a Stripe url');
-    return { ok: false, reason: CHECKOUT_FAILED_REASON };
-  }
-  return { ok: true, url };
-}
-
-/**
- * Read the `messages:open-setup` event the deep-link handler emits for
- * `hq-desktop://setup?...`. True only for a finished checkout of THIS company.
- */
-export function isCheckoutReturnFor(payload: unknown, companyUid: string): boolean {
-  if (!isRecord(payload)) return false;
-  return payload.companyUid === companyUid && payload.checkout === 'done';
-}
+/** The plan a new company starts on: usage pricing ("Sign up free"). */
+export type FirstRunPlan = 'free';
 
 /** Longest handle HQ derives when the server publishes no rule. */
 const COMPANY_HANDLE_MAX_LENGTH = 40;

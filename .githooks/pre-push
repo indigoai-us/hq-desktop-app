@@ -27,7 +27,9 @@
 #
 # This hook refuses a release tag push when another release tag was pushed
 # within the cooldown window (2 hours by default), and refuses to push more than
-# one release tag in a single push. Everything else — branches, tag deletions,
+# one release tag in a single push. It also refuses a vX.Y.Z-beta.N or
+# vX.Y.Z-alpha.N tag whose commit is on main (see "alpha/beta prereleases must
+# not be cut from main" below). Everything else — branches, tag deletions,
 # non-`v` tags — passes straight through.
 #
 # Install: `git config core.hooksPath .githooks` (the root `prepare` script runs
@@ -59,6 +61,7 @@ REMOTE_URL="${2:-}"
 # be a false positive, and recording it would suppress a real release for the
 # length of the window.
 tags=()
+shas=()
 while read -r _local_ref local_sha remote_ref _remote_sha; do
   [ -n "${remote_ref:-}" ] || continue
 
@@ -75,6 +78,7 @@ while read -r _local_ref local_sha remote_ref _remote_sha; do
   esac
 
   tags+=("${remote_ref#refs/tags/}")
+  shas+=("$local_sha")
 done
 
 if [ ${#tags[@]} -eq 0 ]; then
@@ -118,6 +122,81 @@ pacing_explanation() {
   echo "superseded within the hour, and leaves no window in which a release"
   echo "can be observed before the next one lands on top of it."
 }
+
+# --- alpha/beta prereleases must not be cut from main --------------------------
+
+# Owner rule: a vX.Y.Z-beta.N or vX.Y.Z-alpha.N tag ships from a release/*
+# branch, never from main. The accepted shape is a "chore(release):
+# vX.Y.Z-beta.N" commit created on top of main and pushed to
+# release/vX.Y.Z-beta.N; that commit is not on main, so it passes. A tag whose
+# commit is an ancestor of, or equal to, main is refused here before the push
+# starts a release. The Release workflow's "Enforce release branch policy"
+# step enforces the same rule in CI. Stable vX.Y.Z and shelltest tags are not
+# checked here.
+#
+# This check is separate from the cooldown, and HQ_ALLOW_TAG_PUSH does not skip
+# it. The only local override is the explicit, logged
+#   HQ_ALLOW_PRERELEASE_FROM_MAIN=1 git push origin vX.Y.Z-beta.N
+# and CI still rejects the tag afterwards.
+prerelease_main_ref() {
+  # Fresh main from the destination when reachable (FETCH_HEAD), else the
+  # last-fetched remote-tracking ref. Prints nothing when neither exists.
+  if [ -n "${REMOTE_NAME:-}" ] &&
+    git fetch --quiet --no-tags "$REMOTE_NAME" refs/heads/main >/dev/null 2>&1; then
+    git rev-parse --verify --quiet 'FETCH_HEAD^{commit}' && return 0
+  fi
+  if [ -n "${REMOTE_NAME:-}" ]; then
+    git rev-parse --verify --quiet "refs/remotes/${REMOTE_NAME}/main^{commit}" && return 0
+  fi
+  return 0
+}
+
+main_commit=""
+main_resolved="false"
+for i in "${!tags[@]}"; do
+  tag="${tags[$i]}"
+  if ! [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-(alpha|beta)\.(0|[1-9][0-9]*)$ ]]; then
+    continue
+  fi
+  channel="${BASH_REMATCH[4]}"
+
+  if [ "$main_resolved" = "false" ]; then
+    main_commit="$(prerelease_main_ref || true)"
+    main_resolved="true"
+  fi
+  if [ -z "$main_commit" ]; then
+    echo "pre-push: could not resolve ${REMOTE_NAME:-origin}/main; skipping the local $channel-off-main check for $tag (CI still enforces it)." >&2
+    continue
+  fi
+
+  tag_commit="$(git rev-parse --verify --quiet "${shas[$i]}^{commit}" || true)"
+  if [ -z "$tag_commit" ]; then
+    continue
+  fi
+
+  if git merge-base --is-ancestor "$tag_commit" "$main_commit"; then
+    if [ "${HQ_ALLOW_PRERELEASE_FROM_MAIN:-}" = "1" ]; then
+      echo "pre-push: HQ_ALLOW_PRERELEASE_FROM_MAIN=1 — allowing $channel tag $tag on main commit $tag_commit. The Release workflow will still reject it." >&2
+      continue
+    fi
+    {
+      echo
+      echo "BLOCKED: refusing to push $channel tag $tag"
+      echo
+      echo "Its commit $tag_commit is on ${REMOTE_NAME:-origin}/main. alpha and beta"
+      echo "releases must be cut from a release branch, never from main."
+      echo
+      echo "Create a release commit on top of main, push it to a release branch,"
+      echo "and tag that commit:"
+      echo
+      echo "  git commit --allow-empty -m \"chore(release): $tag\""
+      echo "  git push ${REMOTE_NAME:-origin} HEAD:refs/heads/release/$tag"
+      echo "  git tag -a $tag -m $tag && git push ${REMOTE_NAME:-origin} $tag"
+      echo
+    } >&2
+    exit 1
+  fi
+done
 
 if [ "${HQ_ALLOW_TAG_PUSH:-}" = "1" ]; then
   echo "pre-push: HQ_ALLOW_TAG_PUSH=1 — release tag cooldown bypassed." >&2

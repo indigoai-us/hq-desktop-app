@@ -864,6 +864,11 @@ export interface NormalizeOptions {
   dmDots?: ReadonlySet<string> | readonly string[];
   /** Recently opened pair threads — stay conversations after mark-read. */
   recentDms?: ReadonlySet<string> | readonly string[];
+  /**
+   * The signed-in person. Their own DM row (notes to self) is always shown,
+   * reads "<name> (you)", and never carries an unread badge or dot.
+   */
+  selfUid?: string | null;
   now?: number;
   /** Local project id → title so provisioned "Project slug hash" rows read as names. */
   projectTitles?: ReadonlyArray<{
@@ -1011,8 +1016,10 @@ export function normalizeDm(
   const pinnedIds = toIdSet(options.pinnedIds);
   const dmDots = toIdSet(options.dmDots);
   const id = `dm:${contact.personUid}`;
+  const isSelfRow = isSelfContact(contact, options);
   // Never the raw prs_/agt_ id: name, else email, else "Unknown person".
-  const title = dmPeerLabel(contact, options.peerDirectory);
+  const baseTitle = dmPeerLabel(contact, options.peerDirectory);
+  const title = isSelfRow ? `${baseTitle} (you)` : baseTitle;
   const activity = Math.max(
     parseActivityMs(contact.lastMessageAt),
     parseActivityMs(contact.lastActivityAt),
@@ -1021,7 +1028,7 @@ export function normalizeDm(
   const humanMessageActivity = parseActivityMs(contact.lastHumanMessageAt);
   const localDot =
     contact.activityDot === true || dmDots.has(contact.personUid);
-  const serverUnread = contact.unreadCount;
+  const serverUnread = isSelfRow ? 0 : contact.unreadCount;
   const hasServerUnread =
     typeof serverUnread === "number" && Number.isFinite(serverUnread);
   const unreadCount =
@@ -1030,11 +1037,13 @@ export function normalizeDm(
       : undefined;
   // Numeric badge replaces the server-driven dot; local dots still apply when
   // the server says zero (or when the field is absent and only local dots exist).
-  const unreadDot = hasServerUnread
-    ? (serverUnread as number) > 0
-      ? false
-      : localDot
-    : localDot;
+  const unreadDot = isSelfRow
+    ? false
+    : hasServerUnread
+      ? (serverUnread as number) > 0
+        ? false
+        : localDot
+      : localDot;
 
   return {
     id,
@@ -1107,10 +1116,36 @@ export function clearPairUnread(
  * returns as contacts) must NOT render as sidebar conversation rows — contacts
  * without a conversation belong only in the new-message typeahead (G3).
  */
+function isSelfContact(contact: DmContactInput, options: NormalizeOptions): boolean {
+  const selfUid = options.selfUid?.trim();
+  return Boolean(selfUid) && contact.personUid === selfUid;
+}
+
+/**
+ * Contacts plus the signed-in person, so notes to self always have a row even
+ * before the first note. The server roster never lists the caller.
+ */
+export function withSelfContact(
+  contacts: DmContactInput[],
+  self: { uid: string; email?: string | null; displayName?: string | null } | null | undefined,
+): DmContactInput[] {
+  const uid = self?.uid?.trim();
+  if (!uid || contacts.some((c) => c.personUid === uid)) return contacts;
+  return [
+    ...contacts,
+    {
+      personUid: uid,
+      email: self?.email ?? null,
+      displayName: self?.displayName ?? null,
+    } as DmContactInput,
+  ];
+}
+
 export function contactHasConversation(
   contact: DmContactInput,
   options: NormalizeOptions = {},
 ): boolean {
+  if (isSelfContact(contact, options)) return true;
   const activity = Math.max(
     parseActivityMs(contact.lastMessageAt),
     parseActivityMs(contact.lastActivityAt),

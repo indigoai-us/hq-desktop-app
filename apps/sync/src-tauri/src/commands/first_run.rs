@@ -35,7 +35,7 @@ use crate::util::{logfile::log, paths};
 pub use hq_desktop_core::first_run::{
     classify_from_map, classify_from_menubar_read, ensure_install_attempt_id, merge_menubar_flags,
     notice_shown_in_map, read_menubar, read_menubar_obj, should_autoshow_on_launch,
-    should_sync_after_first_run_handoff, LaunchKind, MenubarRead,
+    should_open_desktop_on_launch, should_sync_after_first_run_handoff, LaunchKind, MenubarRead,
 };
 
 pub const FIRST_LAUNCH_SYNC_FLAG: &str = "desktop.first-launch-sync-v1";
@@ -165,6 +165,10 @@ pub fn classify_launch<R: Runtime>(app: &AppHandle<R>) -> LaunchKind {
         // first-run write against an unknown settings location.
         Err(_) => LaunchKind::Normal,
     };
+    // Publish the same verdict process-wide so the HQ root resolver treats a
+    // fresh install as onboarding even after `ensure_machine_id` writes
+    // `machineId` later in `.setup()`.
+    hq_desktop_core::first_run::set_setup_launch_kind(kind);
     // Mint and persist the stable join key before onboarding can emit setup or
     // sign-in telemetry, but only when the initial read proved that settings
     // are absent or valid JSON. A damaged existing settings file must remain

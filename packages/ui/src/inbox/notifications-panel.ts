@@ -63,6 +63,43 @@ export function itemsForTab(
   return [...items];
 }
 
+/**
+ * Newest first, the order a reader expects from a notifications list
+ * (feedback_f36dfa85). The cached feed is a merge of the NOTIF store, the DM
+ * inbox, shares and local rows, each in its own source order, so the panel
+ * cannot rely on the order it is handed. Rows with no timestamp (a pending
+ * company invite with no `invitedAt`) are current state rather than history, so
+ * they stay at the top. Ties keep their incoming order.
+ */
+/**
+ * Unread badge-earned rows first, newest of them on top; every other row
+ * keeps its order. Owner, 2026-10-16: a badge's row stays pinned at the top
+ * of the bell list until its card is revealed, which marks it read and drops
+ * it back into time order.
+ */
+export function pinUnrevealedBadges(
+  items: readonly NotificationItem[],
+): NotificationItem[] {
+  const pinned = (item: NotificationItem): boolean =>
+    item.displayKind === "badge_earned" && item.status === "unread";
+  return [...items.filter(pinned), ...items.filter((item) => !pinned(item))];
+}
+
+export function newestFirst(
+  items: readonly NotificationItem[],
+): NotificationItem[] {
+  const key = (item: NotificationItem): number =>
+    Number.isFinite(item.createdAtMs) && item.createdAtMs > 0
+      ? item.createdAtMs
+      : Number.POSITIVE_INFINITY;
+  return items
+    .map((item, index) => ({ item, index, at: key(item) }))
+    .sort((a, b) =>
+      a.at === b.at ? a.index - b.index : a.at > b.at ? -1 : 1,
+    )
+    .map((entry) => entry.item);
+}
+
 export function withoutItem(
   items: readonly NotificationItem[],
   id: string,

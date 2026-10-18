@@ -26,9 +26,10 @@ const BOTS: EarnedBadge[] = [
 ];
 
 /**
- * The honors badges (OG, Captain, Patient Zero, Core Builder) go to named
- * people, not to a random mix: here, only Corey Epstein has them, so the
- * Legendary tier and Core Builder's fourth level can be seen in the harness.
+ * The honors badges (OG, Captain, Patient Zero, Core Builder, Ecom Rat) go
+ * to named people, not to a random mix: here, Corey Epstein has the first
+ * four and Spencer has Ecom Rat, so the Legendary tier and Core Builder's
+ * fourth level can be seen in the harness.
  */
 const HONORS: Readonly<Record<string, EarnedBadge[]>> = {
   'corey epstein': [
@@ -37,6 +38,7 @@ const HONORS: Readonly<Record<string, EarnedBadge[]>> = {
     { id: 'patientzero', tier: 'L', earnedAt: '2026-10-11' },
     { id: 'corebuilder', tier: 'L', earnedAt: '2026-10-11' },
   ],
+  spencer: [{ id: 'ecomrat', tier: 'L', earnedAt: '2026-10-16' }],
 };
 
 function hash(s: string): number {
@@ -107,7 +109,8 @@ export const sampleProgress: BadgeProgressSource = () => PROGRESS;
  * `?view=shell&earn=<badge>[:<tier>]` raises the "You earned" notice a few
  * seconds after the shell loads, to demo the card reveal (Gold carries
  * "Reveal card"). Several are comma separated, e.g.
- * `earn=founding,poweruser:3,liftoff:1`. Harness only: no production code
+ * `earn=founding,poweruser:3,liftoff:1`, and raise one notice for all of
+ * them ("You earned 3 badges", "Reveal cards"). Harness only: no production code
  * path raises this notice.
  *
  * Tiers follow production's rules (`earnedTier`, as the loader reads

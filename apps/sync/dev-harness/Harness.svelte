@@ -1,5 +1,6 @@
 <script lang="ts">
   import SignInPrompt from '../src/components/SignInPrompt.svelte';
+  import { loadBrief } from '@hq/ui';
   import BannerNotification from '../src/components/BannerNotification.svelte';
   import HqWorkWorkShell from '../src/desktop-alt/HqWorkWorkShell.svelte';
   import { createLifecycleInvoke, resolveLifecycleOptions } from './lifecycle-scenario';
@@ -10,6 +11,7 @@
   import MeetingsWindow from '../src/components/MeetingsWindow.svelte';
   import MeetingsShot from './MeetingsShot.svelte';
   import AccessShot from './AccessShot.svelte';
+  import BriefDesignStage from './BriefDesignStage.svelte';
   import ActivityShot from './ActivityShot.svelte';
   import RepairCardsShot from './RepairCardsShot.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
@@ -17,11 +19,14 @@
   import CinematicIntro from '../src/components/onboarding/CinematicIntro.svelte';
   import CompanyStepPreview from './CompanyStepPreview.svelte';
   import YourAppsPreview from './YourAppsPreview.svelte';
+  import MarketplaceDetailPreview from './MarketplaceDetailPreview.svelte';
   import { WIZARD_STEPS } from '../src/lib/onboarding-wizard';
   import GlobalErrorBoundary from '../src/components/GlobalErrorBoundary.svelte';
   import GlobalErrorPreview from './GlobalErrorPreview.svelte';
   import ForwardPickerPreview from './ForwardPickerPreview.svelte';
+  import ShareStackPreview from './ShareStackPreview.svelte';
   import ClaudeCodePreview from './ClaudeCodePreview.svelte';
+  import BotManagementPreview from './BotManagementPreview.svelte';
   import BotIntegrationsPreview from './BotIntegrationsPreview.svelte';
   import Conversation, {
     type ConversationMessage,
@@ -151,6 +156,21 @@
   // view is the production HQ Work shell; size that one to ~1180x760.
   const params = new URLSearchParams(window.location.search);
   const view = params.get('view') ?? 'shell';
+  // A real brief run read from the HQ root (see the brief view below).
+  const briefRun = params.get('briefRun');
+  const briefCompanies = [
+    {
+      uid: params.get('briefCompanyUid') ?? 'cmp_indigo',
+      slug: params.get('briefCompany') ?? 'indigo',
+      label: params.get('briefCompany') ?? 'indigo',
+    },
+  ];
+  const briefRunSource = {
+    async readHqFile(rel: string): Promise<string | null> {
+      const res = await fetch(`/__hq/${rel}`);
+      return res.ok ? res.text() : null;
+    },
+  };
   if (params.get('tour') === '1') {
     try {
       localStorage.removeItem(TOUR_SEEN_STORAGE_KEY);
@@ -239,7 +259,26 @@
   }
 </script>
 
-{#if view === 'bot-integrations'}
+{#if view === 'brief-design'}
+  <!-- The rendered brief on fixture days, for design iteration. ?day=oct8|oct11|quiet|catchup|everything -->
+  <BriefDesignStage />
+{:else if view === 'brief'}
+  <!-- Daily Brief page alone. Add ?briefDemo=1|fail or ?briefDemoAt=0..1|fail
+       (packages/ui/src/brief/brief-demo.ts) to review the Create brief sunrise. -->
+  <!-- ?briefRun=<run_id>&briefCompany=<slug>&briefCompanyUid=<uid> renders a real
+       run from the HQ root (HQ_ROOT, default ~/hq) through the app's loader. -->
+  {#await loadBrief() then mod}
+    <div style="height:100vh;overflow:auto">
+      {#if briefRun}
+        <mod.BriefRunsPage adapter={{}} companies={briefCompanies} source={briefRunSource} initialRunId={briefRun} />
+      {:else}
+        <mod.BriefRunsPage adapter={{}} companies={[]} source={null} />
+      {/if}
+    </div>
+  {/await}
+{:else if view === 'bot-management'}
+  <BotManagementPreview />
+{:else if view === 'bot-integrations'}
   <!-- Per-bot integration control section (BotIntegrationsSection) rendered in
        both Agent profile and Local bot card contexts. Flag
        desktop.bot-integration-control-v1 is forced on via the flagEnabled
@@ -303,17 +342,21 @@
   <OnboardingWizard
     initialStep={onboardingStep}
     mode={params.get('mode') === 'replay' ? 'replay' : 'onboarding'}
+    wallpaper={params.get('wallpaper') === 'none' ? null : (params.get('wallpaper') ?? '/wallpaper.jpg')}
     onfinish={() => {}}
   />
+{:else if view === 'marketplace'}
+  <!-- The Marketplace tab with the detail panel open on one listing. -->
+  <MarketplaceDetailPreview />
 {:else if view === 'your-apps'}
   <!-- The first-run "Your apps" step on its own (integration auto-detect MVP):
        ?state=auto|connect|connecting|failed|docs|member|empty|many. Size the
        viewport to ~1200x800 or ~960x600. In-page answers only. -->
   <YourAppsPreview />
 {:else if view === 'onboarding-company'}
-  <!-- The first-run company step on its own: ?scenario=create|join|paused.
+  <!-- The first-run company step on its own: ?scenario=create|join|existing.
        Size the viewport to ~800x900 like the welcome window. -->
-  <div class="fake-desktop" aria-hidden="true"></div>
+  <div class="fake-desktop fake-desktop--image" aria-hidden="true"></div>
   <CompanyStepPreview />
 {:else if view === 'global-error'}
   <!-- Deterministic render failure for visually verifying the production
@@ -337,6 +380,8 @@
 {:else if view === 'signin'}
   <!-- Auth-expiry recovery at the native 320x440 `main` window size. -->
   <SignInPrompt reauth={true} />
+{:else if view === 'share-stack'}
+  <ShareStackPreview />
 {:else if view === 'conversation'}
   <!-- The shared messaging Conversation (desktop Messages styling via
        data-window='messages'). Hover a bubble to reveal the copy-message
@@ -356,6 +401,11 @@
 {/if}
 
 <style>
+  .fake-desktop--image {
+    background: #000 url('/wallpaper.jpg') center / cover no-repeat !important;
+    filter: blur(34px) saturate(125%) brightness(0.45) !important;
+    transform: scale(1.08);
+  }
   .fake-desktop {
     position: fixed;
     inset: 0;

@@ -17,10 +17,11 @@
     block?: boolean;
     pill?: boolean;
     active?: boolean;
+    floating?: boolean;
     onchange?: (value: string) => void;
   }
 
-  let { value = $bindable(), options, label, prefix = "", disabled = false, testid, block = false, pill = false, active = false, onchange }: Props = $props();
+  let { value = $bindable(), options, label, prefix = "", disabled = false, testid, block = false, pill = false, active = false, floating = false, onchange }: Props = $props();
 
   const current = $derived(options.find((o) => o.value === value)?.label ?? "");
 </script>
@@ -37,6 +38,7 @@
     block,
     pill,
     active,
+    floating,
     onchange: (next: string) => {
       value = next;
       onchange?.(next);

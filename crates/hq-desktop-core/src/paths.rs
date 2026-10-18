@@ -47,13 +47,41 @@ const EXE_EXT: &str = ".exe";
 const EXE_EXT: &str = "";
 
 /// Returns the managed HQ toolchain directory installed by hq-installer.
-/// Path mirrors `managed_toolchain_dir_in()` in hq-installer's `deps.rs`.
+///
+/// macOS: `~/Library/Application Support/Indigo HQ/toolchain` (mirrors
+/// `managed_toolchain_dir_in()` in hq-installer's `deps.rs`).
+/// Linux: `$XDG_DATA_HOME/IndigoHQ/toolchain` when `XDG_DATA_HOME` is set to
+/// an absolute path, else `~/.local/share/IndigoHQ/toolchain` (the XDG
+/// default; the macOS `Library` layout is never used on Linux).
 #[cfg(not(target_os = "windows"))]
 fn managed_toolchain_dir(home: &Path) -> PathBuf {
-    home.join("Library")
-        .join("Application Support")
-        .join("Indigo HQ")
-        .join("toolchain")
+    managed_toolchain_dir_with(home, std::env::var_os("XDG_DATA_HOME").as_deref())
+}
+
+/// The managed HQ toolchain directory for an explicit home directory.
+#[cfg(not(target_os = "windows"))]
+pub fn managed_toolchain_dir_in(home: &Path) -> PathBuf {
+    managed_toolchain_dir(home)
+}
+
+/// [`managed_toolchain_dir`] with the `XDG_DATA_HOME` value passed in. Test
+/// fixtures pass `None` so they never resolve the process's real data home.
+#[cfg(not(target_os = "windows"))]
+pub fn managed_toolchain_dir_with(home: &Path, xdg_data_home: Option<&std::ffi::OsStr>) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        return home
+            .join("Library")
+            .join("Application Support")
+            .join("Indigo HQ")
+            .join("toolchain");
+    }
+    let data_home = match xdg_data_home {
+        Some(value) if !value.is_empty() && Path::new(value).is_absolute() => {
+            PathBuf::from(value)
+        }
+        _ => home.join(".local").join("share"),
+    };
+    data_home.join("IndigoHQ").join("toolchain")
 }
 
 /// Returns the canonical managed HQ toolchain directory installed by
@@ -500,8 +528,10 @@ pub fn hq_config_dir() -> Result<PathBuf, String> {
 /// Terminal.
 ///
 /// Resolution order:
-/// 1. Managed HQ toolchain (`~/Library/Application Support/Indigo HQ/toolchain/`)
-///    — npm-global/bin and node/bin directories installed by hq-installer
+/// 1. Managed HQ toolchain (`~/Library/Application Support/Indigo HQ/toolchain/`
+///    on macOS, `$XDG_DATA_HOME/IndigoHQ/toolchain/` or
+///    `~/.local/share/IndigoHQ/toolchain/` on Linux) — npm-global/bin and
+///    node/bin directories installed by hq-installer
 /// 2. `$HOME/.npm-global/bin/{name}` — user-level npm prefix (no-sudo installs)
 /// 3. `/opt/homebrew/bin/{name}` — Apple Silicon homebrew
 /// 4. `/usr/local/bin/{name}` — Intel homebrew / system-wide installs
@@ -1160,10 +1190,25 @@ pub fn managed_git_shim_dir_in(home: &Path) -> PathBuf {
     managed_toolchain_dir(home).join("git-shim")
 }
 
-/// Render the portable Git wrapper installed next to the managed toolchain.
+/// Render the portable Git wrapper installed next to the managed toolchain
+/// for `home`.
 #[cfg(not(target_os = "windows"))]
-fn managed_git_shim_script() -> String {
-    "#!/bin/sh\n# Indigo HQ managed toolchain — portable git wrapper (auto-generated)\nd=\"$HOME/Library/Application Support/Indigo HQ/toolchain/git\"\nexport GIT_EXEC_PATH=\"$d/libexec/git-core\"\nexport GIT_TEMPLATE_DIR=\"$d/share/git-core/templates\"\n[ -f /etc/ssl/cert.pem ] && export GIT_SSL_CAINFO=/etc/ssl/cert.pem\nexec \"$d/bin/git\" \"$@\"\n".to_string()
+fn managed_git_shim_script_in(home: &Path) -> String {
+    managed_git_shim_script_for(home, &managed_toolchain_dir(home))
+}
+
+/// Render the portable Git wrapper for an explicit toolchain root. A root
+/// under `home` is written as `$HOME/<relative>` so the wrapper follows the
+/// user's home at run time (today's macOS text); any other root is absolute.
+#[cfg(not(target_os = "windows"))]
+fn managed_git_shim_script_for(home: &Path, toolchain: &Path) -> String {
+    let git_dir = match toolchain.strip_prefix(home) {
+        Ok(relative) => format!("$HOME/{}", relative.join("git").display()),
+        Err(_) => toolchain.join("git").display().to_string(),
+    };
+    format!(
+        "#!/bin/sh\n# Indigo HQ managed toolchain — portable git wrapper (auto-generated)\nd=\"{git_dir}\"\nexport GIT_EXEC_PATH=\"$d/libexec/git-core\"\nexport GIT_TEMPLATE_DIR=\"$d/share/git-core/templates\"\n[ -f /etc/ssl/cert.pem ] && export GIT_SSL_CAINFO=/etc/ssl/cert.pem\nexec \"$d/bin/git\" \"$@\"\n"
+    )
 }
 
 /// Number of spawn attempts made while a freshly written binary is still busy.
@@ -1323,7 +1368,7 @@ pub fn ensure_managed_git_shim_in(home: &Path) -> Result<PathBuf, String> {
     let git_bin = managed_git_bin_in(home);
     let shim_dir = managed_git_shim_dir_in(home);
     let shim = shim_dir.join("git");
-    let script = managed_git_shim_script();
+    let script = managed_git_shim_script_in(home);
     if let Err(reason) = managed_git_health(&git_bin) {
         if std::fs::read_to_string(&shim).ok().as_deref() == Some(script.as_str()) {
             std::fs::remove_file(&shim).map_err(|error| {
@@ -2662,46 +2707,271 @@ pub fn deploy_prefs_json_path() -> Result<PathBuf, String> {
 ///    safety net for installs that didn't write the path back to menubar.json
 ///    (older installer flows).
 /// 4. ~/HQ default
+///
+/// Outside onboarding, a recorded path that is not a valid HQ root yields to a
+/// launchable discovered root (see [`resolve_hq_folder_from`]). While
+/// onboarding is in progress the recorded path always wins, because the wizard
+/// records the folder before it fills it.
 pub fn resolve_hq_folder(config_path: Option<&str>, menubar_override: Option<&str>) -> PathBuf {
-    // Priority 1: menubar.json override
-    if let Some(path) = menubar_override {
-        if !path.is_empty() {
-            return PathBuf::from(path);
+    let candidates = hq_discovery_candidates();
+    let home = home_dir();
+    let resolution = resolve_hq_folder_from(
+        config_path,
+        menubar_override,
+        onboarding_in_progress(),
+        &candidates,
+        home.as_deref(),
+    );
+    if let Some(warning) = &resolution.warning {
+        warn_recorded_root_overridden_once(warning);
+    }
+    resolution.folder
+}
+
+/// Result of [`resolve_hq_folder_from`]: the folder, plus the warning to log
+/// when a recorded path was overridden by a discovered root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HqFolderResolution {
+    pub folder: PathBuf,
+    pub warning: Option<String>,
+}
+
+/// Pure core of [`resolve_hq_folder`]: every input is passed in so the
+/// precedence is unit-testable on any OS.
+///
+/// * While `onboarding_in_progress`, the first non-empty recorded path wins
+///   unconditionally. The wizard records the folder before it is a valid HQ
+///   root and is about to fill it.
+/// * Otherwise the first recorded path that is a valid HQ root wins. When no
+///   recorded path is valid, the first launchable discovery candidate wins and
+///   the resolution carries a warning naming both paths. With no launchable
+///   candidate, the first recorded path is kept.
+/// * With nothing recorded: the first valid candidate, then `<home>/HQ`.
+pub fn resolve_hq_folder_from(
+    config_path: Option<&str>,
+    menubar_override: Option<&str>,
+    onboarding_in_progress: bool,
+    candidates: &[PathBuf],
+    home: Option<&Path>,
+) -> HqFolderResolution {
+    let recorded: Vec<PathBuf> = [menubar_override, config_path]
+        .into_iter()
+        .flatten()
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .collect();
+
+    if let Some(first) = recorded.first() {
+        if onboarding_in_progress {
+            return HqFolderResolution {
+                folder: first.clone(),
+                warning: None,
+            };
         }
-    }
-
-    // Priority 2: config.json hqFolderPath
-    if let Some(path) = config_path {
-        if !path.is_empty() {
-            return PathBuf::from(path);
+        if let Some(valid) = recorded.iter().find(|p| is_valid_hq_root(p)) {
+            return HqFolderResolution {
+                folder: valid.clone(),
+                warning: None,
+            };
         }
+        if let Some(found) = candidates.iter().find(|p| is_launchable_hq_root(p)) {
+            let warning = format!(
+                "recorded HQ folder {} is not a valid HQ root; using discovered HQ root {}",
+                first.display(),
+                found.display()
+            );
+            return HqFolderResolution {
+                folder: found.clone(),
+                warning: Some(warning),
+            };
+        }
+        return HqFolderResolution {
+            folder: first.clone(),
+            warning: None,
+        };
     }
 
-    // Priority 3: discover via core.yaml signature.
-    if let Some(found) = discover_hq_folder_via_core_yaml() {
-        return found;
+    if let Some(found) = candidates.iter().find(|p| is_valid_hq_root(p)) {
+        return HqFolderResolution {
+            folder: found.clone(),
+            warning: None,
+        };
     }
 
-    // Priority 4: ~/HQ default
-    home_dir().unwrap_or_else(|| PathBuf::from("/")).join("HQ")
+    HqFolderResolution {
+        folder: home.unwrap_or_else(|| Path::new("/")).join("HQ"),
+        warning: None,
+    }
+}
+
+/// Log the recorded-root override once per distinct message per process.
+/// `resolve_hq_folder` runs on many code paths; one line per pair of paths is
+/// enough to diagnose a stale `hqPath`.
+fn warn_recorded_root_overridden_once(warning: &str) {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static LOGGED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let logged = LOGGED.get_or_init(|| Mutex::new(HashSet::new()));
+    let first_time = logged
+        .lock()
+        .map(|mut set| set.insert(warning.to_string()))
+        .unwrap_or(true);
+    if first_time {
+        eprintln!("[hq-root] warning: {warning}");
+    }
+}
+
+/// Resumable onboarding install manifest under `~/.hq/`, written by the
+/// desktop app's install stages.
+const INSTALL_MANIFEST_FILE: &str = "install-manifest.json";
+
+/// True while onboarding may still be filling the recorded HQ folder.
+///
+/// `setup_kind` is the launch kind the app classified at `.setup()`, before
+/// `ensure_machine_id` wrote `machineId`. When it is
+/// [`LaunchKind::FirstRun`], onboarding is in progress until `menubar.json`
+/// has `firstRunCompleted: true`; a `machineId` written later this launch
+/// does not end it. Any other setup kind means first-run onboarding is not
+/// running. When `setup_kind` is `None` (CLI, tests), the live `menubar.json`
+/// is classified instead: only `FirstRun` (no `firstRunCompleted` and no
+/// `machineId`) counts, so an install that predates `firstRunCompleted`
+/// (`ExistingUpdate`) is not onboarding.
+///
+/// In every case, an install manifest that records a running or failed step
+/// without a completion marker (a re-run of the installer) also counts. The
+/// manifest rule mirrors the app's `manifest_indicates_install_in_progress`.
+///
+/// [`LaunchKind::FirstRun`]: crate::first_run::LaunchKind::FirstRun
+pub fn onboarding_in_progress_from(
+    setup_kind: Option<crate::first_run::LaunchKind>,
+    menubar: &serde_json::Map<String, serde_json::Value>,
+    install_manifest: Option<&serde_json::Value>,
+) -> bool {
+    use crate::first_run::{classify_from_map, LaunchKind};
+    let first_run_onboarding = match setup_kind {
+        Some(LaunchKind::FirstRun) => classify_from_map(menubar) != LaunchKind::Normal,
+        Some(LaunchKind::ExistingUpdate | LaunchKind::Normal) => false,
+        None => classify_from_map(menubar) == LaunchKind::FirstRun,
+    };
+    if first_run_onboarding {
+        return true;
+    }
+    let Some(manifest) = install_manifest else {
+        return false;
+    };
+    let completed = manifest.get("completedAt").is_some_and(|v| !v.is_null());
+    if completed {
+        return false;
+    }
+    manifest
+        .get("steps")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|steps| {
+            steps.values().any(|step| {
+                matches!(
+                    step.get("status").and_then(serde_json::Value::as_str),
+                    Some("running") | Some("failed")
+                )
+            })
+        })
+}
+
+/// [`onboarding_in_progress_from`] with the app's setup-time launch kind
+/// (unset outside the app) against `~/.hq/menubar.json` and
+/// `~/.hq/install-manifest.json`. Unreadable files read as empty.
+pub fn onboarding_in_progress() -> bool {
+    let menubar = menubar_json_path()
+        .map(|p| crate::first_run::read_menubar_obj(&p))
+        .unwrap_or_default();
+    let manifest = hq_config_dir()
+        .ok()
+        .and_then(|dir| std::fs::read_to_string(dir.join(INSTALL_MANIFEST_FILE)).ok())
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+    onboarding_in_progress_from(
+        crate::first_run::setup_launch_kind(),
+        &menubar,
+        manifest.as_ref(),
+    )
+}
+
+/// True iff `path` is an HQ root Claude Code can be launched into: an
+/// absolute folder with `companies/` and an HQ marker dir
+/// ([`crate::staging::looks_like_hq_root`]), a valid `core.yaml`
+/// ([`is_valid_hq_root`]), and `.claude/settings.json`.
+pub fn is_launchable_hq_root(path: &Path) -> bool {
+    crate::staging::looks_like_hq_root(path)
+        && is_valid_hq_root(path)
+        && path.join(".claude").join("settings.json").is_file()
+}
+
+/// First launchable HQ root among the discovery candidates, if any. Used by
+/// onboarding to adopt an existing root instead of creating a second one.
+pub fn discover_launchable_hq_root() -> Option<PathBuf> {
+    hq_discovery_candidates()
+        .into_iter()
+        .find(|p| is_launchable_hq_root(p))
 }
 
 /// Candidate parent paths the installer wizard typically uses (or that users
 /// commonly choose). First entry that contains a valid `core.yaml` wins.
 /// Order matters — most-likely first to avoid scanning the entire home dir.
 fn hq_discovery_candidates() -> Vec<PathBuf> {
-    let home = match home_dir() {
-        Some(h) => h,
-        None => return Vec::new(),
-    };
-    vec![
-        home.join("HQ"),
-        home.join("hq"),
-        home.join("Documents").join("HQ"),
-        home.join("Documents").join("hq"),
-        home.join("Desktop").join("HQ"),
-        home.join("Desktop").join("hq"),
-    ]
+    #[cfg(target_os = "windows")]
+    let (system_drive_root, local_app_data) = windows_discovery_roots();
+    #[cfg(not(target_os = "windows"))]
+    let (system_drive_root, local_app_data): (Option<PathBuf>, Option<PathBuf>) = (None, None);
+    hq_discovery_candidates_from(
+        home_dir().as_deref(),
+        system_drive_root.as_deref(),
+        local_app_data.as_deref(),
+    )
+}
+
+/// The system drive root (`SystemDrive`, e.g. `C:` -> `C:\`) and
+/// `%LOCALAPPDATA%`. Either is `None` when its variable is unset or empty;
+/// the drive letter is never assumed.
+#[cfg(target_os = "windows")]
+fn windows_discovery_roots() -> (Option<PathBuf>, Option<PathBuf>) {
+    let system_drive_root = std::env::var("SystemDrive")
+        .ok()
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty())
+        .map(|d| PathBuf::from(format!("{d}\\")));
+    let local_app_data = std::env::var_os("LOCALAPPDATA")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from);
+    (system_drive_root, local_app_data)
+}
+
+/// Pure candidate list. The home candidates come first. On Windows the
+/// wrapper also passes the system drive root (`<SystemDrive>\hq`, where
+/// installs outside the user profile land) and `%LOCALAPPDATA%`
+/// (`%LOCALAPPDATA%\hq`). `%LOCALAPPDATA%\hq` matches the desktop app's own
+/// install directory case-insensitively; it has no `companies/` or
+/// `core.yaml`, so the root predicates never adopt it.
+fn hq_discovery_candidates_from(
+    home: Option<&Path>,
+    system_drive_root: Option<&Path>,
+    local_app_data: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(home) = home {
+        candidates.extend([
+            home.join("HQ"),
+            home.join("hq"),
+            home.join("Documents").join("HQ"),
+            home.join("Documents").join("hq"),
+            home.join("Desktop").join("HQ"),
+            home.join("Desktop").join("hq"),
+        ]);
+    }
+    if let Some(root) = system_drive_root {
+        candidates.push(root.join("hq"));
+    }
+    if let Some(dir) = local_app_data {
+        candidates.push(dir.join("hq"));
+    }
+    candidates
 }
 
 /// True iff the candidate folder contains a `core.yaml` (canonical or
@@ -2770,6 +3040,20 @@ mod tests {
         std::fs::write(claude.join(file), body).unwrap();
     }
 
+    /// Settings JSON with `env.PATH` set to `path`. Built with serde_json so a
+    /// Windows path's backslashes are escaped; hand-formatted JSON would carry
+    /// `C:\Users\...` raw, which is invalid JSON and parses as no PATH at all.
+    fn settings_with_path(path: &str) -> String {
+        serde_json::json!({ "env": { "PATH": path } }).to_string()
+    }
+
+    #[test]
+    fn settings_with_path_round_trips_a_windows_path() {
+        let body = settings_with_path(r"C:\Users\person\hq\bin;D:\tools");
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["env"]["PATH"], r"C:\Users\person\hq\bin;D:\tools");
+    }
+
     #[test]
     fn settings_path_dirs_reads_local_env_path_in_order() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -2782,11 +3066,7 @@ mod tests {
         write_settings(
             root,
             "settings.local.json",
-            &format!(
-                "{{\"env\":{{\"PATH\":\"{}{sep}{}\"}}}}",
-                a.display(),
-                b.display()
-            ),
+            &settings_with_path(&format!("{}{sep}{}", a.display(), b.display())),
         );
         let dirs = settings_path_dirs_in(root);
         assert_eq!(dirs, vec![a, b]);
@@ -2883,12 +3163,12 @@ mod tests {
         write_settings(
             root,
             "settings.local.json",
-            &format!("{{\"env\":{{\"PATH\":\"{}\"}}}}", local.display()),
+            &settings_with_path(&local.display().to_string()),
         );
         write_settings(
             root,
             "settings.json",
-            &format!("{{\"env\":{{\"PATH\":\"{}\"}}}}", base.display()),
+            &settings_with_path(&base.display().to_string()),
         );
         // env.PATH is a scalar: local OVERRIDES base — base is NOT appended.
         assert_eq!(settings_path_dirs_in(root), vec![local]);
@@ -2905,7 +3185,7 @@ mod tests {
         write_settings(
             root,
             "settings.json",
-            &format!("{{\"env\":{{\"PATH\":\"{}\"}}}}", base.display()),
+            &settings_with_path(&base.display().to_string()),
         );
         assert_eq!(settings_path_dirs_in(root), vec![base]);
     }
@@ -2978,11 +3258,11 @@ mod tests {
         write_settings(
             root,
             "settings.local.json",
-            &format!(
-                "{{\"env\":{{\"PATH\":\"{}{sep}some/relative/dir{sep}{}\"}}}}",
+            &settings_with_path(&format!(
+                "{}{sep}some/relative/dir{sep}{}",
                 real.display(),
                 missing.display()
-            ),
+            )),
         );
         // Only the absolute, existing directory survives.
         assert_eq!(settings_path_dirs_in(root), vec![real]);
@@ -3052,34 +3332,443 @@ mod tests {
         assert_ne!(prefix, managed_node_dir_in(&root));
     }
 
+    // The precedence tests run against the pure resolver with no discovery
+    // candidates, so the developer's own ~/.hq/menubar.json and ~/HQ cannot
+    // change their outcome. Each is checked both during and after onboarding.
+    fn resolve_pure(config: Option<&str>, menubar: Option<&str>) -> Vec<PathBuf> {
+        let home = PathBuf::from("/home/someone");
+        [true, false]
+            .into_iter()
+            .map(|onboarding| {
+                resolve_hq_folder_from(config, menubar, onboarding, &[], Some(&home)).folder
+            })
+            .collect()
+    }
+
     #[test]
     fn test_resolve_menubar_override_wins() {
-        let result = resolve_hq_folder(Some("/from/config"), Some("/from/menubar"));
-        assert_eq!(result, PathBuf::from("/from/menubar"));
+        for result in resolve_pure(Some("/from/config"), Some("/from/menubar")) {
+            assert_eq!(result, PathBuf::from("/from/menubar"));
+        }
     }
 
     #[test]
     fn test_resolve_config_path() {
-        let result = resolve_hq_folder(Some("/from/config"), None);
-        assert_eq!(result, PathBuf::from("/from/config"));
+        for result in resolve_pure(Some("/from/config"), None) {
+            assert_eq!(result, PathBuf::from("/from/config"));
+        }
     }
 
     #[test]
     fn test_resolve_default() {
+        for result in resolve_pure(None, None) {
+            assert!(result.ends_with("HQ"));
+        }
         let result = resolve_hq_folder(None, None);
-        assert!(result.ends_with("HQ"));
+        assert!(result.ends_with("HQ") || is_valid_hq_root(&result));
     }
 
     #[test]
     fn test_resolve_empty_menubar_falls_through() {
-        let result = resolve_hq_folder(Some("/from/config"), Some(""));
-        assert_eq!(result, PathBuf::from("/from/config"));
+        for result in resolve_pure(Some("/from/config"), Some("")) {
+            assert_eq!(result, PathBuf::from("/from/config"));
+        }
     }
 
     #[test]
     fn test_resolve_empty_both_falls_to_default() {
-        let result = resolve_hq_folder(Some(""), Some(""));
-        assert!(result.ends_with("HQ"));
+        for result in resolve_pure(Some(""), Some("")) {
+            assert!(result.ends_with("HQ"));
+        }
+    }
+
+    /// A complete, launchable HQ root: companies/manifest.yaml, a schema-valid
+    /// core/core.yaml, and .claude/settings.json.
+    fn scaffold_launchable_root(root: &Path) {
+        std::fs::create_dir_all(root.join("companies")).unwrap();
+        std::fs::write(
+            root.join("companies").join("manifest.yaml"),
+            "companies: {}\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("core")).unwrap();
+        std::fs::write(
+            root.join("core").join("core.yaml"),
+            "version: 1\nhqVersion: 15.0.0\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        std::fs::write(root.join(".claude").join("settings.json"), "{}\n").unwrap();
+    }
+
+    #[test]
+    fn discovery_candidates_include_system_drive_hq_and_local_app_data_hq() {
+        let home = PathBuf::from("/home/someone");
+        let system_drive = PathBuf::from("/sysdrive");
+        let local_app_data = PathBuf::from("/home/someone/AppData/Local");
+        let candidates =
+            hq_discovery_candidates_from(Some(&home), Some(&system_drive), Some(&local_app_data));
+        // Home candidates keep their order and come first.
+        assert_eq!(candidates[0], home.join("HQ"));
+        assert_eq!(candidates[1], home.join("hq"));
+        assert_eq!(
+            &candidates[candidates.len() - 2..],
+            &[system_drive.join("hq"), local_app_data.join("hq")]
+        );
+        // Without the Windows roots, only the six home candidates remain.
+        assert_eq!(
+            hq_discovery_candidates_from(Some(&home), None, None).len(),
+            6
+        );
+    }
+
+    #[test]
+    fn discovery_finds_system_drive_hq_when_home_hq_is_absent() {
+        let home = tempfile::TempDir::new().unwrap();
+        let drive = tempfile::TempDir::new().unwrap();
+        let root = drive.path().join("hq");
+        scaffold_launchable_root(&root);
+        let candidates = hq_discovery_candidates_from(Some(home.path()), Some(drive.path()), None);
+        let resolution = resolve_hq_folder_from(None, None, false, &candidates, Some(home.path()));
+        assert_eq!(resolution.folder, root);
+        assert_eq!(resolution.warning, None);
+    }
+
+    #[test]
+    fn recorded_hq_path_that_is_not_an_hq_root_is_overridden_by_discovered_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let recorded = tmp.path().join("Users").join("someone").join("hq");
+        std::fs::create_dir_all(&recorded).unwrap();
+        let discovered = tmp.path().join("hq");
+        scaffold_launchable_root(&discovered);
+        let recorded_str = recorded.to_string_lossy().to_string();
+
+        let resolution = resolve_hq_folder_from(
+            None,
+            Some(&recorded_str),
+            false,
+            std::slice::from_ref(&discovered),
+            Some(tmp.path()),
+        );
+
+        assert_eq!(resolution.folder, discovered);
+        let warning = resolution.warning.expect("override must carry a warning");
+        assert!(warning.contains(&recorded_str), "{warning}");
+        assert!(
+            warning.contains(&discovered.to_string_lossy().to_string()),
+            "{warning}"
+        );
+    }
+
+    #[test]
+    fn recorded_config_hq_folder_path_that_is_not_an_hq_root_is_overridden() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let discovered = tmp.path().join("hq");
+        scaffold_launchable_root(&discovered);
+        let missing = tmp.path().join("gone").to_string_lossy().to_string();
+
+        let resolution = resolve_hq_folder_from(
+            Some(&missing),
+            None,
+            false,
+            std::slice::from_ref(&discovered),
+            Some(tmp.path()),
+        );
+
+        assert_eq!(resolution.folder, discovered);
+        assert!(resolution.warning.is_some());
+    }
+
+    #[test]
+    fn valid_recorded_config_path_wins_over_an_invalid_menubar_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let configured = tmp.path().join("configured");
+        scaffold_launchable_root(&configured);
+        let discovered = tmp.path().join("hq");
+        scaffold_launchable_root(&discovered);
+        let configured_str = configured.to_string_lossy().to_string();
+        let missing = tmp.path().join("gone").to_string_lossy().to_string();
+
+        let resolution = resolve_hq_folder_from(
+            Some(&configured_str),
+            Some(&missing),
+            false,
+            std::slice::from_ref(&discovered),
+            Some(tmp.path()),
+        );
+
+        assert_eq!(resolution.folder, configured);
+        assert_eq!(resolution.warning, None);
+    }
+
+    #[test]
+    fn recorded_hq_path_wins_during_onboarding_even_when_not_yet_an_hq_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let recorded = tmp.path().join("chosen");
+        std::fs::create_dir_all(&recorded).unwrap();
+        let discovered = tmp.path().join("hq");
+        scaffold_launchable_root(&discovered);
+        let recorded_str = recorded.to_string_lossy().to_string();
+
+        let resolution = resolve_hq_folder_from(
+            None,
+            Some(&recorded_str),
+            true,
+            std::slice::from_ref(&discovered),
+            Some(tmp.path()),
+        );
+
+        assert_eq!(resolution.folder, recorded);
+        assert_eq!(resolution.warning, None);
+    }
+
+    #[test]
+    fn valid_recorded_hq_path_still_wins_over_discovered_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let recorded = tmp.path().join("chosen");
+        scaffold_launchable_root(&recorded);
+        let discovered = tmp.path().join("hq");
+        scaffold_launchable_root(&discovered);
+        let recorded_str = recorded.to_string_lossy().to_string();
+
+        let resolution = resolve_hq_folder_from(
+            None,
+            Some(&recorded_str),
+            false,
+            std::slice::from_ref(&discovered),
+            Some(tmp.path()),
+        );
+
+        assert_eq!(resolution.folder, recorded);
+        assert_eq!(resolution.warning, None);
+    }
+
+    #[test]
+    fn app_install_dir_named_hq_is_never_adopted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let local_app_data = tmp.path().join("AppData").join("Local");
+        // The desktop app's own install directory: binaries, no HQ markers.
+        let app_dir = local_app_data.join("hq");
+        std::fs::create_dir_all(app_dir.join("resources")).unwrap();
+        std::fs::write(app_dir.join("HQ.exe"), b"MZ").unwrap();
+        let recorded = tmp.path().join("chosen").to_string_lossy().to_string();
+        let candidates = hq_discovery_candidates_from(None, None, Some(&local_app_data));
+
+        assert!(!is_launchable_hq_root(&app_dir));
+        let resolution =
+            resolve_hq_folder_from(None, Some(&recorded), false, &candidates, Some(tmp.path()));
+        assert_eq!(resolution.folder, PathBuf::from(&recorded));
+        assert_eq!(resolution.warning, None);
+    }
+
+    #[test]
+    fn launchable_hq_root_needs_companies_core_yaml_and_claude_settings() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("hq");
+        scaffold_launchable_root(&root);
+        assert!(is_launchable_hq_root(&root));
+
+        std::fs::remove_file(root.join(".claude").join("settings.json")).unwrap();
+        assert!(
+            !is_launchable_hq_root(&root),
+            "missing .claude/settings.json"
+        );
+
+        scaffold_launchable_root(&root);
+        std::fs::remove_dir_all(root.join("companies")).unwrap();
+        assert!(!is_launchable_hq_root(&root), "missing companies/");
+    }
+
+    #[test]
+    fn existing_update_with_invalid_recorded_path_resolves_to_discovered_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let recorded = tmp.path().join("Users").join("someone").join("hq");
+        std::fs::create_dir_all(&recorded).unwrap();
+        let discovered = tmp.path().join("hq");
+        scaffold_launchable_root(&discovered);
+        let recorded_str = recorded.to_string_lossy().to_string();
+
+        // An install that predates `firstRunCompleted` (ExistingUpdate).
+        let menubar = serde_json::json!({
+            "machineId": "machine-1",
+            "hqPath": recorded_str,
+        });
+        let menubar = menubar.as_object().unwrap();
+        assert!(!onboarding_in_progress_from(None, menubar, None));
+
+        let resolution = resolve_hq_folder_from(
+            None,
+            Some(&recorded_str),
+            onboarding_in_progress_from(None, menubar, None),
+            std::slice::from_ref(&discovered),
+            Some(tmp.path()),
+        );
+
+        assert_eq!(resolution.folder, discovered);
+        let warning = resolution.warning.expect("override must carry a warning");
+        assert!(warning.contains(&recorded_str), "{warning}");
+        assert!(
+            warning.contains(&discovered.to_string_lossy().to_string()),
+            "{warning}"
+        );
+    }
+
+    /// A fresh install: recorded path not yet filled, another launchable root
+    /// on disk. Returns `(tmp, recorded_str, discovered)`.
+    fn fresh_install_roots() -> (tempfile::TempDir, String, PathBuf) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let recorded = tmp.path().join("Users").join("someone").join("hq");
+        std::fs::create_dir_all(&recorded).unwrap();
+        let discovered = tmp.path().join("hq");
+        scaffold_launchable_root(&discovered);
+        let recorded_str = recorded.to_string_lossy().to_string();
+        (tmp, recorded_str, discovered)
+    }
+
+    #[test]
+    fn setup_first_run_keeps_recorded_path_after_machine_id_is_written() {
+        use crate::first_run::LaunchKind;
+        let (tmp, recorded_str, discovered) = fresh_install_roots();
+
+        // Setup classified FirstRun; `ensure_machine_id` has since written
+        // `machineId`, so a live re-read alone would say ExistingUpdate.
+        let menubar = serde_json::json!({
+            "machineId": "machine-1",
+            "hqPath": recorded_str,
+        });
+        let menubar = menubar.as_object().unwrap();
+        let onboarding = onboarding_in_progress_from(Some(LaunchKind::FirstRun), menubar, None);
+        assert!(onboarding);
+
+        let resolution = resolve_hq_folder_from(
+            None,
+            Some(&recorded_str),
+            onboarding,
+            std::slice::from_ref(&discovered),
+            Some(tmp.path()),
+        );
+
+        assert_eq!(resolution.folder, PathBuf::from(&recorded_str));
+        assert!(resolution.warning.is_none(), "{:?}", resolution.warning);
+    }
+
+    #[test]
+    fn setup_first_run_ends_onboarding_once_first_run_completes() {
+        use crate::first_run::LaunchKind;
+        let (tmp, recorded_str, discovered) = fresh_install_roots();
+
+        let menubar = serde_json::json!({
+            "machineId": "machine-1",
+            "firstRunCompleted": true,
+            "hqPath": recorded_str,
+        });
+        let menubar = menubar.as_object().unwrap();
+        let onboarding = onboarding_in_progress_from(Some(LaunchKind::FirstRun), menubar, None);
+        assert!(!onboarding);
+
+        let resolution = resolve_hq_folder_from(
+            None,
+            Some(&recorded_str),
+            onboarding,
+            std::slice::from_ref(&discovered),
+            Some(tmp.path()),
+        );
+
+        assert_eq!(resolution.folder, discovered);
+        let warning = resolution.warning.expect("override must carry a warning");
+        assert!(warning.contains(&recorded_str), "{warning}");
+    }
+
+    #[test]
+    fn unset_setup_kind_keeps_existing_update_fallback() {
+        let (tmp, recorded_str, discovered) = fresh_install_roots();
+
+        let menubar = serde_json::json!({
+            "machineId": "machine-1",
+            "hqPath": recorded_str,
+        });
+        let menubar = menubar.as_object().unwrap();
+        let onboarding = onboarding_in_progress_from(None, menubar, None);
+        assert!(!onboarding);
+
+        let resolution = resolve_hq_folder_from(
+            None,
+            Some(&recorded_str),
+            onboarding,
+            std::slice::from_ref(&discovered),
+            Some(tmp.path()),
+        );
+
+        assert_eq!(resolution.folder, discovered);
+        assert!(resolution.warning.is_some());
+
+        // An empty menubar with no setup kind is still a first run.
+        assert!(onboarding_in_progress_from(
+            None,
+            &serde_json::Map::new(),
+            None
+        ));
+    }
+
+    #[test]
+    fn setup_kind_other_than_first_run_is_not_onboarding_but_manifest_still_counts() {
+        use crate::first_run::LaunchKind;
+        let empty = serde_json::Map::new();
+        for kind in [LaunchKind::ExistingUpdate, LaunchKind::Normal] {
+            assert!(!onboarding_in_progress_from(Some(kind), &empty, None));
+            let running = serde_json::json!({ "steps": { "template": { "status": "running" } } });
+            assert!(onboarding_in_progress_from(
+                Some(kind),
+                &empty,
+                Some(&running)
+            ));
+        }
+        let mut done = serde_json::Map::new();
+        done.insert("firstRunCompleted".into(), serde_json::Value::Bool(true));
+        let failed = serde_json::json!({ "steps": { "template": { "status": "failed" } } });
+        assert!(onboarding_in_progress_from(
+            Some(LaunchKind::FirstRun),
+            &done,
+            Some(&failed)
+        ));
+    }
+
+    #[test]
+    fn onboarding_is_in_progress_until_first_run_completes() {
+        let empty = serde_json::Map::new();
+        assert!(onboarding_in_progress_from(None, &empty, None));
+
+        let mut not_done = serde_json::Map::new();
+        not_done.insert("firstRunCompleted".into(), serde_json::Value::Bool(false));
+        assert!(onboarding_in_progress_from(None, &not_done, None));
+
+        let mut done = serde_json::Map::new();
+        done.insert("firstRunCompleted".into(), serde_json::Value::Bool(true));
+        assert!(!onboarding_in_progress_from(None, &done, None));
+    }
+
+    #[test]
+    fn onboarding_is_in_progress_while_the_install_manifest_has_a_running_step() {
+        let mut done = serde_json::Map::new();
+        done.insert("firstRunCompleted".into(), serde_json::Value::Bool(true));
+
+        let running = serde_json::json!({
+            "completedAt": null,
+            "steps": { "template": { "status": "running" } }
+        });
+        assert!(onboarding_in_progress_from(None, &done, Some(&running)));
+
+        let failed = serde_json::json!({ "steps": { "template": { "status": "failed" } } });
+        assert!(onboarding_in_progress_from(None, &done, Some(&failed)));
+
+        let finished = serde_json::json!({
+            "completedAt": "2026-10-15T00:00:00Z",
+            "steps": { "template": { "status": "running" } }
+        });
+        assert!(!onboarding_in_progress_from(None, &done, Some(&finished)));
+
+        let all_ok = serde_json::json!({ "steps": { "template": { "status": "ok" } } });
+        assert!(!onboarding_in_progress_from(None, &done, Some(&all_ok)));
     }
 
     #[test]
@@ -4623,8 +5312,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
         let foreign = tmp.path().join("foreign").join("git");
-        let managed = home.join("Library/Application Support/Indigo HQ/toolchain/git/bin/git");
-        let shim = home.join("Library/Application Support/Indigo HQ/toolchain/git-shim/git");
+        let managed = managed_git_bin_in(&home);
+        let shim = managed_git_shim_dir_in(&home).join("git");
         let settings = home.join("HQ/.claude/settings.local.json");
         write_unix_exec(&foreign);
         write_unix_exec(&managed);
@@ -4652,7 +5341,7 @@ mod tests {
     fn managed_git_env_requires_the_resolved_managed_binary() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let git_dir = home.join("Library/Application Support/Indigo HQ/toolchain/git");
+        let git_dir = managed_toolchain_dir(&home).join("git");
         let managed_git = git_dir.join("bin/git");
         let foreign_git = tmp.path().join("foreign/git");
         write_unix_exec(&managed_git);
@@ -4689,7 +5378,7 @@ mod tests {
         );
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     #[test]
     fn test_managed_toolchain_path_matches_installer() {
         let home = PathBuf::from("/Users/testuser");
@@ -4698,6 +5387,100 @@ mod tests {
             toolchain,
             PathBuf::from("/Users/testuser/Library/Application Support/Indigo HQ/toolchain"),
             "must match hq-installer's managed_toolchain_dir_in()"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_managed_toolchain_path_follows_the_xdg_data_home_rule() {
+        use std::ffi::OsStr;
+        let home = PathBuf::from("/home/testuser");
+        let default = PathBuf::from("/home/testuser/.local/share/IndigoHQ/toolchain");
+        assert_eq!(managed_toolchain_dir_with(&home, None), default);
+        assert_eq!(
+            managed_toolchain_dir_with(&home, Some(OsStr::new("/srv/xdg-data"))),
+            PathBuf::from("/srv/xdg-data/IndigoHQ/toolchain")
+        );
+        // A relative or empty XDG_DATA_HOME is invalid per the XDG spec and
+        // must be ignored, not joined onto the current directory.
+        assert_eq!(
+            managed_toolchain_dir_with(&home, Some(OsStr::new("relative/xdg-data"))),
+            default
+        );
+        assert_eq!(managed_toolchain_dir_with(&home, Some(OsStr::new(""))), default);
+        assert!(
+            !managed_toolchain_dir(&home).starts_with(home.join("Library")),
+            "Linux must never use the macOS Library layout"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_managed_toolchain_roots_follow_home_and_xdg_data_home() {
+        let _guard = crate::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _home = crate::test_support::ScopedEnv::set("HOME", "/tmp/hq-home");
+        let default = vec![PathBuf::from("/tmp/hq-home/.local/share/IndigoHQ/toolchain")];
+        {
+            let _xdg = crate::test_support::ScopedEnv::unset("XDG_DATA_HOME");
+            assert_eq!(managed_toolchain_roots(), default);
+            assert_eq!(managed_toolchain_roots_checked().unwrap(), default);
+        }
+        {
+            let _xdg = crate::test_support::ScopedEnv::set("XDG_DATA_HOME", "/tmp/hq-xdg");
+            assert_eq!(
+                managed_toolchain_roots(),
+                vec![PathBuf::from("/tmp/hq-xdg/IndigoHQ/toolchain")]
+            );
+        }
+        {
+            let _xdg = crate::test_support::ScopedEnv::set("XDG_DATA_HOME", "relative/xdg");
+            assert_eq!(managed_toolchain_roots(), default);
+        }
+    }
+
+    /// Today's macOS wrapper text, byte for byte. The wrapper is rendered from
+    /// the resolved toolchain root now, and macOS must keep producing exactly
+    /// this (an installed shim is compared against it to detect staleness).
+    #[cfg(not(target_os = "windows"))]
+    const MACOS_GIT_WRAPPER: &str = "#!/bin/sh\n# Indigo HQ managed toolchain — portable git wrapper (auto-generated)\nd=\"$HOME/Library/Application Support/Indigo HQ/toolchain/git\"\nexport GIT_EXEC_PATH=\"$d/libexec/git-core\"\nexport GIT_TEMPLATE_DIR=\"$d/share/git-core/templates\"\n[ -f /etc/ssl/cert.pem ] && export GIT_SSL_CAINFO=/etc/ssl/cert.pem\nexec \"$d/bin/git\" \"$@\"\n";
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn git_wrapper_rendered_from_the_macos_root_is_byte_identical_to_before() {
+        let home = PathBuf::from("/Users/testuser");
+        let toolchain = home.join("Library/Application Support/Indigo HQ/toolchain");
+        assert_eq!(managed_git_shim_script_for(&home, &toolchain), MACOS_GIT_WRAPPER);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_git_wrapper_text_is_unchanged() {
+        assert_eq!(
+            managed_git_shim_script_in(Path::new("/Users/testuser")),
+            MACOS_GIT_WRAPPER
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_git_wrapper_points_at_the_resolved_toolchain_root() {
+        let home = PathBuf::from("/home/testuser");
+        let under_home = managed_git_shim_script_for(
+            &home,
+            Path::new("/home/testuser/.local/share/IndigoHQ/toolchain"),
+        );
+        assert!(
+            under_home.contains("\nd=\"$HOME/.local/share/IndigoHQ/toolchain/git\"\n"),
+            "{under_home}"
+        );
+        assert!(!under_home.contains("Library"));
+        let outside_home =
+            managed_git_shim_script_for(&home, Path::new("/srv/xdg-data/IndigoHQ/toolchain"));
+        assert!(
+            outside_home.contains("\nd=\"/srv/xdg-data/IndigoHQ/toolchain/git\"\n"),
+            "{outside_home}"
         );
     }
 
@@ -4979,10 +5762,8 @@ mod tests {
 
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path();
-        let managed_prefix =
-            home.join("Library/Application Support/Indigo HQ/toolchain/npm-global");
-        let managed_node_bin =
-            home.join("Library/Application Support/Indigo HQ/toolchain/node/bin");
+        let managed_prefix = managed_toolchain_dir(home).join("npm-global");
+        let managed_node_bin = managed_toolchain_dir(home).join("node/bin");
         let nvm_prefix = home.join(".nvm/versions/node/v22.14.0");
         let nvm_bin = nvm_prefix.join("bin");
         let hq = nvm_bin.join("hq");

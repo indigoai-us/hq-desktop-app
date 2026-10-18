@@ -1,5 +1,6 @@
 <script lang="ts">
   import RailIcon from '@hq/ui/rail-icon';
+  import { BRAND_ICONS } from '@hq/ui/rail-icons';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getVersion } from '@tauri-apps/api/app';
@@ -13,6 +14,7 @@
   import {
     HQ_MARK_H,
     HQ_MARK_Q,
+    createCompanyEngine,
     createConsentEngine,
     createFolderEngine,
     createKeyboardEngine,
@@ -181,6 +183,7 @@
   } from '../../lib/command-line-tools-gate';
   import ConnectorImportStep from './ConnectorImportStep.svelte';
   import CompanyStep, { type CompanyStepEvent, type CompanyStepResult } from './CompanyStep.svelte';
+  import hqAppIcon from '../../assets/onboarding/hq-app-icon.png';
   import {
     companyUidFromMissingBucket,
     isMissingBucketMessage,
@@ -311,7 +314,19 @@
    * the ready screen and records the answer when the person finishes from
    * there. Consent-only runs keep their own blocking consent screen.
    */
-  const consentOnReady = $derived(!consentOnly && !replay);
+  /**
+   * This machine's own outpost (machine) identity: whether it has one, and
+   * whether that identity is the live session. An outpost is a fleet agent,
+   * not a person: it gets no usage-data question, no company to name and no
+   * teammate to invite.
+   */
+  let machineIdentity = $state<{ available: boolean; active: boolean }>({
+    available: false,
+    active: false,
+  });
+  /** The live session is this outpost's machine identity (no person entity). */
+  let outpostSession = $state(false);
+  const consentOnReady = $derived(!consentOnly && !replay && !outpostSession);
   const onboardingTelemetry = createOnboardingStepTelemetry();
   const onboardingFeatureFlags = createSyncPlatformAdapter({
     invoke: (command, args) => invoke(command, args),
@@ -469,6 +484,24 @@
   let signedInEmail = $state<string | null>(null);
   /** A session already on this machine when onboarding opened (old ~/.hq). */
   let existingSessionEmail = $state<string | null>(null);
+  /**
+   * The outpost session shown on the sign-in screen: the outpost's uid and
+   * its owner's email. Never shown as a bare owner email, which would read as
+   * the owner being signed in as a person.
+   */
+  let existingSessionOutpost = $state<{ uid: string | null; ownerEmail: string | null } | null>(null);
+  const existingSessionOutpostLabel = $derived.by(() => {
+    if (!existingSessionOutpost) return '';
+    const { uid, ownerEmail } = existingSessionOutpost;
+    if (uid && ownerEmail) return `${uid} · owner ${ownerEmail}`;
+    return uid ?? (ownerEmail ? `owner ${ownerEmail}` : 'this machine');
+  });
+  let existingSessionShownRecorded = false;
+  /** Polls left for a machine session minted shortly after launch. */
+  let machineSessionPollsLeft = 0;
+  let machineSessionPollTimer: ReturnType<typeof setTimeout> | null = null;
+  let usingMachineIdentity = $state(false);
+  let machineIdentityError = $state<string | null>(null);
   let switchingAccount = $state(false);
   let resumeAfterAccountSwitch = false;
   /** First-sync self-heal: "Finishing setup…" while hq-pro provisions a bucket. */
@@ -496,8 +529,18 @@
   /** The company lookup has answered with a usable route (or none needed). */
   let companyRouteResolved = $state(false);
   /** Leaving the explainers waits this long at most for the company lookup. */
-  const COMPANY_ROUTE_WAIT_MS = 3_000;
-  let leavingExplainers = false;
+  /**
+   * How long leaving the explainers waits for the company lookup. Long enough
+   * that the person goes straight to the right screen rather than seeing the
+   * ready screen and being pulled back from it.
+   */
+  const COMPANY_ROUTE_WAIT_MS = 12_000;
+  /** Leaving the explainers waits on the company lookup; the forward button says so. */
+  let leavingExplainers = $state(false);
+  const MACHINE_SESSION_POLL_MS = 1_500;
+  const MACHINE_SESSION_POLLS = 14;
+  const MACHINE_IDENTITY_SIGN_IN_FAILED = 'We couldn’t sign in as this outpost. Try again.';
+  let machineSessionPollSpent = false;
   let companyStepCompanyUid: string | null = null;
   let inviteTeammateContext: { companyUid: string; personUid: string } | null = null;
   let inviteStepHiddenTelemetryRecorded = false;
@@ -809,7 +852,16 @@
   // ─── Welcome flow: chrome, install card, ready gate ─────────────────────
   /** An install this flow started is still running. */
   const installPending = $derived(setupStarted && !setupCompleted);
-  const chrome = $derived(welcomeChrome({ scene, replay, setupCompleted }));
+  /** The company step's current screen offers Back (within the step, or out to the shortcut screen). */
+  let companyBack = $state(false);
+  let companyStepRef = $state<{ back: () => boolean } | null>(null);
+  /** This run has a company step (a person with no company yet). */
+  const companyInRun = $derived(
+    !consentOnly && !replay && Boolean(companyPath && companyPath.kind !== 'skip'),
+  );
+  const chrome = $derived(
+    welcomeChrome({ scene, replay, setupCompleted, companyInRun, companyBack: companyBack && !leavingExplainers }),
+  );
   const installCard = $derived(
     installCardModel({
       percent: overallPercent,
@@ -951,6 +1003,7 @@
         })
         .catch(() => {});
       if (currentStep === WELCOME_SIGNIN_STEP_INDEX) void checkExistingSession();
+      else void probeMachineIdentity();
     }
 
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -980,7 +1033,7 @@
   onMount(() => {
     let active = true;
     const unlisteners: UnlistenFn[] = [];
-    function subscribeFirstFolderSyncEvent<Payload>(
+    function subscribeTauriEvent<Payload>(
       eventName: string,
       handler: (payload: Payload) => void,
     ): void {
@@ -997,25 +1050,32 @@
         });
     }
 
-    subscribeFirstFolderSyncEvent<{ errors?: unknown }>(
+    subscribeTauriEvent<{ errors?: unknown }>(
       'sync:all-complete',
       handleFirstFolderSyncComplete,
     );
-    subscribeFirstFolderSyncEvent<{ aborted?: unknown }>('sync:complete', (payload) => {
+    subscribeTauriEvent<{ aborted?: unknown }>('sync:complete', (payload) => {
       if (firstFolderSyncAwaitingCompletion && payload.aborted === true) {
         firstFolderSyncObservedFailure = true;
       }
     });
-    subscribeFirstFolderSyncEvent<{ message?: unknown }>('sync:error', (payload) => {
+    subscribeTauriEvent<{ message?: unknown }>('sync:error', (payload) => {
       if (!firstFolderSyncAwaitingCompletion) return;
       const uid = companyUidFromMissingBucket(payload?.message);
       if (uid) firstFolderMissingBucketUids.add(uid);
       else firstFolderSyncObservedFailure = true;
     });
-    subscribeFirstFolderSyncEvent('sync:auth-error', handleFirstFolderSyncAuthError);
+    subscribeTauriEvent('sync:auth-error', handleFirstFolderSyncAuthError);
+    // A session minted after this screen mounted (the outpost machine identity
+    // resolves in the background at launch) must show up without a relaunch.
+    // The envelope carries an account id and a generation, no bearer material.
+    subscribeTauriEvent('auth:session-changed', () => {
+      if (currentStep === WELCOME_SIGNIN_STEP_INDEX) void checkExistingSession();
+    });
 
     return () => {
       active = false;
+      stopMachineSessionPoll();
       for (const unlisten of unlisteners) unlisten();
     };
   });
@@ -1083,6 +1143,7 @@
     }
 
     existingSessionEmail = null;
+    existingSessionOutpost = null;
     const call = ++currentSignInCall;
     loadingProvider = provider;
     signInError = '';
@@ -1593,25 +1654,127 @@
    * (a reinstall over an old ~/.hq) may be someone else's. Show it on the
    * sign-in screen before anything is created.
    */
+  /** Whether this machine holds an outpost identity and whether it is the live session. */
+  async function probeMachineIdentity(): Promise<{ available: boolean; active: boolean }> {
+    try {
+      const status = await invokeCommand<{ available?: unknown; active?: unknown } | null>(
+        'get_machine_identity_status',
+      );
+      machineIdentity = { available: status?.available === true, active: status?.active === true };
+    } catch (error) {
+      console.warn('onboarding: machine identity status unavailable', error);
+      machineIdentity = { available: false, active: false };
+    }
+    outpostSession = machineIdentity.active;
+    return machineIdentity;
+  }
+
+  /** The outpost behind the live machine session: its uid and its owner's email. */
+  async function resolveOutpostIdentity(): Promise<{ uid: string | null; ownerEmail: string | null }> {
+    try {
+      const who = await invokeCommand<{ personUid?: unknown; email?: unknown } | null>('whoami');
+      const uid =
+        typeof who?.personUid === 'string' && who.personUid.startsWith('out_') ? who.personUid : null;
+      const ownerEmail = typeof who?.email === 'string' && who.email.trim() ? who.email.trim() : null;
+      return { uid, ownerEmail };
+    } catch (error) {
+      console.warn('onboarding: outpost identity lookup failed', error);
+      return { uid: null, ownerEmail: null };
+    }
+  }
+
+  function recordExistingSessionShown(): void {
+    if (existingSessionShownRecorded) return;
+    existingSessionShownRecorded = true;
+    recordStep(WELCOME_SIGNIN_STEP_INDEX, 'started', { outcome: 'existing_session_shown' });
+  }
+
+  function stopMachineSessionPoll(): void {
+    if (machineSessionPollTimer !== null) clearTimeout(machineSessionPollTimer);
+    machineSessionPollTimer = null;
+    machineSessionPollsLeft = 0;
+  }
+
+  /**
+   * A machine identity resolves its session in the background at launch, a
+   * little after this screen mounts. Look again every 1.5s for about 20s while
+   * the sign-in screen waits with an identity available but no session yet.
+   */
+  function scheduleMachineSessionPoll(): void {
+    if (machineSessionPollTimer !== null) return;
+    if (machineSessionPollsLeft <= 0) return;
+    machineSessionPollsLeft -= 1;
+    machineSessionPollTimer = setTimeout(() => {
+      machineSessionPollTimer = null;
+      if (!mounted || currentStep !== WELCOME_SIGNIN_STEP_INDEX) return;
+      void checkExistingSession();
+    }, MACHINE_SESSION_POLL_MS);
+  }
+
+  /**
+   * Signed-in-as guard: a token already on this machine when onboarding opens
+   * (a reinstall over an old ~/.hq) may be someone else's. Show it on the
+   * sign-in screen before anything is created. The machine's own outpost
+   * identity is shown whatever the launch classified as: it is this
+   * machine's, not a leftover, and it may land after this screen mounted
+   * (the auth session event and a short poll call back in here).
+   */
   async function checkExistingSession(): Promise<void> {
     try {
+      const machine = await probeMachineIdentity();
+      if (machine.active) {
+        const [email, outpost] = await Promise.all([resolveSignedInEmail(), resolveOutpostIdentity()]);
+        if (currentStep !== WELCOME_SIGNIN_STEP_INDEX) return;
+        stopMachineSessionPoll();
+        existingSessionEmail = null;
+        existingSessionOutpost = { uid: outpost.uid, ownerEmail: outpost.ownerEmail ?? email };
+        recordExistingSessionShown();
+        return;
+      }
+      if (machine.available && currentStep === WELCOME_SIGNIN_STEP_INDEX) {
+        if (machineSessionPollsLeft === 0 && machineSessionPollTimer === null && !machineSessionPollSpent) {
+          machineSessionPollSpent = true;
+          machineSessionPollsLeft = MACHINE_SESSION_POLLS;
+        }
+        scheduleMachineSessionPoll();
+      }
       const firstLaunch = await invokeCommand<boolean>('is_first_run').catch(() => false);
       if (!firstLaunch) return;
       const email = await resolveSignedInEmail();
       if (email && currentStep === WELCOME_SIGNIN_STEP_INDEX) {
+        existingSessionOutpost = null;
         existingSessionEmail = email;
-        recordStep(WELCOME_SIGNIN_STEP_INDEX, 'started', { outcome: 'existing_session_shown' });
+        recordExistingSessionShown();
       }
     } catch (error) {
       console.warn('onboarding: existing session check failed', error);
     }
   }
 
+  /** Sign in as this machine's outpost (the local opt-out is cleared natively). */
+  async function useMachineIdentity(): Promise<void> {
+    if (usingMachineIdentity) return;
+    usingMachineIdentity = true;
+    machineIdentityError = null;
+    try {
+      await invokeCommand('use_machine_identity');
+      await checkExistingSession();
+      if (!existingSessionOutpost) machineIdentityError = MACHINE_IDENTITY_SIGN_IN_FAILED;
+    } catch (error) {
+      console.warn('onboarding: use machine identity failed', error);
+      machineIdentityError = MACHINE_IDENTITY_SIGN_IN_FAILED;
+    } finally {
+      usingMachineIdentity = false;
+    }
+  }
+
   /** Keep the session that was already here. */
   function continueExistingSession(): void {
-    if (!existingSessionEmail) return;
+    if (!existingSessionEmail && !existingSessionOutpost) return;
+    const outcome = existingSessionOutpost ? 'outpost_session_continued' : 'existing_session_continued';
     existingSessionEmail = null;
-    void completeAuthenticatedSignIn(++currentSignInCall, { outcome: 'existing_session_continued' });
+    existingSessionOutpost = null;
+    void completeAuthenticatedSignIn(++currentSignInCall, { outcome });
   }
 
   /** Sign out and go back to the sign-in buttons. Used by the guard and by the invite mismatch. */
@@ -1633,7 +1796,12 @@
     membershipMeRead = null;
     await selectCompany(null, true);
     existingSessionEmail = null;
+    existingSessionOutpost = null;
+    existingSessionShownRecorded = false;
     signedInEmail = null;
+    // Signing out of the outpost session is a local opt-out: the identity
+    // stays available, so the sign-in screen offers it again.
+    void probeMachineIdentity();
     if (from === 'company') {
       companyPath = null;
       companyPriorPlan = null;
@@ -2921,6 +3089,22 @@
   }
 
   async function lookUpCompanyRoute(stillCurrent: () => boolean): Promise<void> {
+    if ((await probeMachineIdentity()).active) {
+      // An outpost has no person entity: there is no membership to look up,
+      // no company to name and no teammate to invite. Its company is the
+      // app's active one (the outpost was enrolled into it), used only for
+      // the connector import.
+      const active = await activeCompanyForConnectorImport();
+      if (!stillCurrent()) return;
+      companyPath = null;
+      companyPriorPlan = null;
+      companyNamePrefillEnabled = false;
+      inviteTeammateContext = null;
+      showInviteTeammateStep = false;
+      connectorImportCompany = active;
+      companyRouteResolved = true;
+      return;
+    }
     const retryCompanyLookup = resolveCompanyRouteLookupRetryFlag();
     const [email, anonId] = await Promise.all([
       resolveSignedInEmail(),
@@ -3015,8 +3199,10 @@
   /**
    * Leave the setup explainers. The company step comes first when this
    * person needs one, then the ready ("Open HQ Desktop") screen. A lookup
-   * that has not answered yet gets a short wait; if it answers later, the
-   * ready screen hands over to the company step then.
+   * that has not answered yet is waited for (COMPANY_ROUTE_WAIT_MS, the
+   * forward button reads "One moment…"); only one slower than that lets the
+   * ready screen show, and the company step is then offered once the install
+   * is done, with the other follow-ons.
    */
   async function leaveExplainers(): Promise<void> {
     if (leavingExplainers) return;
@@ -3476,15 +3662,32 @@
     await finishWithRecovery();
   }
 
+  /**
+   * The HQ root the backend resolves when no install path is chosen (the
+   * recorded one, else a discovered root). Empty means no folder is known,
+   * and the caller must not launch.
+   */
+  async function resolveLaunchFolder(): Promise<string> {
+    const resolved = await invokeCommand<string>('resolve_hq_path', { create: false });
+    return (resolved ?? '').trim();
+  }
+
   async function handleLaunchClaudeCode() {
     launchEscape = null;
     launching = 'claude';
     let launched = false;
     try {
       const tools = await ensureAiTools();
-      if (tools.claude_desktop) {
+      const folder =
+        installPath?.trim() ||
+        (tools.claude_desktop || tools.claude_cli ? await resolveLaunchFolder() : '');
+      if ((tools.claude_desktop || tools.claude_cli) && !folder) {
+        // A folderless deep link opens Claude in whatever folder it used
+        // last, so never send one.
+        launchEscape = escapeForLaunch('claude', 'HQ folder could not be resolved');
+      } else if (tools.claude_desktop) {
         const url = buildClaudeCodeUrl({
-          folder: installPath ?? '',
+          folder,
           // NOT '/setup': Claude Desktop scans skills before a link-opened
           // folder is trusted, so HQ's project `/setup` skill is not
           // registered in the session this deep link creates.
@@ -3492,8 +3695,8 @@
         });
         await invoke('open_claude_code_link', { url });
         launched = true;
-      } else if (tools.claude_cli && installPath) {
-        await invoke('launch_claude_code', { path: installPath });
+      } else if (tools.claude_cli) {
+        await invoke('launch_claude_code', { path: folder });
         dispatchPostReadyAction('open_cli');
         launched = true;
       } else {
@@ -3625,6 +3828,11 @@
     const nextScene =
       targetScene ?? (next === CONNECTOR_IMPORT_STEP_INDEX ? scene : sceneForStep(next));
     if (next === currentStep) {
+      // Back from the company step can leave the router on it (a finished
+      // install closes the way back into setup), so coming forward again does
+      // not change step. Showing the company step still counts as visiting it,
+      // or the ready screen would send the person through it a second time.
+      if (next === COMPANY_STEP_INDEX && nextScene === 'company') companyStepVisited = true;
       scene = nextScene;
       return;
     }
@@ -3693,6 +3901,11 @@
 
   function goBack(): void {
     if (!chrome.back) return;
+    // The company step goes back through its own screens first.
+    if (scene === 'company' && companyStepRef?.back()) return;
+    // Leaving the company step by Back means it has not been done: the next
+    // Next comes back to it.
+    if (scene === 'company') companyStepVisited = false;
     const target = previousScene(scene, replay);
     if (!target) return;
     if (target === 'welcome') enterSettled = true;
@@ -3797,10 +4010,8 @@
   function startWelcome(): () => void {
     const controller = createWelcomeController({
       reducedMotion: () => reducedMotion,
-      onTick: (progress) => {
-        const fill = tickFills[chrome.currentTick];
-        if (fill) fill.style.width = `${(progress * 100).toFixed(1)}%`;
-      },
+      // No onTick: the progress ticks do not count down a screen's hold; the
+      // current tick is simply on (design review, 2026-10-12).
       // The motion is decoration in front of setup; it must never block it.
       onError: () => {
         motionFailed = true;
@@ -3910,7 +4121,15 @@
         ),
       );
     }
-    for (const id of ['company', 'first-folder', 'invite', 'connectors', 'trust', 'settings', 'run-setup', 'handoff', 'build']) {
+    if (refs['panel:company'] && refs.companyCanvas) {
+      controller.register(
+        'company',
+        createCompanyEngine(refs['panel:company'], refs.companyCanvas as HTMLCanvasElement, {
+          reveal: revealNav,
+        }),
+      );
+    }
+    for (const id of ['first-folder', 'invite', 'connectors', 'trust', 'settings', 'run-setup', 'handoff', 'build']) {
       const block = refs[`panel:${id}`];
       if (block) controller.register(id, createPanelEngine(block, { reveal: revealNav }));
     }
@@ -3946,9 +4165,10 @@
     const settled = enterSettled;
     enterSettled = false;
     if (motionFailed) navRevealed = true;
-    const index = storyOrder.indexOf(next as never);
+    // Ticks up to and including this screen's are full; the rest are empty.
+    const current = chrome.currentTick;
     for (const [tick, fill] of tickFills.entries()) {
-      if (fill) fill.style.width = tick + 1 < index ? '100%' : '0';
+      if (fill) fill.style.width = tick <= current ? '100%' : '0';
     }
     void tick().then(() => {
       controller.show(next, {
@@ -4030,16 +4250,10 @@
   // the teammate invite (flag-gated, sole active member only), then the
   // connector import, which only shows itself if it has something to offer.
   // Each hands back to the ready screen, which picks the next one up here.
-  // The company step comes before the ready screen. When the lookup answers
-  // only after the person reached ready (a quick Skip intro), hand over then;
-  // this does not wait for the install.
-  $effect(() => {
-    if (consentOnly || replay || !companyRouteResolved) return;
-    if (currentStep !== READY_STEP_INDEX) return;
-    if (companyPath && companyPath.kind !== 'skip' && !companyStepVisited) {
-      advanceTo(COMPANY_STEP_INDEX, null);
-    }
-  });
+  // The company step comes before the ready screen: leaving the explainers
+  // waits for the lookup (COMPANY_ROUTE_WAIT_MS), so a person is not shown the
+  // ready screen and then pulled away from it. Only a lookup slower than that
+  // hands over later, once the install is done, with the other follow-ons.
 
   $effect(() => {
     if (consentOnly || replay || !setupCompleted || !postSetupStepsResolved) return;
@@ -4073,7 +4287,6 @@
     const failed =
       event.action === 'company_create_failed' ||
       event.action === 'invite_join_failed' ||
-      event.action === 'checkout_failed' ||
       event.action === 'provisioning_failed';
     const outcome =
       event.action === 'plan_chosen'
@@ -4151,9 +4364,7 @@
   function leaveCompanyStep(result: CompanyStepResult): void {
     const outcome =
       result.outcome === 'created'
-        ? result.paid
-          ? 'workforce_paid'
-          : `created_${result.plan}`
+        ? `created_${result.plan}`
         : result.outcome === 'joined'
           ? 'joined_invite'
           : result.outcome;
@@ -4162,6 +4373,8 @@
     if (result.outcome === 'created') {
       connectorImportCompany = result.companyUid;
       recordWorkspaceSelected(result.companyUid);
+      // The company step asked about invites itself: never ask twice.
+      inviteTeammateVisited = true;
     } else if (result.outcome === 'joined') {
       details.decision = 'joined_invite';
       const joinedInvite =
@@ -4289,18 +4502,34 @@
                     type="submit"
                     data-testid="microsoft-email-continue"
                     disabled={loadingProvider !== null || microsoftEmail.trim() === ''}
-                  ><RailIcon name="arrow-right" />Continue</button>
+                  >Continue</button>
                 </form>
               {/if}
             {/if}
           </div>
-          {#if existingSessionEmail}
+          {#if existingSessionOutpost}
+            <p class="status inline-note" role="status" data-testid="onboarding-signed-in-as">
+              You're signed in as this outpost ({existingSessionOutpostLabel}).
+              <button class="link-inline" type="button" data-testid="onboarding-signed-in-as-continue" disabled={switchingAccount} onclick={continueExistingSession}>Continue</button>
+              or
+              <button class="link-inline" type="button" data-testid="onboarding-signed-in-as-switch" disabled={switchingAccount} onclick={() => void switchAccount('welcome')}>switch account</button>?
+            </p>
+          {:else if existingSessionEmail}
             <p class="status inline-note" role="status" data-testid="onboarding-signed-in-as">
               You're signed in as {existingSessionEmail}.
               <button class="link-inline" type="button" data-testid="onboarding-signed-in-as-continue" disabled={switchingAccount} onclick={continueExistingSession}>Continue</button>
               or
               <button class="link-inline" type="button" data-testid="onboarding-signed-in-as-switch" disabled={switchingAccount} onclick={() => void switchAccount('welcome')}>switch account</button>?
             </p>
+          {:else if machineIdentity.available}
+            <!-- This machine has its own outpost identity, not in use (opted out, or not resolved yet). -->
+            <p class="status inline-note" role="status" data-testid="onboarding-use-outpost-note">
+              This machine has its own outpost identity.
+              <button class="link-inline" type="button" data-testid="onboarding-use-outpost" disabled={usingMachineIdentity || loadingProvider !== null} aria-busy={usingMachineIdentity} onclick={() => void useMachineIdentity()}>{usingMachineIdentity ? 'Signing in as this outpost…' : "Use this outpost's identity"}</button>
+            </p>
+            {#if machineIdentityError}
+              <p class="status error inline-note" role="alert" data-testid="onboarding-use-outpost-error">{machineIdentityError}</p>
+            {/if}
           {/if}
           {#if signInError}
             <p class="status error inline-note" role="alert">{signInError}</p>
@@ -4316,7 +4545,7 @@
     </div>
     {#if replay}
       <div class="nav" class:on={scene === 'welcome' && navRevealed} bind:this={refs.navWelcome}>
-        <button class="btn btn-primary" type="button" onclick={forward}><RailIcon name="arrow-right" />Next</button>
+        <button class="btn btn-primary" type="button" onclick={forward}>Next</button>
       </div>
     {/if}
   </section>
@@ -4425,7 +4654,7 @@
       {/each}
     </ul>
     <div class="nav" class:on={scene === 'cloud' && navRevealed} bind:this={refs.navCloud}>
-      <button class="btn btn-primary" type="button" onclick={forward}><RailIcon name="arrow-right" />Next</button>
+      <button class="btn btn-primary" type="button" onclick={forward}>Next</button>
     </div>
   </section>
 
@@ -4465,7 +4694,13 @@
       <span class="chordcap">Open the HQ desktop view</span>
     </p>
     <div class="nav" class:on={scene === 'shortcut' && navRevealed} bind:this={refs.navShortcut}>
-      <button class="btn btn-primary" type="button" onclick={forward}>{replay ? 'Done' : 'Next'}</button>
+      <button
+        class="btn btn-primary"
+        type="button"
+        disabled={leavingExplainers}
+        aria-busy={leavingExplainers}
+        onclick={forward}
+      >{replay ? 'Done' : leavingExplainers ? 'One moment…' : 'Next'}</button>
     </div>
   </section>
 
@@ -4645,9 +4880,11 @@
       data-scene="company"
       aria-labelledby="onboarding-title-company"
     >
+      <canvas class="company-art" aria-hidden="true" bind:this={refs.companyCanvas}></canvas>
       <div class="panel-block" bind:this={refs['panel:company']}>
         {#if currentStep === COMPANY_STEP_INDEX && companyPath && companyPath.kind !== 'skip'}
           <CompanyStep
+            bind:this={companyStepRef}
             path={companyPath}
             priorPlan={companyPriorPlan}
             namePrefillEnabled={companyNamePrefillEnabled}
@@ -4658,6 +4895,7 @@
             listen={(event, handler) => listen(event, (message) => handler(message.payload))}
             onTelemetry={recordCompanyStep}
             oncomplete={leaveCompanyStep}
+            onbackchange={(canGoBack) => (companyBack = canGoBack)}
           />
         {/if}
       </div>
@@ -4702,7 +4940,7 @@
                 type="button"
                 data-testid="onboarding-first-folder-sync-skip"
                 onclick={() => advanceTo(nextAfterFirstFolderSync(), 'skipped')}
-              ><RailIcon name="arrow-right" />Skip for now</button>
+              >Skip for now</button>
             </div>
           </div>
         {/if}
@@ -4772,7 +5010,7 @@
                   type="button"
                   data-testid="onboarding-invite-skip"
                   onclick={leaveInviteTeammate}
-                >{inviteSent ? 'Continue' : 'Skip'}</button>
+                >{inviteSent ? 'Continue' : 'Skip for now'}</button>
               </div>
             </form>
           </div>
@@ -4854,11 +5092,9 @@
           aria-busy={finishing || installPending}
           onclick={() => void handleFinish()}
         >
-          <span class="tc-icon" aria-hidden="true">{@render ToolIcon('desktop')}</span>
-          <span class="tc-text">
-            <span class="tc-name">HQ Desktop</span>
-            <span class="tc-line">{openDesktop.label === 'Open HQ Desktop' ? 'Use HQ’s own app' : openDesktop.label}</span>
-          </span>
+          <span class="tc-icon" aria-hidden="true"><img src={hqAppIcon} alt="" width="32" height="32" /></span>
+          <span class="tc-name">{openDesktop.label}</span>
+          {#if !openDesktop.enabled}<span class="tc-spin" aria-hidden="true"></span>{/if}
         </button>
         {#if probeInFlight && !probeTimedOut && !detectionFailed && installedToolSlots.length === 0}
           <div
@@ -4977,7 +5213,9 @@
             </div>
           {/if}
         </div>
-        <!-- Usage data: one quiet line, recorded when the person finishes. -->
+        <!-- Usage data: one quiet line, recorded when the person finishes.
+             Not asked of an outpost: a fleet agent has no consent dialog. -->
+        {#if consentOnReady}
         <div class="alt ready-consent" class:on={scene === 'ready' && navRevealed} data-testid="ready-consent">
           <label class="rc-check">
             <input
@@ -5000,9 +5238,8 @@
             aria-busy={privacyOpening}
             onclick={() => void handleOpenPrivacy()}
           >{privacyOpening ? 'Opening…' : privacyOpenError ? 'Retry opening what’s collected' : 'What’s collected'}</button>
-          <span class="rc-sep" aria-hidden="true">·</span>
           {#if hqAnywhereRuntimeEnabled}
-            <label class="rc-check">
+            <label class="rc-check rc-check-next">
               <input
                 type="checkbox"
                 data-testid="ready-hq-anywhere"
@@ -5037,6 +5274,7 @@
             <span class="consent-link-error" role="alert">Couldn’t open the page.</span>
           {/if}
         </div>
+        {/if}
         {#if consentFailure}
           <div
             class="note consent-error"
@@ -5085,7 +5323,7 @@
         <div class="graphic" aria-hidden="true">{@render TrustMock()}</div>
         <h2 class="h h-md" id="onboarding-title-trust" tabindex="-1" data-scene-heading>Trust your workspace</h2>
         <p class="body">Claude Code will open with your hq folder selected and /setup ready to run. Choose “Yes, trust this workspace.” Just check that hq is still the folder it’s pointing at.</p>
-        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(READY_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(SETTINGS_STEP_INDEX)}><RailIcon name="arrow-right" />Continue</button></div>
+        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(READY_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(SETTINGS_STEP_INDEX)}>Continue</button></div>
       </div>
     </section>
 
@@ -5094,7 +5332,7 @@
         <div class="graphic" aria-hidden="true">{@render SettingsMock()}</div>
         <h2 class="h h-md" id="onboarding-title-settings" tabindex="-1" data-scene-heading>Dial in your settings</h2>
         <p class="body">For the best results, use the latest models (Opus 4.8 or GPT-5.5), set thinking to “High” or above, and turn on auto mode (bypass permissions). You might need to flip that last one on in settings.</p>
-        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(TRUST_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(RUN_SETUP_STEP_INDEX)}><RailIcon name="arrow-right" />Continue</button></div>
+        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(TRUST_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(RUN_SETUP_STEP_INDEX)}>Continue</button></div>
       </div>
     </section>
 
@@ -5103,7 +5341,7 @@
         <div class="graphic" aria-hidden="true">{@render SetupPromptMock()}</div>
         <h2 class="h h-md" id="onboarding-title-run-setup" tabindex="-1" data-scene-heading>Press enter to run /setup</h2>
         <p class="body">Hit ⏎ in the message box to start setup.</p>
-        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(SETTINGS_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(HANDOFF_STEP_INDEX)}><RailIcon name="arrow-right" />Continue</button></div>
+        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(SETTINGS_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(HANDOFF_STEP_INDEX)}>Continue</button></div>
       </div>
     </section>
 
@@ -5112,7 +5350,7 @@
         <div class="graphic" aria-hidden="true">{@render HandoffMock()}</div>
         <h2 class="h h-md" id="onboarding-title-handoff" tabindex="-1" data-scene-heading>Answer, then run /handoff</h2>
         <p class="body">Work through every question until it says setup is finished, then send “/handoff” to save everything to HQ’s memory. You’ll do this at the end of every session.</p>
-        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(RUN_SETUP_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(BUILD_STEP_INDEX)}><RailIcon name="arrow-right" />Continue</button></div>
+        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(RUN_SETUP_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(BUILD_STEP_INDEX)}>Continue</button></div>
       </div>
     </section>
 
@@ -5145,7 +5383,7 @@
         <span class="sr-only">Screen {chrome.currentTick + 2} of {chrome.tickCount + 1}</span>
       {/if}
       {#if chrome.skip}
-        <button class="btn btn-ghost skip" type="button" data-testid="welcome-skip" onclick={skipIntro}><RailIcon name="arrow-right" />Skip intro</button>
+        <button class="btn btn-ghost skip" type="button" data-testid="welcome-skip" disabled={leavingExplainers} onclick={skipIntro}>Skip intro</button>
       {/if}
     </div>
     <button
@@ -5269,17 +5507,12 @@
   <svg viewBox="0 0 120 120" aria-hidden="true"><g fill="currentColor"><path d="M117.6,61.36c0-4.25-.38-8.35-1.09-12.27H60v23.21h32.29c-1.39,7.5-5.62,13.85-11.97,18.11v15.06h19.39c11.35-10.45,17.89-25.83,17.89-44.1Z" /><path d="M60,120c16.2,0,29.78-5.37,39.71-14.54l-19.39-15.05c-5.37,3.6-12.25,5.73-20.32,5.73-15.63,0-28.85-10.55-33.57-24.74H6.38v15.55C16.25,106.55,36.55,120,60,120Z" /><path d="M26.43,71.4c-1.2-3.6-1.88-7.45-1.88-11.4s.68-7.8,1.88-11.4V33.05H6.38C2.32,41.15,0,50.32,0,60s2.32,18.85,6.38,26.95l20.05-15.55Z" /><path d="M60,23.86c8.81,0,16.72,3.03,22.94,8.98l17.21-17.21C89.75,5.95,76.17,0,60,0,36.55,0,16.25,13.45,6.38,33.05l20.05,15.55C31.15,34.42,44.37,23.86,60,23.86Z" /></g></svg>
 {/snippet}
 
-{#snippet ToolIcon(kind: LaunchKind | 'desktop')}
-  {#if kind === 'desktop'}
-    <!-- a window -->
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2.5" /><path d="M3.5 9.5h17" /></svg>
-  {:else if kind === 'codex'}
-    <!-- a terminal prompt -->
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 7.5 9.5 12 5 16.5" /><path d="M12.5 16.5H19" /></svg>
-  {:else}
-    <!-- an eight-ray spark -->
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 3.5v17M3.5 12h17M6 6l12 12M18 6 6 18" /></svg>
-  {/if}
+{#snippet ToolIcon(kind: LaunchKind)}
+  <!-- The vendors' published marks in single-colour white (Claude Spark,
+       OpenAI Blossom), the same path data as the app's brand icons
+       (packages/ui rail-icons BRAND_ICONS; sources in docs/brand-marks.md). -->
+  {@const brand = BRAND_ICONS[kind === 'codex' ? 'codex' : 'claude-code']}
+  <svg viewBox={brand.viewBox} aria-hidden="true"><path d={brand.d} fill="currentColor" fill-rule="evenodd" /></svg>
 {/snippet}
 
 {#snippet MicrosoftMark()}

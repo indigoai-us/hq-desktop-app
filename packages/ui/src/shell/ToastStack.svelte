@@ -74,6 +74,42 @@
       }
     }
     if (next.join() !== heldIds.join()) heldIds = next;
+    measureLift();
+  }
+
+  /**
+   * A message composer the toasts would cover at their resting place (16px
+   * from the bottom and the right). The stack lifts just clear of it, so a
+   * sticky notice never hides the Send button (Shawon's review, 2026-10-16);
+   * anywhere else the stack keeps its equal gaps.
+   */
+  const COMPOSER_SELECTOR = '[data-testid="conversation-composer"], [data-testid="composer-send"]';
+  const COMPOSER_GAP = 12;
+  let composerLift = $state(0);
+
+  function measureLift(): void {
+    if (!stackEl || typeof document === "undefined") return;
+    const boxes = Array.from(stackEl.querySelectorAll<HTMLElement>("[data-toast-id]"))
+      .map((el) => el.getBoundingClientRect())
+      .filter((r) => r.width > 0 && r.height > 0);
+    if (!boxes.length) {
+      if (composerLift) composerLift = 0;
+      return;
+    }
+    // Where the toasts sit without any lift.
+    const top = Math.min(...boxes.map((r) => r.top)) + composerLift;
+    const bottom = Math.max(...boxes.map((r) => r.bottom)) + composerLift;
+    const left = Math.min(...boxes.map((r) => r.left));
+    const right = Math.max(...boxes.map((r) => r.right));
+    let lift = 0;
+    for (const el of Array.from(document.querySelectorAll(COMPOSER_SELECTOR))) {
+      if (stackEl.contains(el)) continue;
+      const r = el.getBoundingClientRect();
+      if (!(r.width > 0 && r.height > 0)) continue;
+      const covers = Math.min(r.right, right) > Math.max(r.left, left) && Math.min(r.bottom, bottom) > Math.max(r.top, top);
+      if (covers) lift = Math.max(lift, Math.ceil(bottom - r.top + COMPOSER_GAP));
+    }
+    if (lift !== composerLift) composerLift = lift;
   }
 
   // Re-measure when the DOM or the window changes, at most once per frame.
@@ -120,6 +156,8 @@
   bind:this={stackEl}
   aria-live="polite"
   data-testid="toast-stack"
+  data-composer-lift={composerLift || undefined}
+  style:--ts-lift="{composerLift}px"
   data-reduced-motion={reduced ? "true" : "false"}
   class:reduced
 >
@@ -127,6 +165,9 @@
     <div
       class="ts-toast"
       class:err={toast.tone === "err"}
+      class:holo={toast.look === "holo"}
+      class:has-lead={Boolean(toast.lead)}
+      data-look={toast.look ?? "plain"}
       role={toast.tone === "err" ? "alert" : "status"}
       data-testid={toast.testId ?? "toast"}
       data-toast-key={toast.key}
@@ -140,6 +181,10 @@
         if (!heldIds.includes(toast.id)) resumeToast(toast.id);
       }}
     >
+      {#if toast.look === "holo"}<span class="ts-holo-edge" aria-hidden="true"></span>{/if}
+      {#if toast.lead}
+        <div class="ts-lead" data-testid="toast-lead"><toast.lead.component {...toast.lead.props ?? {}} /></div>
+      {/if}
       <div class="ts-b">
         <span class="ts-title">{toast.title}</span>
         {#if toast.detail}<span class="ts-m" data-testid="toast-detail">{toast.detail}</span>{/if}
@@ -215,9 +260,13 @@
   .ts-stack {
     --ts-font: var(--font-ui, "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
     font-family: var(--ts-font);
+    /* The same 16px from the bottom as from the right (owner, 2026-10-16:
+       "shoul dbe equidistant from bottom as from right"). */
+    --ts-inset: 16px;
     position: fixed;
-    right: 16px;
-    bottom: var(--toast-bottom-inset, 84px);
+    right: var(--ts-inset);
+    /* --ts-lift: clear of a message composer it would cover (measureLift). */
+    bottom: calc(var(--toast-bottom-inset, var(--ts-inset)) + var(--ts-lift, 0px));
     z-index: 50000;
     display: flex;
     flex-direction: column;
@@ -416,5 +465,74 @@
   .ts-x:focus-visible {
     outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
     outline-offset: 2px;
+  }
+  /* A lead (a badge's mark) sits left of the text, centred on the title line. */
+  .ts-toast.has-lead { grid-template-columns: auto minmax(0, 1fr) 24px; gap: 10px; }
+  .ts-lead { display: flex; align-items: center; min-height: 38px; }
+
+  /* Holographic: the badge cards' shimmer, drawn in CSS. The toast keeps the
+     neutral overlay surface (raised-surface guard); the colour is two
+     decorations over it: a thin iridescent edge laid on the border (its own
+     layer, masked to a 1px ring) and a sheen that sweeps across twice as the
+     notice comes in and again while it is hovered. No blur behind it. */
+  @property --ts-holo-a {
+    syntax: "<angle>";
+    inherits: false;
+    initial-value: 0deg;
+  }
+  /* No overflow clip: the edge layer sits on the border, outside the padding box. */
+  .ts-toast.holo {
+    position: relative;
+  }
+  .ts-holo-edge {
+    position: absolute;
+    inset: -1px;
+    padding: 1px;
+    border-radius: inherit;
+    pointer-events: none;
+    background: conic-gradient(from var(--ts-holo-a), #6ee7f9, #a78bfa, #f472b6, #fbbf24, #86efac, #6ee7f9);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    animation: ts-holo-turn 3.2s linear 2;
+  }
+  .ts-toast.holo::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: linear-gradient(
+      115deg,
+      rgba(110, 231, 249, 0) 30%,
+      rgba(110, 231, 249, 0.16) 40%,
+      rgba(167, 139, 250, 0.2) 46%,
+      rgba(244, 114, 182, 0.18) 52%,
+      rgba(251, 191, 36, 0.14) 58%,
+      rgba(134, 239, 172, 0) 68%
+    );
+    background-size: 260% 100%;
+    background-position: 130% 0;
+    animation: ts-holo-sweep 1.6s ease-in-out 200ms 2 both;
+  }
+  .ts-toast.holo:hover .ts-holo-edge { animation: ts-holo-turn 3.2s linear infinite; }
+  .ts-toast.holo:hover::after { animation: ts-holo-sweep 1.6s ease-in-out infinite; }
+  .ts-toast.holo > :not(.ts-holo-edge) { position: relative; z-index: 1; }
+  /* The badge names wrap to a second line rather than trail off. */
+  .ts-toast.holo .ts-m { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
+  @keyframes ts-holo-turn {
+    to { --ts-holo-a: 360deg; }
+  }
+  @keyframes ts-holo-sweep {
+    from { background-position: 130% 0; }
+    to { background-position: -30% 0; }
+  }
+  /* Reduced motion: the iridescent edge holds still and nothing sweeps. */
+  .reduced .ts-holo-edge, .reduced .ts-toast.holo:hover .ts-holo-edge { animation: none; }
+  .reduced .ts-toast.holo::after, .reduced .ts-toast.holo:hover::after { animation: none; opacity: 0; }
+  @media (prefers-reduced-motion: reduce) {
+    .ts-holo-edge, .ts-toast.holo:hover .ts-holo-edge { animation: none; }
+    .ts-toast.holo::after, .ts-toast.holo:hover::after { animation: none; opacity: 0; }
   }
 </style>

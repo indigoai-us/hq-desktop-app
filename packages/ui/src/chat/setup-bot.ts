@@ -423,7 +423,7 @@ export const SETUP_BOT_FINALE_COPY = {
   codex: "Open in Codex",
   consoleLead: "Manage your team, billing and bots from the HQ console on the web.",
   console: "Open the HQ console",
-  slackLead: "Want to talk to your bot where your team already works? A Slack bot needs the Workforce plan.",
+  slackLead: "Want to talk to your bot where your team already works? A Slack bot runs on a hosted cloud box.",
   /** Button label; `{name}` is the bot's name. */
   slack: "Put {name} in Slack",
   dismiss: "Dismiss",

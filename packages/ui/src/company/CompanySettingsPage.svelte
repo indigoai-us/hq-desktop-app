@@ -3,8 +3,11 @@
   /**
    * Company settings (console-rail US-030).
    * General, Brand, Groups, Grants, HQ Workforce, and Billing.
-   * Cached snapshot paints on the first frame. Upgrade opens Stripe checkout.
-   * Manage payment opens the Stripe portal. Delete group asks first.
+   * Cached snapshot paints on the first frame. Usage-priced companies see
+   * month-to-date usage, credit left, the vault fee and box prices in
+   * Billing; other companies keep seats and the Upgrade to Stripe checkout.
+   * Manage payment opens a Stripe portal session hq-pro mints for this
+   * company (never a fixed link). Delete group asks first.
    */
   import {
     emptySnapshot,
@@ -16,6 +19,9 @@
     type SettingsTab,
   } from "./company-settings.js";
   import type { CompanyApi, FilesApi, MessagingApi } from "@hq/platform";
+  import { billingPortalHint, openBillingPortal, type BillingPortalOutcome } from "../account/billing-portal.js";
+  import { readUsageBilling, vaultCostCents, type UsageBillingView } from "./usage-billing.js";
+  import { boxLadder, boxRange, formatCardCents, formatCardUsd, vaultMeter } from "./usage-pricing.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   import GroupGrantsPane from "./GroupGrantsPane.svelte";
   import type { GrantTarget } from "./group-grants.js";
@@ -127,6 +133,35 @@
   });
 
   const hostedAgentCount = $derived(snap.agents.length || rosterAgents.length);
+
+  // Usage-priced companies (usage-only-pricing US-014). hq-pro's billing
+  // summary says `pricingPlan: "usage-only"`; then the pane shows this month's
+  // usage statement instead of seats. Null keeps the seats view: not
+  // usage-only, not an owner (403), or the summary could not be read.
+  let usage = $state<UsageBillingView | null>(null);
+  let usageCompany = $state<string | null>(null);
+  $effect(() => {
+    if (!showPlan) return;
+    const uid = companyUid;
+    const api = company;
+    if (usageCompany !== uid) usage = null;
+    if (!uid || !api) return;
+    let cancelled = false;
+    void readUsageBilling(api, uid).then((view) => {
+      if (cancelled) return;
+      usage = view;
+      usageCompany = uid;
+    });
+    return () => {
+      cancelled = true;
+    };
+  });
+  const usageVault = $derived(usage ? vaultMeter(usage.pricing) : null);
+  const usageVaultCents = $derived(usage ? vaultCostCents(usage.statement) : null);
+  const usageTrialActive = $derived(usage?.trial?.status === "active");
+  const usageTrialEnds = $derived(
+    usage?.trial?.endsAt ? new Date(usage.trial.endsAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : null,
+  );
 
   // Live Groups and Grants. Sync does not feed these panes: they read hq-pro
   // when opened, paint the last good read first, and show loading and failed
@@ -246,9 +281,39 @@
     remember();
   }
 
-  function openStripe(action: "upgrade" | "portal"): void {
+  function openStripe(action: "upgrade"): void {
     const url = stripeDestination(action);
     openExternal?.(url);
+  }
+
+  // Manage payment: hq-pro mints the portal session per click (owner-gated,
+  // customer ownership verified server-side). Pending while in flight; a
+  // failure leaves a quiet hint and the same button retries.
+  let portalPending = $state(false);
+  let portalOutcome = $state<BillingPortalOutcome | null>(null);
+  const portalOwnerOnly = $derived(role !== null && role.toLowerCase() !== "owner");
+  const portalHint = $derived(
+    portalOwnerOnly
+      ? billingPortalHint({ kind: "owner-only" }, companyLabel)
+      : billingPortalHint(portalOutcome, companyLabel),
+  );
+
+  async function managePayment(): Promise<void> {
+    const uid = companyUid;
+    const api = company;
+    const open = openExternal;
+    if (portalPending || portalOwnerOnly || !uid || !api || !open) return;
+    portalPending = true;
+    portalOutcome = null;
+    try {
+      portalOutcome = await openBillingPortal({
+        companyUid: uid,
+        createSession: (id) => api.createBillingPortalSession(id),
+        openExternal: open,
+      });
+    } finally {
+      portalPending = false;
+    }
   }
 
 </script>
@@ -365,11 +430,49 @@
       <div class="page-head">
         <div>
           <h2>Billing</h2>
-          <p class="sub">Plan, seats and payment · billed to {snap.general.name || companyLabel}</p>
+          <p class="sub">{usage ? "Usage, credit and payment" : "Plan, seats and payment"} · billed to {snap.general.name || companyLabel}</p>
         </div>
         <span class="grow"></span>
-        <RailButton icon="external" type="button" data-testid="manage-payment" onclick={() => openStripe("portal")}>Manage payment</RailButton>
+        {#if !portalOwnerOnly}
+          <RailButton
+            icon="external"
+            type="button"
+            data-testid="manage-payment"
+            disabled={portalPending || !companyUid || !company || !openExternal}
+            aria-busy={portalPending}
+            onclick={() => void managePayment()}
+          >{portalPending ? "Opening Stripe…" : portalOutcome && portalOutcome.kind !== "opened" ? "Try again" : "Manage payment"}</RailButton>
+        {/if}
       </div>
+      {#if portalHint}
+        <p class="note" data-testid="manage-payment-hint" role="status">{portalHint}</p>
+      {/if}
+      {#if usage}
+        {@const statement = usage.statement}
+        <div class="plan" data-testid="usage-billing">
+          <div data-testid="usage-month-to-date">
+            <b>{statement ? formatCardCents(statement.usageCents) : "–"}</b><span>Usage this month</span>
+          </div>
+          <div data-testid="usage-credit-left">
+            <b>{statement ? formatCardCents(statement.allowanceLeftCents) : "–"}</b><span>Credit left of {formatCardUsd(usage.pricing.includedUsd)} included</span>
+          </div>
+          <div data-testid="usage-vault-fee">
+            <b>{usageVaultCents !== null ? formatCardCents(usageVaultCents) : usageVault ? formatCardUsd(usageVault.unitUsd) : "–"}</b><span>{usageVaultCents !== null ? "Vault fee this month" : "Vault fee per vault a month"}{usageVault?.waivedInTrial && usageTrialActive ? " · waived during the trial" : ""}</span>
+          </div>
+          <div data-testid="usage-boxes">
+            <b>{hostedAgentCount}</b><span>Cloud bot boxes · {boxRange(usage.pricing.boxes)}</span>
+          </div>
+        </div>
+        {#if !statement}
+          <p class="note" data-testid="usage-statement-unavailable">This month's usage is not available yet. The credit and rates below still apply.</p>
+        {:else if statement.billCents > 0}
+          <p class="note" data-testid="usage-bill-so-far">Owed so far past the included credit: {formatCardCents(statement.billCents)}.</p>
+        {/if}
+        {#if usageTrialActive}
+          <p class="note" data-testid="usage-trial">Trial{usageTrialEnds ? ` until ${usageTrialEnds}` : ""}, usage capped at {formatCardUsd(usage.trial?.capCents != null ? usage.trial.capCents / 100 : usage.pricing.trial.capUsd)}.</p>
+        {/if}
+        <p class="note" data-testid="usage-box-ladder">Box sizes: {boxLadder(usage.pricing.boxes)} a month.</p>
+      {:else}
       <div class="plan">
         <div data-testid="workforce-seats">
           <b>{rosterHumans ?? "–"}</b>{#if seatLimit && snap.seatsLimit !== null}<span data-testid="workforce-seat-limit"> of {snap.seatsLimit}</span>{/if}<span>Seats used · humans on Team</span>
@@ -391,7 +494,8 @@
         </div>
         <RailButton icon="arrow-right" variant="primary" type="button" data-testid="workforce-upgrade" onclick={() => openStripe("upgrade")}>Upgrade</RailButton>
       </div>
-      <p class="note">Manage payment opens the Stripe customer portal in your browser.</p>
+      {/if}
+      <p class="note">Manage payment opens the Stripe customer portal in your browser. Invoices are listed there.</p>
     {/if}
   </div>
 </section>

@@ -1307,9 +1307,8 @@ describe('embedded Work navigation and lifecycle', () => {
     await flush();
     expect(openExternal).toHaveBeenLastCalledWith('https://hq.computer/');
 
-    // Settings no longer lists companies; they are reached from the rail
-    // tiles and the More companies popover.
-    expect(host.querySelector('[data-testid="settings-nav-companies"]')).toBeNull();
+    // Owner-approved 2026-10-11: Settings has a Companies screen again.
+    expect(host.querySelector('[data-testid="settings-nav-companies"]')).not.toBeNull();
 
     warmRoute('meetings');
     await flush();
@@ -1410,6 +1409,26 @@ describe('embedded Work navigation and lifecycle', () => {
       (host.querySelector('[data-testid="settings-display-name-input"]') as HTMLInputElement)
         .value,
     ).toBe('Grace');
+  });
+
+  it('puts a failed outpost mint on the sign-in screen, not the retry-only recovery screen', async () => {
+    // PR 1612 review: a persistent machine_unavailable (broken CLI, revoked
+    // machine credentials) left the person on "Reconnecting" with only Retry.
+    await mountShell({
+      calls: [],
+      authSession: {
+        accountId: null,
+        generation: 1,
+        status: 'machine_unavailable',
+        reason: 'outpost session unavailable',
+      },
+    });
+    expect(host.querySelector('[data-testid="hq-work-auth-recovery"]')).toBeNull();
+    const signedOut = host.querySelector('[data-testid="hq-work-signed-out"]');
+    expect(signedOut).toBeTruthy();
+    expect(signedOut?.querySelector('[data-testid="sign-in-description"]')?.textContent).toContain(
+      'sign in as this outpost',
+    );
   });
 
   it('retries only the recoverable native refresh state on coalesced online/focus recovery', async () => {

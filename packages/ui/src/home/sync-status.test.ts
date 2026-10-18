@@ -66,10 +66,10 @@ describe("sync-status reducer", () => {
 
   it("leaves attention states to the Core pill rather than lighting a second warning", () => {
     // The Core pill's dot tone and its popover sentence already own
-    // auth-error / conflict / error. A second indicator in the same bar makes
-    // it ambiguous which one to act on. The phase is still reduced and
+    // auth-error / error. A second indicator in the same bar makes it
+    // ambiguous which one to act on. The phase is still reduced and
     // available; the title bar just does not draw it.
-    for (const event of ["sync:auth-error", "sync:conflict", "sync:error"]) {
+    for (const event of ["sync:auth-error", "sync:error"]) {
       let s = reduceSyncEvent(emptySyncStatus(), "sync:plan", plan("acme", 9));
       s = reduceSyncEvent(s, event, {});
       const label = syncStatusLabel(s);
@@ -77,6 +77,15 @@ describe("sync-status reducer", () => {
       expect(label.tone).toBe("attention");
       expect(s.phase, "the phase is still tracked for other consumers").not.toBe("idle");
     }
+  });
+
+  it("ignores per-file conflict events", () => {
+    // Owner decision 2026-10-13: a parked conflict copy has no desktop
+    // surface, so a conflict line never moves the shell out of its phase.
+    let s = reduceSyncEvent(emptySyncStatus(), "sync:plan", plan("acme", 9));
+    s = reduceSyncEvent(s, "sync:progress", { company: "acme" });
+    expect(reduceSyncEvent(s, "sync:conflict", { path: "a.md" })).toBe(s);
+    expect(SYNC_STATUS_EVENTS as readonly string[]).not.toContain("sync:conflict");
   });
 
   it("says nothing at all when idle", () => {

@@ -345,6 +345,12 @@ describe("listingDisplayName — friendly card/detail title", () => {
         listing({ slug: "imessage", name: "hq-pack-imessage" }),
       ),
     ).toBe("iMessage");
+    // Product name — must read "HQ Capture", not the prettifier's "Capture".
+    expect(
+      listingDisplayName(
+        listing({ slug: "hq-capture", name: "hq-pack-hq-capture" }),
+      ),
+    ).toBe("HQ Capture");
   });
 
   it("falls back to a prettified package name for an unknown slug", () => {

@@ -21,6 +21,7 @@ import {
   hasBadgeSource,
   setBadgeProgressSource,
   setBadgeSource,
+  setBadgesEnabledSource,
   type BadgeProgress,
   type BadgeSubject,
 } from "./badge-source.js";
@@ -33,11 +34,16 @@ export type BadgeApi = Pick<IdentityApi, "getBadges">;
 interface Entry {
   badges: readonly EarnedBadge[];
   progress: readonly BadgeProgress[];
+  /**
+   * The server's answer: badges are on for this person. False for
+   * `enabled: false` and for any failure, which shows nothing.
+   */
+  enabled: boolean;
   /** When the read finished, for the refresh. */
   at: number;
 }
 
-const EMPTY: Omit<Entry, "at"> = { badges: [], progress: [] };
+const EMPTY: Omit<Entry, "at"> = { badges: [], progress: [], enabled: false };
 
 const cache = $state<Record<string, Entry>>({});
 const inflight = new Set<string>();
@@ -99,7 +105,7 @@ function load(uid: string, from: BadgeApi): void {
         return;
       }
       const badges = earnedFromPayload(res.value);
-      settle({ badges, progress: progressFromPayload(res.value, badges) });
+      settle({ badges, progress: progressFromPayload(res.value, badges), enabled: res.value.enabled === true });
     })
     .catch(() => settle(EMPTY))
     .finally(() => inflight.delete(uid));
@@ -124,6 +130,15 @@ export function loadedBadgeProgressFor(subject: BadgeSubject): readonly BadgePro
 }
 
 /**
+ * Whether the server has badges on for a person: null until their badges
+ * have loaded. Starts the read, like the two above.
+ */
+export function loadedBadgesEnabledFor(subject: BadgeSubject): boolean | null {
+  const entry = entryFor(subject);
+  return entry ? entry.enabled : null;
+}
+
+/**
  * Make hq-pro the badge source, for an adapter that can read badges. Leaves
  * an installed source alone (the design harness's samples). Returns the
  * uninstall, which also drops the cache.
@@ -134,10 +149,12 @@ export function installBadgeLoader(next: BadgeApi | null | undefined): () => voi
   api = next;
   setBadgeSource(loadedBadgesFor);
   setBadgeProgressSource(loadedBadgeProgressFor);
+  setBadgesEnabledSource(loadedBadgesEnabledFor);
   return () => {
     if (api !== next) return;
     setBadgeSource(null);
     setBadgeProgressSource(null);
+    setBadgesEnabledSource(null);
     resetBadgeLoader();
   };
 }

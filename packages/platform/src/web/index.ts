@@ -17,6 +17,7 @@ import {
   connectionGrantBody,
   failure,
   integrationAppRefBody,
+  integrationOAuthStartBody,
   normalizeReplyThreadValue,
   normalizeNotificationsFeed,
   ok,
@@ -35,6 +36,7 @@ import {
   type Json,
   type PlatformAdapter,
 } from "../adapter.js";
+import { createPersonalAppsApi } from "../personal-apps.js";
 import { WEB_CAPABILITIES, type Capability } from "../capabilities.js";
 import { parseBadgesPayload } from "../badges.js";
 import { createUnsupportedCallsApi } from "../calls/api.js";
@@ -51,6 +53,7 @@ import {
   DESKTOP_AGENT_CREATION_FLAG,
   PERSONAL_WORKSPACE_BOARD_FLAG,
   PERSONAL_TRANSCRIPTS_FLAG,
+  FIRST_RUN_FOUND_APPS_FLAG,
   type ScopedFeatureFlagGates,
 } from "../flags.js";
 import {
@@ -234,6 +237,18 @@ export const WEB_PATHS = {
     `/companies/${encodeURIComponent(slug)}/activity`,
   companyHomeChannel: (companyUid: string) =>
     `/v1/companies/${encodeURIComponent(companyUid)}/home-channel`,
+  /** POST, body `{ companyUid }`: hq-pro's owner-gated Stripe portal mint. */
+  companyBillingPortal: () => `/v1/billing/portal`,
+  /** POST, body `{ companyUid }`: hq-pro's owner-gated Stripe card-capture Checkout. */
+  companyBillingCheckout: () => `/v1/billing/checkout/org`,
+  /** GET, owner-gated: plan, pricing plan (`usage-only`) and usage trial. */
+  companyBillingSummary: (companyUid: string) =>
+    `/v1/billing/summary?companyUid=${encodeURIComponent(companyUid)}`,
+  /** GET, owner-gated: this calendar month's usage statement. */
+  companyUsageStatement: (companyUid: string) =>
+    `/v1/billing/usage?companyUid=${encodeURIComponent(companyUid)}&window=month`,
+  /** GET, public price list. */
+  pricing: "/v1/pricing",
   firstWeekReturnNudge: (companyUid: string) =>
     `/membership/first-week-return-nudge?companyUid=${encodeURIComponent(companyUid)}`,
 
@@ -531,7 +546,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
       flag === "agents.claude-provider" ||
       flag === DESKTOP_AGENT_CREATION_FLAG ||
       flag === PERSONAL_WORKSPACE_BOARD_FLAG ||
-      flag === PERSONAL_TRANSCRIPTS_FLAG
+      flag === PERSONAL_TRANSCRIPTS_FLAG ||
+      flag === FIRST_RUN_FOUND_APPS_FLAG
     ) {
       return Promise.resolve(ok(false));
     }
@@ -1095,6 +1111,16 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.post(WEB_PATHS.agentReauth(agentUid), { brain }),
     submitClaudeLoginCode: (agentUid, code) =>
       this.post(WEB_PATHS.agentLoginCode(agentUid), { code }),
+    disconnectSlack: (uid) => this.requestWithStatus("DELETE", AGENT_PATHS.slackChannel(uid)),
+    connectEmail: (uid) => this.requestWithStatus("POST", AGENT_PATHS.emailChannel(uid), {}),
+    disconnectEmail: (uid) => this.requestWithStatus("DELETE", AGENT_PATHS.emailChannel(uid)),
+    updateEmailAddress: (uid, localPart) => this.requestWithStatus("PATCH", AGENT_PATHS.emailAddress(uid), { localPart }),
+    channelStatus: (uid, channel) => this.requestWithStatus("GET", AGENT_PATHS.channelStatus(uid, channel)),
+    channelContacts: (uid, channel) => this.requestWithStatus("GET", AGENT_PATHS.channelContacts(uid, channel)),
+    addChannelContact: (uid, channel, personUid) => this.requestWithStatus("POST", AGENT_PATHS.channelContacts(uid, channel), { personUid }),
+    removeChannelContact: (uid, channel, personUid) => this.requestWithStatus("DELETE", AGENT_PATHS.channelContacts(uid, channel, personUid)),
+    connectTelegram: async (uid, input) => withoutSecret(await this.requestWithStatus<Json>("POST", AGENT_PATHS.telegramChannel(uid), input), "token" in input ? input.token : ""),
+    disconnectTelegram: (uid) => this.requestWithStatus("DELETE", AGENT_PATHS.telegramChannel(uid)),
     attachSlack: (agentUid) =>
       this.postWithStatus(AGENT_PATHS.slackChannel(agentUid), { ...SLACK_ATTACH_BODY }),
     // The token goes in the body only. The path names the bot, nothing else.
@@ -1140,9 +1166,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.post(INTEGRATION_PATHS.revokeAccess, connectionGrantBody(input)),
     catalogSearch: (companyUid, query, limit) =>
       this.requestWithStatus("GET", INTEGRATION_PATHS.catalog(companyUid, query, limit)),
-    // No redirectUri: the server's default lands on the console's callback.
+    // redirectUri only when the caller passes one; without it the server's
+    // default lands on the console's callback.
     startOAuth: (input) =>
-      this.postWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationAppRefBody(input)),
+      this.postWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationOAuthStartBody(input)),
     // The key goes in the body only, and is taken out of any failure's text.
     install: async (input) =>
       withoutSecret(await this.postWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ""),
@@ -1175,6 +1202,15 @@ export class WebPlatformAdapter implements PlatformAdapter {
     getActivity: (slug) => this.get(WEB_PATHS.companyActivity(slug)),
     ensureHomeChannel: (companyUid) =>
       this.post(WEB_PATHS.companyHomeChannel(companyUid)),
+    createBillingPortalSession: (companyUid) =>
+      this.post(WEB_PATHS.companyBillingPortal(), { companyUid }),
+    createBillingCheckoutSession: (companyUid) =>
+      this.post(WEB_PATHS.companyBillingCheckout(), { companyUid }),
+    getBillingSummary: (companyUid) =>
+      this.get(WEB_PATHS.companyBillingSummary(companyUid)),
+    getUsageStatement: (companyUid) =>
+      this.get(WEB_PATHS.companyUsageStatement(companyUid)),
+    getPricing: () => this.get(WEB_PATHS.pricing),
     getFirstWeekReturnNudge: (companyUid) =>
       this.get(WEB_PATHS.firstWeekReturnNudge(companyUid)),
   };
@@ -1407,6 +1443,12 @@ export class WebPlatformAdapter implements PlatformAdapter {
 
   readonly sessions: PlatformAdapter["sessions"] = {
   };
+
+  // Personal apps (bot-owned MCP servers) through HQ's runtime-actions route.
+  // The HTTP status rides along: a 404 hides the section.
+  readonly personalApps = createPersonalAppsApi((agentUid, input) =>
+    this.requestWithStatus("POST", WEB_PATHS.agentRuntimeActions(agentUid), input),
+  );
 
   readonly settings: PlatformAdapter["settings"] = {
     // Local, browser-scoped stubs until a web settings store lands.

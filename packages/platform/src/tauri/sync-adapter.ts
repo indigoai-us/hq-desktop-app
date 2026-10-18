@@ -6,6 +6,8 @@
  * must not grow a second fetch stack.
  */
 
+import { createPersonalAppsBridge, personalAppsBridgeUrl } from "../personal-apps-bridge.js";
+import { createPersonalAppsApi, type PersonalAppLocalCallback } from "../personal-apps.js";
 import {
   type AdapterResult,
   type AdapterPromise,
@@ -22,9 +24,11 @@ import {
   OUTPOST_PATHS,
   PERSONAL_INTEGRATION_PATHS,
   COMPANY_INTEGRATION_PATHS,
+  REDACTION_PATHS,
   SLACK_ATTACH_BODY,
   INTEGRATION_PATHS,
   integrationAppRefBody,
+  integrationOAuthStartBody,
   type IntegrationOAuthStart,
   buildSendReplyRequest,
   connectionGrantBody,
@@ -61,6 +65,7 @@ import {
   READY_FIRST_ACTION_FLAG,
   SETUP_DEPS_TIMEOUT_RETRY_FLAG,
   VISUAL_FIRST_RUN_FLAG,
+  FIRST_RUN_FOUND_APPS_FLAG,
   createHqProFlagFetch,
   createHqProRestFetch,
   createScopedFeatureFlagGates,
@@ -69,6 +74,7 @@ import {
   type FeatureFlagGateOptions,
 } from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
+import { claudeLaunchArgs } from './claude-launch.js';
 import { localBotSettingsArgs } from './local-bot-settings.js';
 import { withCreateAgentsAdmins } from './provision-refusal.js';
 import { createCallsApi } from '../calls/api.js';
@@ -263,6 +269,12 @@ export function createSyncPlatformAdapter(
     if (flag === VISUAL_FIRST_RUN_FLAG) {
       // Visual first-run setup is a rollout: off until the hq-flags registry
       // holds an explicit enabled value.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === FIRST_RUN_FOUND_APPS_FLAG) {
+      // The first-run "Your apps" step is a rollout: off until the hq-flags
+      // registry holds an explicit enabled value. GET /v1/identity/features
+      // does not exist on hq-pro, so never fall through to it.
       return Promise.resolve(ok(false));
     }
     if (flag === FIRST_FOLDER_SYNC_STEP_FLAG) {
@@ -1287,7 +1299,17 @@ export function createSyncPlatformAdapter(
         if (!attempted.result.ok && attempted.result.code === 'network') return attempted.result;
         return withHttpStatus(attempted.result, attempted.status);
       },
-      attachSlack: (agentUid) =>
+      disconnectSlack: (uid) => hqProRequestWithStatus("DELETE", AGENT_PATHS.slackChannel(uid)),
+    connectEmail: (uid) => hqProRequestWithStatus("POST", AGENT_PATHS.emailChannel(uid), {}),
+    disconnectEmail: (uid) => hqProRequestWithStatus("DELETE", AGENT_PATHS.emailChannel(uid)),
+    updateEmailAddress: (uid, localPart) => hqProRequestWithStatus("PATCH", AGENT_PATHS.emailAddress(uid), { localPart }),
+    channelStatus: (uid, channel) => hqProRequestWithStatus("GET", AGENT_PATHS.channelStatus(uid, channel)),
+    channelContacts: (uid, channel) => hqProRequestWithStatus("GET", AGENT_PATHS.channelContacts(uid, channel)),
+    addChannelContact: (uid, channel, personUid) => hqProRequestWithStatus("POST", AGENT_PATHS.channelContacts(uid, channel), { personUid }),
+    removeChannelContact: (uid, channel, personUid) => hqProRequestWithStatus("DELETE", AGENT_PATHS.channelContacts(uid, channel, personUid)),
+    connectTelegram: async (uid, input) => withoutSecret(await hqProRequestWithStatus<Json>("POST", AGENT_PATHS.telegramChannel(uid), input), "token" in input ? input.token : ""),
+    disconnectTelegram: (uid) => hqProRequestWithStatus("DELETE", AGENT_PATHS.telegramChannel(uid)),
+    attachSlack: (agentUid) =>
         hqProPostWithStatus(AGENT_PATHS.slackChannel(agentUid), { ...SLACK_ATTACH_BODY }),
       // The token goes in the body only. The path names the bot, nothing else.
       submitSlackAppToken: async (agentUid, appToken) =>
@@ -1341,9 +1363,15 @@ export function createSyncPlatformAdapter(
         hqProJson('POST', INTEGRATION_PATHS.revokeAccess, connectionGrantBody(input)),
       catalogSearch: (companyUid, query, limit) =>
         hqProRequestWithStatus('GET', INTEGRATION_PATHS.catalog(companyUid, query, limit)),
-      // No redirectUri: the server's default lands on the console's callback.
+      // redirectUri only when the caller passes one; without it the server's
+      // default lands on the console's callback.
       startOAuth: (input) =>
-        hqProPostWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationAppRefBody(input)),
+        hqProPostWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationOAuthStartBody(input)),
+      // The API base comes from the native side, the same one hq_pro_fetch uses.
+      oauthCallbackUrl: async () => {
+        const base = await call<string>('hq_pro_api_base');
+        return base.ok ? ok(`${base.value}${INTEGRATION_PATHS.oauthCallback}`) : base;
+      },
       // The key goes in the body only, and is taken out of any failure's text.
       install: async (input) =>
         withoutSecret(await hqProPostWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ''),
@@ -1361,6 +1389,10 @@ export function createSyncPlatformAdapter(
       getDeployments: (slug) => call('get_company_deployments', { slug }),
       listIntegrations: (companyUid) =>
         hqProJson('GET', COMPANY_INTEGRATION_PATHS.list(companyUid), undefined, COMPANY_INTEGRATIONS_TIMEOUT_SECS),
+      getRedaction: (companyUid, connectionId) =>
+        hqProRequestWithStatus('GET', REDACTION_PATHS.read(companyUid, connectionId)),
+      putRedaction: (companyUid, connectionId, presets) =>
+        hqProRequestWithStatus('PUT', REDACTION_PATHS.write, { companyUid, connectionId, presets: [...presets] }),
       listDeployApps: (scope) => call('list_deploy_apps', { scope }),
       deployAppPreview: (appId, url, deployedAt, refresh) =>
         call('deploy_app_preview', { appId, url, deployedAt, refresh }),
@@ -1406,6 +1438,19 @@ export function createSyncPlatformAdapter(
       getActivity: (slug) => call('get_company_activity', { slug }),
       getFirstWeekReturnNudge: (companyUid) =>
         hqProJson('GET', WEB_PATHS.firstWeekReturnNudge(companyUid)),
+      createBillingPortalSession: (companyUid) =>
+        hqProJson<{ url: string }>('POST', WEB_PATHS.companyBillingPortal(), {
+          companyUid,
+        }),
+      createBillingCheckoutSession: (companyUid) =>
+        hqProJson<{ url: string }>('POST', WEB_PATHS.companyBillingCheckout(), {
+          companyUid,
+        }),
+      getBillingSummary: (companyUid) =>
+        hqProJson('GET', WEB_PATHS.companyBillingSummary(companyUid)),
+      getUsageStatement: (companyUid) =>
+        hqProJson('GET', WEB_PATHS.companyUsageStatement(companyUid)),
+      getPricing: () => hqProJson('GET', WEB_PATHS.pricing),
       ensureHomeChannel: async (companyUid) => {
         const res = await call<string>('ensure_company_home_channel', {
           companyUid,
@@ -1472,6 +1517,7 @@ export function createSyncPlatformAdapter(
         readFrontmatter: (path) => call('read_vault_note_frontmatter', { path }),
       },
       getFileContent: (path) => call('get_company_file_content', { path }),
+      appendBriefLog: (line) => call('append_brief_log', { line }),
       createFile: (path, contents) => call('create_project_file', { path, contents }),
       listVaultPrefix: (companyUid, prefix, cursor) =>
         hqProJson(
@@ -1604,6 +1650,9 @@ export function createSyncPlatformAdapter(
       },
       beginReauth: () => call('begin_reauth'),
       listSyncableWorkspaces: () => call('list_syncable_workspaces'),
+      getCompanySyncMode: (slug) => call('get_sync_mode', { companySlug: slug }),
+      setCompanySyncMode: (slug, mode) =>
+        call('set_sync_mode', { companySlug: slug, mode }),
     },
 
     shell: {
@@ -1612,8 +1661,11 @@ export function createSyncPlatformAdapter(
       openCodexDeepLink: (url) => call('open_codex_deep_link', { url }),
       openFileInClaude: (path) =>
         call('open_authorized_file_in_claude', { path }),
-      launchClaudeCode: async (path) => {
-        const result = await call<void>('launch_claude_code', { path });
+      launchClaudeCode: async (path, opts) => {
+        const result = await call<void>(
+          'launch_claude_code',
+          claudeLaunchArgs(path, opts),
+        );
         if (result.ok) dispatchPostReadyAction('open_cli');
         return result;
       },
@@ -1740,6 +1792,22 @@ export function createSyncPlatformAdapter(
       loginStatus: (tool) => call('agent_provider_login_status', { tool }),
       loginCancel: (tool) => call('agent_provider_login_cancel', { tool }),
     },
+
+    // Personal apps (bot-owned MCP servers) go through HQ's runtime-actions
+    // route. A local test build can point them at the spike bridge instead.
+    personalApps: personalAppsBridgeUrl()
+      ? createPersonalAppsBridge(personalAppsBridgeUrl()!)
+      : createPersonalAppsApi(
+          (agentUid, input) =>
+            hqProRequestWithStatus('POST', AGENT_PATHS.runtimeActions(agentUid), input),
+          // Apps that refuse HQ's public return page sign in back to this
+          // computer (src-tauri commands/personal_apps_signin.rs).
+          {
+            listen: (state) => call<string>('personal_apps_signin_listen', { state }),
+            wait: (state) => call<PersonalAppLocalCallback>('personal_apps_signin_wait', { state }),
+            cancel: async (state) => { await call<boolean>('personal_apps_signin_cancel', { state }); },
+          },
+        ),
 
     // local-bots US-009: desktop-only — every call shells to `hq bot … --json`
     // behind the host's launch boundary (src-tauri/src/commands/bots.rs).

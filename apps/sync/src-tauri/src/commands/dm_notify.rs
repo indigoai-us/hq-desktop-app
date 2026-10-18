@@ -832,16 +832,26 @@ pub(crate) async fn resolve_notification_credentials_classified<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<(cognito::CognitoTokens, NotificationAuthSnapshot), cognito::CognitoTokenResolutionError>
 {
+    resolve_notification_session_classified(app)
+        .await
+        .map(|(session, snapshot)| (session.tokens, snapshot))
+}
+
+/// Same as [`resolve_notification_credentials_classified`] but keeps the
+/// token source, so the auth surface can tell a person session from the
+/// outpost machine identity. The notification session is partitioned the
+/// same way for both: the account id comes from the token claims.
+pub(crate) async fn resolve_notification_session_classified<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<(cognito::ResolvedSession, NotificationAuthSnapshot), cognito::CognitoTokenResolutionError>
+{
     let started_generation = notification_session_generation(app).await.ok_or_else(|| {
-        cognito::CognitoTokenResolutionError {
-            message: "Notification session state is unavailable".to_string(),
-            refresh_failure_class: None,
-            requires_reauth: false,
-            rejection_class: "none",
-        }
+        cognito::CognitoTokenResolutionError::plain(
+            "Notification session state is unavailable".to_string(),
+        )
     })?;
-    let tokens = match cognito::get_valid_tokens_classified().await {
-        Ok(tokens) => tokens,
+    let session = match cognito::resolve_session_classified(false).await {
+        Ok(session) => session,
         Err(error) => {
             // A refresh transport failure is recoverable and must keep its
             // existing tenant partition. Cognito removes invalid credentials
@@ -856,17 +866,16 @@ pub(crate) async fn resolve_notification_credentials_classified<R: Runtime>(
     let snapshot = ensure_notification_session_if_generation(
         app,
         started_generation,
-        crate::commands::auth::notification_identity_from_tokens(&tokens),
-        tokens.access_token.clone(),
+        crate::commands::auth::notification_identity_from_tokens(&session.tokens),
+        session.tokens.access_token.clone(),
     )
     .await
-    .ok_or_else(|| cognito::CognitoTokenResolutionError {
-        message: "Authentication changed while resolving credentials".to_string(),
-        refresh_failure_class: None,
-        requires_reauth: false,
-        rejection_class: "none",
+    .ok_or_else(|| {
+        cognito::CognitoTokenResolutionError::plain(
+            "Authentication changed while resolving credentials".to_string(),
+        )
     })?;
-    Ok((tokens, snapshot))
+    Ok((session, snapshot))
 }
 
 pub(crate) async fn replace_notification_credentials<R: Runtime>(
@@ -913,6 +922,19 @@ pub(crate) async fn clear_notification_credentials<R: Runtime>(
     cleared
 }
 
+/// Machine-mode sign-out. Drops this process's notification session so no
+/// poll keeps running as the outpost, and nothing else: the outpost's machine
+/// credentials and its minted session are not this app's to revoke or delete.
+pub(crate) async fn detach_notification_session<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<(), String> {
+    app.try_state::<NotificationSessionState>()
+        .ok_or_else(|| "Notification session state is unavailable".to_string())?;
+    invalidate_notification_session(app).await;
+    crate::commands::client_health::notify_client_health_state_changed();
+    Ok(())
+}
+
 pub(crate) async fn refresh_notification_credentials<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<cognito::CognitoTokens, String> {
@@ -921,8 +943,29 @@ pub(crate) async fn refresh_notification_credentials<R: Runtime>(
         .ok_or_else(|| "Notification session state is unavailable".to_string())?;
 
     let Some(started_from) = cognito::get_tokens().await? else {
-        let _ = clear_notification_session_if_generation(app, started_generation).await;
-        return Err("No tokens found — user is not signed in".to_string());
+        // No person session. In machine mode a forced refresh mints a new
+        // outpost session; `REFRESH_TOKEN_AUTH` is never used for one.
+        return match cognito::resolve_session_classified(true).await {
+            Ok(session) => {
+                ensure_notification_session_if_generation(
+                    app,
+                    started_generation,
+                    crate::commands::auth::notification_identity_from_tokens(&session.tokens),
+                    session.tokens.access_token.clone(),
+                )
+                .await
+                .ok_or_else(|| "Authentication changed while refreshing credentials".to_string())?;
+                Ok(session.tokens)
+            }
+            Err(error) => {
+                let _ = clear_notification_session_if_generation(app, started_generation).await;
+                Err(if error.is_not_signed_in() {
+                    "No tokens found — user is not signed in".to_string()
+                } else {
+                    error.message
+                })
+            }
+        };
     };
     let refreshed = match cognito::refresh_access_token_classified(&started_from.refresh_token)
         .await
@@ -1394,11 +1437,37 @@ pub async fn fetch_dm_thread(
 // the held first message into a live DM_EVENT, so the conversation pane can swap
 // the request card for the standard thread on the next thread load.
 
+/// The empty requests list an outpost session gets without a server call.
+fn outpost_requests(site: &'static str) -> Option<RequestsListResponse> {
+    crate::commands::auth::skip_person_only_call(site).then(|| RequestsListResponse {
+        requests: Vec::new(),
+        next_cursor: None,
+    })
+}
+
+/// Accept/decline is person-only. An outpost session gets a plain message
+/// without calling the endpoint that would answer 403.
+fn outpost_refuses_request_action(site: &'static str) -> Result<(), String> {
+    if crate::commands::auth::skip_person_only_call(site) {
+        return Err(OUTPOST_REQUESTS_UNAVAILABLE.to_string());
+    }
+    Ok(())
+}
+
+const OUTPOST_REQUESTS_UNAVAILABLE: &str =
+    "Connection requests are not available while signed in as this outpost.";
+
 /// Tauri command: list the caller's pending incoming connection requests.
 /// `GET /v1/notify/connections/requests`. Surfaces failures to the caller so the
 /// Requests segment can show a load error.
 #[tauri::command]
 pub async fn list_dm_requests() -> Result<RequestsListResponse, String> {
+    // Connection requests belong to people; hq-pro refuses them for an
+    // outpost principal. The Requests segment shows an empty list instead of
+    // a 403 load error, matching the background poll.
+    if let Some(empty) = outpost_requests("DM_NOTIFY_REQUESTS_LIST") {
+        return Ok(empty);
+    }
     let access_token = cognito::get_valid_access_token().await.map_err(|e| {
         log(LOG_TAG, &format!("DM_NOTIFY_REQUESTS_FAIL auth: {e}"));
         format!("Not signed in: {e}")
@@ -1532,6 +1601,12 @@ pub async fn mark_dm_thread_read(app: AppHandle, with_person_uid: String) -> Res
 
     let committed = with_current_notification_auth_snapshot(&app, &auth, || {
         clear_pair_unread_local(&app, uid);
+        // The reader is looking at their messages, which is when the old
+        // Messages window cleared the aggregate unread-DM count (Dock badge and
+        // menu-bar count). That window is gone, so reading a thread in the
+        // desktop shell has to do it, or the count only ever grows
+        // (feedback_f36dfa85).
+        reset_unread_dms(&app);
     })
     .await;
     if committed.is_none() {
@@ -1558,6 +1633,7 @@ pub async fn respond_dm_request(
     pair_key: String,
     action: String,
 ) -> Result<(), String> {
+    outpost_refuses_request_action("DM_NOTIFY_REQUESTS_RESPOND")?;
     let auth = current_notification_auth_snapshot(&app)
         .await
         .ok_or_else(|| "Not signed in".to_string())?;
@@ -1657,6 +1733,11 @@ pub async fn respond_dm_request(
 /// any failure logs and returns without disturbing the DM-inbox poll. The first
 /// poll seeds the seen-set silently (no banner for the pre-launch backlog).
 async fn poll_requests(app: &AppHandle, base_url: &str, auth: &NotificationAuthSnapshot) {
+    // Connection requests belong to people; hq-pro refuses them for an
+    // outpost principal, so the poll steps aside in machine mode.
+    if crate::commands::auth::skip_person_only_call("DM_NOTIFY_REQ_POLL") {
+        return;
+    }
     let Some(state) = app.try_state::<SeenRequestState>() else {
         return;
     };
@@ -3927,6 +4008,33 @@ pub async fn open_dm_detail(app: AppHandle, event: DmEvent) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interactive_request_commands_step_aside_for_an_outpost() {
+        use crate::commands::auth::{
+            reset_skipped_person_only_calls, set_active_session_source_for_test,
+            SOURCE_TEST_LOCK,
+        };
+        use hq_desktop_core::cognito::TokenSource;
+        let _serial = SOURCE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_skipped_person_only_calls();
+
+        set_active_session_source_for_test(Some(TokenSource::Person));
+        assert!(outpost_requests("T_LIST").is_none());
+        assert!(outpost_refuses_request_action("T_RESPOND").is_ok());
+
+        set_active_session_source_for_test(Some(TokenSource::Machine));
+        let empty = outpost_requests("T_LIST").expect("an outpost gets an empty list");
+        assert!(empty.requests.is_empty());
+        assert!(empty.next_cursor.is_none());
+        assert_eq!(
+            outpost_refuses_request_action("T_RESPOND").unwrap_err(),
+            OUTPOST_REQUESTS_UNAVAILABLE
+        );
+
+        set_active_session_source_for_test(None);
+        reset_skipped_person_only_calls();
+    }
 
     fn mk_channel(id: &str, unread: u32) -> crate::commands::messages::Channel {
         crate::commands::messages::Channel {

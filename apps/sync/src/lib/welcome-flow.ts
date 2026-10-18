@@ -24,9 +24,14 @@
  * sync), `invite` (the
  * optional, flag-gated teammate invite), `connectors` (the optional Claude
  * Desktop connector import) and the post-ready tutorial steps are not story
- * screens. They keep their own panels and sit outside the five-tick progress.
- * The three optional steps are offered from the ready screen once the install
- * is done, in that order.
+ * screens. They keep their own panels. The three optional steps are offered
+ * from the ready screen once the install is done, in that order, and read as
+ * the ready position on the progress strip.
+ *
+ * The company step is different: it is a real screen of the run for anyone
+ * who needs one (it comes between the shortcut screen and ready), so when the
+ * run includes it the strip gains a tick for it and ready moves one along.
+ * Nobody sees "the last screen" while they still have a company to make.
  */
 import {
   BUILD_STEP_INDEX,
@@ -150,14 +155,17 @@ export function isStoryScene(scene: SceneId): scene is StorySceneId {
  * steps (first-folder sync, teammate invite, connector import) are offered
  * from the ready screen, so they read as the ready position.
  */
-function storyIndex(scene: SceneId): number | null {
+function storyIndex(scene: SceneId, companyInRun: boolean): number | null {
+  const ready = STORY_SCENES.indexOf('ready');
+  if (scene === 'company') return ready;
+  const afterCompany = companyInRun ? 1 : 0;
+  if (scene === 'ready') return ready + afterCompany;
   if (
-    scene === 'company' ||
     scene === 'first-folder' ||
     scene === 'invite' ||
     scene === 'connectors'
   ) {
-    return STORY_SCENES.indexOf('ready');
+    return ready + afterCompany;
   }
   return isStoryScene(scene) ? STORY_SCENES.indexOf(scene) : null;
 }
@@ -177,6 +185,7 @@ export function nextScene(scene: SceneId, replay: boolean): StorySceneId | 'end'
 }
 
 export function previousScene(scene: SceneId, replay: boolean): StorySceneId | null {
+  if (scene === 'company' && !replay) return 'shortcut';
   if (!isStoryScene(scene)) return null;
   const order = storyScenes(replay);
   const index = order.indexOf(scene);
@@ -188,6 +197,16 @@ export interface WelcomeChromeInput {
   replay: boolean;
   /** The install finished: the folder can no longer be changed from here. */
   setupCompleted: boolean;
+  /**
+   * This run includes the company step (a person with no company yet). It
+   * gets its own tick, between the shortcut screen and ready.
+   */
+  companyInRun?: boolean;
+  /**
+   * The company step is on a screen Back can leave (its first question,
+   * before anything is created). Back returns to the shortcut screen.
+   */
+  companyBack?: boolean;
 }
 
 export interface WelcomeChrome {
@@ -213,10 +232,17 @@ export interface WelcomeChrome {
  * have no Skip. The install card lives on the explainers only; the ready
  * screen shows the same progress in its own capsule.
  */
-export function welcomeChrome({ scene, replay, setupCompleted }: WelcomeChromeInput): WelcomeChrome {
+export function welcomeChrome({
+  scene,
+  replay,
+  setupCompleted,
+  companyInRun = false,
+  companyBack = false,
+}: WelcomeChromeInput): WelcomeChrome {
   const order = storyScenes(replay);
-  const index = storyIndex(scene);
-  const tickCount = order.length - 1;
+  const withCompany = companyInRun && !replay;
+  const index = storyIndex(scene, withCompany);
+  const tickCount = order.length - 1 + (withCompany ? 1 : 0);
   if (index === null) {
     return { ticks: false, tickCount, currentTick: -1, back: false, skip: null, installCard: false };
   }
@@ -237,13 +263,18 @@ export function welcomeChrome({ scene, replay, setupCompleted }: WelcomeChromeIn
   // a running install so the folder can change. Once the install is done the
   // folder is final, so that way back closes.
   if (scene === 'cloud') back = !setupCompleted;
+  // The company step's first question can go back to the shortcut screen;
+  // once a company is being made there is no way back.
+  if (scene === 'company') back = companyBack;
   return {
     ticks,
     tickCount,
     currentTick,
     back,
     skip: scene === 'cloud' || scene === 'shortcut' ? 'ready' : null,
-    installCard: scene === 'cloud' || scene === 'shortcut',
+    // The install keeps running while a company is made, so its card stays.
+    installCard:
+      scene === 'cloud' || scene === 'shortcut' || (scene === 'company' && !setupCompleted),
   };
 }
 

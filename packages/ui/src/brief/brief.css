@@ -1,0 +1,1516 @@
+@font-face {
+  font-family: "Brief Fraunces";
+  src: url("../chat/create-bot/assets/new-bot-wallpapers/fraunces-variable-latin.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 300 700;
+  font-display: swap;
+}
+/* The same variable file upright, as the welcome flow declares it: the greeting's serif. */
+@font-face {
+  font-family: "Brief Fraunces";
+  src: url("../chat/create-bot/assets/new-bot-wallpapers/fraunces-variable-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+/*
+  Daily Brief surface. Everything is scoped under .daily-brief.
+
+  SUNRISE TERMINAL, MIDDLE PATH (design, local; visual-direction-proposal.md):
+  Corey's living-masthead richness, placed with restraint. A near-black stage
+  lit from the top left; cards are lifted objects (soft gradient, one soft drop
+  shadow, hairline rim, film grain) without the neumorphic halo. Colour fields
+  are earned and rare: the decision card is always a dusk gradient (HQ's anime
+  sky: coral, magenta, plum) and the incident card is red. Waiting, risk and
+  shipped stay neutral with a 6px dot. The greeting's second line is warm.
+  The few extra colours are the scoped variables below, mapped to the house
+  --ok / --warn / --red where those exist. No backdrop-filter anywhere
+  (WKWebView renders it square on rounded cards). Max font weight 500.
+
+  EFFECT LEGEND: every effect carries a meaning.
+  - Pixel sunrise ........ progress of today's decisions. The sun rises one
+                           step per decision cleared; a ripple marks a clear;
+                           hovering shows a ghost sun at "all clear".
+  - Iridescent sheen ..... the decision row under your cursor.
+  - Hover-revealed actions only on the row under the cursor. Each action has
+                           its own hover. No card lift on hover.
+  - Holographic foil ..... only on shipped cards: things you shipped.
+  - Pulse dot ............ only on live data (incident).
+  - Count-up ............. only on measured numbers.
+  - Neumorphic press ..... buttons sink when you commit.
+  - Hourglass ............ you are waiting on someone.
+  - Peek card ............ hover anything with more behind it for detail and,
+                           on actionable items, the full prompt before launch.
+  - Today strip .......... neutral = team, teal = outside people,
+                           warm = learning and live sessions; the now-line
+                           shows where the brief sits in the day; projected
+                           meetings are outlined.
+  prefers-reduced-motion turns all motion off.
+*/
+.daily-brief {
+  /* Black stage; cards are the brand's 4% white fill, solid so cutout rings match. */
+  --b-bg: #0d0d0f;
+  /* Solid so cutout rings match the card. */
+  --b-card: #1a1a1d;
+  --b-card-hi: #232327;
+  --b-card-grad: linear-gradient(155deg, #1f1f23, #19191c);
+  --b-drop: 0 2px 4px rgba(0, 0, 0, 0.3), 0 18px 40px rgba(0, 0, 0, 0.5);
+  --b-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.06'/%3E%3C/svg%3E");
+  --b-t1: rgb(var(--b-ink) / 0.92);
+  --b-t2: rgb(var(--b-ink) / 0.7);
+  --b-t3: rgb(var(--b-ink) / 0.5);
+  --b-line: rgb(var(--b-ink) / 0.09);
+  --b-top-light: rgb(var(--b-ink) / 0.12);
+  --b-well-bg: #1d1d20;
+  --b-ev-team: #3d3d3d;
+  --b-ev-team-ink: #fff;
+  --b-hover-blend: screen;
+  --b-foil-blend: color-dodge;
+  --b-go-ring: 0 0 0 0 transparent;
+  --b-peek-shadow: 0 2px 6px rgba(0, 0, 0, 0.25), 0 18px 44px -8px rgba(0, 0, 0, 0.55);
+  --b-ok: var(--ok, #34c759);
+  --b-warn: var(--warn, #facc15);
+  --b-red: var(--red, #ff453a);
+  /* The one accent: hqforwork.com's coral-to-peach. Decisions wear it. */
+  --b-coral: #ff9966;
+  --b-accent-grad: linear-gradient(90deg, #ff809f, #ffb580);
+  --b-decision: var(--b-coral);
+  --b-ice: #c9d6e4;
+  --b-sun: #ffb580;
+  --b-sun-2: #ff809f;
+  /* Cards 12px (Lizzie, 2026-10-13); 6px inner tiles,
+     8px buttons and pop-ups; full rounding only on informational pills. */
+  --b-r: 12px;
+  --b-gap: 8px;
+  /* The highlight: HQ's terracotta orange (the "Most popular" plan tag), white ink on it. */
+  --b-hot: #c9765a;
+  --b-on-hot: #fff;
+  /* The timeline's active marker. */
+  --b-knob: rgba(255, 255, 255, 0.07);
+  /* Inner glass tile fill; colour fields raise it. */
+  --b-glass: rgb(var(--b-ink) / 0.04);
+  /* Neutral glass panels (Next call, monochrome cards): light transparent white in dark mode,
+     so they read as lit glass rather than dimmed holes. */
+  --b-panel: rgba(255, 255, 255, 0.12);
+  /* Dark mode tones the colour cards down a step: a thin dark veil over each field. */
+  --b-dim: linear-gradient(rgba(14, 10, 28, 0.22), rgba(14, 10, 28, 0.22));
+  --b-panel-line: rgba(255, 255, 255, 0.14);
+  --b-field-drop: 0 1px 2px rgba(0, 0, 0, 0.3), 0 18px 36px -16px rgba(0, 0, 0, 0.7);
+  /* One padding and one type scale for every card. */
+  --b-pad: 18px 20px;
+  /* App type scale: 20px/500 titles, 13px body, 11px meta, weight 500 at most.
+     The one exception is a card's measured number (--b-fs-num), the brief's data. */
+  --b-fs-display: var(--type-title, 20px);
+  --b-fs-display-sm: var(--type-title, 20px);
+  --b-display-track: -0.035em;
+  --b-serif: "Brief Fraunces", "Fraunces", Georgia, serif;
+  --b-fs-num: 32px; /* the one measured number a card leads with */
+  --b-fs-title-lg: var(--type-title, 20px); /* a card's headline when it leads at a large size */
+  --b-fs-title: 13px; /* every other card headline */
+  /* Flat material: a hairline instead of raised/sunken depth. */
+  --b-raise: 0 0 0 1px var(--b-line);
+  --b-well: 0 0 0 1px var(--b-line);
+  /* Ink: every white-alpha in the brief is this colour at an alpha, so light mode flips it. */
+  --b-ink: 255 255 255;
+  color-scheme: dark;
+  --b-ui: var(--font-ui, "Geist", -apple-system, system-ui, sans-serif);
+  /* Mono only for code (prompts); labels, ages and counts are sans, as in the app. */
+  --b-mono: var(--b-ui);
+  --b-code: var(--font-mono, "Geist Mono", ui-monospace, monospace);
+
+  position: relative;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  box-sizing: border-box;
+  /* Content caps at 1360px and centers; the background still fills the window. */
+  padding: 22px max(28px, calc((100% - 1360px) / 2)) 28px;
+  /* The page is lit from the top left, as in the approved mockup. */
+  background: radial-gradient(1100px 620px at 18% -12%, #1c1c21 0%, var(--b-bg) 62%), var(--b-bg);
+  color: var(--b-t1);
+  font-family: var(--b-ui);
+  font-size: 13px;
+  line-height: 1.45;
+  font-feature-settings: "tnum" 1;
+  -webkit-font-smoothing: antialiased;
+}
+.daily-brief *,
+.daily-brief *::before,
+.daily-brief *::after {
+  box-sizing: border-box;
+}
+.daily-brief button {
+  font-family: inherit;
+}
+/* Section label, app standard: 13px / 500 / t2, sentence case, no tracking. */
+.daily-brief .eyebrow {
+  font-family: var(--b-ui);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--b-t2);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.daily-brief .ico {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex: none;
+}
+
+/* header */
+.daily-brief .b-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.daily-brief .b-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.daily-brief .b-mark {
+  width: 38px;
+  height: 38px;
+  border-radius: 6px;
+  background: var(--b-card);
+  box-shadow: var(--b-raise);
+  display: grid;
+  place-items: center;
+  color: var(--b-sun);
+}
+.daily-brief .b-mark .ico {
+  width: 18px;
+  height: 18px;
+}
+.daily-brief h1 {
+  margin: 0;
+  font-size: var(--type-title, 20px);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+.daily-brief .b-prov {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-family: var(--b-mono);
+  font-size: 11px;
+  color: var(--b-t3);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.daily-brief .b-prov b {
+  color: var(--b-t2);
+  font-weight: 500;
+}
+.daily-brief .leadchip {
+  font-family: var(--b-ui);
+  font-size: 13px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  box-shadow: var(--b-well);
+  color: var(--b-t2);
+  white-space: nowrap;
+  transition: color 0.15s, background 0.15s;
+}
+.daily-brief .leadchip:hover {
+  color: var(--b-t1);
+  background: rgb(var(--b-ink) / 0.05);
+}
+.daily-brief .leadchip b {
+  color: var(--b-sun);
+}
+
+/* grid */
+.daily-brief .b-grid {
+  display: grid;
+  gap: var(--b-gap);
+  /* Cards keep a readable width; below ~1250px the page scrolls sideways instead of crushing text. */
+  grid-template-columns: repeat(6, minmax(190px, 1fr));
+  min-width: 1180px;
+  grid-template-rows: repeat(3, minmax(120px, auto));
+  margin-top: 14px;
+}
+.daily-brief .w {
+  position: relative;
+  border-radius: var(--b-r);
+  /* Grain sits in the card's own background, so the rim and top light below stay crisp. */
+  background: var(--b-grain), var(--b-card-grad);
+  box-shadow: var(--b-drop);
+  overflow: hidden;
+  padding: var(--b-pad);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  animation: b-in 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes b-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+.daily-brief .w::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 1px var(--b-line);
+  /* A 1px top light: a line, not a shadow. */
+  background: linear-gradient(var(--b-top-light), var(--b-top-light)) top / 100% 1px no-repeat;
+}
+/* Hover light (brief-hover.ts): a soft light under the pointer, no corner brackets. Flat at rest. */
+.daily-brief .slot.lit > .w::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: var(--light, 0);
+  /* Screen-blended over the card so it never needs to restack the card's content. */
+  mix-blend-mode: var(--b-hover-blend);
+  background:
+    radial-gradient(260px 200px at var(--light-x, 50%) var(--light-y, 30%), var(--b-hover-light, rgba(255, 170, 130, 0.22)), transparent 70%);
+  -webkit-mask: radial-gradient(420px 320px at var(--light-x, 50%) var(--light-y, 30%), #000 0%, rgba(0, 0, 0, 0.5) 55%, transparent 85%);
+  mask: radial-gradient(420px 320px at var(--light-x, 50%) var(--light-y, 30%), #000 0%, rgba(0, 0, 0, 0.5) 55%, transparent 85%);
+}
+.daily-brief .slot.lit > :is(.c-violet, .c-red)::before {
+  --b-hover-light: rgb(var(--b-ink) / 0.2);
+}
+/* ASCII decode overlay (asciiDecode): drawn over the real title, which goes clear meanwhile. */
+.daily-brief .decoding {
+  position: relative;
+  color: transparent !important;
+  /* Transparent text still casts its shadow; the overlay draws the one shadow instead. */
+  text-shadow: none !important;
+}
+.daily-brief .decode-overlay {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.daily-brief .decode-overlay .decode-rest {
+  font-family: var(--b-code);
+  letter-spacing: -0.02em;
+  opacity: 0.6;
+}
+.daily-brief .w h3 {
+  margin: 8px 0 0;
+  font-size: var(--b-fs-title);
+  font-weight: 500;
+  letter-spacing: -0.018em;
+  line-height: 1.2;
+}
+.daily-brief .big {
+  font-size: var(--b-fs-num);
+  font-weight: 400;
+  letter-spacing: -0.04em;
+  line-height: 0.95;
+}
+.daily-brief .sub {
+  font-size: 13px;
+  color: var(--b-t2);
+  line-height: 1.4;
+}
+.daily-brief .foot {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--b-line);
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-family: var(--b-ui);
+  font-size: 11px;
+  letter-spacing: 0;
+  color: var(--b-t3);
+}
+
+/* Earned colour. Two fields, never more: the decision card (dusk) and a live
+   incident (red). Each carries a soft gloss at the top. Waiting/risk (amber) and
+   shipped (green) stay neutral cards with a 6px dot on the eyebrow. */
+.daily-brief .c-violet {
+  --b-accent: var(--b-decision);
+  background:
+    linear-gradient(180deg, rgb(var(--b-ink) / 0.12), transparent 38%),
+    radial-gradient(125% 95% at 0% 0%, #e0705a 0%, #a83466 38%, #4a1a4f 75%, #2a1233 100%),
+    var(--b-grain);
+}
+.daily-brief .c-red {
+  --b-accent: var(--b-red);
+  background:
+    linear-gradient(180deg, rgb(var(--b-ink) / 0.12), transparent 38%),
+    radial-gradient(130% 100% at 100% 0%, #ff5a4e 0%, #c1271d 42%, #5e0f0b 100%),
+    var(--b-grain);
+}
+.daily-brief .c-amber {
+  --b-accent: var(--b-warn);
+}
+.daily-brief .c-green {
+  --b-accent: var(--b-ok);
+}
+.daily-brief :is(.c-violet, .c-red) .eyebrow {
+  color: rgb(var(--b-ink) / 0.85);
+}
+.daily-brief :is(.c-violet, .c-red) .sub {
+  color: rgb(var(--b-ink) / 0.85);
+}
+.daily-brief :is(.c-violet, .c-red) .org {
+  color: rgb(var(--b-ink) / 0.62);
+}
+.daily-brief :is(.c-violet, .c-red) .org b {
+  color: rgb(var(--b-ink) / 0.92);
+}
+.daily-brief :is(.c-violet, .c-red) .foot {
+  border-color: rgb(var(--b-ink) / 0.16);
+  color: rgb(var(--b-ink) / 0.62);
+}
+.daily-brief :is(.c-amber, .c-green) > .eyebrow::before,
+.daily-brief :is(.c-amber, .c-green) > * > .eyebrow::before,
+.daily-brief :is(.c-amber, .c-green) > * > .eyebrow:first-child::before {
+  content: "";
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-right: 8px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: var(--b-accent);
+}
+/* One italic accent word, as on hqforwork.com. */
+.daily-brief .accent-word {
+  font-family: inherit;
+  font-style: normal;
+  font-weight: inherit;
+  background: var(--b-accent-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  padding-right: 0.06em;
+}
+
+/* origin chips: company logo + repo */
+.daily-brief .org {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--b-mono);
+  font-size: 11px;
+  letter-spacing: 0;
+  color: var(--b-t3);
+  white-space: nowrap;
+  min-width: 0;
+}
+.daily-brief .org .lgo {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border-radius: 5px;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-family: var(--b-ui);
+  font-size: 11px;
+  font-weight: 500;
+  background: linear-gradient(145deg, #5b5bf7, #3730a3);
+}
+.daily-brief .org b {
+  font-weight: 500;
+  color: var(--b-t2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}
+.daily-brief .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--b-mono);
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgb(var(--b-ink) / 0.06);
+  color: var(--b-t2);
+}
+
+/* small rows */
+.daily-brief .row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+.daily-brief .row .bul {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-top: 6px;
+  flex: none;
+  background: var(--b-t3);
+}
+.daily-brief .row em {
+  font-style: normal;
+  color: var(--b-t2);
+}
+.daily-brief [data-peek] {
+  cursor: default;
+}
+
+/* tones for lines */
+.daily-brief .tone-ok {
+  color: var(--b-ok);
+}
+.daily-brief .tone-warn {
+  color: var(--b-warn);
+}
+.daily-brief .tone-decision {
+  color: var(--b-decision);
+}
+.daily-brief .tone-red {
+  color: var(--b-red);
+}
+.daily-brief .tone-neutral {
+  color: var(--b-t3);
+}
+
+/* launch controls: primary start button, engine switcher, copy prompt */
+/* Every launch control is one height (30px): the Start button, the engine switch and copy. */
+.daily-brief .launch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.daily-brief .launch .go {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  /* No gap while the arrow is hidden, so the label sits centred with even 12px sides. */
+  gap: 0;
+  box-sizing: border-box;
+  height: 30px;
+  /* Button labels share the DM button's style: mono, all caps. */
+  font-family: var(--b-code);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0 12px;
+  border-radius: 8px;
+  color: #18181b;
+  background: #fff;
+  box-shadow: var(--b-go-ring);
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.daily-brief .launch .go svg {
+  width: 0;
+  height: 12px;
+  margin-left: 0;
+  opacity: 0;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: width 0.3s, margin-left 0.3s, opacity 0.3s;
+}
+.daily-brief .launch .go:hover {
+  background: #e6e6e6;
+}
+.daily-brief .launch .go:hover svg {
+  width: 12px;
+  margin-left: 6px;
+  opacity: 1;
+}
+.daily-brief .launch .go:active {
+  background: #d4d4d4;
+}
+/* In a hover card the Start button is the filled primary, like the session card's Resume. */
+.daily-brief .peek .launch .go {
+  color: var(--b-bg);
+  background: rgb(var(--b-ink) / 0.92);
+  box-shadow: none;
+}
+.daily-brief .peek .launch .go:hover {
+  background: rgb(var(--b-ink) / 0.8);
+}
+.daily-brief .launch .eng {
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  height: 30px;
+  padding: 3px;
+  gap: 2px;
+  border-radius: 8px;
+  background: rgb(var(--b-ink) / 0.06);
+}
+/* Engine marks: the rail's brand marks at 14px. Muted until chosen; the
+   chosen one sits on the light chip in full contrast (Claude in its clay). */
+.daily-brief .launch .eng button {
+  all: unset;
+  cursor: pointer;
+  display: inline-grid;
+  place-items: center;
+  box-sizing: border-box;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 5px;
+  color: rgb(var(--b-ink) / 0.55);
+  transition: background 0.2s, color 0.2s;
+}
+.daily-brief .launch .eng .mark {
+  display: block;
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+  stroke: none;
+}
+.daily-brief .launch .eng button:hover {
+  color: var(--b-t1);
+}
+.daily-brief .launch .eng button:focus-visible {
+  outline: 2px solid rgb(var(--b-ink) / 0.7);
+  outline-offset: 1px;
+}
+.daily-brief .launch .eng button[aria-pressed="true"] {
+  background: rgb(var(--b-ink) / 0.9);
+  color: var(--b-card);
+}
+.daily-brief .launch .eng button[aria-pressed="true"] .mark.clay {
+  fill: #d97757;
+}
+.daily-brief .launch .copy {
+  all: unset;
+  cursor: pointer;
+  box-sizing: border-box;
+  width: 30px;
+  height: 30px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 8px;
+  background: rgb(var(--b-ink) / 0.06);
+  color: rgb(var(--b-ink) / 0.75);
+  transition: background 0.2s, color 0.2s;
+}
+.daily-brief .launch .copy:hover {
+  background: rgb(var(--b-ink) / 0.16);
+  color: var(--b-t1);
+}
+.daily-brief .launch .copy.copied {
+  color: var(--b-ok);
+}
+.daily-brief .launch .copy svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.daily-brief .launch-note {
+  font-size: 11px;
+  color: rgb(var(--b-ink) / 0.8);
+  margin-top: 6px;
+}
+
+/* Hover card: the same 12px corners as the cards; a clean sheet with a hairline,
+   a soft two-step shadow, a light top sheen, mono section labels (HQ's label style)
+   and list rows separated by hairlines instead of grey tiles. */
+.daily-brief .peek {
+  position: fixed;
+  z-index: 50;
+  width: 320px;
+  max-height: min(460px, calc(100vh - 32px));
+  overflow: auto;
+  /* 16px on every side, measured to the letters: the first and last lines are trimmed to cap height and baseline below. */
+  padding: 16px;
+  border-radius: var(--b-r);
+  background: linear-gradient(180deg, rgb(var(--b-ink) / 0.015), transparent 40px), var(--b-card-hi);
+  color: var(--b-t1);
+  border: 1px solid rgb(var(--b-ink) / 0.07);
+  box-shadow: var(--b-peek-shadow);
+  animation: b-peek 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+/* Scrollbars in hover cards and their prompt box: a thin, rounded thumb in faint ink, no track,
+   inset from the card's rounded corners; it darkens a little only while you use it. */
+.daily-brief .peek::-webkit-scrollbar,
+.daily-brief .peek .prompt::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.daily-brief .peek::-webkit-scrollbar-track,
+.daily-brief .peek .prompt::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 10px 0;
+}
+.daily-brief .peek::-webkit-scrollbar-thumb,
+.daily-brief .peek .prompt::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 99px;
+  background: rgb(var(--b-ink) / 0.14) padding-box;
+}
+.daily-brief .peek::-webkit-scrollbar-thumb:hover,
+.daily-brief .peek .prompt::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(var(--b-ink) / 0.28);
+}
+.daily-brief .peek::-webkit-scrollbar-corner,
+.daily-brief .peek .prompt::-webkit-scrollbar-corner {
+  background: transparent;
+}
+@supports not selector(::-webkit-scrollbar) {
+  .daily-brief .peek,
+  .daily-brief .peek .prompt {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--b-ink) / 0.16) transparent;
+  }
+}
+@keyframes b-peek {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+/* Even padding, visually: the card's first line starts at its capital letters and its last line ends on the baseline,
+   so line-height leading doesn't add hidden air at the top or bottom. */
+.daily-brief .peek > :is(.ttl, .sample):first-child,
+.daily-brief .peek > .head:first-child .eyebrow {
+  text-box: trim-start cap alphabetic;
+}
+.daily-brief .peek > :is(.ttl, .st, .note):last-child,
+.daily-brief .peek > .sec:last-child > p:last-child,
+.daily-brief .peek > .sec:last-child > .li:last-child > *,
+.daily-brief .peek > .sec:last-child > .eyebrow:last-child {
+  text-box: trim-end cap alphabetic;
+}
+.daily-brief .peek .ttl {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+  letter-spacing: 0;
+}
+.daily-brief .peek .st {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--b-t3);
+  margin-top: 3px;
+}
+.daily-brief .peek .sec {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgb(var(--b-ink) / 0.06);
+}
+/* One gap under every section label (6px), whether a list or a line of text follows. */
+.daily-brief .peek .sec .eyebrow {
+  margin-bottom: 6px;
+  line-height: 1.3;
+  font-family: var(--b-code);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--b-t3);
+}
+.daily-brief .peek p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--b-t2);
+}
+.daily-brief .peek .li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 1.35;
+  padding: 6px 0;
+  border-radius: 0;
+  background: none;
+  margin-top: 0;
+}
+/* The first line sits close under its section label; the row padding only separates lines from each other. */
+.daily-brief .peek .sec .eyebrow + .li,
+.daily-brief .peek .sec > .li:first-child {
+  padding-top: 0;
+}
+/* The last line ends on the card's padding, so the bottom matches the sides. */
+.daily-brief .peek .sec > .li:last-child {
+  padding-bottom: 0;
+}
+.daily-brief .peek .li + .li {
+  border-top: 1px solid rgb(var(--b-ink) / 0.05);
+}
+/* A line's state (FIX, CHANGE, a time, a count): quiet meta text level with the line's first row,
+   so it never reads as a button. Only warning and red states take a colour. */
+.daily-brief .peek .li span {
+  font-family: var(--b-ui);
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--b-t3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  align-self: flex-start;
+  margin-top: 1px;
+}
+.daily-brief .peek .li span.tone-warn {
+  color: var(--b-warn);
+}
+.daily-brief .peek .li span.tone-red {
+  color: var(--b-red);
+}
+/* Prompt text reads as prose, so it is in the UI face (mono is kept for all-caps labels). */
+.daily-brief .peek .prompt {
+  font-family: var(--b-ui);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--b-t1);
+  padding: 10px 12px;
+  border-radius: 8px;
+  box-shadow: none;
+  border: 1px solid rgb(var(--b-ink) / 0.06);
+  background: rgb(var(--b-ink) / 0.03);
+  white-space: pre-wrap;
+  max-height: 180px;
+  overflow: auto;
+}
+.daily-brief .peek .acts {
+  margin-top: 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .daily-brief *,
+  .daily-brief *::before,
+  .daily-brief *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* The highlight label: one style for every orange label on the page (the first stat).
+   Fully rounded, terracotta, white 11px text. */
+.daily-brief .hot-label,
+.daily-brief .stat .pill.hot {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--b-ui);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: none;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--b-hot);
+  color: var(--b-on-hot);
+  white-space: nowrap;
+}
+/* SAMPLE marker: content with no real source yet. Said once and quietly, in mono caps
+   page ink with a small hollow dot; never the orange highlight, which is kept for what matters. */
+.daily-brief .peek .sample,
+.daily-brief .sample-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--b-code);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--b-t3);
+  background: none;
+  border: 0;
+  padding: 0;
+}
+.daily-brief .peek .sample::before,
+.daily-brief .sample-tag::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+.daily-brief .peek .sample {
+  margin-bottom: 10px;
+}
+.daily-brief .sample-tag {
+  margin: 0 0 0 6px;
+}
+
+/* Shared recipes the catalogue cards build on. Inner tile: a flat faint fill and a hairline, no
+   lighting, no shadow and no backdrop-filter (WKWebView draws it square). The "+N more" row is the same
+   glass, centred, mono, and carries a peek listing the rest. Cards that need a variant keep their own. */
+.daily-brief .b-glass {
+  position: relative;
+  border-radius: 8px;
+  background: var(--b-glass);
+  border: 0;
+  min-width: 0;
+}
+.daily-brief .b-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 12px;
+  font-family: var(--b-mono);
+  font-size: 11px;
+  letter-spacing: 0;
+  color: var(--b-t2);
+  cursor: default;
+}
+.daily-brief .b-more:hover {
+  color: var(--b-t1);
+}
+
+/* Light appearance: follows the app (prefers-color-scheme), or the QA override
+   data-force-theme on <html>. Ink flips to near-black; the stage is warm paper;
+   cards are white with a soft shadow. Colour fields and the sunrise hero stay
+   dark islands with white ink in both appearances. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-force-theme="dark"]) .daily-brief {
+    --b-ink: 17 17 17;
+    color-scheme: light;
+    --b-bg: #ebebee;
+    --b-card: #ffffff;
+    --b-card-hi: #ffffff;
+    --b-card-grad: linear-gradient(155deg, #ffffff, #faf9f6);
+    --b-drop: 0 1px 2px rgba(40, 30, 20, 0.06), 0 14px 32px rgba(40, 30, 20, 0.08);
+    --b-t1: rgba(17, 17, 17, 0.92);
+    --b-t2: rgba(17, 17, 17, 0.66);
+    --b-t3: rgba(17, 17, 17, 0.5);
+    --b-line: rgba(17, 17, 17, 0.09);
+    --b-top-light: rgba(255, 255, 255, 0);
+    --b-decision: #d9603a;
+  --b-ok: #1f8a3c;
+  --b-warn: #a16207;
+  --b-red: #d70015;
+  --b-sun: #c2541c;
+  --b-sun-2: #c43d5e;
+  --b-well-bg: rgb(17 17 17 / 0.04);
+  --b-ev-team: rgb(17 17 17 / 0.12);
+  --b-ev-team-ink: rgba(17, 17, 17, 0.85);
+  --b-hover-blend: multiply;
+  --b-hover-light: rgba(217, 96, 58, 0.1);
+  --b-foil-blend: multiply;
+  --b-go-ring: inset 0 0 0 1px rgb(17 17 17 / 0.14);
+  --b-peek-shadow: 0 1px 3px rgba(20, 20, 40, 0.06), 0 16px 40px -10px rgba(20, 20, 40, 0.2);
+  --b-panel: rgba(255, 255, 255, 0.55);
+  --b-dim: linear-gradient(transparent, transparent);
+  --b-panel-line: rgba(255, 255, 255, 0.9);
+  --b-knob: rgba(255, 255, 255, 0.75);
+  --b-field-drop: 0 1px 2px rgba(30, 20, 60, 0.08), 0 18px 34px -18px rgba(60, 30, 110, 0.45);
+    background: radial-gradient(1100px 620px at 18% -12%, #ffffff 0%, var(--b-bg) 62%), var(--b-bg);
+  }
+}
+:root[data-force-theme="light"] .daily-brief {
+  --b-ink: 17 17 17;
+  color-scheme: light;
+  --b-bg: #ebebee;
+  --b-card: #ffffff;
+  --b-card-hi: #ffffff;
+  --b-card-grad: linear-gradient(155deg, #ffffff, #faf9f6);
+  --b-drop: 0 1px 2px rgba(40, 30, 20, 0.06), 0 14px 32px rgba(40, 30, 20, 0.08);
+  --b-t1: rgba(17, 17, 17, 0.92);
+  --b-t2: rgba(17, 17, 17, 0.66);
+  --b-t3: rgba(17, 17, 17, 0.5);
+  --b-line: rgba(17, 17, 17, 0.09);
+  --b-top-light: rgba(255, 255, 255, 0);
+  --b-decision: #d9603a;
+  --b-ok: #1f8a3c;
+  --b-warn: #a16207;
+  --b-red: #d70015;
+  --b-sun: #c2541c;
+  --b-sun-2: #c43d5e;
+  --b-well-bg: rgb(17 17 17 / 0.04);
+  --b-ev-team: rgb(17 17 17 / 0.12);
+  --b-ev-team-ink: rgba(17, 17, 17, 0.85);
+  --b-hover-blend: multiply;
+  --b-hover-light: rgba(217, 96, 58, 0.1);
+  --b-foil-blend: multiply;
+  --b-go-ring: inset 0 0 0 1px rgb(17 17 17 / 0.14);
+  --b-peek-shadow: 0 1px 3px rgba(20, 20, 40, 0.06), 0 16px 40px -10px rgba(20, 20, 40, 0.2);
+  --b-panel: rgba(255, 255, 255, 0.55);
+  --b-dim: linear-gradient(transparent, transparent);
+  --b-panel-line: rgba(255, 255, 255, 0.9);
+  --b-knob: rgba(255, 255, 255, 0.75);
+  --b-field-drop: 0 1px 2px rgba(30, 20, 60, 0.08), 0 18px 34px -18px rgba(60, 30, 110, 0.45);
+  background: radial-gradient(1100px 620px at 18% -12%, #ffffff 0%, var(--b-bg) 62%), var(--b-bg);
+}
+/* Dark islands keep white ink in both appearances. */
+.daily-brief :is(.c-violet, .c-red, .dawn, .w.dawn),
+.daily-brief .slot[data-field] > .w {
+  --b-ink: 255 255 255;
+  --b-t1: rgba(255, 255, 255, 0.92);
+  --b-t2: rgba(255, 255, 255, 0.7);
+  --b-t3: rgba(255, 255, 255, 0.5);
+  --b-line: rgba(255, 255, 255, 0.09);
+  --b-decision: #ff9966;
+  --b-ok: #34c759;
+  --b-warn: #facc15;
+  --b-red: #ff453a;
+  --b-sun: #ffb580;
+  --b-sun-2: #ff809f;
+  --b-hover-blend: screen;
+  --b-hover-light: rgba(255, 255, 255, 0.2);
+  color: var(--b-t1);
+}
+
+/* ------------------------------------------------------------------------
+   GRADIENT BENTO (design, local; after Lizzie's reference, 2026-10-13).
+   An airy top (greeting, thin numbers on pill labels, a glass "next call"
+   panel) over a tight grid of luminous colour fields. Every grid card wears
+   one field for its kind (FIELD in brief-layout.ts) with white ink, a soft
+   highlight in one corner, a hairline light rim and a faint line drawing in
+   the empty corner. No grain, no inner shadows, no backdrop-filter.
+   ------------------------------------------------------------------------ */
+.daily-brief .slot[data-field] > .w {
+  /* On a colour field all ink is white with transparency (never the page's dark ink, which
+     reads as solid grey on colour), in light and dark alike. */
+  --b-ink: 255 255 255;
+  /* Ink for things drawn on the card (glass rows, pills): white on a colour field. */
+  --b-on: 255 255 255;
+  --b-t1: #fff;
+  --b-t2: rgba(255, 255, 255, 0.9);
+  --b-t3: rgba(255, 255, 255, 0.82);
+  --b-line: rgba(255, 255, 255, 0.2);
+  --b-top-light: rgba(255, 255, 255, 0.4);
+  --b-glass: rgba(255, 255, 255, 0.14);
+  --b-ok: #d4ffe0;
+  --b-warn: #fff1a8;
+  --b-red: #ffe0e4;
+  --b-decision: #fff;
+  --b-accent-grad: linear-gradient(90deg, #ffffff, #ffe3d3);
+  --b-well-bg: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 1px 2px rgba(30, 20, 60, 0.06), 0 14px 28px -20px var(--b-field-glow, rgba(60, 30, 110, 0.4));
+  background-repeat: no-repeat;
+  /* A whisper of shadow keeps white text crisp on the light ends of the fields. */
+  text-shadow: 0 1px 2px rgba(70, 10, 50, 0.2);
+}
+/* Glass edge, kept quiet: a 1px rim that is brightest along the top and fades down the
+   sides (a gradient border, masked to the edge), with a soft lift at the bottom. */
+.daily-brief .slot[data-field] > .w::after {
+  box-shadow: none;
+  padding: 1px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.14) 35%, rgba(255, 255, 255, 0.1) 70%, rgba(255, 255, 255, 0.24));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+}
+.daily-brief .slot[data-field] > .w .eyebrow {
+  color: rgba(255, 255, 255, 0.82);
+}
+.daily-brief .slot[data-field] > .w .foot {
+  border-color: rgba(255, 255, 255, 0.22);
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.daily-brief .slot[data-field="violet"] > .w {
+  /* Reference "Average investment": milky lavender at the top left deepening to violet,
+     one soft lilac bloom at the top right. Two hues, no hard-edged blobs. */
+  --b-field-bg:
+    radial-gradient(95% 85% at 100% 0%, rgba(242, 196, 246, 0.6) 0%, rgba(242, 196, 246, 0) 72%),
+    linear-gradient(155deg, #d48de6 0%, #b468d9 38%, #9c4ed2 74%, #a65ad6 100%);
+  --b-field-glow: rgba(160, 80, 220, 0.4);
+}
+.daily-brief .slot[data-field="dusk"] > .w {
+  /* Dawn sky: violet overhead warming through rose to a peach horizon. */
+  background:
+    var(--b-dim),
+    radial-gradient(70% 45% at 70% 100%, #ffb27a 0%, rgba(255, 178, 122, 0) 72%),
+    linear-gradient(180deg, #7442c4 0%, #a64aa8 40%, #e2628c 72%, #ff9e6a 100%);
+  --b-field-glow: rgba(200, 90, 140, 0.45);
+}
+.daily-brief .slot[data-field="pink"] > .w {
+  /* Reference "Marketing information": soft pink at the top, hot pink pooling at the bottom. */
+  --b-field-bg:
+    radial-gradient(75% 65% at 55% 100%, rgba(255, 64, 146, 0.55) 0%, rgba(255, 64, 146, 0) 72%),
+    linear-gradient(172deg, #ec7fb8 0%, #ee64a7 45%, #ec4692 82%, #ee55a0 100%);
+  --b-field-glow: rgba(240, 70, 150, 0.4);
+}
+.daily-brief .slot[data-field="sunset"] > .w {
+  /* Reference "Opportunity information": pink at the top right blending into peach at the
+     bottom, a golden glow rising from the bottom. */
+  --b-field-bg:
+    radial-gradient(60% 55% at 60% 110%, rgba(252, 196, 120, 0.55) 0%, rgba(252, 196, 120, 0) 70%),
+    linear-gradient(205deg, #ec6aa8 0%, #f3868e 38%, #f39a66 72%, #f5a466 100%);
+  --b-field-glow: rgba(245, 120, 110, 0.4);
+}
+.daily-brief .slot[data-field="sky"] > .w {
+  /* Reference "Application map": cyan at the top left into azure, a light sky haze at the right. */
+  --b-field-bg:
+    radial-gradient(65% 70% at 90% 25%, rgba(140, 218, 250, 0.5) 0%, rgba(140, 218, 250, 0) 72%),
+    radial-gradient(60% 55% at 0% 100%, rgba(140, 140, 245, 0.35) 0%, rgba(140, 140, 245, 0) 72%),
+    linear-gradient(160deg, #52c3ef 0%, #42a5ef 45%, #4a6cf0 100%);
+  --b-field-glow: rgba(60, 150, 240, 0.4);
+}
+.daily-brief .slot[data-field="teal"] > .w {
+  /* Reference big card: quiet sea-glass teal, a cyan light along the top edge, paler at the bottom left. */
+  --b-field-bg:
+    radial-gradient(70% 40% at 85% 0%, rgba(170, 235, 245, 0.7) 0%, rgba(170, 235, 245, 0) 70%),
+    radial-gradient(85% 65% at 0% 100%, rgba(172, 214, 220, 0.5) 0%, rgba(172, 214, 220, 0) 72%),
+    linear-gradient(180deg, #58a2ae 0%, #6fb2bc 60%, #8fcad2 100%);
+  --b-field-glow: rgba(80, 150, 160, 0.35);
+}
+.daily-brief .slot[data-field="peri"] > .w {
+  /* Periwinkle (no reference card): soft lavender light at the top right over blue-violet. */
+  --b-field-bg:
+    radial-gradient(80% 70% at 100% 0%, rgba(204, 208, 255, 0.55) 0%, rgba(204, 208, 255, 0) 72%),
+    radial-gradient(60% 60% at 100% 100%, rgba(201, 184, 255, 0.4) 0%, rgba(201, 184, 255, 0) 72%),
+    linear-gradient(160deg, #98a0f5 0%, #7c83ef 50%, #8570e9 100%);
+  --b-field-glow: rgba(110, 110, 235, 0.4);
+}
+/* One quiet motif on every field (not the sunrise, which has its sun): a glass
+   shape and a dotted line in the bottom-right corner, drawn from the card's
+   content (brief-deco.ts, set per slot as --b-deco). Sized to the card's height
+   (250-300px), drawn faint (DECO_OPACITY) so it reads as a backdrop, never over the text. */
+.daily-brief .slot[data-field]:not([data-field="dusk"]) > .w {
+  /* The motif, then the field: one soft bloom (two for teal) over a two-hue base, smooth like the reference. */
+  background-image: var(--b-deco), var(--b-edge), var(--b-dim), var(--b-field-bg);
+  background-position: right bottom, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0;
+  /* The motif is capped, so on the big cards it stays a corner accent instead of running under the rows. */
+  /* Near one size on every card, so the motifs read as a family whatever the card's height. */
+  background-size: auto clamp(250px, 120%, 300px), 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%;
+  background-repeat: no-repeat;
+  box-shadow: 0 1px 2px rgba(30, 20, 60, 0.06), 0 14px 28px -20px var(--b-field-glow, rgba(60, 30, 110, 0.4));
+  background-repeat: no-repeat;
+}
+.daily-brief {
+  /* A soft light just inside the top edge and a fainter one at the bottom: the glass, quietly. */
+  --b-edge: linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0) 20%, rgba(255, 255, 255, 0) 86%, rgba(255, 255, 255, 0.08));
+  --b-deco: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Cdefs%3E%3CradialGradient id='o' cx='.34' cy='.22' r='.85'%3E%3Cstop offset='0' stop-color='white' stop-opacity='.18'/%3E%3Cstop offset='.45' stop-color='white' stop-opacity='.07'/%3E%3Cstop offset='1' stop-color='white' stop-opacity='.02'/%3E%3C/radialGradient%3E%3ClinearGradient id='r' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='white' stop-opacity='.45'/%3E%3Cstop offset='.6' stop-color='white' stop-opacity='.06'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle cx='176' cy='212' r='90' fill='url(%23o)' stroke='url(%23r)' stroke-width='.8'/%3E%3Ccircle cx='176' cy='212' r='114' fill='none' stroke='white' stroke-opacity='.22' stroke-width='1.1' stroke-dasharray='0 5' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+/* Inner glass on a field: white, a little brighter on hover. */
+.daily-brief .slot[data-field] > .w .b-glass {
+  border-color: rgba(255, 255, 255, 0.22);
+}
+.daily-brief .slot[data-field] > .w .chip {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+/* The card label, top left: HQ's standard label (mono, all caps, tracked) with a
+   Phosphor icon on its left. Hover it for why the card is on the page today. */
+/* The whole slot rises in (card and its top-left label together), staggered by the
+   per-slot animation-delay the page sets; the card inside does not animate on its own. */
+.daily-brief .slot {
+  position: relative;
+  animation: b-in 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.daily-brief .slot > .w {
+  animation: none;
+}
+.daily-brief .slot > .why {
+  position: absolute;
+  z-index: 4;
+  /* Same inset as the Next call panel (18px 20px), so every card and panel lines up. */
+  top: 18px;
+  left: 20px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  /* Just the icon and the words, no chip behind them; lines up with the content's left edge. */
+  height: 20px;
+  padding: 0;
+  font-family: var(--b-code);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.86);
+  background: none;
+  cursor: default;
+  transition: color 0.15s;
+}
+.daily-brief .slot > .why svg {
+  height: 12px;
+  flex: none;
+  fill: currentColor;
+}
+.daily-brief .slot > .why:hover {
+  color: #fff;
+}
+
+/* Header: wordmark left, pills right. */
+.daily-brief .b-title {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+/* Date and time under the title, in HQ's label style: mono, all caps, tracked. */
+.daily-brief .b-when {
+  font-family: var(--b-code);
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--b-t3);
+}
+.daily-brief .b-name {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+.daily-brief .b-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.daily-brief .pill {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--b-ui);
+  font-size: 13px;
+  line-height: 1;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--b-line);
+  background: var(--b-panel);
+  color: var(--b-t2);
+  white-space: nowrap;
+}
+/* "Why these cards" (review mode): muted text like the Shift+A hint, brightening on hover where its peek opens. */
+.daily-brief .b-tools .leadchip {
+  height: auto;
+  margin-right: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  font-size: 12px;
+  background: none;
+  color: var(--b-t3);
+  box-shadow: none;
+  cursor: default;
+  transition: color 0.2s;
+}
+.daily-brief .b-tools .leadchip:hover {
+  background: none;
+  color: var(--b-t1);
+}
+.daily-brief .b-mark {
+  border-radius: 999px;
+}
+
+/* The airy top: greeting and numbers on the left, the next call on the right. */
+.daily-brief .b-top {
+  display: grid;
+  /* Greeting and numbers | today's calls | the next call, as in the reference. */
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 380px) 300px;
+  gap: 32px;
+  align-items: stretch;
+  min-width: 1180px;
+  margin: 28px 0 22px;
+}
+.daily-brief .b-upd {
+  font-size: 11px;
+  color: var(--b-t3);
+}
+/* The greeting is the brief's one display moment: HQ's serif, large and light. */
+.daily-brief .b-greet {
+  margin: 0;
+  font-family: var(--b-ui);
+  font-size: 44px;
+  /* The app ships Geist at 400-600; 400 is the lightest real face. */
+  font-weight: 400;
+  line-height: 1.08;
+  letter-spacing: -0.04em;
+}
+.daily-brief .b-stats {
+  display: flex;
+  gap: 32px;
+  margin-top: 40px;
+}
+.daily-brief .stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  border-radius: 10px;
+}
+/* A little more air between the label pill and its number. */
+.daily-brief .stat > .pill {
+  margin-bottom: 6px;
+}
+/* Info pill (app standard): 11px / 400, fully rounded. */
+.daily-brief .stat .pill {
+  font-size: 11px;
+  padding: 4px 10px;
+  border: 0;
+  background: rgb(var(--b-ink) / 0.07);
+  color: var(--b-t2);
+}
+
+.daily-brief .stat .num {
+  font-size: var(--b-fs-num);
+  font-weight: 400;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  color: var(--b-t1);
+}
+.daily-brief .stat .cap {
+  font-size: 11px;
+  color: var(--b-t3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+.daily-brief .b-next {
+  position: relative;
+  /* Room for the timeline's active-call arrow between the list and this panel. */
+  margin-left: 10px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 18px 20px;
+  border-radius: var(--b-r);
+  background: var(--b-panel);
+  border: 1px solid var(--b-panel-line);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 18px 40px -24px rgba(40, 40, 70, 0.35);
+  cursor: default;
+  min-height: 190px;
+  /* Label, time and the call's details, spread evenly down the panel. */
+  justify-content: space-between;
+}
+.daily-brief .b-next .nx-head {
+  display: flex;
+}
+/* The same label as on the cards (mono, all caps, Phosphor icon), in page ink on the glass panel. */
+.daily-brief .b-next .nx-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 20px;
+  padding: 0 7px 0 6px;
+  border-radius: 6px;
+  font-family: var(--b-code);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--b-t2);
+  background: rgb(var(--b-ink) / 0.06);
+}
+.daily-brief .b-next .nx-tag svg {
+  height: 12px;
+  flex: none;
+  fill: currentColor;
+}
+.daily-brief .b-next .nx-time {
+  margin-top: 0;
+  font-size: var(--b-fs-num);
+  font-weight: 400;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+.daily-brief .b-next .nx-time span {
+  font-size: 11px;
+  letter-spacing: 0;
+  margin-left: 4px;
+  color: var(--b-t3);
+}
+.daily-brief .b-next .nx-title {
+  margin-top: 0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+  /* The whole title, full width; it may sit over the orbit. */
+}
+.daily-brief .b-next .nx-who {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  min-width: 0;
+}
+.daily-brief .b-next .names {
+  min-width: 0;
+  font-size: 11px;
+  color: var(--b-t2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A large, quiet orbit bleeding off the bottom-right corner; the text sits on top of it. */
+.daily-brief .b-next .orbit {
+  position: absolute;
+  z-index: 0;
+  right: -86px;
+  bottom: -100px;
+  width: 240px;
+  height: 240px;
+  color: rgb(var(--b-ink));
+  pointer-events: none;
+}
+.daily-brief .b-next > :not(.orbit) {
+  position: relative;
+  z-index: 1;
+}
+.daily-brief .b-next .orbit .orb {
+  opacity: 0.6;
+  stroke: none;
+}
+.daily-brief .b-next .orbit .path {
+  fill: none;
+  stroke: rgb(var(--b-ink) / 0.16);
+  stroke-width: 1.2;
+  stroke-dasharray: 0 4.5;
+  stroke-linecap: round;
+}
+.daily-brief .b-next .orbit .node {
+  fill: var(--b-hot);
+  opacity: 0.75;
+}
+.daily-brief .b-next .orbit.idle .path {
+  stroke: rgb(var(--b-ink) / 0.16);
+}
+/* On a call: the node travels the orbit and a soft ring breathes out from the orb. */
+/* Before a call the node rests on the visible arc; on a call it circles the orbit. */
+.daily-brief .b-next .orbit .spin {
+  transform-origin: 60px 60px;
+  transform: rotate(-40deg);
+}
+/* On a call three nodes share the orbit, a third of a turn apart, so one is always on the card. */
+.daily-brief .b-next .orbit.live .spin {
+  animation: b-orbit 18s linear infinite;
+}
+.daily-brief .b-next .orbit .node.trail {
+  opacity: 0.45;
+}
+.daily-brief .b-next .orbit .pulse {
+  fill: none;
+  stroke: var(--b-hot);
+  stroke-width: 0.8;
+  transform-origin: 60px 60px;
+  animation: b-pulse 2.4s cubic-bezier(0.2, 0.6, 0.3, 1) infinite;
+}
+@keyframes b-orbit {
+  from {
+    transform: rotate(-40deg);
+  }
+  to {
+    transform: rotate(320deg);
+  }
+}
+@keyframes b-pulse {
+  from {
+    opacity: 0.3;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.6);
+  }
+}
+/* Keep each card's top row clear of the corner arrow. */
+/* Each card's own content starts under its label. */
+.daily-brief .slot[data-field] > .w {
+  padding-top: 52px;
+}
+.daily-brief .slot[data-field] > .w.dawn {
+  padding-top: 0;
+}
+.daily-brief .slot[data-field] > .w.dawn > .over {
+  padding-top: 52px;
+}
+
+/* The corner label names every card, so each card's own top line (its old
+   eyebrow: "Today's priorities", "Sunrise · decisions cleared", "Waiting on"...)
+   is hidden. The incident keeps its line: there it is the headline (what is red). */
+.daily-brief .slot[data-field]:not([data-widget="incident"]) > .w > .eyebrow:first-of-type,
+.daily-brief .slot[data-field] > .w > .over > .eyebrow:first-child,
+.daily-brief .slot[data-field] > .w > .top > div > .eyebrow:first-child,
+.daily-brief .slot[data-field] > .w > .hd > .hdt > .eyebrow:first-child,
+.daily-brief .slot[data-field] > .w > .hd > .eyebrow:first-child {
+  display: none;
+}
+
+/* Monochrome cards: the page's own glass panel (like the Next call panel), page ink,
+   no corner motif and no white text shadow. Kept for the cards that are background
+   to the day, so colour stays on what needs you. */
+.daily-brief .slot[data-field="mono"] > .w {
+  --b-ink: inherit;
+  --b-on: var(--b-ink);
+  --b-t1: inherit;
+  --b-t2: inherit;
+  --b-t3: inherit;
+  --b-line: rgb(var(--b-ink) / 0.08);
+  --b-top-light: rgb(var(--b-ink) / 0.04);
+  --b-glass: rgb(var(--b-ink) / 0.04);
+  --b-ok: inherit;
+  --b-warn: inherit;
+  --b-red: inherit;
+  --b-decision: inherit;
+  --b-well-bg: rgb(var(--b-ink) / 0.04);
+  --b-deco: linear-gradient(transparent, transparent);
+  --b-field-bg: linear-gradient(var(--b-panel), var(--b-panel));
+  --b-dim: linear-gradient(transparent, transparent);
+  --b-field-glow: rgba(40, 40, 70, 0.35);
+  --b-edge: linear-gradient(transparent, transparent);
+  /* Glass rows in page ink are much lighter than white glass on colour. */
+  --b-row-bg: rgb(var(--b-ink) / 0.06);
+  --b-row-line: rgb(var(--b-ink) / 0.08);
+  --b-row-hover: rgb(var(--b-ink) / 0.1);
+  color: var(--b-t1);
+  text-shadow: none;
+  border: 1px solid var(--b-panel-line);
+}
+.daily-brief .slot[data-field="mono"] > .w::after {
+  display: none;
+}
+.daily-brief .slot[data-field="mono"] > .w .b-glass {
+  background: rgb(var(--b-ink) / 0.05);
+}
+.daily-brief .slot[data-field="mono"] > .why {
+  color: var(--b-t2);
+}
+
+/* Small (one-column) cards set their rows a size down. */
+.daily-brief .slot[data-size="S"] {
+  --b-row-fs: 12px;
+}
+
+/* A zero stat keeps its place on a quiet day, just quieter. */
+.daily-brief .stat.zero .num {
+  color: var(--b-t3);
+}
+
+/* Monochrome cards: footers in page ink (the colour-field footer is white). */
+.daily-brief .slot[data-field="mono"] .foot {
+  border-top-color: rgb(var(--b-ink) / 0.1);
+}
+.daily-brief .slot[data-field="mono"] .foot > span {
+  color: rgb(var(--b-ink) / 0.6);
+}
+/* One-column cards: every body line a size down, not just the rows. */
+.daily-brief .slot[data-size="S"] :is(.lede, .facts b, .name, .go:not(.launch .go)) {
+  font-size: 12px;
+}
+
+/* Your day: the footer sits under the tiles without a divider. */
+.daily-brief .slot [data-testid="brief-focus-foot"] {
+  border-top: 0;
+}

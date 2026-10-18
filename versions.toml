@@ -15,7 +15,7 @@
 
 [product]
 name = "HQ Sync"          # OS-facing display name — open question (HQ Sync vs HQ Desktop)
-version = "0.11.6"
+version = "0.11.12"
 base_crate = "hq-sync-menubar"
 
 [updater]
@@ -34,7 +34,9 @@ identifier_windows = "ai.indigo.hq-sync-win"
 identifier_windows_target = "ai.indigo.hq"
 
 [platforms]
-# One universal macOS artifact and native Windows installers for both arches.
+# One universal macOS artifact, native Windows installers for both arches,
+# and a Linux x86_64 .deb plus AppImage (both auto-updating).
 macos = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
 windows = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
+linux = ["x86_64-unknown-linux-gnu"]
 windows_shows_operator_surfaces = true

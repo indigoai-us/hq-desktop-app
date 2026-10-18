@@ -141,7 +141,7 @@ describe("US-002 existing shell contracts stay on disk", () => {
 });
 
 describe("US-002 pending console-rail contracts", () => {
-  it("US-003: AppRail order is Home, Meetings, pinned company tiles, More companies, Library, Deployments, Telemetry, Secrets, Connections, Outpost, spacer, You", async () => {
+  it("US-003: AppRail order is Home, Daily Brief, Meetings, pinned company tiles, More companies, Library, Deployments, Telemetry, Secrets, Connections, Outpost, spacer, You", async () => {
     const { readFileSync } = await import("node:fs");
     const { railItems } = await import("./app-rail.js");
     const items = railItems(
@@ -153,6 +153,7 @@ describe("US-002 pending console-rail contracts", () => {
     );
     expect(items.map((item) => item.id)).toEqual([
       "home",
+      "brief",
       "meetings",
       "company:co_a",
       "company:co_b",

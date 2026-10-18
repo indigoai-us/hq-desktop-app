@@ -160,26 +160,9 @@ pub fn setup_last_pass_watch(app: &AppHandle) {
         let mut cache = FileReadCache::default();
         let mut tracker =
             LastPassTracker::starting_after(cache.read_if_changed(&path, read_last_pass));
-        let mut last_notice_fingerprint = String::new();
         loop {
             tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
             let pass = cache.read_if_changed(&path, read_last_pass);
-            if let Some(record) = pass.as_ref() {
-                let fingerprint = serde_json::to_string(&record.pending_conflict_notices)
-                    .unwrap_or_default();
-                if fingerprint != last_notice_fingerprint {
-                    last_notice_fingerprint = fingerprint;
-                    let _ = handle.emit_to(
-                        crate::commands::desktop_alt::WINDOW_LABEL,
-                        "sync:conflict-notices",
-                        &record.pending_conflict_notices,
-                    );
-                    crate::commands::hq_daemon_host::notify_new_conflict_batch(
-                        &handle,
-                        &record.pending_conflict_notices,
-                    );
-                }
-            }
             let Some(pass) = tracker.take_new(pass) else {
                 continue;
             };

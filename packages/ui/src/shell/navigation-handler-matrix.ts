@@ -131,10 +131,6 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   openCompanyIntegrations: "push",
   toggleAccountMenu: "none",
   toggleMoreCompanies: "none",
-  // Core popover "Resolve conflicts" → Settings › Sync, through navigate().
-  openConflictResolution: "push",
-  // Hands the file to the OS editor; the shell stays where it is.
-  openConflictInEditor: "none",
   // A connection card in a cloud bot's DM: opens a console page in the system
   // browser or changes the card's state. The shell stays in the conversation.
   handleConnectionAction: "none",
@@ -145,6 +141,8 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   closeConnectionModal: "none",
   // #welcome / Home setup card → the setup bot's DM (handleSelect).
   openSetupBotDm: "push",
+  // Daily Brief Team peek, Open thread: that person's DM (handleSelect).
+  openBriefDm: "push",
   applyChannelWake: "none",
   applyDmWake: "none",
   openAttachmentTray: "none",
@@ -167,6 +165,9 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   // Visual first run: puts the takeover away and records it as finished.
   // The caller picks the conversation (the assistant's DM or #welcome).
   closeVisualFirstRun: "none",
+  // Badges launch announcement (US-016): puts it away and records it as seen.
+  // "See your badges" navigates afterwards through openSelfProfile.
+  closeLaunch: "none",
   applyEmbeddedNavigation: "push",
   applyInboxDeepLink: "push",
   applyCompanyDeepLink: "push",

@@ -45,11 +45,12 @@ describe("You earned", () => {
   // Owner review 2026-10-12: OG, Captain and Patient Zero are given, not
   // earned; Core Builder is earned by merging pull requests.
   it("tells you that you were awarded the given honors, and that you earned Core Builder", () => {
-    for (const id of ["og", "captain", "patientzero", "corebuilder"]) announceBadgeEarned({ id, tier: "L", earnedAt: "2026-10-11" });
+    for (const id of ["og", "captain", "patientzero", "ecomrat", "corebuilder"]) announceBadgeEarned({ id, tier: "L", earnedAt: "2026-10-11" });
     expect(toastItems().map((t) => t.title)).toEqual([
       "You were awarded OG",
       "You were awarded Captain",
       "You were awarded Patient Zero",
+      "You were awarded Ecom Rat",
       "You earned Core Builder",
     ]);
   });
@@ -118,17 +119,23 @@ describe("You earned", () => {
 describe("the notice is a demo", () => {
   it("no app code raises it: only the badges module defines it and the package re-exports it", () => {
     const src = join(dirname(fileURLToPath(import.meta.url)), "..");
-    const callers: string[] = [];
-    const walk = (dir: string) => {
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        const path = join(dir, entry.name);
-        if (entry.isDirectory()) walk(path);
-        else if (/\.(ts|svelte)$/.test(entry.name) && !/\.test\.ts$/.test(entry.name)) {
-          if (/\b(announceBadgeEarned|revealBadgeCard)\s*\(/.test(readFileSync(path, "utf8"))) callers.push(relative(src, path));
+    const callersOf = (pattern: RegExp): string[] => {
+      const callers: string[] = [];
+      const walk = (dir: string) => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const path = join(dir, entry.name);
+          if (entry.isDirectory()) walk(path);
+          else if (/\.(ts|svelte)$/.test(entry.name) && !/\.test\.ts$/.test(entry.name)) {
+            if (pattern.test(readFileSync(path, "utf8"))) callers.push(relative(src, path));
+          }
         }
-      }
+      };
+      walk(src);
+      return callers.sort();
     };
-    walk(src);
-    expect(callers).toEqual(["badges/badge-announce.ts"]);
+    expect(callersOf(/\b(announceBadgesEarned|announceBadgeEarned|revealBadgeCards)\s*\(/)).toEqual(["badges/badge-announce.ts"]);
+    // One real caller of the card reveal: a "badge_earned" row in the bell
+    // list, which comes from hq-pro's award job (owner, 2026-10-16).
+    expect(callersOf(/\brevealBadgeCard\s*\(/)).toEqual(["badges/badge-announce.ts", "inbox/NotificationsPopover.svelte"]);
   });
 });

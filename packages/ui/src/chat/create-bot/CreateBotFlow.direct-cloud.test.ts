@@ -230,7 +230,7 @@ describe("New bot flow, agents.desktop-agent-creation on", () => {
     await settle();
     expect(q<HTMLButtonElement>('[data-testid="new-bot-choice-cloud"]')!.disabled).toBe(true);
     expect(q('#new-bot-choice-cloud-body')?.textContent?.trim()).toBe(
-      "Cloud bots need the Agents plan ($500 a month). Indigo isn't on it yet.",
+      "Cloud bots are not on Indigo's plan yet ($500 a month).",
     );
     const link = q<HTMLAnchorElement>('[data-testid="chat-bot-where-cloud-fix"]');
     expect(link?.getAttribute("href")).toBe("https://checkout.test/agents");

@@ -1542,6 +1542,158 @@ async fn acquire_cli_package_update_lease(
     Ok((package_guard, process_guard))
 }
 
+/// Replace the `--prefix <live>` value in an npm install argv with `staging`.
+/// Returns None when the argv has no `--prefix` pair to retarget.
+pub(crate) fn staged_install_argv(base_args: &[String], staging: &Path) -> Option<Vec<String>> {
+    let index = base_args.iter().position(|arg| arg == "--prefix")?;
+    base_args.get(index + 1)?;
+    let mut args = base_args.to_vec();
+    args[index + 1] = staging.to_string_lossy().into_owned();
+    Some(args)
+}
+
+const STAGED_HQ_VERSION_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Run the staged `hq --version`. The staged copy sits under a different
+/// prefix, so hq-cli keys it to a different package-use lease directory and it
+/// does not wait on the live update request this updater holds.
+async fn staged_hq_version_runs(hq: &Path, path: &str) -> bool {
+    let hq = hq.to_string_lossy().into_owned();
+    let mut cmd = paths::tokio_spawn_command(&hq, &["--version"]);
+    cmd.env("PATH", path).kill_on_drop(true);
+    matches!(
+        tokio::time::timeout(STAGED_HQ_VERSION_TIMEOUT, cmd.output()).await,
+        Ok(Ok(output)) if output.status.success()
+    )
+}
+
+/// Install hq-cli into a staging prefix, verify it, and swap it into the live
+/// prefix (see `hq_desktop_core::hq_cli_staged_swap`). Returns the staging npm
+/// output on success; None means nothing live changed and the caller should run
+/// the in-place install.
+async fn run_staged_swap_install(
+    npm: &str,
+    path: &str,
+    npm_cache: &Path,
+    prefix: &str,
+    base_args: &[String],
+) -> Option<std::process::Output> {
+    use hq_desktop_core::hq_cli_staged_swap as staged;
+    let windows_layout = cfg!(target_os = "windows");
+    let live = Path::new(prefix);
+    if !staged::hq_cli_package_dir(live, windows_layout).is_dir() {
+        return None;
+    }
+    let nonce = ulid::Ulid::new().to_string();
+    let staging = staged::staging_prefix_for(live, &nonce);
+    let args = staged_install_argv(base_args, &staging)?;
+    let output = match run_npm_install(npm, path, npm_cache, args).await {
+        Ok(output) if output.status.success() => output,
+        Ok(output) => {
+            log(
+                "hq-cli-update",
+                &format!(
+                    "staged install failed; using in-place install: {}",
+                    redact_home(&npm_output_detail(&output))
+                ),
+            );
+            staged::remove_staging(&staging);
+            return None;
+        }
+        Err(error) => {
+            log(
+                "hq-cli-update",
+                &format!("staged install did not run: {error}"),
+            );
+            staged::remove_staging(&staging);
+            return None;
+        }
+    };
+    let verified = staged::verify_staged_install(&staging, windows_layout);
+    let runs = verified.is_ok()
+        && staged_hq_version_runs(&staged::staged_hq_bin(&staging, windows_layout), path).await;
+    if !runs {
+        log(
+            "hq-cli-update",
+            &format!(
+                "staged install failed verification ({}); using in-place install",
+                verified
+                    .err()
+                    .unwrap_or_else(|| "hq --version failed".into())
+            ),
+        );
+        staged::remove_staging(&staging);
+        return None;
+    }
+    let swap = tauri::async_runtime::spawn_blocking({
+        let live = live.to_path_buf();
+        let staging = staging.clone();
+        move || staged::swap_staged_install(&live, &staging, windows_layout, &nonce)
+    })
+    .await;
+    match swap {
+        Ok(Ok(mode)) => {
+            log(
+                "hq-cli-update",
+                &format!("staged install swapped in ({mode:?})"),
+            );
+            Some(output)
+        }
+        Ok(Err(error)) => {
+            log(
+                "hq-cli-update",
+                &format!(
+                    "staged swap failed; using in-place install: {}",
+                    redact_home(&error)
+                ),
+            );
+            staged::remove_staging(&staging);
+            None
+        }
+        Err(error) => {
+            log(
+                "hq-cli-update",
+                &format!("staged swap task failed: {error}"),
+            );
+            staged::remove_staging(&staging);
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod staged_swap_argv_tests {
+    use super::staged_install_argv;
+    use std::path::Path;
+
+    #[test]
+    fn retargets_only_the_prefix_value() {
+        let base: Vec<String> = [
+            "install",
+            "-g",
+            "--prefix",
+            "/live",
+            "@indigoai-us/hq-cli@1.2.3",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let staged = staged_install_argv(&base, Path::new("/live/.hq-cli-staging-x")).unwrap();
+        assert_eq!(staged[3], "/live/.hq-cli-staging-x");
+        assert_eq!(staged[4], "@indigoai-us/hq-cli@1.2.3");
+        assert_eq!(staged.len(), base.len());
+    }
+
+    #[test]
+    fn no_prefix_means_no_staging() {
+        let base: Vec<String> = ["install", "-g", "@indigoai-us/hq-cli"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(staged_install_argv(&base, Path::new("/s")).is_none());
+    }
+}
+
 async fn run_npm_install_with_retries(
     npm: &str,
     path: &str,
@@ -1564,7 +1716,31 @@ async fn run_npm_install_with_retry_attempt(
 ) -> Result<NpmInstallRun, HqCliUpdateFailure> {
     let (_package_use_lease, _process_admission) =
         acquire_cli_package_update_lease(npm, path, prefix, retry_attempt).await?;
+    // Back up before anything runs, so even a staging attempt that misbehaves
+    // can be rolled back by the in-place path below.
     let mut backup = prefix.map(preserve_hq_cli_install).transpose()?;
+    // Stage, verify, and swap first so running sessions never see the live
+    // `hq` link removed. Any staging failure falls through to the in-place
+    // install and its recovery ladder, still under the same lease.
+    if let Some(prefix) = prefix {
+        if let Some(output) =
+            run_staged_swap_install(npm, path, npm_cache, prefix, &base_args).await
+        {
+            if let Some(backup) = backup.as_mut() {
+                backup.finish(true)?;
+            }
+            return Ok(NpmInstallRun {
+                output,
+                final_attempt_forced: false,
+                rungs: vec!["staged-swap"],
+                missing_target_state: MissingTargetState::Unknown,
+                windows_busy_retry_attempts: None,
+                windows_busy_retry_outcome: WindowsBusyRetryOutcome::NotApplicable,
+                lock_holder_diagnostic: None,
+                previous_install_restored: false,
+            });
+        }
+    }
     let mut ledger = Vec::with_capacity(MAX_NPM_INSTALL_ATTEMPTS);
     let mut missing_target_state = MissingTargetState::Unknown;
     let mut windows_busy_retry_attempts = None;
@@ -6145,6 +6321,98 @@ console.log('ready'); setInterval(() => {}, 1000);
         );
     }
 
+    /// Regression: an in-place `npm install -g` removed the live `bin/hq` link
+    /// mid-update, so running sessions hit "command not found: hq". The update
+    /// must install into a staging prefix and swap the package in without ever
+    /// running npm against the live prefix or replacing the live link.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn npm_update_stages_and_swaps_without_touching_live_bin_link() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        use std::fs;
+        use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
+
+        let temp = tempfile::tempdir().unwrap();
+        let prefix = temp.path().join("live prefix");
+        let package = prefix.join("lib/node_modules/@indigoai-us/hq-cli");
+        fs::create_dir_all(package.join("dist")).unwrap();
+        fs::create_dir_all(prefix.join("bin")).unwrap();
+        fs::write(
+            package.join("package.json"),
+            r#"{"name":"@indigoai-us/hq-cli","version":"5.345.108","bin":{"hq":"dist/index.js"}}"#,
+        )
+        .unwrap();
+        fs::write(package.join("dist/index.js"), "#!/bin/sh\necho 5.345.108\n").unwrap();
+        fs::set_permissions(
+            package.join("dist/index.js"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let link_target = "../lib/node_modules/@indigoai-us/hq-cli/dist/index.js";
+        symlink(link_target, prefix.join("bin/hq")).unwrap();
+        let link_inode_before = fs::symlink_metadata(prefix.join("bin/hq")).unwrap().ino();
+
+        // Fake npm: honours --prefix and lays down a complete package + link.
+        let calls = temp.path().join("npm-calls.log");
+        let npm = temp.path().join("fake-npm");
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "{calls}"
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--prefix" ]; then p="$2"; shift; fi
+  shift
+done
+pkg="$p/lib/node_modules/@indigoai-us/hq-cli"
+mkdir -p "$pkg/dist" "$p/bin"
+printf '%s' '{{"name":"@indigoai-us/hq-cli","version":"5.345.109","bin":{{"hq":"dist/index.js"}}}}' > "$pkg/package.json"
+printf '#!/bin/sh\necho 5.345.109\n' > "$pkg/dist/index.js"
+chmod 755 "$pkg/dist/index.js"
+rm -f "$p/bin/hq"
+ln -s "{link_target}" "$p/bin/hq"
+exit 0
+"#,
+            calls = calls.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        fs::set_permissions(&npm, fs::Permissions::from_mode(0o755)).unwrap();
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap()), Some("5.345.109")),
+        )
+        .await
+        .unwrap();
+
+        assert!(run.output.status.success());
+        assert_eq!(run.rungs, vec!["staged-swap"]);
+        let log = fs::read_to_string(&calls).unwrap();
+        assert_eq!(log.lines().count(), 1, "one npm run, into staging only");
+        assert!(log.contains(".hq-cli-staging-"), "{log}");
+        assert_eq!(
+            fs::symlink_metadata(prefix.join("bin/hq")).unwrap().ino(),
+            link_inode_before,
+            "live bin link was never replaced"
+        );
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(package.join("package.json")).unwrap()).unwrap();
+        assert_eq!(manifest["version"], "5.345.109");
+        let leftovers: Vec<_> = fs::read_dir(&prefix)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".hq-cli-staging-") || n.starts_with("hq-cli-install-backup"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn failed_npm_install_restores_the_previous_cli_package_and_shim() {
@@ -7136,11 +7404,9 @@ exit 0
         let temp = tempfile::tempdir().unwrap();
         std::env::set_var("HOME", temp.path());
 
-        // The unix managed layout: <HOME>/Library/Application Support/Indigo HQ/
-        // toolchain/node/bin/{node,npm}.
-        let bin = temp
-            .path()
-            .join("Library/Application Support/Indigo HQ/toolchain/node/bin");
+        // The unix managed layout: <managed toolchain root>/node/bin/{node,npm},
+        // where the root follows the host OS rule in `hq_desktop_core::paths`.
+        let bin = hq_desktop_core::paths::managed_toolchain_dir_in(temp.path()).join("node/bin");
         fs::create_dir_all(&bin).unwrap();
         fs::write(bin.join("npm"), "#!/bin/sh\nexit 0\n").unwrap();
 

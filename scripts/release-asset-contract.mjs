@@ -6,7 +6,10 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const EXPECTED_ASSET_COUNT = 15;
+// 21 product assets: 15 macOS/Windows (unchanged since the Linux job landed)
+// plus the Linux x86_64 .deb and AppImage, their .sig sidecars and the two
+// versionless Linux download aliases.
+const EXPECTED_ASSET_COUNT = 21;
 
 function contractError(message) {
   return new Error(`Release asset contract failed: ${message}`);
@@ -54,7 +57,7 @@ export async function readLocalReleaseAssets(directory) {
 
 // UI hot-update assets (ui-<version>.tar.gz, its .sig, ui-manifest.json) are
 // attached by the release workflow's `ui-bundle` job AFTER publication, so
-// they are outside the 15-asset product contract. A rerun that finds them on
+// they are outside the 21-asset product contract. A rerun that finds them on
 // the release is still an exact, healthy release.
 export const UI_BUNDLE_ASSET = /^(ui-[0-9][0-9A-Za-z._-]*\.tar\.gz(\.sig)?|ui-manifest\.json)$/;
 
@@ -272,6 +275,12 @@ async function verifyPublishedManifestOnce({
     "darwin-x86_64": `HQ_${version}_universal.app.tar.gz`,
     "windows-x86_64": `HQ_${version}_x64-setup.exe`,
     "windows-aarch64": `HQ_${version}_arm64-setup.exe`,
+    // Linux: the .deb installs through the updater's dpkg path, the AppImage
+    // self-replaces. The bare `linux-x86_64` key is the updater's fallback
+    // when the running bundle type is unknown and points at the AppImage.
+    "linux-x86_64-deb": `HQ_${version}_amd64.deb`,
+    "linux-x86_64-appimage": `HQ_${version}_amd64.AppImage`,
+    "linux-x86_64": `HQ_${version}_amd64.AppImage`,
   };
 
   if (manifest?.version !== version) {

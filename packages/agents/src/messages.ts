@@ -53,8 +53,8 @@ export function createErrorCopy(
     case "plan_limit": {
       const price = formatPlanPrice(error.amountMinor, error.currency);
       const message = price
-        ? `Cloud bots need the Agents plan (${price} a month). ${company} isn't on it yet.`
-        : `Cloud bots need the Agents plan. ${company} isn't on it yet.`;
+        ? `Cloud bots are not on ${company}'s plan yet (${price} a month).`
+        : `Cloud bots are not on ${company}'s plan yet.`;
       if (error.checkoutUrl) {
         return { message, fix: { kind: "checkout", url: error.checkoutUrl, label: "Upgrade plan" } };
       }

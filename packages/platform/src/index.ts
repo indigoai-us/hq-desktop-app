@@ -12,6 +12,9 @@ export * from "./library-shelf.js";
 export * from "./plan-limit.js";
 // Plain-language API error copy (QA-080).
 export * from "./api-error.js";
+// Local test bridge for cloud bots' personal apps (dev builds only).
+export * from "./personal-apps-bridge.js";
+export * from "./personal-apps.js";
 export {
   CLAUDE_PROVIDER_FLAG,
   COMPANY_NAME_PREFILL_FLAG,
@@ -35,6 +38,7 @@ export {
   FIRST_RUN_FOUND_APPS_FLAG,
   BOT_INTEGRATION_CONTROL_FLAG,
   RAIL_ATLAS_FLAG,
+  RAIL_BRIEF_FLAG,
   RAIL_DEPLOYMENTS_ACTIONS_FLAG,
   RAIL_GATE_EVERYONE_DEFAULT,
   RAIL_OUTPOST_FLAG,
@@ -46,6 +50,7 @@ export {
   ensureHqAnywhereGlobalRuntime,
   getHqAnywherePersonSetting,
   hqAnywhereRuntimeEnabled,
+  hqAnywhereGlobalRuntimeAllowed,
   putHqAnywherePersonSetting,
   retryHqAnywhereRequest,
   setHqAnywhereGlobalRuntime,

@@ -2,7 +2,7 @@
 // Returns plausible fixture data per command so components mount and render
 // without a Tauri backend. Design-only: no real side effects.
 import type { Workspace } from '../../src/lib/workspaces';
-import { personaHasLocalHq, resolveHarnessPersona, type ShellPersona } from '../personas';
+import { harnessNotificationsFeed, personaHasLocalHq, resolveHarnessPersona, type ShellPersona } from '../personas';
 import { resolveHarnessState, resolveLoadingMs, withHarnessState } from '../state-flags';
 import { conflictNoticesSwitch, readsSwitch, switchedHandler, withReadsSwitch } from '../audit-switches';
 import { emit } from './event';
@@ -57,6 +57,106 @@ function harnessPersona(): ShellPersona | null {
 function shiftTestEnabled(): boolean {
   if (typeof window === 'undefined') return false;
   return new URLSearchParams(window.location.search).has('shiftTest');
+}
+
+/**
+ * Hover-menu probe — `?hoverMenuProbe=1`.
+ *
+ * A fixed same-day thread: a one-line continuation whose link sits on the
+ * right (the owner bug), a top row, a row that can be scrolled flush with
+ * the scrollport, and one thread root. Kept under the timeline window of 20.
+ */
+function hoverMenuProbeEnabled(): boolean {
+  if (typeof window === 'undefined') return false;
+  return new URLSearchParams(window.location.search).get('hoverMenuProbe') === '1';
+}
+
+function hoverMenuProbeClock(): number {
+  const noon = new Date();
+  noon.setHours(12, 0, 0, 0);
+  return noon.getTime();
+}
+
+function hoverMenuProbePerson(offsetSec: number, extra: Record<string, unknown> = {}) {
+  return {
+    fromPersonUid: 'prs_grace',
+    fromDisplayName: 'Grace Hopper',
+    fromEmail: 'grace@getindigo.ai',
+    direction: 'in' as const,
+    createdAt: new Date(hoverMenuProbeClock() + offsetSec * 1000).toISOString(),
+    ...extra,
+  };
+}
+
+function hoverMenuProbeMessages(): unknown[] {
+  const filler = (index: number, offsetSec: number) => ({
+    ...hoverMenuProbePerson(offsetSec),
+    eventId: `probe-fill-${index}`,
+    body: `Filler note ${index}. This second sentence is long enough to wrap onto another line in the thread so the list is taller than the pane.`,
+  });
+  // Fillers above the link row so it can sit mid-scrollport with room for
+  // the menu. Same sender, 60s apart, so the link row stays a continuation.
+  const above = Array.from({ length: 8 }, (_, index) => filler(index, (index + 1) * 60));
+  const below = Array.from({ length: 4 }, (_, index) => filler(index + 8, (index + 11) * 60));
+  return [
+    {
+      ...hoverMenuProbePerson(0),
+      eventId: 'probe-top',
+      body: 'Start of the channel stays readable https://example.com/top',
+    },
+    ...above,
+    {
+      ...hoverMenuProbePerson(9 * 60),
+      eventId: 'probe-link',
+      body: 'Windows rescue leaves WSL links Node cannot open from here now: https://example.com/rescue',
+    },
+    {
+      ...hoverMenuProbePerson(10 * 60),
+      eventId: 'probe-reply',
+      replyCount: 1,
+      body: 'Thread root stays clear of its menu.',
+    },
+    ...below,
+    {
+      ...hoverMenuProbePerson(16 * 60),
+      eventId: 'probe-flush',
+      body: 'Flush row sits at the scrollport top.',
+    },
+    {
+      // Last row cannot reach the scrollport top: max scroll parks its bottom
+      // on the composer. Prose, not a log dump: a heavy body is clipped to a
+      // 240px <pre> and still cannot push this row to the scrollport top.
+      ...hoverMenuProbePerson(17 * 60),
+      eventId: 'probe-flush-tail',
+      body: Array.from({ length: 24 }, (_, index) =>
+        `Spacer sentence ${index} is written as ordinary prose so the flush row can scroll to the top of the pane without being treated as a log.`,
+      ).join('\n'),
+    },
+  ];
+}
+
+function hoverMenuProbeThread(args?: Record<string, unknown>): unknown {
+  const rootId = String(args?.rootEventId ?? '');
+  const scope = args?.scope === 'dm' ? 'dm' : 'channel';
+  if (rootId !== 'probe-reply') {
+    return { scope, root: null, replies: [], replyCount: 0 };
+  }
+  const root = hoverMenuProbeMessages().find(
+    (row) => (row as { eventId?: string }).eventId === 'probe-reply',
+  );
+  return {
+    scope,
+    root,
+    replyCount: 1,
+    replies: [
+      {
+        ...hoverMenuProbePerson(17 * 60),
+        eventId: 'probe-reply-line',
+        rootEventId: 'probe-reply',
+        body: 'One line reply with a link on the right side of the row https://example.com/reply-line',
+      },
+    ],
+  };
 }
 
 /** Long enough to be a loading window, short enough to keep the suite quick. */
@@ -827,6 +927,12 @@ const handlers: Record<string, Handler> = {
   is_indigo_user: () => harnessPersona()?.isIndigo ?? true,
   get_auth_session: () => {
     const persona = harnessPersona();
+    // `?authStatus=machine_unavailable` (or any native status) renders that
+    // auth lifecycle screen, e.g. the outpost mint failure sign-in screen.
+    const authStatus = new URLSearchParams(window.location.search).get('authStatus');
+    if (authStatus && authStatus !== 'active') {
+      return { accountId: null, generation: 1, status: authStatus, reason: null };
+    }
     return {
       accountId: persona?.accountId ?? 'cognito-sub-ada',
       generation: 1,
@@ -834,6 +940,11 @@ const handlers: Record<string, Handler> = {
       reason: null,
     };
   },
+  // `?outpost=1` offers "Use this outpost's identity" on the sign-in screen.
+  get_machine_identity_status: () => ({
+    available: new URLSearchParams(window.location.search).get('outpost') === '1',
+    active: false,
+  }),
   // Company-board path (?view=company)
   list_syncable_workspaces: () => ({
     workspaces: harnessPersona()?.workspaces ?? HARNESS_WORKSPACES,
@@ -1297,6 +1408,9 @@ This final paragraph verifies spacing after a thematic break.
   // Notifications feed (the popover's default body since the redesign). Returns
   // a representative mix of DMs, shares, and cross-session new-file rows so the
   // inline feed renders fully in the browser harness (?view=popover).
+  // The shell's bell + Notifications feed (createNotificationsApi ->
+  // sync-adapter fetchNotifications). Empty unless ?notify=badges.
+  fetch_notifications: () => harnessNotificationsFeed(),
   fetch_notification_history: () => {
     const iso = (minsAgo: number) => new Date(Date.now() - minsAgo * 60 * 1000).toISOString();
     return {
@@ -1580,7 +1694,18 @@ This final paragraph verifies spacing after a thematic break.
   },
   list_channels: () => {
     const persona = harnessPersona();
-    if (persona) return { channels: persona.channels };
+    if (persona) {
+      // The probe channel is otherwise months old and folded into history,
+      // where the sidebar does not mount its row.
+      const channels = hoverMenuProbeEnabled()
+        ? persona.channels.map((channel) =>
+            channel.channelId === 'chn_1'
+              ? { ...channel, lastActivityAt: new Date().toISOString() }
+              : channel,
+          )
+        : persona.channels;
+      return { channels };
+    }
     return {
       channels: [
         {
@@ -1625,7 +1750,19 @@ This final paragraph verifies spacing after a thematic break.
     };
   },
   shell_ready: () => null,
+  // Preview-only sign-in: the welcome screen's Google/Microsoft buttons
+  // resolve as a successful OAuth round trip so the flow can be walked from
+  // the very first screen.
+  start_oauth_login: () => ({ authorizeUrl: 'about:blank', state: 'preview' }),
+  oauth_listen_for_code: () => new Promise((resolve) => setTimeout(() => resolve({ code: 'preview' }), 900)),
+  oauth_exchange_code: () => ({ authenticated: true, accountId: 'preview' }),
+  // The folder step checks the chosen location before installing.
+  detect_hq: () => ({ exists: false, looksLikeHq: false, nonEmpty: false }),
+  check_writable: () => true,
   fetch_channel: (args) => {
+    if (hoverMenuProbeEnabled()) {
+      return { messages: hoverMenuProbeMessages(), nextCursor: null };
+    }
     const channelId = String(args?.channelId ?? 'ch_core');
     if (shiftTestEnabled()) {
       return { messages: shiftTestChannelMessages(channelId), nextCursor: null };
@@ -1680,6 +1817,9 @@ This final paragraph verifies spacing after a thematic break.
     ],
   }),
   fetch_dm_thread: (args) => {
+    if (hoverMenuProbeEnabled()) {
+      return { messages: hoverMenuProbeMessages(), nextCursor: null };
+    }
     const peer = String(args?.withPersonUid ?? 'prs_ada');
     const people: Record<string, { name: string; email: string; latest: string }> = {
       prs_ada: {
@@ -1723,6 +1863,7 @@ This final paragraph verifies spacing after a thematic break.
     ],
   }),
   send_dm: () => ({ eventId: 'sent-1', createdAt: '2026-06-09T19:44:00.000Z' }),
+  fetch_thread: (args) => (hoverMenuProbeEnabled() ? hoverMenuProbeThread(args) : null),
   // Reactions (US-025 + share reactions) — canned aggregates so pills render.
   fetch_reactions: (args) => {
     const id = String(args?.messageId ?? '');
@@ -1740,6 +1881,9 @@ This final paragraph verifies spacing after a thematic break.
       ];
     }
     if (id === 'share-1') return [{ emoji: '👍', count: 1, reactedByMe: false }];
+    if (hoverMenuProbeEnabled() && id === 'probe-link') {
+      return [{ emoji: '👍', count: 1, reactedByMe: false }];
+    }
     return [];
   },
   toggle_reaction: () => ({ ok: true, added: true }),
@@ -1963,6 +2107,65 @@ function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; b
   const url = typeof args?.url === 'string' ? args.url : '';
   const method = typeof args?.method === 'string' ? args.method : 'GET';
   const body = typeof args?.body === 'string' ? JSON.parse(args.body) : null;
+  if (url === '/v1/billing/portal' && method === 'POST') {
+    // hq-pro mints a short-lived Stripe portal session per company. `?portal=fail`
+    // previews the quiet retry hint; `?portal=forbidden` the owner handoff.
+    const mode = new URLSearchParams(window.location.search).get('portal');
+    if (mode === 'fail') return { status: 500, body: JSON.stringify({ error: 'Internal Server Error' }) };
+    if (mode === 'forbidden') return { status: 403, body: JSON.stringify({ error: 'Requires owner role on this company', code: 'FORBIDDEN' }) };
+    const uid = typeof body?.companyUid === 'string' ? body.companyUid : 'cmp_unknown';
+    return { status: 200, body: JSON.stringify({ url: `https://billing.stripe.com/p/session/test_harness_${uid}` }) };
+  }
+  // Core menu "Usage this month" (hq-pro owner-gated billing reads).
+  // `?usage=forbidden` previews a non-owner, `?usage=fail` a failed lookup,
+  // `?usage=paid` a company with a card on file.
+  const usageMode = new URLSearchParams(window.location.search).get('usage');
+  // Visual QA with captured hq-pro bodies: a script sets this before load.
+  const captured = (window as Window & { __hqHarnessBilling?: { summary?: unknown; usage?: unknown } }).__hqHarnessBilling;
+  if (captured?.summary && url.startsWith('/v1/billing/summary?')) return { status: 200, body: JSON.stringify(captured.summary) };
+  if (captured?.usage && url.startsWith('/v1/billing/usage?')) return { status: 200, body: JSON.stringify(captured.usage) };
+  if (url.startsWith('/v1/billing/summary?')) {
+    if (usageMode === 'forbidden') return { status: 403, body: JSON.stringify({ error: 'Requires owner role on this company', code: 'FORBIDDEN' }) };
+    if (usageMode === 'fail') return { status: 500, body: JSON.stringify({ error: 'Internal Server Error' }) };
+    return {
+      status: 200,
+      body: JSON.stringify({
+        billingConfigured: true,
+        pricingPlan: 'usage-only',
+        defaultPaymentMethod: { present: usageMode === 'paid', brand: null },
+        usageTrial: { status: 'active', allowanceCents: 1000, cardOnFile: usageMode === 'paid' },
+      }),
+    };
+  }
+  if (url.startsWith('/v1/billing/usage?')) {
+    return {
+      status: 200,
+      body: JSON.stringify({
+        scope: 'company',
+        window: 'month',
+        periodStart: '2026-10-01',
+        periodEnd: '2026-10-31',
+        complete: true,
+        allowanceCents: 1000,
+        usageCents: 800,
+        allowanceLeftCents: 200,
+        billCents: 0,
+        lines: [
+          { key: 'member-sync', status: 'measured', billed: true, costCents: 60 },
+          { key: 'integration-call', status: 'measured', billed: true, costCents: 200 },
+          { key: 'hq-mcp-call', status: 'measured', billed: true, costCents: 0 },
+          { key: 'agent-run', status: 'measured', billed: true, costCents: 310 },
+          { key: 'storage', status: 'measured', billed: true, costCents: 0 },
+          { key: 'secret', status: 'measured', billed: true, costCents: 40 },
+          { key: 'vault', status: 'measured', billed: true, costCents: 0, waived: true },
+        ],
+      }),
+    };
+  }
+  if (url === '/v1/billing/checkout/org' && method === 'POST') {
+    const uid = typeof body?.companyUid === 'string' ? body.companyUid : 'cmp_unknown';
+    return { status: 200, body: JSON.stringify({ url: `https://checkout.stripe.com/c/pay/cs_test_harness_${uid}` }) };
+  }
   if (url === '/v1/flags/resolve') {
     return {
       status: 200,

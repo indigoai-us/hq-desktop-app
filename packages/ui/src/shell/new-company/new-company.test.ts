@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  NEW_COMPANY_PLANS,
   companySlugFromName,
   parseInviteEmails,
   pinnedIdsAfterFinish,
@@ -30,10 +31,10 @@ describe("new company flow (US-037)", () => {
     ]);
   });
 
-  it("hands a paid plan to Stripe checkout and does not create on that click", () => {
-    const paid = stepOneEffects("workforce");
-    expect(new URL(paid.checkoutUrl ?? "").hostname).toBe("checkout.stripe.com");
-    expect(paid.createNow).toBe(false);
+  it("offers only usage pricing and always creates in-app, never checkout", () => {
+    expect(NEW_COMPANY_PLANS.map((plan) => plan.id)).toEqual(["free"]);
+    expect(NEW_COMPANY_PLANS[0]!.detail).toBe("$10 of usage included every month. 30-day trial, usage capped at $500.");
+    expect(JSON.stringify(NEW_COMPANY_PLANS)).not.toMatch(/Workforce/);
     expect(stepOneEffects("free")).toEqual({ checkoutUrl: null, createNow: true });
   });
 

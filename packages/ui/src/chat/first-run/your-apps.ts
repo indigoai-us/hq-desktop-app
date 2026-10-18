@@ -50,6 +50,11 @@ export type TileAction =
   | "connect"
   /** Slack or Google Workspace: HQ's own providers, connected on the Integrations page. */
   | "integrations"
+  /**
+   * Slack: HQ has no browser sign-in for it here, so the tile says to connect
+   * it later from Integrations and shows no button.
+   */
+  | "later"
   /** No-sign-in catalog app the person can still press (auto-connect did not run or was undone). */
   | "install"
   /** Not in the catalog; HQ reads the vendor's docs. */
@@ -135,6 +140,7 @@ export const YOUR_APPS_COPY = {
   failed: "Didn't connect",
   cantYet: "HQ can't connect it yet",
   needsKey: "Needs a key. Add it later from Integrations.",
+  later: "Connect later in Integrations",
   adminOnly: "An admin can connect this",
   groupConnected: "Connected",
   groupReady: "Ready to connect",
@@ -267,12 +273,19 @@ export function yourAppsView(input: YourAppsInput): YourAppsView {
     if (app.native || match) {
       let action: TileAction;
       if (!input.canManage) action = "admin-only";
+      else if (app.native === "slack") action = "later";
       else if (app.native) action = "integrations";
       else if (match?.authClass === "key") action = "needs-key";
       else if (match?.authClass === "none") action = "install";
       else action = "connect";
       const note =
-        action === "admin-only" ? YOUR_APPS_COPY.adminOnly : action === "needs-key" ? YOUR_APPS_COPY.needsKey : where;
+        action === "admin-only"
+          ? YOUR_APPS_COPY.adminOnly
+          : action === "needs-key"
+            ? YOUR_APPS_COPY.needsKey
+            : action === "later"
+              ? YOUR_APPS_COPY.later
+              : where;
       ready.push({ ...base, action, note: runNote(run, note) });
       continue;
     }

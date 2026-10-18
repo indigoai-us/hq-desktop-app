@@ -570,7 +570,11 @@ pub(crate) async fn fetch_cloud_roster(
     String,
 > {
     let pending_by_email_request = async {
-        if email_verified == Some(false) {
+        // Invites are addressed to people. An outpost has no email to be
+        // invited on and hq-pro refuses the lookup for it.
+        if email_verified == Some(false)
+            || crate::commands::auth::skip_person_only_call("workspaces pending-by-email")
+        {
             Ok(Vec::new())
         } else {
             vault.list_pending_invites_by_email().await
@@ -1013,6 +1017,12 @@ pub async fn claim_pending_company_invite(
     company_slug: Option<String>,
     route: Option<String>,
 ) -> Result<ClaimPendingInviteResult, String> {
+    if crate::commands::auth::machine_session_is_active() {
+        return Err(
+            "Sign in as a person to accept invites. This device is signed in as its outpost."
+                .to_string(),
+        );
+    }
     let vault_url = resolve_vault_api_url()?;
     let jwt = resolve_jwt().await?;
     let vault = VaultClient::new(&vault_url, &jwt);

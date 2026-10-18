@@ -13,6 +13,7 @@ import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { meetingCanvasDoor, meetingsSidepaneDoor } from "./lazy-doors.js";
 import { loadOutpost } from "./outpost-lazy.js";
+import { loadBrief } from "./brief-lazy.js";
 import { loadPersonalRail } from "./personal-rail-lazy.js";
 import { loadTelemetry } from "./telemetry-lazy.js";
 import { installMemoryLocalStorage } from "../test-support/memory-local-storage.js";
@@ -98,11 +99,13 @@ function localFilesAdapter(): PlatformAdapter {
   } as unknown as PlatformAdapter;
 }
 
-/** Web adapter whose registry turns Telemetry on (RELEASE-001 gate). */
+const OPEN_GATES = new Set(["desktop.rail-telemetry-v1", "desktop.rail-brief-v1"]);
+
+/** Web adapter whose registry turns Telemetry and the Daily Brief on (RELEASE-001 gates). */
 function telemetryAdapter(): PlatformAdapter {
   const adapter = webAdapter();
   (adapter as unknown as { identity: unknown }).identity = {
-    hasFeature: async (flag: string) => ok(flag === "desktop.rail-telemetry-v1"),
+    hasFeature: async (flag: string) => ok(OPEN_GATES.has(flag)),
   };
   return adapter;
 }
@@ -158,6 +161,7 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     await mountShell(telemetryAdapter());
     expect(railIds()).toEqual([
       "home",
+      "brief",
       "meetings",
       "more-companies",
       "library",
@@ -210,6 +214,46 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     expect(current()).toBe("meetings");
     expect(host.querySelector('[data-testid="meetings-dek"]')).not.toBeNull();
     await lazyBodiesLoaded(...meetingsBodies);
+  });
+
+  it("opens the Daily Brief through its lazy host, with no side pane", async () => {
+    await mountShell(telemetryAdapter());
+    click("rail-brief");
+    await settle();
+    expect(host.querySelector('[data-testid="brief-host"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="rail-placeholder"]')).toBeNull();
+    expect(current()).toBe("brief");
+    await lazyBodiesLoaded(loadBrief);
+  });
+
+  it("hides the Daily Brief entry outside Indigo, with no brief host (owner hold 2026-10-14)", async () => {
+    await mountShell();
+    await settle();
+    expect(host.querySelector('[data-testid="rail-brief"]')).toBeNull();
+    expect(host.querySelector('[data-testid="brief-host"]')).toBeNull();
+    expect(railIds()).not.toContain("brief");
+  });
+
+  it("leaves the Daily Brief for Home without a blank when the gate turns off", async () => {
+    const adapter = webAdapter();
+    let push: ((result: { ok: boolean; value?: unknown }) => void) | null = null;
+    (adapter as unknown as { identity: unknown }).identity = {
+      hasFeature: async (flag: string) => ok(flag === "desktop.rail-brief-v1"),
+      subscribeFeature: (flag: string, cb: (result: { ok: boolean; value?: unknown }) => void) => {
+        if (flag === "desktop.rail-brief-v1") push = cb;
+        return () => {};
+      },
+    };
+    await mountShell(adapter);
+    click("rail-brief");
+    await settle();
+    expect(current()).toBe("brief");
+    push!(ok(false));
+    await settle();
+    expect(host.querySelector('[data-testid="rail-brief"]')).toBeNull();
+    expect(host.querySelector('[data-testid="brief-host"]')).toBeNull();
+    expect(current()).toBe("home");
+    await lazyBodiesLoaded(loadBrief);
   });
 
   it("opens the Outpost page through its lazy host instead of the placeholder", async () => {
@@ -364,6 +408,10 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
       );
       await settle();
     };
+    // Daily Brief takes no number (owner call pending), so every shortcut
+    // keeps the number it had before the brief joined the rail.
+    const brief = host.querySelector('[data-testid="rail-brief"]')!;
+    expect(brief.getAttribute("aria-keyshortcuts")).toBeNull();
     await press("2");
     expect(current()).toBe("meetings");
     await press("4");

@@ -340,7 +340,7 @@
 
     <div class="actions">
       {#if position.index < lastBeatIndex}
-        <button class="skip ghost" type="button" onclick={complete}><RailIcon name="arrow-right" />Skip intro</button>
+        <button class="skip ghost" type="button" onclick={complete}>Skip intro</button>
       {/if}
       <button class="skip" type="button" onclick={advance}>
         {position.index >= lastBeatIndex ? 'Get started' : waiting ? 'Continue' : 'Next'}
