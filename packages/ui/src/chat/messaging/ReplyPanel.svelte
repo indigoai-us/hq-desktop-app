@@ -20,6 +20,7 @@
   import type { ChatArtifact } from "./artifact-model.js";
   import ReactionBar from "./ReactionBar.svelte";
   import { buildMessageLink } from "./message-link";
+  import { hoverMenuClippedAbove } from "./hover-menu-placement";
   import EmojiPicker from "./EmojiPicker.svelte";
   import {
     readThreadComposerDraft,
@@ -264,6 +265,66 @@
 
   const QUICK_REACT_EMOJI = ["👍", "🎉"] as const;
   let reactPickerFor = $state<string | null>(null);
+  let replyScroller = $state<HTMLDivElement | null>(null);
+  let replyMenuFlip = $state<Record<string, true>>({});
+
+  function setReplyMenuFlip(id: string, on: boolean): void {
+    if (on === Boolean(replyMenuFlip[id])) return;
+    const next = { ...replyMenuFlip };
+    if (on) next[id] = true;
+    else delete next[id];
+    replyMenuFlip = next;
+  }
+
+  function placeReplyMenu(row: HTMLElement, pointerY: number | null): void {
+    const id = row.dataset.eventId ?? "";
+    if (!id || !replyScroller) return;
+    const menu = row.querySelector<HTMLElement>(
+      ":scope > .reply-col > .reply-quick-react",
+    );
+    if (!menu) return;
+    const rowRect = row.getBoundingClientRect();
+    if (pointerY !== null && pointerY < rowRect.top) return;
+    setReplyMenuFlip(
+      id,
+      hoverMenuClippedAbove(
+        rowRect.top,
+        menu.offsetHeight,
+        replyScroller.getBoundingClientRect().top,
+      ),
+    );
+  }
+
+  function onReplyPointerEnter(event: PointerEvent): void {
+    const row = event.currentTarget;
+    if (!(row instanceof HTMLElement)) return;
+    placeReplyMenu(row, event.clientY);
+  }
+
+  function onReplyPointerLeave(event: PointerEvent): void {
+    const row = event.currentTarget;
+    if (!(row instanceof HTMLElement)) return;
+    if (row.matches(":focus-within")) return;
+    const related = event.relatedTarget;
+    if (related instanceof Node && row.contains(related)) return;
+    const id = row.dataset.eventId ?? "";
+    if (id) setReplyMenuFlip(id, false);
+  }
+
+  function onReplyFocusIn(event: FocusEvent): void {
+    const row = event.currentTarget;
+    if (!(row instanceof HTMLElement)) return;
+    placeReplyMenu(row, null);
+  }
+
+  function onReplyFocusOut(event: FocusEvent): void {
+    const row = event.currentTarget;
+    if (!(row instanceof HTMLElement)) return;
+    const related = event.relatedTarget;
+    if (related instanceof Node && row.contains(related)) return;
+    const id = row.dataset.eventId ?? "";
+    if (id) setReplyMenuFlip(id, false);
+  }
 
   /** `id:<eventId>` or `link:<eventId>` whose copy just succeeded. */
   let copiedKey = $state<string | null>(null);
@@ -1175,7 +1236,7 @@
   </header>
 
   <div class="reply-body">
-    <div class="reply-list" data-testid="reply-panel-list">
+    <div class="reply-list" data-testid="reply-panel-list" bind:this={replyScroller}>
       <!-- The thread's first message scrolls with its replies, so a long one
            never squeezes the conversation into a sliver under it. -->
       <div class="reply-root" data-testid="reply-panel-root">
@@ -1324,6 +1385,11 @@
             data-testid="reply-panel-message"
             data-event-id={msg.eventId}
             data-send-status={msg.sendStatus ?? ""}
+            data-menu-flip={replyMenuFlip[msg.eventId] ? "" : undefined}
+            onpointerenter={onReplyPointerEnter}
+            onpointerleave={onReplyPointerLeave}
+            onfocusin={onReplyFocusIn}
+            onfocusout={onReplyFocusOut}
           >
             <span class="reply-avatar" aria-hidden="true">
               <IdentityMark
@@ -1750,12 +1816,15 @@
     /* First item of the scrolling list: bleed past the list padding so its
        divider still spans the panel. */
     margin: -8px -12px 8px;
-    padding: 12px 16px 16px;
+    /* Reserved gutter so the root toolbar sits above the text. The list
+       clips anything that sticks out past this row. */
+    padding: 40px 16px 16px;
     border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.12));
   }
 
   .reply-root:hover .reply-quick-react-root,
   .reply-root:focus-within .reply-quick-react-root,
+  .reply-quick-react-root:hover,
   .reply-quick-react-root:has([aria-expanded="true"]) {
     opacity: 1;
     pointer-events: auto;
@@ -1769,11 +1838,9 @@
     }
   }
 
-  /* Root sits at the panel top — anchor its toolbar inside the row, not above. */
-  .reply-quick-react-root {
-    top: 8px;
-    right: 16px;
-  }
+  /* Position is set after the shared .reply-quick-react rule, which would
+     otherwise win on equal specificity and pull the root toolbar above the
+     row, where this list clips it. */
 
   .reply-root-meta {
     display: flex;
@@ -1946,7 +2013,8 @@
      rows stay tight and the affordance only appears on hover/focus. */
   .reply-quick-react {
     position: absolute;
-    top: -12px;
+    top: auto;
+    bottom: calc(100% - 3px);
     right: 8px;
     z-index: 2;
     display: flex;
@@ -1964,13 +2032,37 @@
 
   .reply-row:hover .reply-quick-react,
   .reply-row:focus-within .reply-quick-react,
+  .reply-quick-react:hover,
   .reply-quick-react:has([aria-expanded="true"]) {
     opacity: 1;
     pointer-events: auto;
   }
 
+  .reply-row[data-menu-flip] {
+    padding-top: 40px;
+  }
+
+  .reply-row[data-menu-flip] > .reply-col > .reply-quick-react {
+    top: 0;
+    bottom: auto;
+  }
+
+  /* Root toolbar stays in the row gutter. Higher specificity than the shared
+     rule above, which anchors every other reply toolbar over the row padding. */
+  .reply-root .reply-quick-react-root {
+    top: 4px;
+    bottom: auto;
+    right: 16px;
+  }
+
   @media (hover: none) {
+    .reply-row {
+      padding-top: 40px;
+    }
+
     .reply-quick-react {
+      top: 0;
+      bottom: auto;
       opacity: 1;
       pointer-events: auto;
     }
