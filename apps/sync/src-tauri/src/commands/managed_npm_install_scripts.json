@@ -1,0 +1,130 @@
+{
+  "generated_at": "2026-10-16",
+  "generator": "apps/sync/scripts/managed-npm-install-scripts.mjs, @npmcli/arborist 9.9.1",
+  "packages": {
+    "@anthropic-ai/claude-code": {
+      "spec": "@anthropic-ai/claude-code",
+      "version": "2.1.301",
+      "install_scripts": [
+        {
+          "name": "@anthropic-ai/claude-code",
+          "version": "2.1.301",
+          "optional": false
+        }
+      ]
+    },
+    "@openai/codex": {
+      "spec": "@openai/codex",
+      "version": "0.163.0",
+      "install_scripts": []
+    },
+    "@xai-official/grok": {
+      "spec": "@xai-official/grok",
+      "version": "1.0.60",
+      "install_scripts": [
+        {
+          "name": "@xai-official/grok",
+          "version": "1.0.60",
+          "optional": false
+        }
+      ]
+    },
+    "@tobilu/qmd": {
+      "spec": "@tobilu/qmd@2.5.3",
+      "version": "2.5.3",
+      "install_scripts": [
+        {
+          "name": "better-sqlite3",
+          "version": "12.10.0",
+          "optional": false
+        },
+        {
+          "name": "node-llama-cpp",
+          "version": "3.18.1",
+          "optional": false
+        },
+        {
+          "name": "tree-sitter-go",
+          "version": "0.25.0",
+          "optional": false
+        },
+        {
+          "name": "tree-sitter-javascript",
+          "version": "0.23.1",
+          "optional": false
+        },
+        {
+          "name": "tree-sitter-python",
+          "version": "0.25.0",
+          "optional": false
+        },
+        {
+          "name": "tree-sitter-rust",
+          "version": "0.24.0",
+          "optional": false
+        },
+        {
+          "name": "tree-sitter-typescript",
+          "version": "0.23.2",
+          "optional": false
+        }
+      ]
+    },
+    "@indigoai-us/hq-cli": {
+      "spec": "@indigoai-us/hq-cli",
+      "version": "5.345.141",
+      "install_scripts": [
+        {
+          "name": "@indigoai-us/hq-cli",
+          "version": "5.345.141",
+          "optional": false
+        },
+        {
+          "name": "better-sqlite3",
+          "version": "12.10.0",
+          "optional": false
+        },
+        {
+          "name": "better-sqlite3",
+          "version": "12.11.1",
+          "optional": false
+        },
+        {
+          "name": "node-llama-cpp",
+          "version": "3.18.1",
+          "optional": false
+        },
+        {
+          "name": "tree-sitter-go",
+          "version": "0.25.0",
+          "optional": false
+        },
+        {
+          "name": "tree-sitter-javascript",
+          "version": "0.23.1",
+          "optional": false
+        },
+        {
+          "name": "tree-sitter-python",
+          "version": "0.25.0",
+          "optional": false
+        },
+        {
+          "name": "tree-sitter-rust",
+          "version": "0.24.0",
+          "optional": false
+        },
+        {
+          "name": "tree-sitter-typescript",
+          "version": "0.23.2",
+          "optional": false
+        }
+      ]
+    },
+    "pnpm": {
+      "spec": "pnpm@9",
+      "version": "9.15.9",
+      "install_scripts": []
+    }
+  }
+}
