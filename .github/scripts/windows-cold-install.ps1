@@ -470,7 +470,11 @@ try {
   $summary.ok = $true
   $summary.failure = $null
   Save-Summary
+  # hq doctor exits 1 outside an HQ tree. GitHub's pwsh wrapper turns that
+  # leftover native exit code into a failed step even after we accepted it.
+  $global:LASTEXITCODE = 0
   Write-Host "Cold install passed ($($summary.release.tag))"
+  exit 0
 } catch {
   if (-not $summary.failure) {
     $summary.failure = (($_.Exception.Message -replace "\s+", " ").Trim())
