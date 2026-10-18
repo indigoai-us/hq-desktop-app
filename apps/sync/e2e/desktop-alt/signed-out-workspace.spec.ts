@@ -1,6 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import { readRepoFile } from './harness';
 
+/** The source of one Rust fn, from its signature to its matching close brace. */
+function fnBody(src: string, signature: string): string {
+  const start = src.indexOf(signature);
+  expect(start, `${signature} not found`).toBeGreaterThan(-1);
+  const open = src.indexOf('{', start);
+  let depth = 0;
+  for (let i = open; i < src.length; i += 1) {
+    if (src[i] === '{') depth += 1;
+    if (src[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return src.slice(start, i + 1);
+    }
+  }
+  throw new Error(`${signature} has no closing brace`);
+}
+
 /**
  * Signed-out users must still be able to open the desktop workspace and
  * reach Google/Microsoft sign-in inside that window — not a deleted classic
@@ -15,13 +31,21 @@ describe('signed-out users open the desktop workspace for sign-in', () => {
   const auth = readRepoFile('src-tauri/src/commands/auth.rs');
 
   it('does not gate open_desktop_alt_window on a signed-in session', () => {
-    const idx = rust.indexOf('pub async fn open_desktop_alt_window_inner');
-    expect(idx).toBeGreaterThan(-1);
-    const body = rust.slice(idx, idx + 2500);
+    // The open path ends in a fresh build of the desktop-alt window. The
+    // builder lives in `build_desktop_alt_window` (shared with the first-run
+    // handoff), so the open body must reach it with no signed-in gate on the
+    // way, and the builder body must construct the window through the Tauri
+    // builder with the desktop-alt label.
+    const body = fnBody(rust, 'pub async fn open_desktop_alt_window_inner(');
     expect(rust).not.toContain('desktop-alt requires a signed-in user');
-    expect(body).not.toContain('if !desktop_alt_enabled().await');
-    expect(body).toContain('WINDOW_LABEL');
-    expect(body).toContain('tauri::WebviewWindowBuilder::new');
+    expect(body).not.toContain('desktop_alt_enabled()');
+    expect(body).toContain('app.get_webview_window(WINDOW_LABEL)');
+    expect(body).toMatch(/\n {4}build_desktop_alt_window\(&app, route\)\n\}$/);
+
+    const builder = fnBody(rust, 'fn build_desktop_alt_window(');
+    expect(builder).not.toContain('desktop_alt_enabled()');
+    expect(builder).toMatch(/tauri::WebviewWindowBuilder::new\(\s*app,\s*WINDOW_LABEL,/);
+    expect(builder).toMatch(/\.build\(\)/);
     expect(rust).toContain('const WINDOW_LABEL: &str = "desktop-alt"');
   });
 

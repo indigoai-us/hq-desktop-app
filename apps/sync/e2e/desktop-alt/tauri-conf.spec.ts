@@ -81,8 +81,9 @@ describe('tauri.conf.json desktop-alt window declaration', () => {
   // and the tray toggle restored it at that size every time, because the open
   // path revealed the existing window without re-checking its frame.
   it('recovers the window frame on every reveal and on a monitor/scale change', () => {
-    const revealIndex = desktopCommandSource.indexOf('reveal_desktop_alt_window(&window);');
-    const recoverIndex = desktopCommandSource.indexOf('enforce_desktop_alt_frame(&window);');
+    const openPath = desktopCommandSource.slice(desktopCommandSource.indexOf('pub async fn open_desktop_alt_window_inner('));
+    const revealIndex = openPath.indexOf('reveal_desktop_alt_window(&window);');
+    const recoverIndex = openPath.indexOf('enforce_desktop_alt_frame(&window);');
 
     expect(recoverIndex).toBeGreaterThan(-1);
     expect(revealIndex).toBeGreaterThan(-1);
@@ -174,13 +175,14 @@ describe('tauri.conf.json desktop-alt window declaration', () => {
     // a different file, so it is deliberately not constrained here.
   });
 
-  it('reveals the cold macOS window only after its first native glass paint', () => {
+  it('reveals the cold macOS window after the shell paint signal with native glass applied', () => {
     expect(desktopCommandSource).toContain('.visible(false)');
-    expect(desktopCommandSource).toContain('tauri::webview::PageLoadEvent::Finished');
-    expect(desktopCommandSource).toContain('AtomicBool::new(false)');
-    expect(desktopCommandSource).toContain(
-      'first_page_finished.swap(true, Ordering::AcqRel)',
-    );
+    expect(desktopCommandSource).toContain('REVEAL_ON_PAINT.store(!first_run_reveal_held(), Ordering::Release)');
+    expect(desktopCommandSource).toContain('REVEAL_ON_PAINT.swap(false, Ordering::AcqRel)');
+    expect(desktopCommandSource).toContain('pub fn desktop_first_run_takeover_painted(');
+    expect(desktopCommandSource).not.toContain('.on_page_load(');
+    expect(desktopCommandSource).toContain('if !take_reveal_on_paint() {');
+    expect(desktopCommandSource).toContain('reveal_desktop_alt_window(&watchdog);');
     expect(glassSource).toContain('pub fn refresh_liquid_glass_window');
     expect(glassSource).toContain('setNeedsLayout: true');
     expect(glassSource).toContain('layoutSubtreeIfNeeded');
@@ -188,7 +190,7 @@ describe('tauri.conf.json desktop-alt window declaration', () => {
     expect(glassSource).toContain('displayIfNeeded');
 
     const coldLifecycleSource = desktopCommandSource.slice(
-      desktopCommandSource.indexOf('let first_page_finished'),
+      desktopCommandSource.indexOf('fn reveal_desktop_alt_window('),
     );
     const lifecycle = [
       'crate::glass::apply_liquid_glass_window(&window)',
