@@ -4,8 +4,8 @@
    * The price, when the catalog has one, comes from the same pricing read
    * the rest of the app uses. A missing price hides the hint.
    */
-  import { onMount } from "svelte";
   import type { AdapterResult, Json } from "@hq/platform";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import CompanyOutpostPage from "../company-outpost/CompanyOutpostPage.svelte";
   import { createCompanyOutpostClient, type CompanyOutpostApi } from "../company-outpost/company-outpost-client.js";
   import { canManageRole, formatOutpostPrice, type CompanyOutpostRole } from "../company-outpost/company-outpost-model.js";
@@ -23,6 +23,7 @@
 
   let priceHint = $state<string | null>(null);
   let priced = $state(false);
+  let attempt = $state(0);
 
   function monthlyFromPricing(value: unknown): number | null {
     if (!value || typeof value !== "object") return null;
@@ -31,17 +32,30 @@
     return typeof monthly === "number" && Number.isFinite(monthly) ? monthly : null;
   }
 
-  onMount(() => {
+  // Pricing is optional. A hang shows the shared loader. A failure or a throw
+  // still opens the list, with no price hint.
+  $effect(() => {
+    const read = readPricing;
+    const label = companyLabel || "the company";
+    const nonce = attempt;
     let live = true;
     void (async () => {
-      if (readPricing) {
-        const result = await readPricing();
-        if (live && result.ok) {
-          const monthly = monthlyFromPricing(result.value);
-          if (monthly != null) priceHint = formatOutpostPrice(monthly, companyLabel || "the company");
+      let nextHint: string | null = null;
+      try {
+        if (read) {
+          const result = await read();
+          if (!live) return;
+          if (result.ok) {
+            const monthly = monthlyFromPricing(result.value);
+            if (monthly != null) nextHint = formatOutpostPrice(monthly, label);
+          }
         }
+      } catch {
+        nextHint = null;
       }
-      if (live) priced = true;
+      if (!live || nonce !== attempt) return;
+      priceHint = nextHint;
+      priced = true;
     })();
     return () => {
       live = false;
@@ -61,6 +75,8 @@
 <div class="host" data-testid="company-outpost-host">
   {#if priced}
     <CompanyOutpostPage {companyUid} {role} {client} {onOpenBilling} />
+  {:else}
+    <ReadLoader testid="company-outpost-pricing-loading" onretry={() => (attempt += 1)} />
   {/if}
 </div>
 

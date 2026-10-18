@@ -41,6 +41,20 @@ describe("Company Outpost page", () => {
     flushSync();
   }
 
+  it("shows the shared loader while the list read is still waiting", () => {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const client = createCompanyOutpostStub({ role: "member", items: FIXTURE_BOXES });
+    client.list = () => new Promise(() => {});
+    component = mount(CompanyOutpostPage, {
+      target,
+      props: { companyUid: "cmp_1", role: "member", client, now: FIXTURE_NOW, pollMs: null },
+    });
+    flushSync();
+    expect(target.querySelector(".read-loader")).not.toBeNull();
+    expect(target.querySelector("[data-testid='empty-outposts']")).toBeNull();
+  });
+
   it("shows list columns for an admin and the add action", async () => {
     const { target } = await show("admin");
     expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-manage")).toBe("true");

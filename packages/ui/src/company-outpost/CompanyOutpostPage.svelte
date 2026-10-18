@@ -7,6 +7,7 @@
    */
   import { onMount } from "svelte";
   import RailButton from "../common/button/RailButton.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import {
     OUTPOST_JOBS_ROUTE,
     PREP_STEPS,
@@ -270,7 +271,7 @@
     <header class="co-head"><h1>You do not have access</h1><p>Only company members can view Outposts.</p></header>
     <div class="co-card"><p>Ask a company owner to update your access.</p></div>
   {:else if !ready}
-    <p class="co-hint" data-testid="company-outpost-loading">Loading Outposts.</p>
+    <ReadLoader testid="company-outpost-loading" onretry={() => { void refresh().then(() => { ready = true; }); }} />
   {:else if loadMessage && screen === "list"}
     <header class="co-head"><h1>Outposts</h1></header>
     <div class="co-note" role="alert" data-testid="company-outpost-error">{loadMessage}</div>
