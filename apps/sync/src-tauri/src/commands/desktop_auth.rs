@@ -57,6 +57,7 @@ use hq_desktop_core::continuation_endpoints::ContinuationEndpoints;
 use hq_desktop_core::first_run::LaunchKind;
 use hq_desktop_core::session_continuation::{
     may_start, AttemptEnd, ContinuationAttempt, LaunchContext, RolloutDecision, StartRefusal,
+    ATTEMPT_LIFETIME,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -626,7 +627,7 @@ pub async fn desktop_continuation_start(app: AppHandle) -> Result<ContinuationSt
 
     // The website knows the prior provider. Only signin-start may receive
     // this provider-less request; never open it directly in the browser.
-    let armed = super::oauth::arm_oauth_flow(&app, None, Some(&nonce))?;
+    let armed = super::oauth::arm_oauth_flow(&app, None, Some(&nonce), ATTEMPT_LIFETIME)?;
 
     let (browser_url, referral_nonce) =
         match prepare_desktop_referral_start_url(&armed.authorize_url).await {
@@ -854,7 +855,7 @@ pub async fn desktop_continuation_cancel(attempt_id: String) -> Result<(), Strin
 
     // Dropping the custody entry is not cancelling. Without this the listener
     // thread keeps both loopback sockets and `OAUTH_FLOW_ACTIVE` alive until a
-    // callback or the five-minute timeout, so blur-hide stays suppressed and
+    // callback or the attempt lifetime, so blur-hide stays suppressed and
     // Cancel visibly cancels nothing.
     if let Some(state) = state {
         release_listener(&state);

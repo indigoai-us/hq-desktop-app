@@ -4,19 +4,22 @@
  * layout the card draws. Mirrors the catalogue's blockedByMe measure(): a
  * decision has an edge when it names blocks or carries unlock lines; people
  * are counted only from blocks of kind "person"; with no named blocks at all
- * the parties are the unlock lines. No Date, no toLocale*.
+ * the parties are the unlock lines. The card draws the list form (each call,
+ * then who it frees) from blockedLayout and the one-row lead form from
+ * chainNodes. No Date, no toLocale*.
  */
 import type { PeekContent } from "./brief-context.svelte.js";
 import { humanTitle } from "./brief-distill.js";
 import { productName } from "./brief-origin.js";
 import type { BriefDecision, BriefOrigin, BriefTone } from "./brief-types.js";
 
-/** Decision pills in the two-row graph. */
-export const PILL_CAP = 3;
-/** Freed parties in any list before the "+N more" tile. */
-export const PARTY_CAP = 5;
-/** Sentinel party key for edges that end at the "+N more" tile. */
-export const MORE_KEY = "+more";
+/** Calls in the list form before "+N more calls". */
+export const CALL_CAP = 3;
+/** Party lines in the list form, across every call, before each call's "+N more". */
+export const LINE_CAP = 5;
+/** The same caps on a one-column card. */
+export const NARROW_CALL_CAP = 2;
+export const NARROW_LINE_CAP = 3;
 
 export interface FreedParty {
   key: string;
@@ -145,7 +148,7 @@ export function blockedHeadline(s: BlockedSummary): string {
   return `${plural(calls, "call")} ${calls === 1 ? "frees" : "free"} ${parts.join(" and ")}.`;
 }
 
-/** Mono age chip: "17h", "44h", "3d"; empty when unknown. */
+/** Age pill: "17h", "44h", "3d"; empty when unknown. */
 export function ageLabel(hours: number | null | undefined): string {
   if (hours == null || !Number.isFinite(hours) || hours < 0) return "";
   if (hours < 1) return "<1h";
@@ -153,52 +156,96 @@ export function ageLabel(hours: number | null | undefined): string {
   return `${Math.round(hours / 24)}d`;
 }
 
-/** Past a day the call is late: amber pill age and edges. */
-export const isLate = (d: BriefDecision): boolean => (d.ageHours ?? 0) > 24;
-
-export interface LaidEdge extends BlockedEdge {
-  /** Index into `pills`. */
-  from: number;
-  /** Index into `parties`, or `parties.length` for the "+N more" tile. */
-  to: number;
-}
-
-export interface BlockedLayout {
-  pills: BriefDecision[];
-  morePills: BriefDecision[];
-  parties: FreedParty[];
-  moreParties: FreedParty[];
-  /** Edges from a shown pill; a party past the cap points at the "+N more" tile with key MORE_KEY. */
-  edges: LaidEdge[];
+export interface BlockedStat {
+  key: "calls" | "freed" | "oldest";
+  value: string;
+  /** Mono caps label under the number. */
+  label: string;
+  /** The oldest call is past a day. */
+  late?: boolean;
 }
 
 /**
- * The two-row graph: at most `pillCap` decisions on the left, at most
- * `partyCap` parties on the right (those freed by the shown pills first),
- * then a "+N more" tile that collects the rest and their edges.
+ * The card's numbers, for the band at the foot of a tall card: how many
+ * calls, how many people and things wait on them (never "people" without a
+ * block of kind person), and the oldest call's age when one is known.
  */
-export function blockedLayout(s: BlockedSummary, pillCap = PILL_CAP, partyCap = PARTY_CAP): BlockedLayout {
-  const pills = s.decisions.slice(0, pillCap);
-  const morePills = s.decisions.slice(pillCap);
-  const shownIds = new Set(pills.map((d) => d.id));
-  const ordered = [...s.parties.filter((p) => p.by.some((id) => shownIds.has(id))), ...s.parties.filter((p) => !p.by.some((id) => shownIds.has(id)))];
-  const parties = ordered.slice(0, partyCap);
-  const moreParties = ordered.slice(partyCap);
-  const index = new Map(parties.map((p, j) => [p.key, j]));
-  const edges: LaidEdge[] = [];
-  for (const e of s.edges) {
-    const from = pills.findIndex((d) => d.id === e.decisionId);
-    if (from < 0) continue;
-    const to = index.get(e.partyKey);
-    if (to != null) {
-      edges.push({ ...e, from, to });
-      continue;
-    }
-    const more = edges.find((x) => x.from === from && x.partyKey === MORE_KEY);
-    if (more) more.weight += e.weight;
-    else edges.push({ decisionId: e.decisionId, partyKey: MORE_KEY, weight: e.weight, from, to: parties.length });
+export function blockedStats(s: BlockedSummary): BlockedStat[] {
+  if (!s.decisions.length) return [];
+  const n = s.parties.length;
+  const freedLabel = s.unlocksOnly
+    ? n === 1 ? "Thing unlocked" : "Things unlocked"
+    : s.people && s.work
+      ? "Waiting on them"
+      : s.people
+        ? s.people === 1 ? "Person waiting" : "People waiting"
+        : n === 1 ? "Thing held" : "Things held";
+  const out: BlockedStat[] = [
+    { key: "calls", value: String(s.decisions.length), label: s.decisions.length === 1 ? "Call" : "Calls" },
+    { key: "freed", value: String(n), label: freedLabel },
+  ];
+  const ages = s.decisions.map((d) => d.ageHours).filter((h): h is number => h != null && Number.isFinite(h) && h >= 0);
+  if (ages.length) {
+    const oldest = Math.max(...ages);
+    out.push({ key: "oldest", value: ageLabel(oldest), label: "Oldest call", late: oldest > 24 });
   }
-  return { pills, morePills, parties, moreParties, edges };
+  return out;
+}
+
+/** Past a day the call is late: its age pill turns warm. */
+export const isLate = (d: BriefDecision): boolean => (d.ageHours ?? 0) > 24;
+
+/** One call in the list form and what it frees there. */
+export interface LaidCall {
+  decision: BriefDecision;
+  /** Parties drawn under the call (a party freed by two shown calls is drawn under both). */
+  parties: FreedParty[];
+  /** Its parties past the line budget: the call's own "+N more" line. */
+  folded: FreedParty[];
+}
+
+export interface BlockedLayout {
+  calls: LaidCall[];
+  /** Calls past the cap: the "+N more calls" line. */
+  moreCalls: BriefDecision[];
+}
+
+/**
+ * The list form: at most `callCap` calls, each with what it frees, and at
+ * most `lineCap` party lines in all. Every shown call gets its first party
+ * before any call gets a second, so no call is drawn freeing nothing; the
+ * rest of the budget goes to the calls in order. What does not fit folds
+ * into that call's "+N more".
+ */
+export function blockedLayout(s: BlockedSummary, callCap = CALL_CAP, lineCap = LINE_CAP): BlockedLayout {
+  const shown = s.decisions.slice(0, callCap);
+  const own = shown.map((d) => s.parties.filter((p) => p.by.includes(d.id)));
+  const take = own.map(() => 0);
+  let budget = lineCap;
+  for (let i = 0; i < own.length && budget > 0; i++) {
+    if (own[i]!.length) {
+      take[i] = 1;
+      budget -= 1;
+    }
+  }
+  for (let i = 0; i < own.length && budget > 0; i++) {
+    const extra = Math.min(budget, own[i]!.length - take[i]!);
+    take[i] = take[i]! + extra;
+    budget -= extra;
+  }
+  return {
+    calls: shown.map((d, i) => ({ decision: d, parties: own[i]!.slice(0, take[i]), folded: own[i]!.slice(take[i]) })),
+    moreCalls: s.decisions.slice(callCap),
+  };
+}
+
+/** A party is freed once every call that holds it is made. */
+export const isFreed = (p: FreedParty, cleared: Readonly<Record<string, boolean>>): boolean => p.by.length > 0 && p.by.every((id) => !!cleared[id]);
+
+/** One letter for a person's glass circle: "Jonathan" -> "J". */
+export function initialOf(name: string): string {
+  const ch = name.trim().match(/[\p{L}\p{N}]/u)?.[0] ?? "?";
+  return ch.toUpperCase();
 }
 
 export interface ChainNodes {

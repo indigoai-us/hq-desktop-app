@@ -177,12 +177,12 @@ async function openCompanyBots(): Promise<void> {
   await settle();
 }
 
-async function messageBotFromProfile(): Promise<void> {
+async function messageBotFromRoster(): Promise<void> {
   let message: HTMLButtonElement | null = null;
   for (let i = 0; i < 150 && !message; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 100));
     await settle();
-    message = host.querySelector<HTMLButtonElement>('[data-testid="bot-profile-message"]');
+    message = host.querySelector<HTMLButtonElement>('[data-testid="bots-message"]');
   }
   expect(message).not.toBeNull();
   message!.click();
@@ -197,7 +197,7 @@ describe("Home sidebar is the same however Home is reached", () => {
     expect(viaRail.activity).toBe(false);
 
     await openCompanyBots();
-    await messageBotFromProfile();
+    await messageBotFromRoster();
     expect(host.querySelector('[data-testid="bots-page"]')).toBeNull();
     expect(host.textContent ?? "").toContain("deez");
     expect(homeSidebar()).toEqual(viaRail);

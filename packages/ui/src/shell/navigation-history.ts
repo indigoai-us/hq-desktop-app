@@ -646,19 +646,44 @@ export function createNavigationHistory(
     },
     filter: (keep) => {
       if (entries.length === 0) return snapshot();
-      const current = index >= 0 ? entries[index]! : null;
-      const currentKey = current ? canonicalEntryKey(current) : null;
-      const next = entries.filter(keep);
-      if (next.length === 0) {
+      const originIndex = index;
+      const kept: { entry: NavigationEntry; from: number }[] = [];
+      for (let i = 0; i < entries.length; i += 1) {
+        const entry = entries[i]!;
+        if (!keep(entry)) continue;
+        kept.push({ entry, from: i });
+      }
+      if (kept.length === 0) {
         entries = [];
         index = -1;
         return snapshot();
       }
-      let nextIndex = currentKey
-        ? next.findIndex((item) => canonicalEntryKey(item) === currentKey)
-        : -1;
-      if (nextIndex < 0) nextIndex = Math.min(Math.max(index, 0), next.length - 1);
-      entries = next;
+      // Adjacent equal entries collapse to the later one. A close that
+      // replaces a thread with the conversation it was opened from otherwise
+      // leaves two copies, and the first match would park the cursor on the
+      // older copy so Forward walks into the duplicate.
+      const collapsed: {
+        entry: NavigationEntry;
+        includesCurrent: boolean;
+      }[] = [];
+      for (const item of kept) {
+        const includesCurrent = item.from === originIndex;
+        const prev = collapsed[collapsed.length - 1];
+        if (prev && entriesEqual(prev.entry, item.entry)) {
+          prev.entry = item.entry;
+          prev.includesCurrent = prev.includesCurrent || includesCurrent;
+          continue;
+        }
+        collapsed.push({ entry: item.entry, includesCurrent });
+      }
+      let nextIndex = collapsed.findIndex((item) => item.includesCurrent);
+      if (nextIndex < 0) {
+        nextIndex = Math.min(
+          Math.max(originIndex, 0),
+          collapsed.length - 1,
+        );
+      }
+      entries = collapsed.map((item) => item.entry);
       index = nextIndex;
       return snapshot();
     },

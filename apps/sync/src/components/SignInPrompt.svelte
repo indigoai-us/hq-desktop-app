@@ -75,6 +75,18 @@
   let continuation = $state<ContinuationState>({ phase: 'idle' });
   let continuationDepsRef: ContinuationDeps | null = null;
   let continuationBusy = $state(false);
+  const continuationBrowserWait = $derived(
+    continuation.phase === 'opening' || continuation.phase === 'waiting',
+  );
+  // A failed provider-less attempt, including one that never opened the
+  // browser, stays on the named provider buttons. Cancel and "not in the
+  // rollout" return to the ordinary sign-in screen.
+  const continuationOffersProviders = $derived(
+    continuationBrowserWait ||
+      (continuation.phase === 'fallback' &&
+        continuation.errorKind !== 'cancelled' &&
+        continuation.errorKind !== 'unavailable'),
+  );
 
   /**
    * Set the moment a provider button is pressed, and never cleared.
@@ -117,6 +129,13 @@
       decision,
       (next) => {
         continuation = next;
+        if (
+          next.phase === 'fallback' &&
+          next.errorKind !== 'cancelled' &&
+          next.errorKind !== 'unavailable'
+        ) {
+          error = 'That browser sign-in did not finish. Continue with Google or Microsoft.';
+        }
       },
       () => !manualSignInStarted,
     );
@@ -317,6 +336,34 @@
     }, CALLBACK_TIMEOUT_MS);
   }
 
+  function continuationAttemptId(): string | null {
+    if (
+      continuation.phase === 'opening' ||
+      continuation.phase === 'waiting' ||
+      continuation.phase === 'confirming'
+    ) {
+      return continuation.attemptId;
+    }
+    return null;
+  }
+
+  /**
+   * Drop the provider-less attempt before a named provider starts.
+   *
+   * Cancel releases that attempt's listener, nonce, and PKCE verifier. The
+   * named sign-in then arms a new listener. Cancelling after the new listener
+   * exists is still safe: teardown is scoped to the old attempt's state.
+   */
+  async function releaseContinuationForNamedProvider(): Promise<void> {
+    const attemptId = continuationAttemptId();
+    if (!attemptId) return;
+    try {
+      await invoke('desktop_continuation_cancel', { attemptId });
+    } catch (cause) {
+      console.warn('[signin] failed to cancel the browser sign-in:', cause);
+    }
+  }
+
   async function handleSignIn(provider: SignInProvider) {
     if (provider === 'Microsoft' && microsoftEmail.trim() === '') {
       microsoftEmailPrompt = true;
@@ -326,10 +373,15 @@
 
     const run = ++signInRun;
     // Claim the flow before anything awaits, so a continuation whose config
-    // lands mid-click sees this rather than racing it.
+    // lands mid-click sees this rather than racing it. Cancel only when an
+    // attempt is already armed: that await must finish before the named
+    // listener starts, and a click with nothing to cancel stays synchronous
+    // up to start_oauth_login.
     manualSignInStarted = true;
-    // Preparation observes this claim and leaves continuation unarmed. Manual
-    // OAuth starts now; its native completion supplies AttemptEnd::Superseded.
+    if (continuationAttemptId()) {
+      await releaseContinuationForNamedProvider();
+      if (!isCurrentSignInRun(run)) return;
+    }
     loadingProvider = provider;
     error = '';
     lastProvider = provider;
@@ -547,16 +599,19 @@
           <RailIcon name="user-plus" />Use another account
         </button>
       </div>
-    {:else if continuation.phase === 'opening' || continuation.phase === 'waiting'}
+    {:else if continuationBrowserWait}
       <p class="loading-hint" data-testid="continuation-waiting">
         Finishing your sign-in in the browser…
+      </p>
+      <p class="loading-hint" data-testid="continuation-provider-fallback">
+        Or continue with Google or Microsoft.
       </p>
       <button class="cancel-btn" onclick={handleContinuationReject} disabled={continuationBusy}>
         <RailIcon name="x" />Cancel
       </button>
     {/if}
 
-    {#if layout === "column" && !showAlternate && continuation.phase !== 'confirming'}
+    {#if layout === "column" && !showAlternate && continuation.phase !== 'confirming' && !continuationOffersProviders}
       <button
         type="button"
         class="sign-in-btn big"
@@ -576,10 +631,8 @@
       class="sign-in-actions"
       class:secondary={continuation.phase === 'confirming'}
       hidden={
-        continuation.phase === 'opening' ||
-        continuation.phase === 'waiting' ||
         loadingProvider !== null ||
-        (layout === 'column' && !showAlternate && continuation.phase !== 'confirming')
+        (layout === 'column' && !showAlternate && continuation.phase !== 'confirming' && !continuationOffersProviders)
       }
     >
       {#each providers as provider}

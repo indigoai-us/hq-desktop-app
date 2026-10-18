@@ -509,11 +509,26 @@ export async function beginContinuation(
   );
   onState({ phase: 'waiting', attemptId, sessionId });
 
+  // A named-provider click during the browser-opened receipt must not be
+  // allowed to wait on this attempt. Awaiting here would take whatever
+  // listener is armed now, including the one the click just started.
+  if (!shouldContinue()) {
+    try {
+      await deps.bridge.cancel({ attemptId });
+    } catch {
+      // The click path cancels the same attempt. Either call is enough.
+    }
+    return await fail(deps, sessionId, startedAt, variant, 'cancelled', onState);
+  }
+
   let identity: VerifiedIdentity;
   try {
     identity = await deps.bridge.awaitIdentity({ attemptId });
   } catch (error) {
-    return await fail(deps, sessionId, startedAt, variant, classifyContinuationError(error), onState);
+    // Choosing Google or Microsoft while this wait is in flight is a cancel,
+    // not a website failure. The click owns the next attempt.
+    const errorKind = shouldContinue() ? classifyContinuationError(error) : 'cancelled';
+    return await fail(deps, sessionId, startedAt, variant, errorKind, onState);
   }
 
   await recordReceipt(

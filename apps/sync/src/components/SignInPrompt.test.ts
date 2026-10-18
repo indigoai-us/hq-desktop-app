@@ -131,6 +131,159 @@ describe('SignInPrompt browser continuation', () => {
   });
 });
 
+const CONTINUATION_CONTEXT = {
+  installAttemptId: '11111111-1111-4111-8111-111111111111',
+  appVersion: '0.10.229',
+  apiBase: 'https://api.placeholder.test',
+  suppressFirstLaunchTelemetry: true,
+};
+
+const CONTINUATION_CONFIG = {
+  protocolVersion: 1,
+  minimumDesktopVersion: '0.10.229',
+  variant: 'continuation',
+  rolloutPercent: 100,
+};
+
+function installContinuationInvoke(options: {
+  start?: () => Promise<unknown>;
+  awaitIdentity?: () => Promise<unknown>;
+  onInvoke?: (command: string) => void;
+}): void {
+  tauri.invoke.mockImplementation((command: string) => {
+    options.onInvoke?.(command);
+    switch (command) {
+      case 'desktop_continuation_context':
+        return Promise.resolve(CONTINUATION_CONTEXT);
+      case 'desktop_continuation_config':
+        return Promise.resolve(CONTINUATION_CONFIG);
+      case 'desktop_continuation_may_start':
+        return Promise.resolve(null);
+      case 'desktop_continuation_deliver':
+        return Promise.resolve(200);
+      case 'desktop_continuation_start':
+        return options.start ? options.start() : Promise.resolve({ attemptId: 'attempt-1' });
+      case 'desktop_continuation_await_identity':
+        return options.awaitIdentity ? options.awaitIdentity() : new Promise(() => {});
+      case 'desktop_continuation_cancel':
+        return Promise.resolve(undefined);
+      case 'get_auth_state':
+        return Promise.resolve({ authenticated: false, expiresAt: '' });
+      case 'get_machine_identity_status':
+        return Promise.resolve({ available: false, active: false });
+      case 'start_oauth_login':
+        return new Promise(() => {});
+      default:
+        return Promise.resolve(undefined);
+    }
+  });
+}
+
+function providerActions(): HTMLElement | null {
+  return host.querySelector<HTMLElement>('.sign-in-actions');
+}
+
+describe('provider buttons stay beside a provider-less browser wait', () => {
+  it('shows Google and Microsoft immediately on the desktop sign-in page', async () => {
+    installContinuationInvoke({});
+    component = mount(SignInPrompt, { target: host, props: { layout: 'column' } });
+
+    await flushUntil(() => host.querySelector('[data-testid="continuation-waiting"]') !== null);
+
+    expect(host.textContent).toContain('Finishing your sign-in in the browser');
+    expect(host.textContent).toContain('Or continue with Google or Microsoft.');
+    expect(providerActions()?.hasAttribute('hidden')).toBe(false);
+    expect(host.textContent).toContain('Continue with Google');
+    expect(host.textContent).toContain('Continue with Microsoft');
+    expect(host.querySelector('[data-testid="sign-in-with-hq"]')).toBeNull();
+  });
+
+  it('shows the same buttons on the compact card without waiting', async () => {
+    installContinuationInvoke({});
+    component = mount(SignInPrompt, { target: host });
+
+    await flushUntil(() => host.querySelector('[data-testid="continuation-provider-fallback"]') !== null);
+
+    expect(providerActions()?.hasAttribute('hidden')).toBe(false);
+    expect(providerButtons().map((button) => button.textContent)).toEqual(
+      expect.arrayContaining([expect.stringContaining('Continue with Google'), expect.stringContaining('Continue with Microsoft')]),
+    );
+  });
+
+  it('cancels the pending attempt and starts the named provider that was pressed', async () => {
+    const order: string[] = [];
+    installContinuationInvoke({
+      onInvoke: (command) => {
+        if (command === 'desktop_continuation_cancel' || command === 'start_oauth_login') {
+          order.push(command);
+        }
+      },
+    });
+    component = mount(SignInPrompt, { target: host, props: { layout: 'column' } });
+    await flushUntil(() => host.querySelector('[data-testid="continuation-waiting"]') !== null);
+
+    providerButtons().find((button) => button.textContent?.includes('Google'))?.click();
+    await flushUntil(() => order.includes('start_oauth_login'));
+
+    expect(order).toEqual(['desktop_continuation_cancel', 'start_oauth_login']);
+    expect(tauri.invoke).toHaveBeenCalledWith('desktop_continuation_cancel', { attemptId: 'attempt-1' });
+    expect(tauri.invoke).toHaveBeenCalledWith('start_oauth_login', { provider: 'Google' });
+  });
+
+  it('returns to the provider buttons when the opened website sign-in fails', async () => {
+    let rejectIdentity: (error: Error) => void = () => {};
+    installContinuationInvoke({
+      awaitIdentity: () =>
+        new Promise((_resolve, reject) => {
+          rejectIdentity = reject;
+        }),
+    });
+    component = mount(SignInPrompt, { target: host, props: { layout: 'column' } });
+    await flushUntil(() => host.querySelector('[data-testid="continuation-waiting"]') !== null);
+    expect(providerActions()?.hasAttribute('hidden')).toBe(false);
+
+    rejectIdentity(new Error(JSON.stringify({ code: 'OAUTH_PROVIDER_ERROR', message: 'signin-start failed' })));
+    await flushUntil(() => host.querySelector('[data-testid="continuation-waiting"]') === null);
+
+    expect(host.textContent).toContain('That browser sign-in did not finish. Continue with Google or Microsoft.');
+    expect(providerActions()?.hasAttribute('hidden')).toBe(false);
+    expect(host.textContent).toContain('Continue with Google');
+    expect(host.textContent).not.toContain('Finishing your sign-in in the browser');
+  });
+
+  it('uses the 90 second timeout as the backstop and still ends on the provider buttons', async () => {
+    let rejectIdentity: (error: Error) => void = () => {};
+    installContinuationInvoke({
+      awaitIdentity: () =>
+        new Promise((_resolve, reject) => {
+          rejectIdentity = reject;
+        }),
+    });
+    component = mount(SignInPrompt, { target: host, props: { layout: 'column' } });
+    await flushUntil(() => host.querySelector('[data-testid="continuation-waiting"]') !== null);
+
+    rejectIdentity(new Error('Timed out waiting for sign-in (90 seconds).'));
+    await flushUntil(() => host.textContent?.includes('That browser sign-in did not finish') === true);
+
+    expect(host.querySelector('[data-testid="continuation-waiting"]')).toBeNull();
+    expect(providerActions()?.hasAttribute('hidden')).toBe(false);
+  });
+
+  it('goes straight to the provider buttons when the attempt cannot start', async () => {
+    installContinuationInvoke({
+      start: () => Promise.reject(new Error('Could not open the browser: refused')),
+    });
+    component = mount(SignInPrompt, { target: host, props: { layout: 'column' } });
+
+    await flushUntil(() => host.textContent?.includes('That browser sign-in did not finish') === true);
+
+    expect(host.querySelector('[data-testid="continuation-waiting"]')).toBeNull();
+    expect(providerActions()?.hasAttribute('hidden')).toBe(false);
+    expect(host.textContent).toContain('Continue with Google');
+    expect(host.querySelector('[data-testid="sign-in-with-hq"]')).toBeNull();
+  });
+});
+
 describe('SignInPrompt session retry (OWNER-015)', () => {
   beforeEach(() => {
     tauri.invoke.mockImplementation((command: string) =>

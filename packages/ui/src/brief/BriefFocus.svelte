@@ -14,7 +14,7 @@
    */
   import BriefLogo from "./BriefLogo.svelte";
   import { peek, useBrief, type PeekContent } from "./brief-context.svelte.js";
-  import { FOCUS_CAP, focusSummary, hasFocus, sessionLabel, tileLayout, type FocusGroup } from "./brief-focus.js";
+  import { FOCUS_CAP, FOCUS_ONE_ROW_CAP, focusSummary, hasFocus, sessionLabel, tileLayout, type FocusGroup } from "./brief-focus.js";
   import { clockLabel } from "./brief-time.js";
   import { sessionPeek } from "./brief-timeline.js";
   import type { BriefSession } from "./brief-types.js";
@@ -34,11 +34,14 @@
 
   const sum = $derived(focusSummary(sessions, companies, now));
   const show = $derived(hasFocus(sum));
-  const shown = $derived(sum.groups.slice(0, FOCUS_CAP));
-  const rest = $derived(sum.groups.slice(FOCUS_CAP));
+  // A one-row slot keeps the tiles on one line, so the card stays as short as its neighbours.
+  const oneRow = $derived(rows === 1);
+  const cap = $derived(oneRow ? (sum.groups.length === FOCUS_ONE_ROW_CAP + 1 ? FOCUS_ONE_ROW_CAP + 1 : FOCUS_ONE_ROW_CAP) : FOCUS_CAP);
+  const shown = $derived(sum.groups.slice(0, cap));
+  const rest = $derived(sum.groups.slice(cap));
   const restSessions = $derived(rest.reduce((n, g) => n + g.count, 0));
   const tiles = $derived(shown.length + (rest.length ? 1 : 0));
-  const layout = $derived(tileLayout(tiles));
+  const layout = $derived(tileLayout(tiles, oneRow, rest.length > 0));
   // A one-row slot (W) keeps the tiles shallower; the card still sets its own height.
   const tall = $derived(rows > 1 || cols >= 3);
 
@@ -84,7 +87,6 @@
             <BriefLogo company={brief.company(g.company)} fallback={g.company ?? g.name} size={18} />
             <b>{g.name}</b>
           </div>
-          <span class="n">{plural(g.count, "session")}</span>
           <div class="ss">
             {#each g.sessions.slice(0, FOCUS_CAP) as s, j (s.id)}
               <button type="button" class="st" data-testid="brief-focus-session" use:peek={{ state: brief, content: () => titlePeek(g, s, j) }}>{sessionLabel(s.title)}</button>
@@ -95,7 +97,15 @@
               >
             {/if}
           </div>
-          {#if i === 0}<i class="bar" style="width:{Math.round(g.share * 100)}%" data-testid="brief-focus-bar" aria-hidden="true"></i>{/if}
+          <!-- The count at the tile's foot; the lead tile also says its share of the day, in words. -->
+          <div class="foot-n">
+            <span class="n"><b>{g.count}</b> {g.count === 1 ? "session" : "sessions"}</span>
+            {#if i === 0}<span class="share" data-testid="brief-focus-share">{Math.round(g.share * 100)}% of your day</span>{/if}
+          </div>
+          {#if i === 0}
+            <!-- The same share as a bar: a full-width track under the count, filled to the percentage. -->
+            <div class="track" aria-hidden="true"><i class="bar" style="width:{Math.round(g.share * 100)}%" data-testid="brief-focus-bar"></i></div>
+          {/if}
         </div>
       {/each}
       {#if rest.length}
@@ -105,7 +115,7 @@
           role="group"
           aria-label="{rest.length} more {rest.length === 1 ? 'product' : 'products'}"
           data-testid="brief-focus-more"
-          use:peek={{ state: brief, content: moreTilesPeek }}
+          use:peek={{ state: brief, content: moreTilesPeek, place: "below" }}
         >
           <b>+{rest.length} more</b>
           <span class="n">{plural(restSessions, "session")}</span>
@@ -132,32 +142,24 @@
   .tall .tm {
     grid-template-rows: repeat(var(--tm-rows, 2), minmax(78px, 1fr));
   }
+  /* Glass tile: product, its session titles, and the count at the foot. No rim, no backdrop-filter. */
   .tile {
     position: relative;
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 6px;
     min-width: 0;
-    border-radius: 14px;
-    padding: 9px 11px 10px;
-    /* Glass: lit from the top, hairline rim, soft drop. No inner shadow and no
-       backdrop-filter (WKWebView draws it as a square that ignores the radius). */
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.025) 42%, rgba(255, 255, 255, 0.015)),
-      radial-gradient(120% 60% at 20% 0%, rgba(255, 255, 255, 0.06), transparent 60%);
-    border: 1px solid rgba(255, 255, 255, 0.09);
-    border-top-color: rgba(255, 255, 255, 0.18);
-    box-shadow:
-      0 1px 2px rgba(0, 0, 0, 0.3),
-      0 8px 20px -8px rgba(0, 0, 0, 0.5);
+    border-radius: 10px;
+    padding: 12px 14px;
+    background: var(--b-row-bg, rgb(var(--b-ink) / 0.12));
+    border: 0;
+    box-shadow: none;
     transition: background 0.3s;
   }
   .tile:hover,
   .tile:focus-within {
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.05) 42%, rgba(255, 255, 255, 0.03)),
-      radial-gradient(120% 60% at 20% 0%, rgba(255, 255, 255, 0.08), transparent 60%);
+    background: var(--b-row-hover, rgb(var(--b-ink) / 0.2));
   }
   .tile.lead {
     grid-row: span 2;
@@ -168,56 +170,35 @@
   .id {
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: 8px;
     min-width: 0;
   }
   .id b {
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 500;
     letter-spacing: -0.01em;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .n {
-    font-family: var(--b-mono);
-    font-size: 9.5px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--b-t3);
-    transition: opacity 0.3s;
-  }
-  /* The session titles slide in over the count line; the name and logo stay. */
+  /* Session titles as a calm list, like the Shipped tiles: one line each, hairlines between,
+     as many as the tile has room for. */
   .ss {
-    position: absolute;
-    left: 11px;
-    right: 11px;
-    top: 30px;
-    bottom: 8px;
+    flex: 1;
+    min-height: 0;
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    gap: 1px;
-    opacity: 0;
-    translate: 0 6px;
-    pointer-events: none;
-    transition: opacity 0.3s, translate 0.3s;
-  }
-  .tile:hover .ss,
-  .tile:focus-within .ss {
-    opacity: 1;
-    translate: 0 0;
-    pointer-events: auto;
-  }
-  .tile:hover .n,
-  .tile:focus-within .n {
-    opacity: 0;
+    margin-top: 4px;
   }
   .st {
     all: unset;
     display: block;
+    flex: none;
     max-width: 100%;
-    font-size: 10.5px;
+    padding: 6px 0;
+    border-top: 1px solid rgb(var(--b-ink) / 0.08);
+    font-size: 12px;
     line-height: 1.35;
     color: var(--b-t2);
     white-space: nowrap;
@@ -227,26 +208,55 @@
   }
   .st:hover,
   .st:focus-visible {
-    color: #fff;
+    color: var(--b-t1);
   }
   .st.more {
     color: var(--b-t3);
+    opacity: 0.8;
+  }
+  .n {
+    flex: none;
+    font-size: 11px;
+    color: var(--b-t3);
+  }
+  .n b {
+    margin-right: 2px;
+    font-size: 20px;
+    font-weight: 400;
+    letter-spacing: -0.02em;
+    color: var(--b-t1);
+  }
+  .foot-n {
+    flex: none;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .share {
+    font-size: 11px;
+    color: var(--b-t3);
+    white-space: nowrap;
+  }
+  .track {
+    flex: none;
+    height: 4px;
+    border-radius: 99px;
+    background: rgb(var(--b-ink) / 0.08);
+    overflow: hidden;
   }
   .bar {
-    position: absolute;
-    left: 0;
-    bottom: 0;
-    height: 3px;
-    background: var(--b-ice);
-    opacity: 0.6;
-    pointer-events: none;
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: rgb(var(--b-ink) / 0.45);
   }
   .rest {
     justify-content: center;
     cursor: default;
   }
   .rest b {
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 500;
     color: var(--b-t2);
   }

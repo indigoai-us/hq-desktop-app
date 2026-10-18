@@ -17,6 +17,8 @@ export const DAY_MS = 86_400_000;
 export const REMINDER_WINDOW_MS = 2 * DAY_MS;
 /** Rows on the card before "+N more". */
 export const REMINDER_ROWS = 5;
+/** A lone reminder's card at least this tall (px) has room for the said-to-due day strip. */
+export const REMINDER_TALL_PX = 200;
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
@@ -113,10 +115,77 @@ export function saidLabel(saidAt: string, now: string): string {
   return `said ${dateLabel(saidAt)}`;
 }
 
-/** The mono line under the quote: "said Thu in a DM to yourself · due today". */
-export function saidLine(r: BriefReminder, now: string, today: string): string {
+/** The quiet source line under the quote: "said Thu in a DM to yourself", or "said Thu" when nowhere was recorded. The due state is the pill's. */
+export function sourceLine(r: BriefReminder, now: string): string {
   const where = r.where.trim();
-  return `${saidLabel(r.saidAt, now)}${where ? ` in ${where}` : ""} · ${dueLabel(r, today)}`;
+  return `${saidLabel(r.saidAt, now)}${where ? ` in ${where}` : ""}`;
+}
+
+/**
+ * The due pill's tone: its due state, or "done" once Done (or Start) marked it
+ * in this brief. Overdue reads red, due today reads warm, the rest stay quiet.
+ */
+export type DueTone = DueState | "done";
+export function dueTone(r: BriefReminder, today: string, cleared = false): DueTone {
+  return cleared ? "done" : dueState(r, today);
+}
+
+/** A segment of the day strip's track, from one day to the next: time gone, time left, or time overdue. */
+export type StripSeg = "past" | "ahead" | "late" | null;
+export interface StripDay {
+  day: string;
+  /** "TUE": three letters, upper case. */
+  label: string;
+  said: boolean;
+  due: boolean;
+  today: boolean;
+  /** The track coming in from the day before, and going out to the day after. */
+  into: StripSeg;
+  out: StripSeg;
+}
+
+const laterDay = (a: string, b: string) => (a > b ? a : b);
+
+/**
+ * The day strip under a lone reminder: `n` days with the track from the day
+ * it was said to the later of due and today centred in it (a day more of
+ * what is ahead when the room is odd), always ending at least a day after.
+ * The track is solid for days gone, dotted for days left, and "late" from
+ * the due day to today when it is overdue. A reminder said before the
+ * window runs its track in from the left edge. Empty when the due day or
+ * today does not parse. Days are calendar days (YYYY-MM-DD), so the strip is
+ * the same on every machine for the same local days.
+ */
+export function reminderStrip(r: BriefReminder, today: string, n = 7): StripDay[] {
+  const due = localDay(r.dueAt);
+  const len = Math.floor(n);
+  if (!due || !DAY_RE.test(today) || len < 1) return [];
+  const said = localDay(r.saidAt) || due;
+  const start = said < due ? said : due;
+  const end = laterDay(due, today);
+  const overdue = due < today;
+  const span = dayDiff(start, end) + 1;
+  const first = span + 1 > len ? addDays(end, 2 - len) : addDays(start, -Math.floor((len - span) / 2));
+  const seg = (d: string): StripSeg => {
+    const next = addDays(d, 1);
+    if (d < start || next > end) return null;
+    if (overdue) return d < due ? "past" : "late";
+    return next <= today ? "past" : "ahead";
+  };
+  return Array.from({ length: len }, (_, i) => {
+    const day = addDays(first, i);
+    const [y, m, d] = day.split("-").map(Number);
+    const wd = new Date(Date.UTC(y!, m! - 1, d!)).getUTCDay();
+    return {
+      day,
+      label: WEEKDAYS[wd]!.toUpperCase(),
+      said: day === said && said !== due,
+      due: day === due,
+      today: day === today,
+      into: seg(addDays(day, -1)),
+      out: seg(day),
+    };
+  });
 }
 
 /** "Thu, Oct 8 at 2 PM" for the peek. */

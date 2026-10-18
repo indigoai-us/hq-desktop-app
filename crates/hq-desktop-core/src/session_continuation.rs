@@ -34,9 +34,13 @@ use sha2::{Digest, Sha256};
 /// different one is not understood, and not understood means disabled.
 pub const SUPPORTED_PROTOCOL_VERSION: u32 = 1;
 
-/// How long a pending attempt may live. Matches the loopback listener's own
-/// five-minute timeout, so neither side outlives the other.
-pub const ATTEMPT_LIFETIME: Duration = Duration::from_secs(300);
+/// How long a pending provider-less attempt may live.
+///
+/// The loopback listener for that attempt uses this same bound, so neither
+/// side outlives the other. Ninety seconds is long enough to finish in the
+/// browser and short enough that a website error is not a five-minute dead
+/// end. A named-provider sign-in keeps its own longer listener timeout.
+pub const ATTEMPT_LIFETIME: Duration = Duration::from_secs(90);
 
 /// How long the "Continue as …" confirmation stays answerable, bounded by the
 /// attempt deadline — a confirmation window cannot extend an expired attempt.
@@ -340,7 +344,7 @@ impl ContinuationAttempt {
     /// loopback listener too, and that listener is addressed by state. Without
     /// it, pressing **Use another account** would drop the custody entry while
     /// the native listener kept both sockets and the blur-suppression flag
-    /// alive until a callback or the five-minute timeout — a Cancel that
+    /// alive until a callback or the attempt lifetime — a Cancel that
     /// visibly cancels nothing.
     ///
     /// Not a secret in the sense a token is: it is a per-attempt random value
@@ -743,7 +747,13 @@ mod tests {
     }
 
     #[test]
-    fn an_attempt_expires_after_five_minutes() {
+    fn an_attempt_expires_when_its_lifetime_ends() {
+        // A person who is staring at a broken website sign-in should not wait
+        // five minutes. Ninety seconds is the backstop; one second earlier the
+        // attempt is still alive.
+        assert_eq!(ATTEMPT_LIFETIME, std::time::Duration::from_secs(90));
+        let mut live = attempt();
+        assert!(live.tokens_received(NOW + 89_000).is_ok());
         let mut attempt = attempt();
         assert_eq!(
             attempt.tokens_received(NOW + ATTEMPT_LIFETIME.as_millis() as i64),

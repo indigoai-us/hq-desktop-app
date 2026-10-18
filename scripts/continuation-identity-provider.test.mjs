@@ -17,7 +17,8 @@ describe('desktop continuation provider contract', () => {
 
   it('leaves provider selection to signin-start and guards browser launch', () => {
     const start = desktopAuth.split('pub async fn desktop_continuation_start(')[1].split('pub async fn ')[0];
-    assert.ok(start.includes('arm_oauth_flow(&app, None, Some(&nonce))'));
+    assert.ok(start.includes('arm_oauth_flow(&app, None, Some(&nonce), ATTEMPT_LIFETIME)'));
+    assert.ok(!start.includes('IDLE_TIMEOUT'));
     assert.ok(start.includes('prepare_desktop_referral_start_url(&armed.authorize_url)'));
     assert.ok(start.includes('set_pending_referral_nonce(&armed.state, &referral_nonce)'));
     const guard = start.indexOf('validate_browser_signin_url(&browser_url)');
@@ -28,7 +29,8 @@ describe('desktop continuation provider contract', () => {
 it('manual sign-in returns only the validated signin-start wrapper', () => {
   const start = oauth.split('pub async fn start_oauth_login(')[1].split('async fn resolve_identity_provider')[0];
   assert.ok(start.includes('prepare_desktop_referral_start_url('));
-  assert.ok(start.includes('arm_oauth_flow(&app, Some(&identity_provider), None)'));
+  assert.ok(start.includes('arm_oauth_flow(&app, Some(&identity_provider), None, IDLE_TIMEOUT)'));
+  assert.ok(!start.includes('ATTEMPT_LIFETIME'));
   const prepare = desktopAuth.split('pub(crate) async fn prepare_desktop_referral_start_url(')[1].split('pub(crate) async fn')[0];
   assert.ok(prepare.includes('desktop_signin_link::signin_start_url('));
   assert.ok(prepare.indexOf('validate_browser_signin_url(&browser_url)') >= 0);

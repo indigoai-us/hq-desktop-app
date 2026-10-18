@@ -98,6 +98,82 @@ export function timelineOf(r: BriefRecovered): { shown: TimelineEntry[]; rest: T
   return { shown: entries.slice(0, TIMELINE_MAX), rest: entries.slice(TIMELINE_MAX) };
 }
 
+/** A stretch of time as a big number with small units: 4h 51m, 38m, 2d 3h. */
+export type DurationPart = { n: string; u: string };
+
+/** Minutes under an hour, hours and minutes under two days, then days and hours; zero parts are dropped. */
+export function durationParts(ms: number): DurationPart[] {
+  const mins = Math.max(0, Math.round(ms / 60_000));
+  if (mins < 60) return [{ n: String(mins), u: "m" }];
+  const hours = Math.floor(mins / 60);
+  if (hours < 48) {
+    const m = mins % 60;
+    return m ? [{ n: String(hours), u: "h" }, { n: String(m), u: "m" }] : [{ n: String(hours), u: "h" }];
+  }
+  const d = Math.floor(hours / 24);
+  const h = hours % 24;
+  return h ? [{ n: String(d), u: "d" }, { n: String(h), u: "h" }] : [{ n: String(d), u: "d" }];
+}
+
+/** The duration as one string: "4h 51m". */
+export function durationLabel(ms: number): string {
+  return durationParts(ms)
+    .map((p) => `${p.n}${p.u}`)
+    .join(" ");
+}
+
+/** The fraction of the track the outage takes: in proportion to the time, but never so thin or so wide that a label cannot sit. */
+export const SPLIT_MIN = 0.3;
+export const SPLIT_MAX = 0.6;
+/** Where the fix sits on the track when the outage start is unknown. */
+export const SPLIT_UNKNOWN = 0.42;
+
+/**
+ * The recovery as a track: red from the first timeline entry to the fix,
+ * green from the fix to `now`. The fix is the last timed timeline entry
+ * when there are at least two (the first is when it broke), otherwise the
+ * item's own time. Durations are null when a side is unknown; `marks` are
+ * the timeline entries between the break and the fix, as track fractions.
+ */
+export interface RecoverySpan {
+  brokeAt: string | null;
+  fixedAt: string | null;
+  downMs: number | null;
+  upMs: number | null;
+  /** 0..1: where the fix sits on the track. */
+  split: number;
+  marks: number[];
+}
+
+export function recoverySpan(r: BriefRecovered, now: string): RecoverySpan {
+  const timed = timelineOf(r)
+    .shown.concat(timelineOf(r).rest)
+    .map((e) => ({ e, t: Date.parse(e.at) }))
+    .filter((x) => Number.isFinite(x.t));
+  const n = Date.parse(now);
+  const own = r.at ? Date.parse(r.at) : NaN;
+  const known = timed.length >= 2;
+  const broke = known ? timed[0]! : null;
+  const fixed = known ? timed.at(-1)! : null;
+  const fixT = fixed ? fixed.t : own;
+  const fixedAt = fixed ? fixed.e.at : Number.isFinite(own) ? r.at! : null;
+  const downMs = broke && fixed && fixed.t > broke.t ? fixed.t - broke.t : null;
+  const upMs = Number.isFinite(fixT) && Number.isFinite(n) && n >= fixT ? n - fixT : null;
+  let split = SPLIT_UNKNOWN;
+  if (downMs !== null && upMs !== null) split = Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, downMs / (downMs + upMs)));
+  else if (downMs !== null) split = SPLIT_MAX;
+  const marks =
+    broke && fixed && downMs
+      ? timed.slice(1, -1).map((x) => Math.round(((x.t - broke.t) / downMs) * split * 1000) / 1000)
+      : [];
+  return { brokeAt: broke ? broke.e.at : null, fixedAt, downMs, upMs, split, marks };
+}
+
+/** "06:27"; the clock without the zone, for track labels under a caption that names UTC. */
+export function utcHm(at: string | null | undefined): string | null {
+  return utcClock(at)?.slice(0, 5) ?? null;
+}
+
 /** One timeline entry as a peek line: the text, the UTC clock on the right; the last entry reads green. */
 export function timelineLine(e: TimelineEntry, last: boolean): BriefLine {
   return { label: e.text, state: utcClock(e.at) ?? "", tone: last ? "ok" : "neutral" };

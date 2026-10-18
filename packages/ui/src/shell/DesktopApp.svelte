@@ -42,6 +42,7 @@
     type CloudFileEventPayload,
 } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
+  import { resolveUsageCompany } from "../home/core-usage-model.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
@@ -69,8 +70,9 @@
   import type { NewCompanyPlan, ProjectTemplate } from "./new-company/new-company.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import BriefRailHost from "./BriefRailHost.svelte";
-  import { BRIEF_CLAUDE_PERMISSION_MODE, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
+  import { BRIEF_CLAUDE_PERMISSION_MODE, briefBotLabel, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
   import { BriefCreateRun, type BriefCreator } from "../brief/brief-create.svelte.js";
+  import { briefBotFailure } from "../brief/brief-bot-failure.js";
   import {
     RAIL_ATLAS_FLAG,
     RAIL_BRIEF_FLAG,
@@ -612,6 +614,8 @@
     type NavigationScrollState,
     type ProjectsFocusTab,
   } from "./navigation-history.js";
+  import { settleThreadSidebarClose } from "./thread-sidebar-close.js";
+  import { resetThreadComposerDrafts } from "../chat/messaging/thread-composer-draft.js";
   import {
     createNavigationScrollTracker,
     scheduleNavigationScrollRestore,
@@ -5562,6 +5566,14 @@
       ""
     );
   });
+  /**
+   * Company for the Core menu's usage panel: the company on screen, else the
+   * branded company. A local-only company shows "No usage", never another
+   * company's spend (resolveUsageCompany).
+   */
+  const usageCompany = $derived(
+    resolveUsageCompany(companies, selectedCompanySlug, brandState?.companySlug),
+  );
   const activeCompanyPane = $derived.by(() => {
     if (view !== "conversation" || selectedRow?.kind !== "channel") return null;
     const scope = (selectedRow.channelScope ?? "").trim();
@@ -5805,6 +5817,17 @@
           // Sign-in and model setup live in the bot's conversation.
           openSetupBotDm({ agentUid: bot.agentUid, handle: bot.name });
           return null;
+        },
+        async botFailure(bot, sinceMs) {
+          const res = await adapter.messaging.fetchDmThread({ withPersonUid: bot.agentUid, limit: 20 });
+          if (!res.ok) return null;
+          const label = briefBotLabel(bot);
+          return briefBotFailure(normalizeConversationMessages(res.value), {
+            agentUid: bot.agentUid,
+            sinceMs,
+            bot: label,
+            runtime: bot.runtime,
+          });
         },
         notify(title, body) {
           pushToast({ title, detail: body, tone: "ok" });
@@ -10689,7 +10712,37 @@
     pendingReplyRootId = null;
     pendingReplyForRowId = null;
     replyApplyInFlight = null;
-    void leaveCurrentDestination();
+    const row = selectedRow;
+    if (!row) {
+      openReplyRootId = null;
+      return;
+    }
+    // X and Escape both call this. Replace the open thread with the same
+    // conversation, then drop every earlier thread in that conversation.
+    // Going back would show the previous thread, so the sidebar looks stuck.
+    // The thread is captured now. If a newer thread wins before this
+    // navigation settles, the fallback must not overwrite it.
+    const closingThread = navigationHistory.current()?.destination ?? null;
+    const closed = destinationFromConversation(row, {
+      ...currentConversationNested(),
+      replyRootEventId: null,
+    });
+    openReplyRootId = null;
+    const settled = navigate(closed, "replace");
+    const finish = (result: { committed: boolean }): void => {
+      settleThreadSidebarClose(
+        navigationHistory,
+        closed,
+        result.committed,
+        closingThread,
+      );
+      syncNavigationChrome();
+    };
+    if (settled instanceof Promise) {
+      void settled.then(finish);
+      return;
+    }
+    finish(settled);
   }
 
   function queueReplyForRow(
@@ -12822,6 +12875,7 @@
   });
 
   async function signOutWithImageCleanup(): Promise<void> {
+    resetThreadComposerDrafts();
     navigation.clear();
     stopScrollRestore();
     pendingRestoreScroll = null;
@@ -14244,6 +14298,7 @@
     {cloudReachable}
     {cloudError}
     workspaces={syncWorkspaces}
+    {usageCompany}
     hqFolderPath={hqFolderPath ?? liveSync.hqFolderPath}
     watchedCount={watched}
     {unreadCount}
@@ -14895,6 +14950,7 @@
               messagePersonByUid(uid, { name, companyUid: companyPaneCompany?.uid });
             }}
             onaddbot={addAgentFromTeam}
+            {onopenurl}
           />
         {:else if railPlaceholder?.id === "activity" && companyPaneCompany}
           <ActivityRailHost
@@ -16030,7 +16086,7 @@
                 </div>
               {:else if openAgentMember && openLocalBot}
                 <div
-                  class="reply-column profile-column inspector-pane"
+                  class="reply-column profile-column inspector-pane bot-management-column"
                   class:overlay={narrowViewport}
                   data-testid="local-bot-detail-column"
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
@@ -16048,6 +16104,8 @@
                       runtimeKind: "local",
                       companyUid: profileCompanyUid,
                       agents: adapter.agents ?? null,
+                      adapter,
+                      onopenurl,
                       onclose: closeAgentDetail,
                       onmessage: () => messageMemberDirectly(openAgentMember!),
                     }}
@@ -16073,7 +16131,7 @@
                 </div>
               {:else if openAgentMember}
                 <div
-                  class="reply-column profile-column inspector-pane"
+                  class="reply-column profile-column inspector-pane bot-management-column"
                   class:overlay={narrowViewport}
                   data-testid="agent-detail-column"
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
@@ -16091,6 +16149,8 @@
                       runtimeKind: "cloud",
                       companyUid: promotedBotCompany(localBotRecords, openAgentMember.personUid) ?? profileCompanyUid,
                       agents: adapter.agents ?? null,
+                      adapter,
+                      onopenurl,
                       onclose: closeAgentDetail,
                       onmessage: () => messageMemberDirectly(openAgentMember!),
                     }}
@@ -16214,6 +16274,7 @@
                     withPersonUid={selectedRow.personUid}
                     withPersonName={selectedRow.title}
                     channelName={selectedRow.kind === "channel" ? selectedRow.title : null}
+                    accountId={self?.uid ?? tenantAccountId ?? null}
                     companyUid={selectedRow.companyUid}
                     {seedRoot}
                     {wakes}
@@ -16714,6 +16775,12 @@
     flex: 0 0 340px;
     background: var(--v4-secondary-sidebar, var(--side-bg));
   }
+
+  .reply-column.inspector-pane.bot-management-column {
+    width: min(680px, 60%);
+    flex: 0 0 min(680px, 60%);
+  }
+  .reply-column.inspector-pane.bot-management-column.overlay { width: 100%; max-width: 680px; }
 
   /* First frame of a profile pane while its chunk loads (lazy-doors.ts). */
   .profile-pane-loading {
