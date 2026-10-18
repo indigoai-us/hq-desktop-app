@@ -35,12 +35,6 @@ const settings = {
 
 let harnessHqAnywhereSetting = false;
 
-/** `?anywhere=adopted` shows the Settings line for an install HQ Desktop took on. */
-function harnessAnywhereAdopted(): boolean {
-  if (typeof window === 'undefined') return false;
-  return new URLSearchParams(window.location.search).get('anywhere') === 'adopted';
-}
-
 function harnessPersona(): ShellPersona | null {
   if (typeof window === 'undefined') return null;
   return resolveHarnessPersona(window.location.search);
@@ -1281,8 +1275,7 @@ This final paragraph verifies spacing after a thematic break.
     }
     return { ...settings };
   },
-  get_hq_anywhere_person_setting: () => harnessAnywhereAdopted() || harnessHqAnywhereSetting,
-  hq_anywhere_adopted_install: () => harnessAnywhereAdopted(),
+  get_hq_anywhere_person_setting: () => harnessHqAnywhereSetting,
   put_hq_anywhere_person_setting: (args) => {
     harnessHqAnywhereSetting = args?.value === true;
     return null;

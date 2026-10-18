@@ -2934,12 +2934,6 @@ export interface SettingsApi {
    * install uses to skip a tool that is already set up.
    */
   hqAnywhereRuntimeInstalled?(runtime: "claude" | "codex"): AdapterPromise<boolean>;
-  /**
-   * True when the desktop adopted an existing HQ Anywhere install and that
-   * install is still the one it recorded. Settings uses this to say that
-   * turning the switch off removes that install.
-   */
-  hqAnywhereAdoptedInstall?(): AdapterPromise<boolean>;
   getSetupStatus(): AdapterPromise<Json>;
   /**
    * The welcome channel's guided setup finished on this machine. Optional:

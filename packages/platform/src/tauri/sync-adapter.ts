@@ -1850,7 +1850,6 @@ export function createSyncPlatformAdapter(
         call('install_hq_runtime_for_tool', { runtime }),
       hqAnywhereRuntimeInstalled: (runtime) =>
         call('hq_anywhere_runtime_installed', { runtime }),
-      hqAnywhereAdoptedInstall: () => call('hq_anywhere_adopted_install'),
       updateSettings: async (patch) => {
         const settingsInvoker: SettingsInvoker = <T>(
           command: string,

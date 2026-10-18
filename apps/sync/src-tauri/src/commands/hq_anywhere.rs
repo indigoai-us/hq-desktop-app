@@ -363,9 +363,8 @@ fn write_desktop_marker(home: &Path, runtime: GlobalRuntime, origin: MarkerOrigi
     }
 }
 
-/// True when the desktop adopted an existing install and that install is still
-/// the one it recorded. Settings uses this to say that turning the switch off
-/// removes that install.
+/// True when either runtime has an adopted record that still matches the
+/// install on disk.
 pub fn desktop_adopted_install(home: &Path) -> bool {
     [GlobalRuntime::Claude, GlobalRuntime::Codex]
         .into_iter()
@@ -459,15 +458,6 @@ pub fn hq_anywhere_runtime_installed(runtime: String) -> Result<bool, String> {
     let home =
         dirs::home_dir().ok_or_else(|| "Could not resolve the home directory.".to_string())?;
     runtime_installed_for_tool(&home, &runtime)
-}
-
-/// Whether Settings should say that turning HQ Anywhere off removes an install
-/// the desktop adopted. Does not install or uninstall.
-#[tauri::command]
-pub fn hq_anywhere_adopted_install() -> Result<bool, String> {
-    let home =
-        dirs::home_dir().ok_or_else(|| "Could not resolve the home directory.".to_string())?;
-    Ok(desktop_adopted_install(&home))
 }
 
 async fn run_global_install(enabled: bool, only: Option<GlobalRuntime>) -> Result<(), String> {

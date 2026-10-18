@@ -23,7 +23,6 @@ function createAdapter(options: {
   getSetting?: PlatformAdapter["settings"]["getHqAnywherePersonSetting"];
   putSetting?: PlatformAdapter["settings"]["putHqAnywherePersonSetting"];
   syncRuntime?: PlatformAdapter["settings"]["syncHqAnywhereGlobal"];
-  hqAnywhereAdoptedInstall?: PlatformAdapter["settings"]["hqAnywhereAdoptedInstall"];
 }) {
   const getHqAnywherePersonSetting = vi.fn(
     options.getSetting ?? (async () => ok(options.initialValue ?? false)),
@@ -44,9 +43,6 @@ function createAdapter(options: {
       getHqAnywherePersonSetting,
       putHqAnywherePersonSetting,
       syncHqAnywhereGlobal,
-      ...(options.hqAnywhereAdoptedInstall
-        ? { hqAnywhereAdoptedInstall: vi.fn(options.hqAnywhereAdoptedInstall) }
-        : {}),
     },
   } as unknown as PlatformAdapter;
   return {
@@ -344,33 +340,13 @@ describe("Settings > HQ Anywhere", () => {
     warn.mockRestore();
   });
 
-  it("says turning the switch off removes an install the desktop adopted", async () => {
-    const { adapter } = createAdapter({
-      initialValue: true,
-      hqAnywhereAdoptedInstall: async () => ok(true),
-    });
-    render(adapter);
-
-    await vi.waitFor(() =>
-      expect(host.querySelector('[data-testid="hq-anywhere-setting-adopted-off"]')?.textContent).toBe(
-        "Turning this off removes that install.",
-      ),
-    );
-    expect(host.textContent).toContain(
-      "Use your HQ context in Claude Code, Codex, ChatGPT and Grok",
-    );
-    expect(toggle()?.getAttribute("aria-checked")).toBe("true");
-  });
-
-  it("keeps the decided hint when the desktop installed HQ Anywhere itself", async () => {
-    const { adapter } = createAdapter({
-      initialValue: true,
-      hqAnywhereAdoptedInstall: async () => ok(false),
-    });
+  it("does not add a line about removing an install", async () => {
+    const { adapter } = createAdapter({ initialValue: true });
     render(adapter);
 
     await vi.waitFor(() => expect(toggle()?.getAttribute("aria-checked")).toBe("true"));
     expect(host.querySelector('[data-testid="hq-anywhere-setting-adopted-off"]')).toBeNull();
+    expect(host.textContent).not.toContain("Turning this off removes that install.");
     expect(host.textContent).toContain(
       "Use your HQ context in Claude Code, Codex, ChatGPT and Grok",
     );

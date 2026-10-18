@@ -38,13 +38,4 @@ describe("sync adapter HQ Anywhere person setting", () => {
 
     expect(invoke.mock.calls).toEqual([["hq_anywhere_runtime_installed", { runtime: "claude" }]]);
   });
-
-  it("reads whether the desktop adopted an existing install", async () => {
-    const invoke = vi.fn(async () => true);
-    const adapter = createSyncPlatformAdapter({ invoke });
-
-    await expect(adapter.settings.hqAnywhereAdoptedInstall?.()).resolves.toEqual(ok(true));
-
-    expect(invoke.mock.calls).toEqual([["hq_anywhere_adopted_install", undefined]]);
-  });
 });
