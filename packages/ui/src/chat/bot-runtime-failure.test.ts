@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import type { LocalBotRow } from "@hq/platform";
 
 import { isRawBotFailureText } from "./local-bots";
 import {
   botNeedsCodingToolNotice,
   localBotCodingToolNeed,
   localBotNeedsCodingTool,
+  localBotSignedOutHere,
   plainBotFailureReply,
   withPlainBotFailureReplies,
 } from "./bot-runtime-failure";
@@ -138,5 +140,34 @@ describe("localBotNeedsCodingTool", () => {
     expect(
       botNeedsCodingToolNotice({ name: "setup", displayName: "Taffy", runtime: "claude" }, { noun: "Mac" }),
     ).toBe("Taffy needs Claude Code on this Mac to answer. Install it and sign in here, and Taffy picks up from there.");
+  });
+});
+
+describe("localBotSignedOutHere", () => {
+  const since = "2026-09-15T10:00:00Z";
+  const sinceMs = Date.parse(since);
+  const bot = (over: Partial<LocalBotRow> = {}) => ({ name: "setup", agentUid: "agt_x", runtime: "claude", ...over }) as LocalBotRow;
+  const expired = { state: "expired" as const, runtime: "claude" as const, since };
+
+  it("is true while the bot reports an expired sign-in and none finished here since", () => {
+    expect(localBotSignedOutHere(bot({ runtimeSignIn: expired }), null, null, {})).toBe(true);
+    expect(localBotSignedOutHere(bot({ runtimeSignIn: expired }), null, null, { claude: sinceMs - 1 })).toBe(true);
+  });
+
+  it("is true while the tool is installed but not signed in here", () => {
+    expect(localBotSignedOutHere(bot(), { claude: false }, { claude: true }, {})).toBe(true);
+  });
+
+  it("is false once the tool signs in here", () => {
+    expect(localBotSignedOutHere(bot({ runtimeSignIn: expired }), null, null, { claude: sinceMs })).toBe(false);
+    expect(localBotSignedOutHere(bot(), { claude: false }, { claude: true }, { claude: 1 })).toBe(false);
+    expect(localBotSignedOutHere(bot(), { claude: true }, { claude: true }, {})).toBe(false);
+  });
+
+  it("is false for a ready bot, a missing tool, an unknown runtime or no bot", () => {
+    expect(localBotSignedOutHere(bot(), null, null, {})).toBe(false);
+    expect(localBotSignedOutHere(bot(), { claude: false }, { claude: false }, {})).toBe(false);
+    expect(localBotSignedOutHere(bot({ runtime: "other" as LocalBotRow["runtime"] }), { other: false }, { other: true }, {})).toBe(false);
+    expect(localBotSignedOutHere(null, { claude: false }, { claude: true }, {})).toBe(false);
   });
 });
