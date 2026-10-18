@@ -13,7 +13,7 @@
     type PlatformAdapter,
   } from "@hq/platform";
 
-  const HQ_ANYWHERE_UNAVAILABLE_LINE = "HQ Anywhere is not available right now.";
+  const HQ_ANYWHERE_UNAVAILABLE_LINE = "HQ Anywhere is turned off for your account right now.";
 
   interface Props {
     adapter?: PlatformAdapter | null;

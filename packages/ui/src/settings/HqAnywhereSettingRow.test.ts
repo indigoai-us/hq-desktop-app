@@ -269,7 +269,7 @@ describe("Settings > HQ Anywhere", () => {
     expect(host.querySelector('[data-testid="hq-anywhere-setting-row"]')).toBeNull();
     await vi.waitFor(() => expect(unavailableRow()).not.toBeNull());
     expect(unavailableRow()?.textContent?.replace(/\s+/g, " ").trim()).toBe(
-      "HQ Anywhere HQ Anywhere is not available right now.",
+      "HQ Anywhere HQ Anywhere is turned off for your account right now.",
     );
     expect(unavailableRow()?.querySelector("button")).toBeNull();
     expect(toggle()).toBeNull();
