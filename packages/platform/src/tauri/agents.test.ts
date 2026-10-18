@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { AGENT_PATHS, OUTPOST_PATHS } from "../adapter.js";
+import { AGENT_PATHS, COMPANY_OUTPOST_PATHS, OUTPOST_PATHS, companyOutpostListPath } from "../adapter.js";
 import { TauriPlatformAdapter } from "./index.js";
 import { CLAUDE_LOGIN_CODE_TIMEOUT_SECS, createSyncPlatformAdapter } from "./sync-adapter.js";
 
@@ -285,6 +285,31 @@ describe("createSyncPlatformAdapter personal Outpost", () => {
     const res = await adapter.agents.getMyOutpostStatus?.();
     expect(res?.ok).toBe(false);
     expect(res && !res.ok ? res.code : "").toBe("http-404");
+  });
+});
+
+describe("createSyncPlatformAdapter company Outpost", () => {
+  it("lists and provisions on the company routes, with the company as payer", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        return { status: 200, body: JSON.stringify({ outposts: [] }) };
+      },
+    });
+    await adapter.agents.listCompanyOutposts?.("cmp_1");
+    await adapter.agents.provisionCompanyOutpost?.("cmp_1");
+    expect(calls).toEqual([
+      { cmd: "hq_pro_fetch", args: { url: companyOutpostListPath("cmp_1"), method: "GET", body: null } },
+      {
+        cmd: "hq_pro_fetch",
+        args: {
+          url: COMPANY_OUTPOST_PATHS.provision,
+          method: "POST",
+          body: JSON.stringify({ companyUid: "cmp_1", ownerKind: "company", action: "create" }),
+        },
+      },
+    ]);
   });
 });
 

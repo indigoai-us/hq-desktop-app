@@ -32,10 +32,10 @@ describe("company sidepane (console-rail US-007)", () => {
       "Team", "Bots", "Groups", "Grants",
       "Knowledge", "Policies", "Skills", "Workers",
       "Vault", "Integrations", "Secrets", "Deployments",
-      "General", "Brand", "Billing",
+      "General", "Brand", "Outposts", "Billing",
     ]);
     expect(model.footerRow).toBeNull();
-    expect(COMPANY_PANE_ROW_IDS).toHaveLength(18);
+    expect(COMPANY_PANE_ROW_IDS).toHaveLength(19);
   });
 
   it("hides Grants and Billing from people who cannot open them (OWNER-R24)", () => {
@@ -44,6 +44,7 @@ describe("company sidepane (console-rail US-007)", () => {
     expect(ids).not.toContain("grants");
     expect(ids).not.toContain("billing");
     expect(ids).toContain("groups");
+    expect(ids).toContain("outposts");
     expect(ids).toContain("general");
     expect(ids).toContain("brand");
   });

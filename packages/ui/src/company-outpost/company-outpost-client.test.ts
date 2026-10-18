@@ -1,0 +1,139 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { createCompanyOutpostClient, parseCompanyOutpostDetail, parseCompanyOutpostList, parseProvision } from "./company-outpost-client.js";
+import { failureCopy, listAfterProvision, emptyHealth } from "./company-outpost-model.js";
+import type { AdapterResult, Json } from "@hq/platform";
+
+function ok(value: Json): AdapterResult<Json> {
+  return { ok: true, value };
+}
+
+describe("company outpost client", () => {
+  it("reads the list fields from the list payload", () => {
+    const parsed = parseCompanyOutpostList({
+      priceHint: "USD 100 a month, billed to the company",
+      cap: 5,
+      outposts: [
+        {
+          outpostId: "demo-1",
+          name: "main",
+          state: "ready",
+          lastSeenAt: "2026-10-18T15:00:00.000Z",
+          jobsCount: 2,
+          jobHealth: { ok: 1, missed: 1, blocked: 0, stale: 0, unknown: 0 },
+        },
+      ],
+    });
+    expect(parsed?.items[0]).toMatchObject({ id: "demo-1", name: "main", state: "running", jobsCount: 2 });
+    expect(parsed?.priceHint).toMatch(/USD 100/);
+  });
+
+  it("does not treat an error body as an empty company", () => {
+    expect(parseCompanyOutpostList({ error: true })).toBeNull();
+  });
+
+  it("keeps the created date and drops host secrets on detail", () => {
+    const detail = parseCompanyOutpostDetail({
+      outpostId: "demo-1",
+      name: "main",
+      lifecycle: "blocked",
+      sessionToken: "sk-secret",
+      createdAt: "October 17, 2026",
+      host: { instanceId: "i-1", executionPrincipal: "arn:secret", payerCompanyUid: "cmp_1" },
+      jobs: [{ jobId: "inbox-check", name: "inbox-check", health: "blocked", lastRunAt: "2026-10-18T13:00:00.000Z" }],
+      runs: [{ id: "r1", jobId: "inbox-check", jobName: "inbox-check", at: "2026-10-18T13:00:00.000Z", health: "blocked" }],
+    });
+    expect(detail?.machine).toEqual({ region: "", instanceId: "", createdAt: "October 17, 2026" });
+    expect(JSON.stringify(detail)).not.toContain("sk-secret");
+    expect(JSON.stringify(detail)).not.toContain("i-1");
+    expect(JSON.stringify(detail)).not.toContain("arn:secret");
+    expect(detail?.runs).toHaveLength(1);
+    expect(detail?.state).toBe("blocked");
+  });
+
+  it("reports provision states and never turns a failure into a box", () => {
+    expect(parseProvision(ok({ status: "pending", attemptId: "try-1" }))).toEqual({ status: "pending", attemptId: "try-1" });
+    expect(parseProvision(ok({ status: "already_exists", outpostId: "demo-1" }))).toEqual({ status: "already_exists", outpostId: "demo-1" });
+    expect(parseProvision(ok({ status: "payment_not_set_up" }))).toEqual({ status: "payment_not_set_up" });
+    const failure = parseProvision(ok({ status: "failure", outpostId: "half", error: "ec2 failed" }));
+    expect(failure).toEqual({ status: "failure", charged: false, message: failureCopy(false) });
+    expect(listAfterProvision([], failure).map((item) => item.id)).toEqual([]);
+    const charged = parseProvision(ok({ status: "failure", charged: true, outpostId: "half" }));
+    expect(charged).toMatchObject({ status: "failure", charged: true });
+    expect(listAfterProvision([
+      { id: "keep", name: "main", state: "running", lastSeenAt: null, jobsCount: 0, jobHealth: emptyHealth() },
+    ], charged)).toHaveLength(1);
+  });
+
+  it("refuses provision and manage when the person cannot manage, without calling the API", async () => {
+    const provision = vi.fn(async () => ok({ status: "success", outpostId: "nope", name: "nope", state: "ready" }));
+    const rename = vi.fn(async () => ok({}));
+    const remove = vi.fn(async () => ok({}));
+    const signIn = vi.fn(async () => ok({}));
+    const client = createCompanyOutpostClient({
+      companyUid: "cmp_1",
+      canManage: false,
+      api: {
+        listCompanyOutposts: async () => ok({ outposts: [] }),
+        provisionCompanyOutpost: provision,
+        renameCompanyOutpost: rename,
+        removeCompanyOutpost: remove,
+        signInCompanyOutpostAgain: signIn,
+      },
+    });
+    expect(await client.provision()).toEqual({ status: "forbidden" });
+    expect(await client.rename("demo-1", "quiet-pine")).toMatchObject({ ok: false });
+    expect(await client.remove("demo-1")).toMatchObject({ ok: false });
+    expect(await client.signInAgain("demo-1")).toMatchObject({ ok: false });
+    expect(provision).not.toHaveBeenCalled();
+    expect(rename).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+    expect(signIn).not.toHaveBeenCalled();
+  });
+
+  it("lets an admin provision through the company payer call", async () => {
+    const provision = vi.fn(async () => ok({
+      status: "success",
+      outpost: { outpostId: "demo-new", name: "quiet-pine", state: "preparing", jobsCount: 0 },
+    }));
+    const client = createCompanyOutpostClient({
+      companyUid: "cmp_1",
+      canManage: true,
+      api: { provisionCompanyOutpost: provision, listCompanyOutposts: async () => ok({ outposts: [] }) },
+    });
+    const result = await client.provision();
+    expect(provision).toHaveBeenCalledWith("cmp_1");
+    expect(result.status).toBe("success");
+  });
+
+  it("treats a provisioning response as pending and does not add a row", () => {
+    const pending = parseProvision(ok({
+      outpost: { outpostId: "opc_new", name: "quiet-pine", lifecycle: "provisioning" },
+      operationId: "op_1",
+    }));
+    expect(pending).toEqual({ status: "pending", attemptId: "opc_new" });
+    expect(listAfterProvision([], pending)).toEqual([]);
+  });
+
+  it("maps a coded unavailable provision to an uncharged failure", () => {
+    const failure = parseProvision({ ok: false, reason: "error", code: "unavailable", message: "no resources changed" });
+    expect(failure).toEqual({ status: "failure", charged: false, message: failureCopy(false) });
+    expect(listAfterProvision([], failure)).toEqual([]);
+  });
+
+  it("reads price from the catalog block instead of a fixed amount", () => {
+    const parsed = parseCompanyOutpostList({
+      price: { monthlyUsd: 80, currency: "USD", payer: "company" },
+      outposts: [],
+    });
+    expect(parsed?.priceHint).toBe("USD 80 a month, billed to the company");
+    expect(parsed?.items).toEqual([]);
+  });
+
+  it("maps a ready row that is not signed in to needs attention", () => {
+    const parsed = parseCompanyOutpostList({
+      outposts: [{ outpostId: "opc_1", lifecycle: "ready", signIn: { signedIn: false, state: "awaiting_sign_in" } }],
+    });
+    expect(parsed?.items[0]).toMatchObject({ name: "main", state: "needs_attention" });
+  });
+});

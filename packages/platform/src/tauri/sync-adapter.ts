@@ -21,6 +21,10 @@ import {
   type VersionInfo,
   AGENT_PATHS,
   OUTPOST_PATHS,
+  COMPANY_OUTPOST_PATHS,
+  companyOutpostDetailPath,
+  companyOutpostJobsStatusPath,
+  companyOutpostListPath,
   PERSONAL_INTEGRATION_PATHS,
   COMPANY_INTEGRATION_PATHS,
   REDACTION_PATHS,
@@ -1347,6 +1351,22 @@ export function createSyncPlatformAdapter(
         call('list_local_sessions', { from: range.from, to: range.to, offset: page?.offset ?? 0, limit: page?.limit ?? 50 }),
       getMyOutpostStatus: () => hqProJson('POST', OUTPOST_PATHS.status, {}),
       listMyOutpostJobs: () => hqProJson('GET', OUTPOST_PATHS.jobsStatus),
+      listCompanyOutposts: (companyUid) => hqProJson('GET', companyOutpostListPath(companyUid)),
+      getCompanyOutpost: (companyUid, outpostId) => hqProJson('GET', companyOutpostDetailPath(companyUid, outpostId)),
+      listCompanyOutpostJobs: (companyUid, outpostId) =>
+        hqProJson('POST', COMPANY_OUTPOST_PATHS.jobs, { companyUid, ownerKind: 'company', action: 'list', outpostId }),
+      getCompanyOutpostJobHealth: (companyUid, outpostId) =>
+        hqProJson('GET', companyOutpostJobsStatusPath(companyUid, outpostId)),
+      provisionCompanyOutpost: (companyUid) =>
+        hqProJson('POST', COMPANY_OUTPOST_PATHS.provision, { companyUid, ownerKind: 'company', action: 'create' }),
+      renameCompanyOutpost: (companyUid, outpostId, name) =>
+        hqProJson('POST', COMPANY_OUTPOST_PATHS.status, { companyUid, ownerKind: 'company', action: 'rename', outpostId, name }),
+      removeCompanyOutpost: (companyUid, outpostId) =>
+        hqProJson('POST', COMPANY_OUTPOST_PATHS.destroy, { companyUid, ownerKind: 'company', action: 'delete', outpostId }),
+      signInCompanyOutpostAgain: (companyUid, outpostId) =>
+        hqProJson('POST', COMPANY_OUTPOST_PATHS.signIn, { companyUid, action: 'regenerate', outpostId }),
+      pollCompanyOutpostProvision: (companyUid, attemptId) =>
+        hqProJson('GET', companyOutpostDetailPath(companyUid, attemptId)),
       listMyGoogleAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.googleAccounts),
       listMySlackAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.slackAccounts),
     },

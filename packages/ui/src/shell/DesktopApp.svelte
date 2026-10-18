@@ -90,6 +90,7 @@
   import DeploymentsRailHost from "./DeploymentsRailHost.svelte";
   import PersonalRailHost from "./PersonalRailHost.svelte";
   import OutpostRailHost from "./OutpostRailHost.svelte";
+  import CompanyOutpostRailHost from "./CompanyOutpostRailHost.svelte";
   import AtlasLandingHost from "./AtlasLandingHost.svelte";
   import type { AtlasLocalSource, AtlasVaultSource } from "./atlas-landing.js";
   import ActivityRailHost from "./ActivityRailHost.svelte";
@@ -15080,6 +15081,15 @@
           />
         {:else if railPlaceholder?.id === "outpost"}
           <OutpostRailHost api={adapter.agents ?? null} openExternal={onopenurl} full={railGate(RAIL_OUTPOST_FLAG)} />
+        {:else if railPlaceholder?.id === "outposts" && companyPaneCompany}
+          <CompanyOutpostRailHost
+            companyUid={companyPaneCompany.uid}
+            companyLabel={companyPaneCompany.label}
+            role={companyPaneRole === "Owner" ? "owner" : companyPaneRole === "Admin" ? "admin" : companyPaneRole === "Guest" ? "guest" : "member"}
+            api={adapter.agents ?? null}
+            readPricing={adapter.company?.getPricing ?? null}
+            onOpenBilling={() => selectCompanyPaneRow("billing")}
+          />
         {:else if railPlaceholder}
           <section
             class="rail-placeholder"

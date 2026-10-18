@@ -28,6 +28,7 @@
   import ClaudeCodePreview from './ClaudeCodePreview.svelte';
   import BotManagementPreview from './BotManagementPreview.svelte';
   import BotIntegrationsPreview from './BotIntegrationsPreview.svelte';
+  import { CompanyOutpostPreview } from '@hq/ui';
   import Conversation, {
     type ConversationMessage,
   } from '../src/components/messaging/Conversation.svelte';
@@ -259,7 +260,10 @@
   }
 </script>
 
-{#if view === 'brief-design'}
+{#if view === 'company-outpost'}
+  <!-- Company Outpost screens from fixtures. ?screen= names one COMPANY_OUTPOST_SCREENS key. -->
+  <CompanyOutpostPreview screen={params.get('screen') ?? 'admin-list'} />
+{:else if view === 'brief-design'}
   <!-- The rendered brief on fixture days, for design iteration. ?day=oct8|oct11|quiet|catchup|everything -->
   <BriefDesignStage />
 {:else if view === 'brief'}

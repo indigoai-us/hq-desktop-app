@@ -48,6 +48,7 @@ const PAGE_INFO: Record<string, { story: string; summary: string }> = {
   grants: { story: "OWNER-R24", summary: "Folder grants and when they expire." },
   general: { story: "OWNER-R24", summary: "Company name, slug, and defaults for members." },
   brand: { story: "OWNER-R24", summary: "Accent color and voice." },
+  outposts: { story: "US-001", summary: "Always-on machines that run this company's scheduled jobs." },
   billing: { story: "OWNER-R24", summary: "Plan, seats, and payment." },
 };
 

@@ -1,6 +1,7 @@
 import "./common/button/button-standard.css";
 import "./common/inline-banner.css";
 export { default as Button } from "./Button.svelte";
+export { default as CompanyOutpostPreview } from "./company-outpost/CompanyOutpostPreview.svelte";
 export { classNames } from "./class-names.js";
 
 // Shared install-choice panel: the "open Claude Desktop or ChatGPT with a
