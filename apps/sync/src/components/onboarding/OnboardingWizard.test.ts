@@ -2213,7 +2213,8 @@ describe('onboarding launch handoff', () => {
     ).toBeNull();
     expect(
       host.querySelector('[data-testid="onboarding-completion-success-indicator"]'),
-    ).not.toBeNull();
+    ).toBeNull();
+    expect(host.querySelector('#onboarding-title-ready')?.textContent?.trim()).toBe('HQ is ready.');
     expect(host.querySelector('[data-testid="onboarding-retry-failed-stages"]')).toBeNull();
     expect(tauri.invoke).toHaveBeenCalledWith('record_install_complete');
     // It finished once, by itself, and launched no AI tool.
@@ -2221,13 +2222,14 @@ describe('onboarding launch handoff', () => {
     expect(tauri.invoke).not.toHaveBeenCalledWith('open_claude_code_link', expect.anything());
   });
 
-  it('keeps the success completion indicator after a required setup failure', async () => {
+  it('keeps the ready heading without a waiting indicator after a required setup failure', async () => {
     mountWizard();
     await flush();
 
     expect(
       host.querySelector('[data-testid="onboarding-completion-success-indicator"]'),
-    ).not.toBeNull();
+    ).toBeNull();
+    expect(host.querySelector('#onboarding-title-ready')?.textContent?.trim()).toBe('HQ is ready.');
     expect(
       host.querySelector('[data-testid="onboarding-completion-warning-indicator"]'),
     ).toBeNull();
@@ -2272,7 +2274,8 @@ describe('onboarding launch handoff', () => {
     ).toBeNull();
     expect(
       host.querySelector('[data-testid="onboarding-completion-success-indicator"]'),
-    ).not.toBeNull();
+    ).toBeNull();
+    expect(host.querySelector('#onboarding-title-ready')?.textContent?.trim()).toBe('HQ is ready.');
   });
 
   it('keeps final Done pending and guarded until the handoff finishes', async () => {

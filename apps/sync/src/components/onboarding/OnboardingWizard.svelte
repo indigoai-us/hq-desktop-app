@@ -34,13 +34,13 @@
     keyboardRowsFor,
   } from './welcome/engines';
   import {
-    READY_PROGRESS_DONE_TEXT,
     SCENE_HOLD_MS,
     forwardLabel,
     installCardModel,
-    installCardStepLines,
+    installCardActivityLines,
     isStoryScene,
     previousScene,
+    readyProgressLine,
     readyTimings,
     sceneForStep,
     stepForScene,
@@ -124,6 +124,7 @@
     type SetupStageRecoveryAction,
     type StageId,
     type StageState,
+    setupActivityPhrase,
   } from '../../lib/onboarding-setup';
   import {
     openHqShortcutChord,
@@ -613,7 +614,7 @@
   let autoFinishRetryOwed = $state(false);
   let autoFinishRetried = false;
   // The usage-data checkbox is ticked by default, so the ready step stays up
-  // `readyTimings().consentDwellMs` after the checkbox appears before it
+  // `readyTimings().consentDwellMs` after blocking setup ends and the checkbox is visible before it
   // finishes by itself and records the answer. Touching either checkbox
   // starts the wait again.
   let readyDwellElapsed = $state(false);
@@ -876,6 +877,24 @@
     (setupStarted && !setupCompleted && (!blockingPhaseDone || backgroundPhaseRunning)) ||
       hostQueueRunning,
   );
+  const currentInstallItemId = $derived(
+    installPending && currentStageId
+      ? currentStageId
+      : hostQueueRunning && hostQueue?.currentId ? hostQueue.currentId : currentStageId,
+  );
+  const currentInstallActivity = $derived(setupActivityPhrase(currentInstallItemId));
+  // While blocking setup runs, the Ready line names the step and says so when
+  // that step waits on its automatic retry or has run a while. The retry and
+  // the elapsed clock belong to the wizard's own stage, not a host queue item.
+  const readyLine = $derived(
+    readyProgressLine({
+      itemId: currentInstallItemId,
+      retrying: Boolean(
+        setupRetry && setupRetry.stageId === currentStageId && currentInstallItemId === currentStageId,
+      ),
+      elapsedMs: currentInstallItemId !== null && currentInstallItemId === currentStageId ? stageElapsedMs : 0,
+    }),
+  );
   const chrome = $derived(welcomeChrome({ scene, replay, setupCompleted }));
   const installCard = $derived(
     installCardModel({
@@ -885,13 +904,14 @@
           ? Math.floor((hostQueue.done * 100) / hostQueue.total)
           : overallPercent,
       completed: installSettled,
+      currentItemId: currentInstallItemId,
       retryText:
         setupRetry && setupRetry.stageId === currentStageId
           ? setupRetrySubStatusText(setupRetry.attempt)
           : null,
     }),
   );
-  const installCardLines = installCardStepLines();
+  const installCardLines = installCardActivityLines();
   const consentGate = $derived(deferredConsentGate(deferredConsent));
   const storyOrder = $derived(storyScenes(replay));
 
@@ -4134,15 +4154,16 @@
   function restartReadyDwell(): void {
     clearReadyDwell();
     readyDwellElapsed = false;
+    if (installPending || scene !== 'ready' || !navRevealed || !consentOnReady) return;
     readyDwellTimer = setTimeout(() => {
       readyDwellTimer = null;
       readyDwellElapsed = true;
     }, readyTimings().consentDwellMs);
   }
 
-  // The dwell starts when the usage-data line comes on show.
+  // Count the full dwell only while the ready heading and usage-data choice are visible.
   $effect(() => {
-    if (scene !== 'ready' || !navRevealed || !consentOnReady) return;
+    if (scene !== 'ready' || !navRevealed || !consentOnReady || installPending) return;
     untrack(restartReadyDwell);
     return clearReadyDwell;
   });
@@ -4986,15 +5007,16 @@
           HQ lives in your {setupHostOs === 'macos' ? 'menu bar' : 'system tray'} now and keeps everything in sync.
         </p>
       </div>
-      <div class="prog" class:done={!installActivityRunning} bind:this={refs.readyProg}>
-        <div class="pwrap">
-          <!-- One indicator for every outcome: a turning ring while the install
-               runs, a check once it has settled. A failed stage is recorded for
-               the setup skill and never turns this into a warning. -->
-          <i class="pi" data-testid="onboarding-completion-success-indicator" aria-hidden="true"></i>
-          <span class="pl">{installActivityRunning ? installCard.line : READY_PROGRESS_DONE_TEXT}</span>
-          <span class="pbar" aria-hidden="true"><b style:width={`${installActivityRunning ? installCard.percent : 100}%`}></b></span>
-        </div>
+      <div class="prog" class:done={!installPending} bind:this={refs.readyProg} aria-live="polite">
+        {#if installPending}
+          <div class="pwrap">
+            <i class="pi" data-testid="onboarding-completion-success-indicator" aria-hidden="true"></i>
+            <span class="pl">{readyLine}</span>
+            <span class="pbar" aria-hidden="true"><b style:width={`${installCard.percent}%`}></b></span>
+          </div>
+        {:else if installActivityRunning && currentInstallActivity}
+          <span class="pl finishing-activity">Finishing setup: {currentInstallActivity}</span>
+        {/if}
       </div>
       <!-- The ready screen has no buttons: it shows the install's progress and
            finishes by itself once the blocking phase is done (the AUTO-FINISH
@@ -5002,11 +5024,6 @@
            (refs.navReady) when it lays out the scene. -->
       <div class="nav ready-options" class:on={scene === 'ready' && navRevealed} bind:this={refs.navReady} data-testid="onboarding-launchers"></div>
       <div class="alt-block" bind:this={refs.readyAlt}>
-        {#if installPending}
-          <p class="substatus" data-testid="welcome-ready-substatus">
-            {setupSubStatusModel.text ?? setupExpectation}{#if setupSubStatusModel.elapsedLabel}<span class="elapsed">{setupSubStatusModel.elapsedLabel}</span>{/if}
-          </p>
-        {/if}
         {#if deferredConsent?.phase === 'failed'}
           <div class="note consent-error" role="alert" data-testid="consent-deferred-error">
             {#if deferredConsent.kind === 'offline'}
@@ -5295,7 +5312,7 @@
         <span class="st">{installCard.title}</span>
         <span class="ss-stack">
           {#each installCardLines as line (line)}<span class="ss ghost">{line}</span>{/each}
-          <span class="ss live">{installCard.line}</span>
+          {#if installCard.line}<span class="ss live">{installCard.line}</span>{/if}
         </span>
       </div>
       <span
