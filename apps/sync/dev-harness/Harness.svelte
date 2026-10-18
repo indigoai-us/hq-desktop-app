@@ -20,6 +20,7 @@
   import HeadsUpWindow from '../src/components/onboarding/HeadsUpWindow.svelte';
   import YourAppsPreview from './YourAppsPreview.svelte';
   import WelcomeReportPreview from './WelcomeReportPreview.svelte';
+  import RisePreview from './RisePreview.svelte';
   import TeamCardPreview from './TeamCardPreview.svelte';
   import MarketplaceDetailPreview from './MarketplaceDetailPreview.svelte';
   import { WIZARD_STEPS } from '../src/lib/onboarding-wizard';
@@ -353,6 +354,9 @@
        ?state=auto|connect|connecting|failed|docs|member|empty|many. Size the
        viewport to ~1200x800 or ~960x600. In-page answers only. -->
   <YourAppsPreview />
+{:else if view === 'rise'}
+  <!-- Sunrise rise stills and clips. ?phase=opening|reveal|brief|record&t=<seconds>&theme=dark|light -->
+  <RisePreview />
 {:else if view === 'welcome-report'}
   <!-- The welcome report with "Connect your AI apps" and the suggested
        integrations from a fake scan: ?state=ready|held&company=acme|none.

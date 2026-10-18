@@ -1,6 +1,6 @@
 <script lang="ts">
   import RailIcon from '@hq/ui/rail-icon';
-  import { FIRST_RUN_TIMING_TAG, formatShell } from '@hq/ui/first-run-timing';
+  import { FIRST_RUN_TIMING_TAG, authSessionRemountLine, signOutRemountLine } from '@hq/ui/first-run-timing';
   import {
     parseFirstRunHandoffHint,
     type FirstRunHandoffHint,
@@ -464,11 +464,10 @@
   (globalThis as { __hqLog?: (tag: string, message: string) => void }).__hqLog = (tag, message) => {
     void invokeFn('frontend_log', { tag, message }).catch(() => undefined);
   };
-  /** `[first-run]` line for a remount of the keyed shell. */
-  function logShellRemount(reason: string): void {
-    void invokeFn('frontend_log', { tag: FIRST_RUN_TIMING_TAG, message: formatShell('remount', reason) }).catch(
-      () => undefined,
-    );
+  /** `[first-run]` line for a remount or reload of the keyed shell. */
+  function logShellLine(message: string | null): void {
+    if (!message) return;
+    void invokeFn('frontend_log', { tag: FIRST_RUN_TIMING_TAG, message }).catch(() => undefined);
   }
   let authAccountId = $state<string | null>(null);
   let revalidationPending = false;
@@ -546,7 +545,7 @@
     }
     planLimitNotices = [];
     // A new generation remounts the keyed shell below.
-    if (next.generation !== authGeneration) logShellRemount('auth-session');
+    logShellLine(authSessionRemountLine(authGeneration, next.generation));
     authGeneration = next.generation;
     authAccountId = next.accountId;
     hydration += 1;
@@ -949,7 +948,7 @@
       await invokeFn('sign_out');
       navigation.clear();
       rosterRefresher.cancel();
-      logShellRemount('sign-out');
+      logShellLine(signOutRemountLine());
       authGeneration += 1;
       authAccountId = null;
       planLimitNotices = [];

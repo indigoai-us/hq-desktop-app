@@ -25,7 +25,9 @@
   import type { FoundWorkApps } from "@hq/platform";
   import BriefConnectApps from "./BriefConnectApps.svelte";
   import BriefOpenTool from "./BriefOpenTool.svelte";
+  import BriefRise from "./BriefRise.svelte";
   import type { BriefOpenToolAction } from "./brief-open-tool.js";
+  import { welcomeRiseSources, type RiseCompany } from "./brief-rise.js";
   import { setWelcomeAiApps, type WelcomeAiApps } from "./welcome-ai-apps.js";
   import { WelcomeConnectSession } from "./welcome-connect-session.svelte.js";
   import { assistantNameInSentence } from "./brief-action-cards.js";
@@ -71,9 +73,28 @@
      * welcome report that did not prepare a tool.
      */
     openTool?: BriefOpenToolAction | null;
+    /** Companies in this brief. None is a getting-started rise, never a company gate. */
+    companies?: readonly RiseCompany[];
+    /** Frozen rise time for stills. Absent: the sunrise runs while the brief builds. */
+    elapsed?: number | null;
+    theme?: "dark" | "light" | null;
     children: Snippet;
   }
-  let { ready, progress = null, connect = null, onsetup = null, madeBy, aiApps = null, session: given = null, blocked = null, openTool = null, children }: Props = $props();
+  let {
+    ready,
+    progress = null,
+    connect = null,
+    onsetup = null,
+    madeBy,
+    aiApps = null,
+    session: given = null,
+    blocked = null,
+    openTool = null,
+    companies = [],
+    elapsed = null,
+    theme = null,
+    children,
+  }: Props = $props();
 
   const local = untrack(() => given) ? null : new WelcomeConnectSession();
   onDestroy(() => local?.dispose());
@@ -103,6 +124,7 @@
     return {
       detect: aiApps?.detect ?? (() => (host ? host.detect() : Promise.resolve(null))),
       cli: aiApps?.cli ?? { claudeCode: false, codex: false },
+      anywhereOnId: aiApps?.anywhereOnId ?? null,
       suggest: connect
         ? {
             host: connect.host,
@@ -121,14 +143,29 @@
   });
 
   const pct = $derived(progress == null ? null : Math.round(Math.min(1, Math.max(0, progress)) * 100));
+  const rising = $derived(!ready && !onsetup && !blocked);
+  const riseSources = $derived(welcomeRiseSources(companies));
+  /** Keeps the sunrise up for the cross-fade after the report is ready. The loading test id is gone at once. */
+  let holdRise = $state(false);
+  $effect(() => {
+    if (rising) {
+      holdRise = true;
+      return;
+    }
+    if (!holdRise) return;
+    const timer = setTimeout(() => {
+      holdRise = false;
+    }, 600);
+    return () => clearTimeout(timer);
+  });
 </script>
 
-<div class="welcome" data-testid="welcome-report">
+<div class="welcome" class:rising data-testid="welcome-report">
   {#if openTool}
     <BriefOpenTool label={openTool.label} detail={openTool.detail} busy={openTool.busy} error={openTool.error} onopen={openTool.onopen} />
   {/if}
   {#if ready}
-    <div class="report" data-testid="welcome-report-ready">
+    <div class="report reveal" data-testid="welcome-report-ready">
       {#if madeBy}
         <p class="made-by" data-testid="welcome-report-made-by">
           <span>{madeBy.name} made this report.</span>
@@ -137,7 +174,20 @@
       {/if}
       {@render children()}
     </div>
-  {:else}
+  {/if}
+  {#if rising || holdRise}
+    <section class="rise-hold" class:out={!rising} data-testid={rising ? "welcome-report-loading" : undefined} aria-busy={rising ? "true" : undefined}>
+      <BriefRise
+        sources={riseSources}
+        {companies}
+        {elapsed}
+        {theme}
+        readyAt={null}
+        meter={rising ? { now: pct, label: WELCOME_REPORT_LOADING } : null}
+      />
+    </section>
+  {/if}
+  {#if !ready}
     {#if onsetup}
       <section class="card loading" data-testid="welcome-report-setup">
         <h2>{WELCOME_REPORT_NEEDS_ASSISTANT}</h2>
@@ -150,25 +200,18 @@
         <button type="button" class="cta" onclick={runFix} disabled={fixing} data-testid="welcome-report-blocked-fix">{blocked.label}</button>
         {#if fixError}<p class="reason" data-testid="welcome-report-blocked-error">{fixError}</p>{/if}
       </section>
-    {:else}
-      <section class="card loading" data-testid="welcome-report-loading" aria-busy="true">
-        <h2>{WELCOME_REPORT_LOADING}</h2>
-        <div
-          class="bar"
-          role="progressbar"
-          aria-label={WELCOME_REPORT_LOADING}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={pct ?? undefined}
-        >
-          <span class="fill" class:indeterminate={pct === null} style:--fill={pct === null ? null : pct / 100}></span>
-        </div>
-      </section>
     {/if}
-    <!-- Under the status card, outside its branches, so a status change (loading to held) keeps a Connect in progress. -->
+    <!-- Under the status, outside its branches, so a status change (loading to held) keeps a Connect in progress. -->
     {#if connectApps}
       <div class="held-connect" data-testid="welcome-report-connect">
-        <BriefConnectApps detect={connectApps.detect} cli={connectApps.cli} suggest={connectApps.suggest} session={connectApps.session} />
+        <BriefConnectApps
+          detect={connectApps.detect}
+          cli={connectApps.cli}
+          suggest={connectApps.suggest}
+          session={connectApps.session}
+          anywhereOnId={connectApps.anywhereOnId ?? null}
+          quiet={rising}
+        />
       </div>
     {/if}
   {/if}
@@ -176,6 +219,7 @@
 
 <style>
   .welcome {
+    position: relative;
     min-height: 100%;
     box-sizing: border-box;
     display: flex;
@@ -185,6 +229,43 @@
     background: var(--b-bg, #1b1b1e);
     font-family: var(--font-ui, "Geist", system-ui, sans-serif);
     color: var(--b-t1, rgba(255, 255, 255, 0.95));
+  }
+  .welcome.rising {
+    position: relative;
+    gap: 0;
+    padding: 0;
+    min-height: 640px;
+  }
+  .rise-hold {
+    position: relative;
+    flex: 1;
+    min-height: 640px;
+  }
+  .rise-hold.out {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    min-height: 0;
+    pointer-events: none;
+    animation: rise-out 0.6s ease both;
+  }
+  @keyframes rise-out {
+    from { opacity: 1; }
+    to { opacity: 0; }
+  }
+  .welcome.rising .held-connect {
+    position: absolute;
+    left: 28px;
+    bottom: 28px;
+    z-index: 4;
+    width: min(420px, calc(50% - 120px));
+  }
+  .report.reveal {
+    animation: brief-in 0.6s ease both;
+  }
+  @keyframes brief-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
   }
   /* The card brings its own top margin for the brief body; the column gap spaces it here. */
   .held-connect :global([data-testid="connect-ai-apps-card"]) {
@@ -252,39 +333,8 @@
     color: var(--b-bg, #1b1b1e);
     background: var(--b-sun, #ffb580);
   }
-  .bar {
-    position: relative;
-    width: min(360px, 80%);
-    height: 4px;
-    border-radius: 2px;
-    overflow: hidden;
-    background: var(--b-line, rgba(255, 255, 255, 0.07));
-  }
-  /* Fill ratio via --fill (0..1) + scaleX, as ProjectRow.svelte does, so
-     the bar moves on the compositor; the track clips + rounds it. */
-  .fill {
-    position: absolute;
-    inset: 0 auto 0 0;
-    width: 100%;
-    border-radius: 2px;
-    background: var(--b-sun, #ffb580);
-    transform: scaleX(var(--fill, 0));
-    transform-origin: left center;
-    transition: transform 0.4s ease;
-  }
-  /* A 30%-wide bar sliding across: translateX is relative to its own width,
-     so -100% starts it just off the left edge and 333% just off the right. */
-  .fill.indeterminate {
-    width: 30%;
-    transform: translateX(-100%);
-    animation: slide 1.4s ease-in-out infinite;
-  }
-  @keyframes slide {
-    from { transform: translateX(-100%); }
-    to { transform: translateX(333%); }
-  }
   @media (prefers-reduced-motion: reduce) {
-    .fill.indeterminate { animation: none; transform: none; width: 100%; opacity: 0.4; }
     .made-by button { transition: none; }
+    .report.reveal, .rise-hold.out { animation: none; }
   }
 </style>

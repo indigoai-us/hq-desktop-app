@@ -84,7 +84,14 @@ export class WelcomeConnectSession {
    */
   setCompany(host: YourAppsHost, uid: string | null): void {
     this.#host = host;
-    if (this.#disposed || uid === this.#company) return;
+    if (this.#disposed) return;
+    // Same company (a remount, or the report switched before the sheet answered).
+    // A matching Connect whose catalog has not arrived keeps its wait: stopping
+    // the timer here left the row on Waiting for a hung catalog.
+    if (uid === this.#company) {
+      if (uid && this.pending && this.pendingUid === uid && !this.load) this.#armCatalogWait(this.pending, uid);
+      return;
+    }
     this.#company = uid;
     this.#gen += 1;
     this.#loading = false;
@@ -95,11 +102,14 @@ export class WelcomeConnectSession {
     this.undoProblem = null;
     if (uid) this.waitFailed = null;
     if (this.pending && this.pendingUid) {
-      if (uid === this.pendingUid) this.#stopWaitTimer();
-      // A different company than the one the step made: the wait is over.
-      else if (uid) this.#waitRanOut();
+      if (uid === this.pendingUid) {
+        // The company arrived. The wait now covers the catalog, not the sheet.
+      } else if (uid) this.#waitRanOut();
     }
-    if (uid) this.#loadApps(uid);
+    if (uid) {
+      this.#loadApps(uid);
+      if (this.pending && this.pendingUid === uid) this.#armCatalogWait(this.pending, uid);
+    }
   }
 
   #loadApps(uid: string): void {
@@ -127,8 +137,24 @@ export class WelcomeConnectSession {
     if (!uid) return;
     this.undoProblem = null;
     this.load = null;
+    this.#loading = false;
     this.memoryFor(uid).autoRan = false;
     this.#loadApps(uid);
+  }
+
+  /**
+   * Try again after a hung catalog, once the company exists. Reloads the
+   * catalog instead of opening the new-company sheet a second time.
+   */
+  retryCatalog(domain: string): void {
+    const uid = this.company;
+    if (!uid || this.pending) return;
+    this.waitFailed = null;
+    this.pending = domain;
+    this.pendingUid = uid;
+    this.setRun(domain, { state: "idle" });
+    this.#armCatalogWait(domain, uid);
+    this.reload();
   }
 
   setRun(domain: string, run: AppRun): void {
@@ -231,16 +257,13 @@ export class WelcomeConnectSession {
       return;
     }
     this.pendingUid = uid;
-    if (this.company === uid) return;
-    if (this.company) {
+    if (this.company && this.company !== uid) {
       this.#waitRanOut();
       return;
     }
-    this.#stopWaitTimer();
-    this.#waitTimer = setTimeout(() => {
-      this.#waitTimer = undefined;
-      if (this.pending === domain && this.pendingUid === uid && this.company !== uid) this.#waitRanOut();
-    }, NEW_COMPANY_WAIT_MS);
+    // Company already matches, or it has not switched yet. Either way the
+    // wait covers a catalog that never arrives.
+    this.#armCatalogWait(domain, uid);
   }
 
   /** The card ran (or dropped) the Connect that waited for the new company. */
@@ -251,13 +274,29 @@ export class WelcomeConnectSession {
     return domain;
   }
 
-  /** The Connect that waited never reached a company: its row says it didn't connect, with Try again. */
+  /**
+   * Restart the bounded wait. It ends when the catalog is in and the card
+   * can connect, or when the wait runs out, including a hung catalog.
+   */
+  #armCatalogWait(domain: string, uid: string): void {
+    this.#stopWaitTimer();
+    this.#waitTimer = setTimeout(() => {
+      this.#waitTimer = undefined;
+      if (this.pending !== domain || this.pendingUid !== uid) return;
+      if (this.company === uid && this.load) return;
+      this.#waitRanOut();
+    }, NEW_COMPANY_WAIT_MS);
+  }
+
+  /** The Connect that waited never reached a loaded catalog: its row says it didn't connect, with Try again. */
   #waitRanOut(): void {
     const domain = this.pending;
     this.#clearPending();
     if (!domain) return;
-    if (this.company) this.setRun(domain, DIDNT_CONNECT);
-    else this.waitFailed = domain;
+    if (this.company) {
+      this.setRun(domain, DIDNT_CONNECT);
+      if (!this.load) this.waitFailed = domain;
+    } else this.waitFailed = domain;
   }
 
   #clearPending(): void {

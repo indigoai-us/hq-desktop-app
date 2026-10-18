@@ -74,6 +74,7 @@
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import BriefRailHost from "./BriefRailHost.svelte";
   import WelcomeReport from "../brief/WelcomeReport.svelte";
+  import { finishNavigatesToCompany } from "../brief/welcome-finish.js";
   import { welcomeMadeBy } from "../brief/welcome-made-by.js";
   import { briefActionsFor } from "../brief/brief-action-cards.js";
   import { welcomeAppsCompanyFor } from "../brief/welcome-ai-apps.js";
@@ -11307,13 +11308,13 @@
     const nextRecent = rememberCompanyId(companyRecentIds, result.companyUid);
     companyRecentIds = nextRecent;
     writeSettingsPrefs({ companyRecentIds: nextRecent });
-    companyPaneOpen = true;
-    if (welcomeNewCompanyResolve) {
-      // From a welcome report Connect: stay on the report so the connect continues in the new company.
+    if (!finishNavigatesToCompany(welcomeNewCompanyResolve != null)) {
+      // From a welcome report Connect: stay on the report. Do not open the company sidepane.
       setTenantScope(result.companyUid);
       answerWelcomeNewCompany(result.companyUid);
       return;
     }
+    companyPaneOpen = true;
     changeTenantCompany(result.companyUid);
     void navigate(companyRowDestination("atlas", result.companyUid));
   }
@@ -11353,13 +11354,16 @@
               createCompanyRequested = true;
               const uid = result.company.companyUid;
               const channelId = result.company.companyChannelId;
-              if (uid) changeTenantCompany(uid);
-              if (channelId) {
-                requestChannelOpen(channelId, {
-                  companyUid: uid,
-                  focusCardId: null,
-                  focusCardKind: null,
-                });
+              // Welcome Connect finishes on the report. Switching here would leave that page.
+              if (finishNavigatesToCompany(welcomeNewCompanyResolve != null)) {
+                if (uid) changeTenantCompany(uid);
+                if (channelId) {
+                  requestChannelOpen(channelId, {
+                    companyUid: uid,
+                    focusCardId: null,
+                    focusCardKind: null,
+                  });
+                }
               }
             }
             return result;
@@ -16135,6 +16139,7 @@
               session={welcomeConnectSession}
               blocked={welcomeReportBlocked}
               openTool={briefOpenToolAction}
+              companies={railCompanyRoster.map((company) => ({ id: company.uid, name: company.label }))}
             >
               {@render briefPage(false)}
             </WelcomeReport>

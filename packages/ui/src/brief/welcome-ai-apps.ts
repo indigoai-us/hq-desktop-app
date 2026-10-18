@@ -39,6 +39,8 @@ export interface WelcomeAiApps {
   detect: () => Promise<FoundWorkApps | null>;
   /** Claude Code and the Codex CLI, as the launch detection found them. */
   cli: { claudeCode: boolean; codex: boolean };
+  /** Connector id whose local HQ Anywhere install is on. Copy stays on every row. */
+  anywhereOnId?: string | null;
   /** The suggested integrations; null leaves the group out (flag off or no host). */
   suggest?: WelcomeSuggest | null;
   /** The owner's connect session: the scan, the runs and the memory, kept across remounts. */

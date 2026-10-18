@@ -35,8 +35,12 @@
     suggest?: WelcomeSuggest | null;
     /** The owner's connect session; without one the card keeps its own while mounted. */
     session?: WelcomeConnectSession | null;
+    /** Connector id whose local HQ Anywhere install is on. Copy stays Copy. */
+    anywhereOnId?: string | null;
+    /** One quiet action inside the sunrise, not the full copy-card wall. */
+    quiet?: boolean;
   }
-  let { detect, cli, suggest = null, session: given = null }: Props = $props();
+  let { detect, cli, suggest = null, session: given = null, anywhereOnId = null, quiet = false }: Props = $props();
 
   /** The brand mark per app: Claude and Claude Code share the Claude mark, ChatGPT and Codex the OpenAI mark. */
   const MARK: Record<ConnectorApp["id"], BrandIconName> = {
@@ -80,8 +84,25 @@
 </script>
 
 {#if apps.length || suggesting}
-  <section class="connect" data-testid="connect-ai-apps-card">
-    {#if apps.length}
+  <section class="connect" class:quiet data-testid="connect-ai-apps-card">
+    {#if quiet}
+      <p class="quiet-line">Connect your AI apps</p>
+      {#if apps.length}
+        <ul class="quiet-apps">
+          {#each apps as app (app.id)}
+            <li data-testid={`connect-ai-app-${app.id}`}>
+              <span class="name">{app.name}</span>
+              {#if anywhereOnId === app.id}
+                <span class="anywhere" data-testid={`connect-ai-app-${app.id}-anywhere`}>HQ Anywhere on</span>
+              {/if}
+              <button type="button" class:copied={copiedId === app.id} data-testid={`connect-ai-app-${app.id}-copy`} onclick={() => void copy(app)}>
+                {copiedId === app.id ? "Copied" : "Copy"}
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    {:else if apps.length}
     <h2 class="eyebrow">Connect your AI apps</h2>
     <h3>Let the apps you already use read and write your HQ.</h3>
     <div class="group" data-group="ai-apps">
@@ -94,6 +115,9 @@
                 <svg class="mark" class:clay={mark.fill === "clay"} viewBox={mark.viewBox} width="18" height="18"><path fill-rule="evenodd" d={mark.d} /></svg>
               </span>
               <span class="name">{app.name}</span>
+              {#if anywhereOnId === app.id}
+                <span class="anywhere" data-testid={`connect-ai-app-${app.id}-anywhere`}>HQ Anywhere on</span>
+              {/if}
               <button type="button" class:copied={copiedId === app.id} data-testid={`connect-ai-app-${app.id}-copy`} onclick={() => void copy(app)}>
                 {copiedId === app.id ? "Copied" : app.copyLabel || "Copy"}
               </button>
@@ -146,6 +170,41 @@
     line-height: 1.45;
     text-align: left;
     animation: in 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+  .connect.quiet {
+    margin-top: 0;
+    padding: 0;
+    background: transparent;
+    box-shadow: none;
+    animation: none;
+  }
+  .quiet-line {
+    margin: 0 0 8px;
+    font-size: 13px;
+  }
+  .quiet-apps {
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    margin: 0 0 10px;
+    padding: 0;
+  }
+  .quiet-apps li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .anywhere {
+    color: var(--b-t2, rgba(255, 255, 255, 0.62));
+    font-size: 12px;
+  }
+  .connect.quiet :global(h2),
+  .connect.quiet :global(h3) {
+    display: none;
+  }
+  .connect.quiet::after {
+    content: none;
   }
   .connect::after {
     content: "";

@@ -236,6 +236,31 @@ export function formatShell(event: ShellEvent, reason: string | undefined): stri
   return `kind=shell event=${event} reason=${reasonWord(reason)}`;
 }
 
+/**
+ * A newer auth generation remounts the keyed shell. The same generation, or
+ * an older one that arrives late, does not. Callers still ignore an older
+ * generation before they touch shell state.
+ */
+export function authSessionRemountLine(previousGeneration: number, nextGeneration: number): string | null {
+  if (!(nextGeneration > previousGeneration)) return null;
+  return formatShell("remount", "auth-session");
+}
+
+/** Written before the shell generation is bumped for sign-out. */
+export function signOutRemountLine(): string {
+  return formatShell("remount", "sign-out");
+}
+
+/** Written when a tenant switch bumps the keyed shell. */
+export function tenantSwitchRemountLine(): string {
+  return formatShell("remount", "tenant-switch");
+}
+
+/** Written before Start over reloads the page. */
+export function errorBoundaryReloadLine(): string {
+  return formatShell("reload", "error-boundary");
+}
+
 /** An automatic (not person-clicked) navigation to #welcome. */
 export function formatWelcomeNav(reason: string | undefined): string {
   return `kind=nav event=auto-welcome reason=${reasonWord(reason)}`;

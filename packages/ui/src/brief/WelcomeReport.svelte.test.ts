@@ -91,6 +91,8 @@ describe("WelcomeReport", () => {
     expect(loading?.textContent).toContain(WELCOME_REPORT_LOADING);
     expect(WELCOME_REPORT_LOADING).toBe("Your welcome report is loading");
     expect(loading?.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBe("40");
+    expect(q('[data-testid="brief-rise"]')).not.toBeNull();
+    expect(loading?.querySelector(".card")).toBeNull();
     expect(q('[data-testid="brief-page"]')).toBeNull();
 
     props.ready = true;

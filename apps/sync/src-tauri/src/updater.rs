@@ -2859,13 +2859,14 @@ fn updater_disabled_reason_for(
 }
 
 /// The kill switch the HQ UserPromptSubmit hook `31-ensure-hq-desktop.sh`
-/// reads. That hook updates the desktop app on its own: it downloads the
-/// latest release, quits HQ, swaps the bundle and relaunches it. A Claude run
-/// the app starts (the setup assistant bot behind "Continue in Claude Code")
-/// fires the hook, so on a build whose updater is off the hook replaced and
-/// relaunched the running app mid-onboarding (PR #1670). Hooks released
-/// before hq-core-staging PR #1395 ignore `HQ_UPDATER_DISABLED`, so the app
-/// also exports this switch for every child it spawns.
+/// reads. When the updater is off, this process exports it so children it
+/// spawns inherit it. The hq bot is a launch agent started by hq-cli, so it
+/// does not inherit this process environment. hq-cli 5.345.147 and later
+/// (pull request 1984) writes `HQ_NO_ENSURE_HQ_DESKTOP=1` into that agent
+/// and forces it on model spawns. This desktop's install floor is
+/// `HQ_CLI_MIN_VERSION` (5.345.46), which is older, so a machine still on an
+/// earlier hq-cli is not covered until that CLI updates. A browser or
+/// Terminal launch is not a child of this process.
 const ENSURE_DESKTOP_HOOK_OFF_ENV: &str = "HQ_NO_ENSURE_HQ_DESKTOP";
 
 /// The env pair to export so child Claude runs skip the desktop-update hook,
@@ -2877,10 +2878,9 @@ fn ensure_desktop_hook_off_env_for(
 }
 
 /// Export `HQ_NO_ENSURE_HQ_DESKTOP=1` into this process's environment when
-/// the updater is off, so every child (bots, terminals, CLI runs) inherits
-/// it. Call from `main` before any thread starts. Children started by
-/// launchd do not inherit it; the hook's own `HQ_UPDATER_DISABLED` check
-/// covers those.
+/// the updater is off, so children this process spawns inherit it. Call from
+/// `main` before any thread starts. This does not reach a launch agent. The
+/// bot path is hq-cli 5.345.147 or later, which stores the same setting.
 pub fn export_ensure_desktop_hook_off_env() {
     let reason = updater_disabled_reason();
     if let Some((name, value)) = ensure_desktop_hook_off_env_for(reason) {

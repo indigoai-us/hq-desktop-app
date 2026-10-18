@@ -1,6 +1,6 @@
 <script lang="ts">
   import RailIcon from '@hq/ui/rail-icon';
-  import { FIRST_RUN_TIMING_TAG, formatShell } from '@hq/ui/first-run-timing';
+  import { FIRST_RUN_TIMING_TAG, errorBoundaryReloadLine } from '@hq/ui/first-run-timing';
   import * as Sentry from '@sentry/svelte';
   import { invoke } from '@tauri-apps/api/core';
   import type { Component } from 'svelte';
@@ -121,7 +121,7 @@
     void reset;
     void invoke('frontend_log', {
       tag: FIRST_RUN_TIMING_TAG,
-      message: formatShell('reload', 'error-boundary'),
+      message: errorBoundaryReloadLine(),
     }).catch(() => undefined);
     window.location.reload();
   }

@@ -77,13 +77,14 @@ function render(
   apps: FoundWorkApps["apps"],
   cli = { claudeCode: false, codex: false },
   suggest: WelcomeSuggest | null = null,
+  extra: { quiet?: boolean; anywhereOnId?: string | null } = {},
 ): { detect: ReturnType<typeof vi.fn> } {
   target = document.createElement("div");
   document.body.appendChild(target);
   const detect = vi.fn(async () => scan(apps));
   component = mount(BriefConnectApps, {
     target,
-    props: { detect, cli, suggest },
+    props: { detect, cli, suggest, ...extra },
   });
   return { detect };
 }
@@ -181,6 +182,23 @@ describe("BriefConnectApps", () => {
     await settle();
     expect(warn).toHaveBeenCalledWith("[hq-desktop] welcome report app scan threw:", err);
     expect(q("connect-ai-apps-card")).toBeNull();
+  });
+
+  it("quiet mode keeps Copy and the Anywhere note, and drops the step wall", async () => {
+    render(
+      [{ bundleId: "com.anthropic.claudefordesktop", name: "Claude" }],
+      { claudeCode: false, codex: false },
+      null,
+      { quiet: true, anywhereOnId: "claude" },
+    );
+    await settle();
+    const card = q("connect-ai-apps-card");
+    expect(card?.querySelector(".quiet-line")?.textContent).toBe("Connect your AI apps");
+    expect(card?.querySelector("h2")).toBeNull();
+    expect(card?.querySelector("ol")).toBeNull();
+    expect(card?.textContent).not.toContain("Let the apps you already use read and write your HQ.");
+    expect(q("connect-ai-app-claude-copy")?.textContent?.trim()).toBe("Copy");
+    expect(q("connect-ai-app-claude-anywhere")?.textContent).toBe("HQ Anywhere on");
   });
 
   it("is left out when no found app matches and there are no suggestions", async () => {

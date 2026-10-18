@@ -313,4 +313,37 @@ describe("BriefSuggestedApps with no company", () => {
     expect(host.connect).toHaveBeenCalledTimes(1);
     expect(host.connect).toHaveBeenCalledWith("cmp_other", expect.objectContaining({ domain: "linear.app" }), expect.anything());
   });
+
+  it("a hung catalog after the company is set ends on Try again, and retry reloads instead of opening the sheet", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const host = fakeHost();
+    host.load = vi.fn((_companyUid: string) => new Promise<YourAppsLoad>(() => undefined));
+    let answer: (uid: string | null) => void = () => undefined;
+    const onnewcompany = vi.fn(() => new Promise<string | null>((resolve) => (answer = resolve)));
+    const { setCompany } = render(host, { company: null, onnewcompany });
+    await settle();
+
+    q<HTMLButtonElement>("suggested-app-connect-linear.app")!.click();
+    await settle();
+    setCompany({ uid: "cmp_new", name: "New Co" });
+    await settle();
+    answer("cmp_new");
+    await settle();
+    setCompany({ uid: "cmp_new", name: "New Co" });
+    await settle();
+    expect(q("suggested-app-connect-linear.app")?.textContent?.trim()).toBe("Waiting");
+
+    vi.advanceTimersByTime(NEW_COMPANY_WAIT_MS);
+    await settle();
+    expect(q("suggested-app-connect-linear.app")?.textContent?.trim()).toBe("Try again");
+    expect(q("suggested-app-note-linear.app")?.textContent).toBe("Didn't connect");
+
+    const load = host.load as ReturnType<typeof vi.fn>;
+    const loads = load.mock.calls.length;
+    q<HTMLButtonElement>("suggested-app-connect-linear.app")!.click();
+    await settle();
+    expect(onnewcompany).toHaveBeenCalledTimes(1);
+    expect(load).toHaveBeenCalledTimes(loads + 1);
+    expect(host.connect).not.toHaveBeenCalled();
+  });
 });

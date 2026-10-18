@@ -20,10 +20,12 @@
     step?: string;
     /** Full page (empty state) or a shorter masthead over the brief. */
     size?: "page" | "masthead";
+    /** Light opens from a dim warm grey. Dark is the night-to-dawn sky. */
+    theme?: "dark" | "light";
     onbloomdone?: () => void;
     children?: Snippet;
   }
-  let { progress, phase, headline = "", step = "", size = "page", onbloomdone, children }: Props = $props();
+  let { progress, phase, headline = "", step = "", size = "page", theme = "dark", onbloomdone, children }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
   let canvas = $state<HTMLCanvasElement | null>(null);
@@ -66,14 +68,19 @@
     const d = look.desaturate;
     const tint = (c: number[]) => (d > 0 ? grey(c, d) : c);
     ctx.clearRect(0, 0, W, H);
+    const light = theme === "light";
     const sky = ctx.createLinearGradient(0, 0, 0, hz * 8);
-    const top = tint([20 + 18 * look.warmth, 20 + 10 * look.warmth, 28 + 6 * look.warmth]);
-    const low = tint([34 + 90 * look.warmth, 30 + 44 * look.warmth, 38 + 24 * look.warmth]);
+    const top = light
+      ? tint([236, 228 - 8 * look.warmth, 220 - 12 * look.warmth])
+      : tint([20 + 18 * look.warmth, 20 + 10 * look.warmth, 28 + 6 * look.warmth]);
+    const low = light
+      ? tint([255, 214 + 16 * look.warmth, 196])
+      : tint([34 + 90 * look.warmth, 30 + 44 * look.warmth, 38 + 24 * look.warmth]);
     sky.addColorStop(0, `rgb(${top.join(",")})`);
     sky.addColorStop(1, `rgb(${low.join(",")})`);
     ctx.fillStyle = sky;
     ctx.fillRect(0, 0, W, hz * 8);
-    ctx.fillStyle = "#121216";
+    ctx.fillStyle = light ? "#f4efe9" : "#121216";
     ctx.fillRect(0, hz * 8, W, H - hz * 8);
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {

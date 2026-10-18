@@ -86,11 +86,17 @@
     | { kind: "tile"; domain: string; name: string; tile: AppTile }
     | { kind: "found"; domain: string; name: string; app: FoundApp };
 
+  function foundRows(): Row[] {
+    return found.filter((app) => !app.excluded).map((app) => ({ kind: "found" as const, domain: app.domain, name: app.name, app }));
+  }
+
   /** Connected first, then ready to connect, then the ones HQ sets up from a guide. */
   const rows = $derived.by((): Row[] => {
-    if (!companyUid) {
-      return found.filter((app) => !app.excluded).map((app) => ({ kind: "found", domain: app.domain, name: app.name, app }));
-    }
+    if (!companyUid) return foundRows();
+    // Catalog still out, but a Connect is waiting or already ran out: keep the
+    // found row so it can say Waiting, then Didn't connect. An empty list here
+    // hid the button for the whole hang.
+    if (!view && (session.pending || session.waitFailed)) return foundRows();
     if (!view) return [];
     return [
       ...view.connected.map((chip): Row => ({ kind: "chip", domain: chip.domain, name: chip.name, chip })),
@@ -150,6 +156,15 @@
   function connectAfterNewCompany(app: FoundApp): void {
     const open = suggest.onnewcompany;
     if (open) void session.connectAfterNewCompany(app.domain, open);
+  }
+
+  /** Found row: a company whose catalog hung retries the load. Otherwise open the sheet. */
+  function pressFound(app: FoundApp): void {
+    if (companyUid && session.waitFailed === app.domain) {
+      session.retryCatalog(app.domain);
+      return;
+    }
+    connectAfterNewCompany(app);
   }
 
   /** The found row's button: Connect, Waiting while the new company is made, Try again once the wait ran out. */
@@ -266,7 +281,7 @@
             aria-label={`${foundLabel(row.domain)} ${row.name}`}
             disabled={session.pending !== null}
             aria-busy={session.pending === row.domain ? "true" : undefined}
-            onclick={() => connectAfterNewCompany(row.app)}
+            onclick={() => pressFound(row.app)}
           >{foundLabel(row.domain)}</button>
         {/if}
       </li>
