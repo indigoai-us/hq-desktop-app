@@ -214,6 +214,33 @@ describe("DesktopApp hq:// links (US-008)", () => {
     expect(current()).not.toBe("brief");
   });
 
+  it("a cold-start hq://brief whose gates never answer opens Home after 10 s and logs a [first-run] line", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const adapter = webAdapter();
+    (adapter as unknown as { identity: unknown }).identity = {
+      whoami: async () => ok({ personUid: "prs_fixture", email: "" }),
+      hasFeature: () => new Promise(() => undefined),
+      subscribeFeature: () => () => {},
+    };
+    await mountShell(adapter);
+    vi.useFakeTimers();
+    try {
+      dispatchEmbeddedNavigation(HQ_BRIEF_TARGET);
+      await vi.advanceTimersByTimeAsync(9_000);
+      // Still held on the link: no redirect yet.
+      expect(current()).toBeNull();
+      expect(warn.mock.calls.some((c) => String(c[0]).startsWith("[first-run] hq://brief"))).toBe(false);
+      await vi.advanceTimersByTimeAsync(1_500);
+    } finally {
+      vi.useRealTimers();
+    }
+    await settle();
+    expect(warn.mock.calls.some((c) => String(c[0]).startsWith("[first-run] hq://brief gates did not answer"))).toBe(true);
+    expect(host.querySelector('[data-testid="brief-host"]')).toBeNull();
+    expect(current()).not.toBeNull();
+    expect(current()).not.toBe("brief");
+  });
+
   it("hq://vault opens the Files page with the rail on Files", async () => {
     await mountShell(localFilesAdapter());
     expect(host.querySelector('[data-testid="rail-files-host"]')).toBeNull();

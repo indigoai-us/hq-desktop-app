@@ -30,7 +30,6 @@
   import { SETUP_BOT_RUNTIME_ORDER } from "../setup-bot.js";
   import {
     FIRST_RUN_COPY,
-    firstRunOpeningLabel,
     FIRST_RUN_DECISION_COPY as COPY,
     assistantNameIssue,
     decisionToolFor,
@@ -224,14 +223,20 @@
   /** A sentence from Continue, shown on the takeover, or null. */
   let toolError = $state<string | null>(null);
 
+  /** True only while Enable's HQ Anywhere install runs; every other Continue installs nothing. */
+  let installingAnywhere = $state(false);
+
   async function continueInTool(runtime: FirstRunRuntime): Promise<void> {
     toolError = null;
+    const enableHqAnywhere = calloutPhase === "shown" && anywhereChoice === "enable";
+    installingAnywhere = enableHqAnywhere;
     try {
-      const enableHqAnywhere = calloutPhase === "shown" && anywhereChoice === "enable";
       toolError = (await oncontinueintool(runtime, { enableHqAnywhere })) || null;
     } catch (error) {
       console.warn("[first-run] tool failed", error);
-      toolError = `Could not open ${toolName}. Try again.`;
+      toolError = COPY.handoffFailed;
+    } finally {
+      installingAnywhere = false;
     }
   }
 
@@ -259,7 +264,7 @@
 
   /**
    * Continue on the question opens the callout when this press can install.
-   * An unread flag counts as on, so the step shows with no "Setting up…".
+   * An unread flag counts as on, so the step shows before any handoff.
    * A hidden callout goes straight on. Continue on the callout step is the handoff.
    */
   function continueInChosenTool(): void {
@@ -601,9 +606,9 @@
           aria-busy={pressed === "tool" ? "true" : undefined}
           aria-describedby="first-run-anywhere-callout"
           onclick={continueInChosenTool}
-        >{pressed === "tool"
-          ? firstRunOpeningLabel(toolName)
-          : toolError
+        >{pressed === "tool" && installingAnywhere
+          ? COPY.anywhereTurningOn
+          : toolError && pressed === null
             ? FIRST_RUN_COPY.retry
             : COPY.toolPrimary(toolName)}</button>
       </div>
@@ -624,9 +629,9 @@
           disabled={pressed !== null}
           aria-busy={pressed === "tool" ? "true" : undefined}
           onclick={continueInChosenTool}
-        >{pressed === "tool"
-          ? firstRunOpeningLabel(toolName)
-          : toolError
+        >{pressed === "tool" && installingAnywhere
+          ? COPY.anywhereTurningOn
+          : toolError && pressed === null
             ? FIRST_RUN_COPY.retry
             : COPY.toolPrimary(toolName)}</button>
         <button

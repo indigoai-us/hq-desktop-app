@@ -569,11 +569,11 @@ describe("visual first run, flag on", () => {
     expect(primary.textContent).toContain("Continue in Claude Code");
     await enableAnywhere();
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
-    // The takeover holds "Setting up Claude Code…" while the install runs. The tool stays closed.
+    // After Enable, the takeover reads "Turning on HQ Anywhere…" while the install runs. The tool stays closed.
     await vi.waitFor(() => expect(installRuntimeForTool).toHaveBeenCalledWith("claude"));
     await settle();
     expect(q('[data-testid="first-run-takeover"]')).toBeTruthy();
-    expect(q('[data-testid="first-run-decision-primary"]')?.textContent).toContain("Setting up Claude Code…");
+    expect(q('[data-testid="first-run-decision-primary"]')?.textContent).toBe("Turning on HQ Anywhere…");
     expect(launchClaudeCode).not.toHaveBeenCalled();
     expect(q('[data-testid="welcome-report"]')).toBeNull();
 

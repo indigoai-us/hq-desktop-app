@@ -257,10 +257,6 @@ export const FIRST_RUN_COPY = {
   retrying: "Retrying…",
 } as const;
 
-/** The tool button while HQ is installed into that tool. The tool stays closed. */
-export function firstRunOpeningLabel(toolName: string): string {
-  return toolName.trim() ? `Setting up ${toolName.trim()}…` : "Setting up…";
-}
 
 
 export function runtimeLabel(runtime: FirstRunRuntime): string {
@@ -351,6 +347,10 @@ export const FIRST_RUN_DECISION_COPY = {
   anywhereEnable: "Enable",
   anywhereNotNow: "Not now",
   anywhereOn: "HQ Anywhere is on. Continue sets it up.",
+  /** Continue's label only while Enable's HQ Anywhere install runs. Nothing else is installed. */
+  anywhereTurningOn: "Turning on HQ Anywhere…",
+  /** Continue threw: the handoff to the desktop did not happen. */
+  handoffFailed: "Could not continue to the desktop. Try again.",
   anywhereUndo: "Undo",
   anywhereOff: "HQ Anywhere is off. Turn it on later in Settings.",
   // Two equal paths (owner, 2026-10-15): the tool and naming the assistant.

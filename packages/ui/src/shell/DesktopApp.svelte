@@ -14151,9 +14151,20 @@
       void refreshBriefInstallCheck();
     });
   });
+  // A gate that never answers must not hold a cold-start hq://brief forever.
+  const BRIEF_GATE_WAIT_MS = 10_000;
+  let briefGateWaitExpired = $state(false);
   $effect(() => {
-    // A cold-start hq://brief lands before the gates answer; wait for them.
-    if (railPlaceholder?.id !== "brief" || briefVisible || welcomeReportOwed || !railGatesSettled) return;
+    if (railPlaceholder?.id !== "brief" || railGatesSettled || briefGateWaitExpired) return;
+    const timer = setTimeout(() => {
+      console.warn("[first-run] hq://brief gates did not answer in 10s; opening Home without the brief");
+      briefGateWaitExpired = true;
+    }, BRIEF_GATE_WAIT_MS);
+    return () => clearTimeout(timer);
+  });
+  $effect(() => {
+    // A cold-start hq://brief lands before the gates answer; wait for them, up to BRIEF_GATE_WAIT_MS.
+    if (railPlaceholder?.id !== "brief" || briefVisible || welcomeReportOwed || !(railGatesSettled || briefGateWaitExpired)) return;
     const company = tenantCompanyId;
     untrack(() => {
       void navigate(company ? companyRowDestination("atlas", company) : { kind: "messages" });

@@ -380,7 +380,7 @@ describe("FirstRunDecisionTakeover", () => {
     expect(text("first-run-decision-primary")).toBe("Continue in Codex");
   });
 
-  it("continue in the tool passes its runtime, shows Setting up <tool> at once and ignores a second press", async () => {
+  it("continue in the tool passes its runtime, stays Continue in <tool> while busy and ignores a second press", async () => {
     let release: () => void = () => undefined;
     const { handlers } = render({
       oncontinueintool: () => new Promise<void>((resolve) => (release = resolve)),
@@ -395,7 +395,7 @@ describe("FirstRunDecisionTakeover", () => {
     await settle();
     expect(primary.disabled).toBe(true);
     expect(primary.getAttribute("aria-busy")).toBe("true");
-    expect(primary.textContent?.trim()).toBe("Setting up Codex…");
+    expect(primary.textContent?.trim()).toBe("Continue in Codex");
     expect(byId("first-run-decision-other")).toBeNull();
     primary.click();
     await settle();
@@ -414,7 +414,8 @@ describe("FirstRunDecisionTakeover", () => {
     expect(warn).toHaveBeenCalled();
     expect(byId<HTMLButtonElement>("first-run-decision-primary")!.disabled).toBe(false);
     // A thrown error shows a fixed sentence, never the raw error text.
-    expect(text("first-run-decision-error")).toBe("Could not open Codex. Try again.");
+    expect(text("first-run-decision-error")).toBe("Could not continue to the desktop. Try again.");
+    expect(text("first-run-decision-primary")).toBe(FIRST_RUN_COPY.retry);
     expect(byId("first-run-takeover")?.textContent ?? "").not.toContain("no launch");
   });
 
@@ -441,7 +442,7 @@ describe("FirstRunDecisionTakeover", () => {
 
     await continuePastCallout();
     expect(byId("first-run-decision-error")).toBeNull();
-    expect(text("first-run-decision-primary")).toBe("Setting up Codex…");
+    expect(text("first-run-decision-primary")).toBe("Continue in Codex");
     release();
     await settle();
     expect(handlers.oncontinueintool).toHaveBeenCalledTimes(2);
@@ -840,5 +841,70 @@ describe("FirstRunDecisionTakeover sign-in", () => {
     await continuePastCallout();
     expect(signin.signedIn).not.toHaveBeenCalled();
     expect(handlers.onconfirmname).toHaveBeenCalledWith("Pickles", "claude");
+  });
+
+  describe("Continue's label while the handoff runs (Shepherd, PR 1642)", () => {
+    type Case = {
+      name: string;
+      opts: Opts;
+      choose: "enable" | "later" | null;
+      runtime: string;
+      enable: boolean;
+      busy: string;
+    };
+    const cases: Case[] = [
+      { name: "Not now", opts: {}, choose: "later", runtime: "codex", enable: false, busy: "Continue in Codex" },
+      { name: "Continue on the callout with no choice", opts: {}, choose: null, runtime: "codex", enable: false, busy: "Continue in Codex" },
+      {
+        name: "Grok",
+        opts: { hqAnywhereFlag: true, scanTools: [], installed: { claude: false, codex: false, grok: true } },
+        choose: null,
+        runtime: "grok",
+        enable: false,
+        busy: "Continue in Grok",
+      },
+      { name: "the callout killed by its flag", opts: { hqAnywhereFlag: false }, choose: null, runtime: "codex", enable: false, busy: "Continue in Codex" },
+      { name: "Enable", opts: {}, choose: "enable", runtime: "codex", enable: true, busy: FIRST_RUN_DECISION_COPY.anywhereTurningOn },
+    ];
+
+    for (const c of cases) {
+      it(`reads ${JSON.stringify(c.busy)} after Continue with ${c.name}`, async () => {
+        let release: () => void = () => undefined;
+        const { handlers } = render({
+          ...c.opts,
+          oncontinueintool: vi.fn(() => new Promise<void>((resolve) => (release = resolve))),
+        });
+        await waitForDecision();
+        await showCalloutStep();
+        if (byId("first-run-anywhere-slot")) {
+          // Continue before the callout shows hands nothing off and keeps its label.
+          expect(handlers.oncontinueintool).not.toHaveBeenCalled();
+          expect(text("first-run-decision-primary")).toBe("Continue in Codex");
+          if (c.choose === "enable") byId<HTMLButtonElement>("first-run-anywhere-enable")!.click();
+          if (c.choose === "later") byId<HTMLButtonElement>("first-run-anywhere-not-now")!.click();
+          await settle();
+          byId<HTMLButtonElement>("first-run-decision-primary")!.click();
+          await settle();
+        } else {
+          expect(c.choose).toBeNull();
+        }
+        expect(handlers.oncontinueintool).toHaveBeenCalledWith(c.runtime, { enableHqAnywhere: c.enable });
+        const primary = byId<HTMLButtonElement>("first-run-decision-primary")!;
+        expect(primary.getAttribute("aria-busy")).toBe("true");
+        expect(primary.textContent?.trim()).toBe(c.busy);
+        expect(byId("first-run-takeover")?.textContent ?? "").not.toContain("Setting up");
+        release();
+        await settle();
+        expect(primary.textContent?.trim()).toBe(c.busy === FIRST_RUN_DECISION_COPY.anywhereTurningOn ? "Continue in Codex" : c.busy);
+      });
+    }
+
+    it("has no Setting up copy anywhere in the decision copy", () => {
+      const all = JSON.stringify({ ...FIRST_RUN_DECISION_COPY, ...FIRST_RUN_COPY }) +
+        Object.values(FIRST_RUN_DECISION_COPY)
+          .map((v: unknown) => (typeof v === "function" ? (v as (...a: unknown[]) => string)("Codex", "Mac", 3) : ""))
+          .join(" ");
+      expect(all).not.toContain("Setting up");
+    });
   });
 });
