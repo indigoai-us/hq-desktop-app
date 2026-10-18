@@ -178,9 +178,63 @@ describe("CorePopover first-launch cache bail (US-014)", () => {
       expect(host.querySelector('[data-testid="core-popover-sync-retry-failed"]')).not.toBeNull();
     });
     const visible = host.querySelector('[data-testid="core-popover-sync-status"]')?.textContent ?? "";
-    expect(visible).toContain("Your files have not synced yet.");
+    expect(visible.split("Your files have not synced yet.").length - 1).toBe(1);
+    expect(text(host.querySelector('[data-testid="core-popover-sync-retry-failed"]'))).toBe(
+      "Sync could not be started. Try again.",
+    );
     expect(visible.toLowerCase()).not.toContain("npm");
     expect(visible).not.toContain("another window");
+  });
+
+  it("shows the plain line once and says the retry did not start", async () => {
+    const adapter = makeAdapter();
+    adapter.sync.startSync = vi.fn(async () => ({
+      ok: false as const,
+      reason: "error" as const,
+      message: "lock file unreadable",
+    }));
+    mountPopover({
+      adapter,
+      syncState: "error",
+      errorMessage: "Your files have not synced yet.",
+      errorKind: "first-launch-unsynced",
+    });
+    (host.querySelector('[data-testid="core-popover-sync-now"]') as HTMLButtonElement).click();
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="core-popover-sync-retry-failed"]')).not.toBeNull();
+    });
+    expect(text(host.querySelector('[data-testid="core-popover-sync-retry-failed"]'))).toBe(
+      "Sync could not be started. Try again.",
+    );
+    const visible = host.querySelector('[data-testid="core-popover-sync-status"]')?.textContent ?? "";
+    expect(visible.split("Your files have not synced yet.").length - 1).toBe(1);
+    expect(visible).not.toContain("lock file unreadable");
+  });
+
+  it("adds no failure line when a sync is already running", async () => {
+    const adapter = makeAdapter();
+    adapter.sync.startSync = vi.fn(async () => ({
+      ok: false as const,
+      // A Tauri command error string comes back with the invoke code.
+      reason: "error" as const,
+      code: "invoke",
+      message: "Sync is already running",
+    }));
+    mountPopover({
+      adapter,
+      syncState: "error",
+      errorMessage: "Your files have not synced yet.",
+      errorKind: "first-launch-unsynced",
+    });
+    (host.querySelector('[data-testid="core-popover-sync-now"]') as HTMLButtonElement).click();
+    await vi.waitFor(() => {
+      expect(adapter.sync.startSync).toHaveBeenCalledOnce();
+    });
+    await Promise.resolve();
+    flushSync();
+    expect(host.querySelector('[data-testid="core-popover-sync-retry-failed"]')).toBeNull();
+    const visible = host.querySelector('[data-testid="core-popover-sync-status"]')?.textContent ?? "";
+    expect(visible.split("Your files have not synced yet.").length - 1).toBe(1);
   });
 });
 

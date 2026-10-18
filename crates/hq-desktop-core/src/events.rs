@@ -376,6 +376,9 @@ pub const EVENT_SYNC_PROGRESS: &str = "sync:progress";
 /// First-launch sync is waiting for the npm cache lock. `message` is the
 /// existing setup caption, not an error.
 pub const EVENT_SYNC_WAITING: &str = "sync:waiting";
+/// The first-launch cache wait ended without starting a run. No payload.
+/// The UI drops the `sync:waiting` caption if it is still showing.
+pub const EVENT_SYNC_WAITING_END: &str = "sync:waiting-end";
 pub const EVENT_SYNC_ERROR: &str = "sync:error";
 pub const EVENT_SYNC_COMPLETE: &str = "sync:complete";
 /// hq-cloud ≥5.24.0. Emitted only under `currency-gated` delete policy

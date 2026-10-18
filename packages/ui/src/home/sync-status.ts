@@ -119,12 +119,21 @@ export function reduceSyncEvent(
       // is ignored so a stray payload cannot put new copy on screen.
       const caption = asText(data.message) ?? FIRST_LAUNCH_CACHE_WAIT_CAPTION;
       if (caption !== FIRST_LAUNCH_CACHE_WAIT_CAPTION) return state;
+      // A run already moving files keeps its counts.
+      if (state.planTotal > 0 || state.progressed > 0) return state;
       return {
         ...emptySyncStatus(),
         phase: "syncing",
         caption,
       };
     }
+
+    case "sync:waiting-end":
+      // The wait ended without a run. Drop the caption only if it is still
+      // what is showing; a run or an error that arrived since stays put.
+      return state.caption === FIRST_LAUNCH_CACHE_WAIT_CAPTION
+        ? emptySyncStatus()
+        : state;
 
     case "sync:auth-error":
       return {
@@ -162,6 +171,7 @@ export const SYNC_STATUS_EVENTS = [
   "sync:plan",
   "sync:progress",
   "sync:waiting",
+  "sync:waiting-end",
   "sync:auth-error",
   "sync:error",
   "sync:all-complete",

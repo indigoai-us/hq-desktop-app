@@ -154,7 +154,8 @@
   let returnNudge = $state<{ companyUid: string; slug?: string; dayIndex: number } | null>(null);
   let returnNudgeBusy = $state(false);
   let cacheOfferBusy = $state(false);
-  let cacheOfferFailed = $state(false);
+  /** Shown under the plain line when Sync now did not start. Existing copy. */
+  let cacheOfferFailure = $state<string | null>(null);
   const modelPacks = $derived.by((): CorePopoverPack[] => {
     if (packs.length > 0) return packs;
     return useFixtures ? CORE_POPOVER_FIXTURE_PACKS : [];
@@ -400,21 +401,29 @@
     }
   }
 
+  // Same sentence the membership banner uses when a sync does not start.
+  const SYNC_NOT_STARTED = "Sync could not be started. Try again.";
+
   async function runCacheOfferSync(): Promise<void> {
     if (cacheOfferBusy || !model.syncOffer || !model.syncNowAllowed) return;
     cacheOfferBusy = true;
-    cacheOfferFailed = false;
+    cacheOfferFailure = null;
     try {
       const result = await adapter.sync.startSync();
       if (!result.ok) {
-        cacheOfferFailed = true;
+        // A run already in progress is not a failure; its own events will
+        // replace the plain line.
+        const alreadyRunning = (result.message ?? "")
+          .toLowerCase()
+          .includes("already running");
+        cacheOfferFailure = alreadyRunning ? null : SYNC_NOT_STARTED;
         console.error(
           "core-popover: sync now failed",
           result.code ?? result.reason,
         );
       }
     } catch (error) {
-      cacheOfferFailed = true;
+      cacheOfferFailure = SYNC_NOT_STARTED;
       console.error(
         "core-popover: sync now failed",
         error instanceof Error ? error.name : "unknown",
@@ -546,13 +555,13 @@
       <span class="core-status-plain" data-testid="core-popover-sync-plain">
         {model.syncOffer.line}
       </span>
-      {#if cacheOfferFailed}
+      {#if cacheOfferFailure}
         <span
           class="core-status-plain"
           role="status"
           data-testid="core-popover-sync-retry-failed"
         >
-          {model.syncOffer.line}
+          {cacheOfferFailure}
         </span>
       {/if}
       <button

@@ -406,13 +406,14 @@ struct FirstLaunchUnsyncedEvent<'a> {
 /// The first-launch sync bailed. A busy npm cache waits, then retries once.
 /// The plain line is emitted only when that wait times out or the retry hits
 /// the cache bail again. Every other error is reported as itself.
-async fn recover_first_launch_sync_start<W, WF, S, SF, E, R, C, T>(
+async fn recover_first_launch_sync_start<W, WF, S, SF, E, R, C, D, T>(
     error: &str,
     wait_for_lock: W,
     retry_sync: S,
     emit_plain_line: E,
     report: R,
     show_waiting: C,
+    end_waiting: D,
     on_started: T,
 ) where
     W: FnOnce() -> WF,
@@ -422,6 +423,7 @@ async fn recover_first_launch_sync_start<W, WF, S, SF, E, R, C, T>(
     E: FnOnce(&str),
     R: FnOnce(&str),
     C: FnOnce(),
+    D: FnOnce(),
     T: FnOnce(),
 {
     use hq_desktop_core::prewarm::{recover_first_launch_cache_bail, FirstLaunchCacheBail};
@@ -454,6 +456,8 @@ async fn recover_first_launch_sync_start<W, WF, S, SF, E, R, C, T>(
     match outcome {
         FirstLaunchCacheBail::Started => on_started(),
         FirstLaunchCacheBail::NeedsSyncNow { line, .. } => {
+            // Clear the caption first so the plain line replaces it.
+            end_waiting();
             emit_plain_line(line);
             let real = retry_error
                 .or(wait_error)
@@ -461,6 +465,9 @@ async fn recover_first_launch_sync_start<W, WF, S, SF, E, R, C, T>(
             report(&real);
         }
         FirstLaunchCacheBail::Unrelated => {
+            // Cloud Off, lock IO and similar outcomes send nothing else to
+            // the UI, so without this the caption would stay up until restart.
+            end_waiting();
             let real = retry_error
                 .or(wait_error)
                 .unwrap_or_else(|| error.to_string());
@@ -473,6 +480,7 @@ async fn recover_first_launch_sync_after_start_error(handle: AppHandle, error: &
     let handle_retry = handle.clone();
     let handle_emit = handle.clone();
     let handle_waiting = handle.clone();
+    let handle_end_waiting = handle.clone();
     recover_first_launch_sync_start(
         error,
         || async {
@@ -518,14 +526,22 @@ async fn recover_first_launch_sync_after_start_error(handle: AppHandle, error: &
                 "first-run",
                 "first-launch sync waiting for the npm cache lock",
             );
-            // Desktop is the only window that shows this caption. A broadcast
-            // would also wake the popover, banner, and any other open webview.
+            // Sent to the desktop window, which shows this caption. A JS
+            // listener on any target still receives a targeted event in
+            // Tauri v2; only DesktopApp.svelte listens for it today.
             let _ = handle_waiting.emit_to(
                 crate::commands::desktop_alt::WINDOW_LABEL,
                 crate::events::EVENT_SYNC_WAITING,
                 hq_desktop_core::events::SyncWaitingEvent {
                     message: hq_desktop_core::prewarm::FIRST_LAUNCH_CACHE_WAIT_CAPTION.to_string(),
                 },
+            );
+        },
+        || {
+            let _ = handle_end_waiting.emit_to(
+                crate::commands::desktop_alt::WINDOW_LABEL,
+                crate::events::EVENT_SYNC_WAITING_END,
+                (),
             );
         },
         || {
@@ -605,6 +621,7 @@ mod first_launch_sync_start_capture_tests {
     #[tokio::test]
     async fn cache_bail_retry_ok_emits_nothing() {
         let (emits, reports, waiting, started) = sample_effects();
+        let ended = std::sync::Mutex::new(0u32);
         recover_first_launch_sync_start(
             "HQ Sync is still preparing its npm cache in another window. Wait a moment, then try Sync again.",
             || async { Ok(()) },
@@ -613,6 +630,9 @@ mod first_launch_sync_start_capture_tests {
             |error| reports.lock().expect("reports").push(error.to_string()),
             || {
                 *waiting.lock().expect("waiting") += 1;
+            },
+            || {
+                *ended.lock().expect("ended") += 1;
             },
             || {
                 *started.lock().expect("started") += 1;
@@ -629,11 +649,17 @@ mod first_launch_sync_start_capture_tests {
         );
         assert_eq!(*waiting.lock().expect("waiting"), 1);
         assert_eq!(*started.lock().expect("started"), 1);
+        assert_eq!(
+            *ended.lock().expect("ended"),
+            0,
+            "a started run clears the caption with its own events"
+        );
     }
 
     #[tokio::test]
     async fn already_running_retry_emits_nothing_and_reports_the_real_error() {
         let (emits, reports, _, _) = sample_effects();
+        let ended = std::sync::Mutex::new(0u32);
         recover_first_launch_sync_start(
             "HQ Sync is still preparing its npm cache in another window. Wait a moment, then try Sync again.",
             || async { Ok(()) },
@@ -641,9 +667,17 @@ mod first_launch_sync_start_capture_tests {
             |line| emits.lock().expect("emits").push(line.to_string()),
             |error| reports.lock().expect("reports").push(error.to_string()),
             || {},
+            || {
+                *ended.lock().expect("ended") += 1;
+            },
             || {},
         )
         .await;
+        assert_eq!(
+            *ended.lock().expect("ended"),
+            1,
+            "an Unrelated outcome must clear the waiting caption"
+        );
         assert!(emits.lock().expect("emits").is_empty());
         assert_eq!(
             reports.lock().expect("reports").as_slice(),
@@ -654,6 +688,7 @@ mod first_launch_sync_start_capture_tests {
     #[tokio::test]
     async fn cloud_paused_retry_emits_nothing_and_reports_the_real_error() {
         let (emits, reports, _, _) = sample_effects();
+        let ended = std::sync::Mutex::new(0u32);
         recover_first_launch_sync_start(
             "HQ Sync is still preparing its npm cache in another window. Wait a moment, then try Sync again.",
             || async { Ok(()) },
@@ -661,9 +696,17 @@ mod first_launch_sync_start_capture_tests {
             |line| emits.lock().expect("emits").push(line.to_string()),
             |error| reports.lock().expect("reports").push(error.to_string()),
             || {},
+            || {
+                *ended.lock().expect("ended") += 1;
+            },
             || {},
         )
         .await;
+        assert_eq!(
+            *ended.lock().expect("ended"),
+            1,
+            "an Unrelated outcome must clear the waiting caption"
+        );
         assert!(emits.lock().expect("emits").is_empty());
         assert_eq!(
             reports.lock().expect("reports").as_slice(),
@@ -685,13 +728,25 @@ mod first_launch_sync_start_capture_tests {
             |error| reports.lock().expect("reports").push(error.to_string()),
             || {},
             || {
+                // The clear goes out before the plain line, so the reducer
+                // drops the caption and then shows the error.
+                assert!(
+                    emits.lock().expect("emits").is_empty(),
+                    "the waiting caption clears before the plain line is sent"
+                );
+                emits.lock().expect("emits").push("<end-waiting>".to_string());
+            },
+            || {
                 *started.lock().expect("started") += 1;
             },
         )
         .await;
         assert_eq!(
             emits.lock().expect("emits").as_slice(),
-            [hq_desktop_core::prewarm::FIRST_LAUNCH_SYNC_UNSYNCED_LINE]
+            [
+                "<end-waiting>",
+                hq_desktop_core::prewarm::FIRST_LAUNCH_SYNC_UNSYNCED_LINE
+            ]
         );
         assert_eq!(reports.lock().expect("reports").as_slice(), [timeout]);
         assert_eq!(*started.lock().expect("started"), 0);
@@ -712,6 +767,9 @@ mod first_launch_sync_start_capture_tests {
             |error| reports.lock().expect("reports").push(error.to_string()),
             || {
                 *waiting.lock().expect("waiting") += 1;
+            },
+            || {
+                panic!("no wait was shown, so there is nothing to clear");
             },
             || {},
         )

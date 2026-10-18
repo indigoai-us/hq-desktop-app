@@ -99,6 +99,43 @@ describe("sync-status reducer", () => {
     expect(SYNC_STATUS_EVENTS as readonly string[]).toContain("sync:waiting");
   });
 
+  it("clears the setup caption when the first-launch wait ends without a run", () => {
+    // Cloud Off, a sync already running, or a lock error all end the wait
+    // without a plan or an error event. Without this the caption stays up.
+    const waiting = reduceSyncEvent(emptySyncStatus(), "sync:waiting", {
+      message: FIRST_LAUNCH_CACHE_WAIT_CAPTION,
+    });
+    const s = reduceSyncEvent(waiting, "sync:waiting-end");
+    expect(s).toEqual(emptySyncStatus());
+    expect(syncStatusLabel(s).text).toBeNull();
+    expect(SYNC_STATUS_EVENTS as readonly string[]).toContain("sync:waiting-end");
+  });
+
+  it("leaves a running sync or an error alone when the wait ends", () => {
+    let running = reduceSyncEvent(emptySyncStatus(), "sync:plan", plan("acme", 9));
+    running = reduceSyncEvent(running, "sync:progress", { company: "acme" });
+    expect(reduceSyncEvent(running, "sync:waiting-end")).toBe(running);
+
+    const failed = reduceSyncEvent(emptySyncStatus(), "sync:error", {
+      message: "Sync ran into a problem.",
+    });
+    expect(reduceSyncEvent(failed, "sync:waiting-end")).toBe(failed);
+    expect(reduceSyncEvent(emptySyncStatus(), "sync:waiting-end")).toEqual(
+      emptySyncStatus(),
+    );
+  });
+
+  it("does not reset the counts of a run already moving files", () => {
+    let s = reduceSyncEvent(emptySyncStatus(), "sync:plan", plan("acme", 9));
+    s = reduceSyncEvent(s, "sync:progress", { company: "acme" });
+    const after = reduceSyncEvent(s, "sync:waiting", {
+      message: FIRST_LAUNCH_CACHE_WAIT_CAPTION,
+    });
+    expect(after).toBe(s);
+    expect(after.planTotal).toBe(9);
+    expect(after.progressed).toBe(1);
+  });
+
   it("says nothing at all when idle", () => {
     // A permanent "All synced" chip is right almost always and therefore stops
     // being read. Silence is the signal.
@@ -125,7 +162,14 @@ describe("sync-status reducer", () => {
     // A host subscribing to this list is the contract; drift means an event
     // silently stops being counted.
     for (const name of SYNC_STATUS_EVENTS) {
-      const before = { ...emptySyncStatus(), progressed: 1, planTotal: 2 };
+      // The two wait events only act around the setup caption, before any
+      // file has moved, so they start from that state.
+      const before =
+        name === "sync:waiting"
+          ? emptySyncStatus()
+          : name === "sync:waiting-end"
+            ? { ...emptySyncStatus(), phase: "syncing" as const, caption: FIRST_LAUNCH_CACHE_WAIT_CAPTION }
+            : { ...emptySyncStatus(), progressed: 1, planTotal: 2 };
       expect(
         reduceSyncEvent(before, name, { company: "acme" }),
         `${name} is listed but not handled`,
