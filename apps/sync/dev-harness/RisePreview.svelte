@@ -28,6 +28,7 @@
     apps: [
       { bundleId: 'com.anthropic.claudefordesktop', name: 'Claude' },
       { bundleId: 'com.openai.chat', name: 'ChatGPT' },
+      { bundleId: 'ai.x.grok', name: 'Grok' },
     ],
     mcpServers: [],
     sources: [],
@@ -87,7 +88,7 @@
     <div class="invite">
       <BriefConnectApps
         detect={async () => SCAN}
-        cli={{ claudeCode: true, codex: false }}
+        cli={{ claudeCode: true, codex: true }}
         anywhereOnId="claude"
         quiet
         {theme}
@@ -99,7 +100,7 @@
       <WelcomeReport
         ready
         {theme}
-        aiApps={{ detect: async () => SCAN, cli: { claudeCode: true, codex: false }, anywhereOnId: 'claude' }}
+        aiApps={{ detect: async () => SCAN, cli: { claudeCode: true, codex: true }, anywhereOnId: 'claude' }}
         connect={{ host, company: { uid: 'cmp_preview', name: 'Acme' }, onnewcompany: async () => never() }}
       >
         <DailyBrief

@@ -251,6 +251,32 @@ describe("BriefConnectApps", () => {
     expect(q("connect-ai-quiet-hint")?.textContent).toBe("Bring your coding sessions");
   });
 
+  it("quiet strip uses the mockup's solid brand tiles, Codex as a prompt glyph", async () => {
+    render(
+      [
+        { bundleId: "com.anthropic.claudefordesktop", name: "Claude" },
+        { bundleId: "com.openai.chat", name: "ChatGPT" },
+        { bundleId: "ai.x.grok", name: "Grok" },
+      ],
+      { claudeCode: true, codex: true },
+      null,
+      { quiet: true, theme: "dark" },
+    );
+    await settle();
+    const card = q("connect-ai-apps-card")!;
+    const tools = [...card.querySelectorAll<HTMLButtonElement>(".tool")];
+    const byName = new Map(tools.map((t) => [t.querySelector(".name")?.textContent, t]));
+    expect([...byName.keys()]).toEqual(["Claude", "ChatGPT", "Codex", "Grok"]);
+    const tile = (name: string) => byName.get(name)!.querySelector(".tool-logo")!.getAttribute("data-tile");
+    expect(tile("Claude")).toBe("light");
+    expect(tile("Grok")).toBe("light");
+    expect(tile("ChatGPT")).toBe("dark");
+    expect(tile("Codex")).toBe("dark");
+    expect(byName.get("Codex")!.querySelector(".tool-logo svg.prompt")).not.toBeNull();
+    expect(byName.get("Claude")!.querySelector(".tool-logo svg.prompt")).toBeNull();
+    expect(card.querySelectorAll("[data-testid='connect-ai-quiet-connect']")).toHaveLength(1);
+  });
+
   it("quiet mode is left out when Claude Code is the only app found", async () => {
     render([], { claudeCode: true, codex: false }, null, { quiet: true });
     await settle();

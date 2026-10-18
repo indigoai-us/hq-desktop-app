@@ -98,7 +98,22 @@
     grok: "Bring your Grok sessions",
     "claude-code": "",
   };
-  const quietApps = $derived(apps.filter((app) => app.id !== "claude-code"));
+  /** The round 11b brand tiles: OpenAI marks on a dark tile, the rest on white. */
+  const QUIET_TILE: Record<ConnectorApp["id"], "light" | "dark"> = {
+    claude: "light",
+    chatgpt: "dark",
+    codex: "dark",
+    "grok-bot": "light",
+    grok: "light",
+    "claude-code": "light",
+  };
+  /** The round 11b strip order: Claude, ChatGPT, Codex, then Grok. */
+  const QUIET_ORDER: ConnectorApp["id"][] = ["claude", "chatgpt", "codex", "grok-bot", "grok"];
+  const quietApps = $derived(
+    apps
+      .filter((app) => app.id !== "claude-code")
+      .sort((a, b) => QUIET_ORDER.indexOf(a.id) - QUIET_ORDER.indexOf(b.id)),
+  );
   const quietChosen = $derived.by(() => {
     if (quietApps.length === 0) return null;
     return quietApps.find((app) => app.id === pickedId) ?? quietApps.find((app) => app.id === "chatgpt") ?? quietApps[0]!;
@@ -138,8 +153,12 @@
                 data-testid={`connect-ai-app-${app.id}`}
                 onclick={() => (pickedId = app.id)}
               >
-                <span class="tool-logo" aria-hidden="true">
-                  <svg class="mark" class:clay={mark.fill === "clay"} viewBox={mark.viewBox} width="16" height="16"><path fill-rule="evenodd" d={mark.d} /></svg>
+                <span class="tool-logo" data-tile={QUIET_TILE[app.id]} aria-hidden="true">
+                  {#if app.id === "codex"}
+                    <svg class="mark prompt" viewBox="0 0 16 16" width="19" height="19"><path d="M2.5 4 6.5 8 2.5 12M8.5 12.5H14" /></svg>
+                  {:else}
+                    <svg class="mark" class:clay={mark.fill === "clay"} viewBox={mark.viewBox} width="16" height="16"><path fill-rule="evenodd" d={mark.d} /></svg>
+                  {/if}
                 </span>
                 <span class="name">{QUIET_NAME[app.id] ?? app.name}</span>
               </button>
@@ -287,31 +306,36 @@
     font: inherit;
     font-size: 12px;
     cursor: pointer;
+  }
+  /* Only the name dims; the brand tiles stay solid (round 11b). */
+  .connect.quiet .tool .name {
     opacity: 0.72;
   }
-  .connect.quiet .tool[aria-pressed="true"] {
+  .connect.quiet .tool[aria-pressed="true"] .name {
     opacity: 1;
   }
   .connect.quiet .tool[aria-pressed="true"]::after {
     content: "";
     position: absolute;
-    left: 0;
+    left: 5px;
     right: 0;
     bottom: -7px;
-    height: 1.5px;
-    border-radius: 1px;
+    height: 1px;
     background: currentColor;
   }
+  /* Round 11b brand tiles: a solid white or near-black tile per app. */
   .tool-logo {
-    width: 26px;
-    height: 26px;
-    border-radius: 8px;
+    width: 25px;
+    height: 25px;
+    border-radius: 9px;
     display: inline-grid;
     place-items: center;
-    background: rgba(255, 255, 255, 0.08);
+    background: #fff;
+    color: #111;
   }
-  .connect.quiet[data-theme="light"] .tool-logo {
-    background: rgba(42, 28, 22, 0.06);
+  .tool-logo[data-tile="dark"] {
+    background: #111;
+    color: #fff;
   }
   .tool-logo .mark {
     fill: currentColor;
@@ -319,20 +343,29 @@
   .tool-logo .mark.clay {
     fill: #d97757;
   }
+  .tool-logo .mark.prompt {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
   .choice {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: 10px;
+    gap: 14px;
     margin-top: 20px;
   }
   .rec {
     font-size: 10px;
-    letter-spacing: 0.04em;
-    padding: 2px 6px;
-    border: 1px solid currentColor;
-    border-radius: 4px;
-    opacity: 0.72;
+    letter-spacing: 0.03em;
+    padding: 4px 7px;
+    border: 1px solid rgba(255, 236, 220, 0.16);
+    border-radius: 5px;
+  }
+  .connect.quiet[data-theme="light"] .rec {
+    border-color: rgba(42, 28, 22, 0.14);
   }
   .choice-hint {
     font-size: 12px;
@@ -340,20 +373,20 @@
   }
   .connect.quiet .connect-one {
     border: 0;
-    border-radius: 999px;
-    padding: 7px 14px;
+    border-radius: 10px;
+    padding: 8px 14px;
     font: inherit;
-    font-size: 12.5px;
+    font-size: 12px;
     font-weight: 500;
     cursor: pointer;
   }
   .connect.quiet[data-theme="light"] .connect-one {
-    background: #2a1c16;
-    color: #fffaf3;
+    background: #000;
+    color: #fff;
   }
   .connect.quiet[data-theme="dark"] .connect-one {
-    background: rgba(255, 236, 220, 0.94);
-    color: #161018;
+    background: #fff;
+    color: #111;
   }
   .connect.quiet .anywhere {
     margin-top: 8px;
