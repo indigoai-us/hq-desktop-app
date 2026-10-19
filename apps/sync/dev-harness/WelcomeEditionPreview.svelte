@@ -5,7 +5,8 @@
    * seeded 38-project fixture (US-019). The brief run is served from memory
    * through the real runs page, so the edition renders exactly as the first
    * brief does. No network, no credentials.
-   *   ?fixture=personal|company|seeded   personal (default) has no company.
+   *   ?fixture=personal|company|cursor|seeded   personal (default) has no company;
+   *                                      cursor is a Cursor-primary person.
    *   ?rise=<seconds>                    the sunrise frozen mid-rise instead.
    *   ?theme=dark|light
    *   ?chrome=app                        inside the app's rail, as the app shows it.
@@ -31,7 +32,13 @@
   // The company edition shows one company tile on the rail; the personal one has none.
   const rail = railItems(fixture === 'company' ? [{ uid: 'cmp_preview', label: 'Your company', iconUrl: null }] : [], 'You');
   const welcome =
-    fixture === 'company' ? core.showcase_company : fixture === 'seeded' ? seeded.welcome : core.showcase_personal;
+    fixture === 'company'
+      ? core.showcase_company
+      : fixture === 'cursor'
+        ? core.cursor_person
+        : fixture === 'seeded'
+          ? seeded.welcome
+          : core.showcase_personal;
   const brief = { items: seeded.items, welcome };
 
   const RUN = 'brief-20261018-090000';
