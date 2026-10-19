@@ -11,6 +11,7 @@
   import MeetingsWindow from '../src/components/MeetingsWindow.svelte';
   import MeetingsShot from './MeetingsShot.svelte';
   import AccessShot from './AccessShot.svelte';
+  import BriefDesignStage from './BriefDesignStage.svelte';
   import ActivityShot from './ActivityShot.svelte';
   import RepairCardsShot from './RepairCardsShot.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
@@ -25,7 +26,9 @@
   import GlobalErrorBoundary from '../src/components/GlobalErrorBoundary.svelte';
   import GlobalErrorPreview from './GlobalErrorPreview.svelte';
   import ForwardPickerPreview from './ForwardPickerPreview.svelte';
+  import ShareStackPreview from './ShareStackPreview.svelte';
   import ClaudeCodePreview from './ClaudeCodePreview.svelte';
+  import BotManagementPreview from './BotManagementPreview.svelte';
   import BotIntegrationsPreview from './BotIntegrationsPreview.svelte';
   import Conversation, {
     type ConversationMessage,
@@ -263,7 +266,10 @@
   }
 </script>
 
-{#if view === 'brief'}
+{#if view === 'brief-design'}
+  <!-- The rendered brief on fixture days, for design iteration. ?day=oct8|oct11|quiet|catchup|everything -->
+  <BriefDesignStage />
+{:else if view === 'brief'}
   <!-- Daily Brief page alone. Add ?briefDemo=1|fail or ?briefDemoAt=0..1|fail
        (packages/ui/src/brief/brief-demo.ts) to review the Create brief sunrise. -->
   <!-- ?briefRun=<run_id>&briefCompany=<slug>&briefCompanyUid=<uid> renders a real
@@ -277,6 +283,8 @@
       {/if}
     </div>
   {/await}
+{:else if view === 'bot-management'}
+  <BotManagementPreview />
 {:else if view === 'bot-integrations'}
   <!-- Per-bot integration control section (BotIntegrationsSection) rendered in
        both Agent profile and Local bot card contexts. Flag
@@ -362,7 +370,7 @@
   <div class="fake-desktop" aria-hidden="true"></div>
   <HeadsUpWindow onaction={() => {}} />
 {:else if view === 'onboarding-company'}
-  <!-- The first-run company step on its own: ?scenario=create|join|paused.
+  <!-- The first-run company step on its own: ?scenario=create|join|existing.
        Size the viewport to ~800x900 like the welcome window. -->
   <div class="fake-desktop fake-desktop--image" aria-hidden="true"></div>
   <CompanyStepPreview />
@@ -388,6 +396,8 @@
 {:else if view === 'signin'}
   <!-- Auth-expiry recovery at the native 320x440 `main` window size. -->
   <SignInPrompt reauth={true} />
+{:else if view === 'share-stack'}
+  <ShareStackPreview />
 {:else if view === 'conversation'}
   <!-- The shared messaging Conversation (desktop Messages styling via
        data-window='messages'). Hover a bubble to reveal the copy-message

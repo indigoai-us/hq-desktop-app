@@ -427,6 +427,40 @@ describe("navigation history stack", () => {
     expect(history.snapshot().index).toBe(NAVIGATION_HISTORY_CAP - 1);
   });
 
+  it("drops filtered entries, collapses adjacent duplicates, and keeps the cursor on the current copy", () => {
+    const history = createNavigationHistory();
+    const channel = entry({
+      kind: "channel",
+      channelId: "chn_core",
+      replyRootEventId: null,
+      tab: "chat",
+    });
+    const thread = entry({
+      kind: "channel",
+      channelId: "chn_core",
+      replyRootEventId: "evt_a",
+      tab: "chat",
+    });
+    history.push(channel);
+    history.push(thread);
+    history.push(channel);
+    expect(history.snapshot().index).toBe(2);
+
+    history.filter((item) => {
+      const destination = item.destination;
+      return !(
+        destination.kind === "channel" && destination.replyRootEventId
+      );
+    });
+
+    const snap = history.snapshot();
+    expect(snap.entries).toHaveLength(1);
+    expect(snap.index).toBe(0);
+    expect(history.canGoBack()).toBe(false);
+    expect(history.canGoForward()).toBe(false);
+    expect(history.forward()).toBeNull();
+  });
+
   it("does not add a history entry for hydration or poller writes", () => {
     const history = createNavigationHistory();
     const dest = entry({ kind: "channel", channelId: "chn_boot" });

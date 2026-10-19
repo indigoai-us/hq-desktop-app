@@ -201,7 +201,6 @@
               </span>
             </button>
           {/each}
-          <p class="hint">Workforce continues to Stripe checkout in your browser after this step.</p>
         </div>
       </div>
       <div class="fr">
@@ -235,7 +234,7 @@
           <span class="mark">{initials}</span>
           <div>
             <b>{name}</b>
-            <p class="hint">{plan === "workforce" ? "HQ Workforce" : "Free"} · {slug}</p>
+            <p class="hint">Usage pricing · {slug}</p>
           </div>
           {#if busy}
             <ReadLoader testid="new-company-loading" />
@@ -314,7 +313,7 @@
       {#if error}
         {error}
       {:else if step === 1}
-        Step 1 of 2{plan === "workforce" ? " · checkout opens next" : ""}
+        Step 1 of 2
       {:else}
         Finish pins the tile{invites.length ? `, sends ${invites.length} invite${invites.length === 1 ? "" : "s"}` : ""}{projectSlug ? `, and creates ${projectSlug}` : ""}
       {/if}

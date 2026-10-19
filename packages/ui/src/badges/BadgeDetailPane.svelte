@@ -4,7 +4,7 @@
    * levels with the one reached, and when it was earned.
    */
   import RailIcon from "../common/button/RailIcon.svelte";
-  import FullBadge from "./FullBadge.svelte";
+  import BadgeMark from "./BadgeMark.svelte";
   import BadgeCardModal from "./BadgeCardModal.svelte";
   import { badgeLevels } from "./badge-levels.js";
   import { cardDate } from "./badge-card.js";
@@ -28,6 +28,12 @@
   let viewCardEl = $state<HTMLButtonElement | null>(null);
   const levels = $derived(badgeLevels(badge.def, badge.tier));
   const earnedOn = $derived(cardDate(badge.earnedAt));
+  /**
+   * The large mark: the drawn mark at the size the full ASCII badge had,
+   * 270px in the 340px pane (owner pick 2026-10-15). Only the holographic
+   * card stays ASCII.
+   */
+  const MARK_PX = 270;
   /** OG, Captain and Patient Zero are given, not earned (owner review 2026-10-12). */
   const awarded = $derived(isAwarded(badge.def));
 </script>
@@ -41,7 +47,7 @@
   </header>
   <div class="body">
     <div class="hero">
-      <FullBadge badge={badge.def} tier={badge.tier} label="{badge.def.name}, {TIER_NAME[badge.tier]}" />
+      <BadgeMark badge={badge.def} tier={badge.tier} px={MARK_PX} label="{badge.def.name}, {TIER_NAME[badge.tier]}" />
       <div class="nm">{badge.def.name}</div>
       <p class="crit">{badge.def.crit}.</p>
       <div class="meta" data-testid="badge-detail-meta">{TIER_NAME[badge.tier]} · {awarded ? "Awarded" : "Earned"} {earnedOn}{owner ? ` ${awarded ? "to" : "by"} ${owner}` : ""}</div>

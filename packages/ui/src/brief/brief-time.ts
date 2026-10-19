@@ -18,3 +18,17 @@ export function hourOf(iso: string): number {
   const d = new Date(iso);
   return d.getHours() + d.getMinutes() / 60;
 }
+
+export type PartOfDay = "Morning" | "Afternoon" | "Evening";
+
+/**
+ * The greeting's word for a local time: Morning from 5 AM, Afternoon from
+ * noon, Evening from 5 PM until 5 AM. The page greets by the clock the person
+ * reads it at, not the time the brief was written.
+ */
+export function partOfDay(d: Date): PartOfDay {
+  const h = d.getHours();
+  if (h >= 5 && h < 12) return "Morning";
+  if (h >= 12 && h < 17) return "Afternoon";
+  return "Evening";
+}

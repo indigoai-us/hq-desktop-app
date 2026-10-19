@@ -501,7 +501,7 @@ describe("The flow's own Cloud or Local question", () => {
     expect(q('[data-testid="chat-bot-where-external"]')?.textContent).toContain("hq agent enroll");
     expect(q('[data-testid="chat-bot-external-enroll-mask"]')?.textContent).toBe("••••-••••");
     // The paid-plan note lives in this flow, not on the Where step.
-    expect(q('[data-testid="chat-bot-external-paid"]')?.textContent).toContain("paid plans");
+    expect(q('[data-testid="chat-bot-external-paid"]')?.textContent).toBe("External bots count toward the company's plan.");
     click('[data-testid="create-bot-back"]');
     await settle();
     expect(step()).toBe("where");

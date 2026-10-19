@@ -46,6 +46,7 @@
   import FinishingSetupChip from "./FinishingSetupChip.svelte";
   import { installQueueAttentionNotice, parseInstallQueueStatus } from "./finishing-setup.js";
   import type { InstallQueueHost } from "./finishing-setup.js";
+  import { resolveUsageCompany } from "../home/core-usage-model.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
@@ -77,8 +78,9 @@
   import { welcomeMadeBy } from "../brief/welcome-made-by.js";
   import { briefActionsFor } from "../brief/brief-action-cards.js";
   import type { WelcomeConnectMemory } from "../chat/first-run/WelcomeConnectCard.svelte";
-  import { BRIEF_CLAUDE_PERMISSION_MODE, BRIEF_FIX_LABEL, BRIEF_STARTING_STEP, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
+  import { BRIEF_CLAUDE_PERMISSION_MODE, BRIEF_FIX_LABEL, BRIEF_STARTING_STEP, briefBotLabel, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
   import { BriefCreateRun, type BriefCreator } from "../brief/brief-create.svelte.js";
+  import { briefBotFailure } from "../brief/brief-bot-failure.js";
   import {
     RAIL_ATLAS_FLAG,
     RAIL_BRIEF_FLAG,
@@ -101,10 +103,19 @@
   import ActivityRailHost from "./ActivityRailHost.svelte";
   import BotsPage from "../company/BotsPage.svelte";
   import { botSubjectName, profileViewingCompanyUid } from "./profile-panes/bot-subject-name.js";
-  import { badgesFor } from "../badges/badge-source.js";
+  import { badgeProgressFor, badgesEnabledFor, badgesFor, type BadgeSubject } from "../badges/badge-source.js";
+  import BadgeLaunchAnnouncement from "../badges/BadgeLaunchAnnouncement.svelte";
+  import {
+    LAUNCH_OPEN_DELAY_MS,
+    hasSeenLaunch,
+    launchPreview,
+    markLaunchSeen,
+    setLaunchPreview,
+    shouldShowLaunch,
+  } from "../badges/badge-launch.js";
   import { installBadgeLoader } from "../badges/badge-loader.svelte.js";
   import { topBadge } from "../badges/badge-tier.js";
-  import type { ResolvedBadge } from "../badges/badge-catalog.js";
+  import { resolveEarned, type ResolvedBadge } from "../badges/badge-catalog.js";
   import CompanySettingsHost from "./CompanySettingsHost.svelte";
   import {
     atlasLiveActors,
@@ -684,6 +695,8 @@
     type NavigationScrollState,
     type ProjectsFocusTab,
   } from "./navigation-history.js";
+  import { settleThreadSidebarClose } from "./thread-sidebar-close.js";
+  import { resetThreadComposerDrafts } from "../chat/messaging/thread-composer-draft.js";
   import {
     createNavigationScrollTracker,
     scheduleNavigationScrollRestore,
@@ -1007,6 +1020,7 @@
   } from "../chat/conversation-title.js";
   import {
     botDmRows,
+    missingBotDmRootIds,
     mergeFetchedTimeline,
     mergeTimelineMessages,
     messagesForDisplay,
@@ -1017,6 +1031,7 @@
     withThreadAnswers,
     type TimelineDisplayOptions,
     timelinePageFromPayload,
+    withFetchedTimelineRoots,
     HUMAN_HISTORY_VIEW,
   } from "../chat/live-messages.js";
   import {
@@ -6587,6 +6602,14 @@
       ""
     );
   });
+  /**
+   * Company for the Core menu's usage panel: the company on screen, else the
+   * branded company. A local-only company shows "No usage", never another
+   * company's spend (resolveUsageCompany).
+   */
+  const usageCompany = $derived(
+    resolveUsageCompany(companies, selectedCompanySlug, brandState?.companySlug),
+  );
   const activeCompanyPane = $derived.by(() => {
     if (view !== "conversation" || selectedRow?.kind !== "channel") return null;
     const scope = (selectedRow.channelScope ?? "").trim();
@@ -6834,6 +6857,17 @@
           // Sign-in and model setup live in the bot's conversation.
           openSetupBotDm({ agentUid: bot.agentUid, handle: bot.name });
           return null;
+        },
+        async botFailure(bot, sinceMs) {
+          const res = await adapter.messaging.fetchDmThread({ withPersonUid: bot.agentUid, limit: 20 });
+          if (!res.ok) return null;
+          const label = briefBotLabel(bot);
+          return briefBotFailure(normalizeConversationMessages(res.value), {
+            agentUid: bot.agentUid,
+            sinceMs,
+            bot: label,
+            runtime: bot.runtime,
+          });
         },
         notify(title, body) {
           pushToast({ title, detail: body, tone: "ok" });
@@ -7814,6 +7848,56 @@
     return isBotDmRow(row) ? normalizeConversationMessages(raw) : shown;
   }
 
+  async function hydrateBotDmRoots(
+    row: ConversationRow,
+    raw: unknown,
+    knownRoots: readonly ConversationMessageWire[],
+  ): Promise<unknown> {
+    const peerUid = (row.personUid ?? "").trim();
+    if (!isBotDmRow(row) || !peerUid) return raw;
+    const rootEventIds = missingBotDmRootIds(raw, knownRoots);
+    if (rootEventIds.length === 0) return raw;
+    const fetchedRoots = await Promise.all(
+      rootEventIds.map(async (rootEventId) => {
+        try {
+          const result = await adapter.messaging.fetchReplyThread({
+            scope: "dm",
+            rootEventId,
+            withPersonUid: peerUid,
+          });
+          if (!result.ok) {
+            console.warn("[hq-desktop]", {
+              event: "bot-dm-root-fetch-failure",
+              id: row.id,
+              rootEventId,
+              reason: result.reason,
+              code: result.code,
+              error: result.message,
+            });
+            return null;
+          }
+          if (!result.value.root) return null;
+          const root = normalizeConversationMessages([result.value.root], {
+            keepAudience: true,
+          })[0];
+          return root?.eventId === rootEventId ? result.value.root : null;
+        } catch (error) {
+          console.warn("[hq-desktop]", {
+            event: "bot-dm-root-fetch-error",
+            id: row.id,
+            rootEventId,
+            error: String(error),
+          });
+          return null;
+        }
+      }),
+    );
+    return withFetchedTimelineRoots(
+      raw,
+      fetchedRoots.filter((root): root is NonNullable<typeof root> => root !== null),
+    );
+  }
+
   /** Same messages (by reference) in the same order — nothing to repaint. */
   function sameTimeline(
     a: ConversationMessageWire[],
@@ -7913,7 +7997,11 @@
           // The timeline leaves the app's notices to the bot out; the page does not.
           noteConnectionNotice(row.personUid, fetched);
         }
-        return res.ok ? res.value : null;
+        if (!res.ok) return null;
+        const knownRoots = liveTimelineId === row.id
+          ? liveTimeline
+          : (timelineCache.get(row.id) ?? []);
+        return hydrateBotDmRoots(row, res.value, knownRoots);
       }
       if (row.channelId) {
         const res = await adapter.messaging.fetchChannel({
@@ -8007,7 +8095,11 @@
     const raw = row.channelId
       ? unwrapAdapter(await adapter.messaging.fetchChannel({ channelId: row.channelId, cursor, limit: 50, ...view }))
       : row.kind === "dm" && row.personUid
-        ? unwrapAdapter(await adapter.messaging.fetchDmThread({ withPersonUid: row.personUid, cursor, limit: 50, ...view }))
+        ? await hydrateBotDmRoots(
+            row,
+            unwrapAdapter(await adapter.messaging.fetchDmThread({ withPersonUid: row.personUid, cursor, limit: 50, ...view })),
+            liveTimeline,
+          )
         : null;
     if (selectedRow?.id !== row.id || tenantGeneration !== generation || raw === null) return;
     recordHistoryPage(row, raw, cursor);
@@ -11727,7 +11819,37 @@
     pendingReplyRootId = null;
     pendingReplyForRowId = null;
     replyApplyInFlight = null;
-    void leaveCurrentDestination();
+    const row = selectedRow;
+    if (!row) {
+      openReplyRootId = null;
+      return;
+    }
+    // X and Escape both call this. Replace the open thread with the same
+    // conversation, then drop every earlier thread in that conversation.
+    // Going back would show the previous thread, so the sidebar looks stuck.
+    // The thread is captured now. If a newer thread wins before this
+    // navigation settles, the fallback must not overwrite it.
+    const closingThread = navigationHistory.current()?.destination ?? null;
+    const closed = destinationFromConversation(row, {
+      ...currentConversationNested(),
+      replyRootEventId: null,
+    });
+    openReplyRootId = null;
+    const settled = navigate(closed, "replace");
+    const finish = (result: { committed: boolean }): void => {
+      settleThreadSidebarClose(
+        navigationHistory,
+        closed,
+        result.committed,
+        closingThread,
+      );
+      syncNavigationChrome();
+    };
+    if (settled instanceof Promise) {
+      void settled.then(finish);
+      return;
+    }
+    finish(settled);
   }
 
   function queueReplyForRow(
@@ -13337,9 +13459,11 @@
     }
     if (!res.ok) return;
     if (selectedRow?.id !== row.id) return;
-    const incoming = messagesForDisplay(res.value, timelineDisplayFor(row));
-    commitTimeline(row, mergeFetchedTimeline(liveTimeline, res.value, timelineDisplayFor(row)));
-    clearThinkingFromIncoming(thinkingRowsFrom(row, res.value, incoming), row.id);
+    const raw = await hydrateBotDmRoots(row, res.value, liveTimeline);
+    if (selectedRow?.id !== row.id) return;
+    const incoming = messagesForDisplay(raw, timelineDisplayFor(row));
+    commitTimeline(row, mergeFetchedTimeline(liveTimeline, raw, timelineDisplayFor(row)));
+    clearThinkingFromIncoming(thinkingRowsFrom(row, raw, incoming), row.id);
   }
 
   /**
@@ -13862,6 +13986,7 @@
   });
 
   async function signOutWithImageCleanup(): Promise<void> {
+    resetThreadComposerDrafts();
     navigation.clear();
     stopScrollRestore();
     pendingRestoreScroll = null;
@@ -14402,10 +14527,41 @@
    */
   onDestroy(installBadgeLoader(untrack(() => adapter.identity)));
 
+  const youSubject = $derived<BadgeSubject>({
+    kind: "person",
+    name: resolvedAccountLabel ?? "",
+    email: self?.email ?? null,
+    uid: self?.uid ?? null,
+  });
   /** Your earned badges, for the hover card on the rail's You button. */
-  const youBadges = $derived(
-    badgesFor({ kind: "person", name: resolvedAccountLabel ?? "", email: self?.email ?? null, uid: self?.uid ?? null }),
-  );
+  const youBadges = $derived(badgesFor(youSubject));
+
+  /**
+   * hq-accomplishment-badges US-016: the launch announcement, once, over the
+   * whole window, when the server has badges on for you (badge-launch.ts).
+   * It waits for first-run setup and the guided tour, which own the window.
+   */
+  let launchOpen = $state(false);
+  const youBadgesEnabled = $derived(badgesEnabledFor(youSubject));
+  $effect(() => {
+    const uid = self?.uid?.trim() || null;
+    const busy = launchOpen || visualFirstRunOpen || Boolean(tourStep);
+    const show = launchPreview()
+      ? !busy
+      : shouldShowLaunch({ uid, enabled: youBadgesEnabled, seen: uid ? hasSeenLaunch(uid) : true, busy });
+    if (!show) return;
+    const timer = window.setTimeout(() => (launchOpen = true), LAUNCH_OPEN_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  });
+  function closeLaunch(): void {
+    launchOpen = false;
+    if (launchPreview()) {
+      setLaunchPreview(false);
+      return;
+    }
+    const uid = self?.uid?.trim();
+    if (uid) markLaunchSeen(uid);
+  }
   /** The badge behind your tier mark, on your picture in the account menu. */
   const youTopBadge = $derived(topBadge(youBadges));
 
@@ -14529,6 +14685,13 @@
   function toggleNotifications(): void {
     notificationsPopoverOpen = !notificationsPopoverOpen;
   }
+
+  /**
+   * Local refetch trigger for the notifications feed, added to the mesh
+   * `notificationWakeSeq` so "Mark all read" in the titlebar popover reloads
+   * the Inbox view (and the titlebar dot) from the server.
+   */
+  let notificationRefreshSeq = $state(0);
 
   async function acceptCompanyInviteFromBell(
     item: NotificationItem,
@@ -15278,6 +15441,7 @@
     {cloudReachable}
     {cloudError}
     workspaces={syncWorkspaces}
+    {usageCompany}
     hqFolderPath={hqFolderPath ?? liveSync.hqFolderPath}
     watchedCount={watched}
     {unreadCount}
@@ -15315,6 +15479,9 @@
         onacceptcompany: acceptCompanyInviteFromBell,
         onclose: () => (notificationsPopoverOpen = false),
         onopen: openNotification,
+        onmarkedallread: () => {
+          notificationRefreshSeq += 1;
+        },
         onopensettings: () => {
           notificationsPopoverOpen = false;
           openSettings("notifications");
@@ -15799,7 +15966,7 @@
         >
           <NotificationsView
             api={notificationsApi}
-            wakeSeq={notificationWakeSeq}
+            wakeSeq={notificationWakeSeq + notificationRefreshSeq}
             signedIn={Boolean(self)}
             onback={() => {
               void leaveCurrentDestination();
@@ -15938,6 +16105,7 @@
               messagePersonByUid(uid, { name, companyUid: companyPaneCompany?.uid });
             }}
             onaddbot={addAgentFromTeam}
+            {onopenurl}
           />
         {:else if railPlaceholder?.id === "activity" && companyPaneCompany}
           <ActivityRailHost
@@ -16597,6 +16765,10 @@
               displayName={headerTitle}
               avatarUrl={avatarByUid[agentChannelUid] ?? null}
               companyUid={promotedBotCompany(localBotRecords, agentChannelUid) ?? selectedRow?.companyUid}
+              companySlug={companySlugForUid(
+                promotedBotCompany(localBotRecords, agentChannelUid) ?? selectedRow?.companyUid,
+              )}
+              {avatarByUid}
               {companyNames}
               {self}
               {isAdmin}
@@ -17105,7 +17277,7 @@
                 </div>
               {:else if openAgentMember && openLocalBot}
                 <div
-                  class="reply-column profile-column inspector-pane"
+                  class="reply-column profile-column inspector-pane bot-management-column"
                   class:overlay={narrowViewport}
                   data-testid="local-bot-detail-column"
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
@@ -17123,6 +17295,8 @@
                       runtimeKind: "local",
                       companyUid: profileCompanyUid,
                       agents: adapter.agents ?? null,
+                      adapter,
+                      onopenurl,
                       onclose: closeAgentDetail,
                       onmessage: () => messageMemberDirectly(openAgentMember!),
                     }}
@@ -17148,7 +17322,7 @@
                 </div>
               {:else if openAgentMember}
                 <div
-                  class="reply-column profile-column inspector-pane"
+                  class="reply-column profile-column inspector-pane bot-management-column"
                   class:overlay={narrowViewport}
                   data-testid="agent-detail-column"
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
@@ -17166,6 +17340,8 @@
                       runtimeKind: "cloud",
                       companyUid: promotedBotCompany(localBotRecords, openAgentMember.personUid) ?? profileCompanyUid,
                       agents: adapter.agents ?? null,
+                      adapter,
+                      onopenurl,
                       onclose: closeAgentDetail,
                       onmessage: () => messageMemberDirectly(openAgentMember!),
                     }}
@@ -17185,6 +17361,10 @@
                       null}
                     description={openAgentMember.description}
                     companyUid={promotedBotCompany(localBotRecords, openAgentMember.personUid) ?? selectedRow.companyUid}
+                    companySlug={companySlugForUid(
+                      promotedBotCompany(localBotRecords, openAgentMember.personUid) ?? selectedRow.companyUid,
+                    )}
+                    {avatarByUid}
                     {companyNames}
                     {self}
                     {isAdmin}
@@ -17286,6 +17466,7 @@
                     withPersonUid={selectedRow.personUid}
                     withPersonName={selectedRow.title}
                     channelName={selectedRow.kind === "channel" ? selectedRow.title : null}
+                    accountId={self?.uid ?? tenantAccountId ?? null}
                     companyUid={selectedRow.companyUid}
                     {seedRoot}
                     {wakes}
@@ -17382,6 +17563,18 @@
 
   {#if cheatSheetOpen}
     <ShortcutCheatSheet onclose={() => (cheatSheetOpen = false)} />
+  {/if}
+
+  {#if launchOpen}
+    <BadgeLaunchAnnouncement
+      badges={resolveEarned(youBadges)}
+      progress={badgeProgressFor(youSubject)}
+      onclose={closeLaunch}
+      onopenbadges={() => {
+        closeLaunch();
+        void openSelfProfile({ view: "badges" });
+      }}
+    />
   {/if}
 
   <!-- Visual first-run setup (desktop.visual-first-run). Over the whole window. -->
@@ -17783,6 +17976,12 @@
     flex: 0 0 340px;
     background: var(--v4-secondary-sidebar, var(--side-bg));
   }
+
+  .reply-column.inspector-pane.bot-management-column {
+    width: min(680px, 60%);
+    flex: 0 0 min(680px, 60%);
+  }
+  .reply-column.inspector-pane.bot-management-column.overlay { width: 100%; max-width: 680px; }
 
   /* First frame of a profile pane while its chunk loads (lazy-doors.ts). */
   .profile-pane-loading {

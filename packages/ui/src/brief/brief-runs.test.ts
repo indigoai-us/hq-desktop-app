@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LocalBotRow } from "@hq/platform";
 import {
+  missingNote,
   BRIEF_QUIET_MS,
   BRIEF_START_TIMEOUT_MS,
   BRIEF_STALL_TIMEOUT_MS,
@@ -464,5 +465,15 @@ describe("previousReadyRun", () => {
     expect(plainLine("x".repeat(81), 80)).toBeNull();
     expect(plainLine("see /Users/x/brief-sweep.py", 80)).toBeNull();
     expect(plainLine("GH_TOKEN is missing", 80)).toBeNull();
+  });
+});
+
+describe("missingNote", () => {
+  it("says what is wrong in plain words and never names a file", () => {
+    expect(missingNote([])).toBeNull();
+    const both = missingNote(["brief-data.json", "brief.json"]);
+    expect(both).toBe("This brief did not finish. Create a new one to see it in full.");
+    expect(missingNote(["brief.json"])).toBe("Part of this brief did not finish, so some cards may be empty.");
+    for (const line of [both, missingNote(["brief.json"]), missingNote(["housekeeping.json"])]) expect(line).not.toMatch(/\.json/);
   });
 });

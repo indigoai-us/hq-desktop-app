@@ -39,9 +39,15 @@ describe("DailyBrief", () => {
   it("Shift+A toggles review mode: the catalogue by group, every scored card rendered, then back to the plan", () => {
     render({});
     const planned = qa("[data-widget]").length;
+    // The live page points to review mode in the title row; review mode has its own bar instead.
+    const hint = q('[data-testid="brief-review-hint"]')!;
+    expect(hint.getAttribute("aria-label")).toBe("Shift+A to view every card");
+    // The same key chips as the review bar.
+    expect([...hint.querySelectorAll("kbd")].map((k) => k.textContent)).toEqual(["Shift", "A"]);
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true }));
     flushSync();
     expect(q('[data-testid="brief-review"]')).not.toBeNull();
+    expect(q('[data-testid="brief-review-hint"]')).toBeNull();
     expect(qa("[data-widget]").length).toBeGreaterThanOrEqual(planned);
     const groups = qa('[data-testid="brief-review-group"]').map((el) => el.textContent?.trim());
     expect(groups[0]).toBe("Hero");
@@ -99,7 +105,8 @@ describe("DailyBrief", () => {
       const card = slot!.querySelector(".w");
       expect(card, `${kind} renders its card`).not.toBeNull();
       expect(card!.textContent!.trim().length, `${kind} has content`).toBeGreaterThan(10);
-      expect(slot!.getAttribute("title")).toMatch(/^(Always first|Shown)\b.*\.$/);
+      expect(slot!.getAttribute("data-reason")).toMatch(/^(Always first|Shown)\b.*\.$/);
+      expect(slot!.querySelector('[data-testid="brief-why"]')!.hasAttribute("title"), "no native tooltip").toBe(false);
     }
     // Owner rules on the page: no repo slug, PR number or conventional prefix on any card face.
     const faces = qa("[data-widget] .w").map((el) => el.textContent ?? "").join("\n");
@@ -111,7 +118,7 @@ describe("DailyBrief", () => {
     expect(q('[data-widget="waiting"]')!.textContent).toContain("Jacob");
   });
 
-  it("renders the generated plan: lead chip with priority 1, eight widgets in template 8, today strip, logos and repos", () => {
+  it("renders the generated plan: no lead chip on the live page, eight widgets in template 8, today strip, logos and repos", () => {
     render({ companies: [{ uid: "cmp_indigo", label: "Indigo", iconUrl: null }] });
     const root = q('[data-testid="daily-brief"]')!;
     expect(root.getAttribute("data-lead")).toBe("decisions");
@@ -127,8 +134,8 @@ describe("DailyBrief", () => {
       "shipped",
       "runway",
     ]);
-    const chip = q('[data-testid="brief-lead"]')!;
-    expect(chip.textContent!.replace(/\s+/g, " ").trim()).toBe('Lead Decisions · 8 widgets · "Cut the hq-core release" leads · 4 calls and a live incident');
+    // The picker's "Why these cards" lives in review mode only.
+    expect(q('[data-testid="brief-lead"]')).toBeNull();
     expect(q('[data-testid="brief-today"]')?.textContent).toContain("HQ Founder Office Hours");
     expect(qa('[data-testid="brief-need"]')).toHaveLength(4);
     const origins = qa('[data-testid="brief-origin"]').map((el) => el.textContent?.trim());
@@ -137,15 +144,16 @@ describe("DailyBrief", () => {
     expect(q('[data-testid="brief-other-work"]')).toBeNull();
   });
 
-  it("every slot carries its reason as title and data-reason; the hero names priority 1", () => {
+  it("every slot carries its reason on its corner arrow and as data-reason; the hero names priority 1", () => {
     render({});
     const plan = generateBrief(day());
+    const why = (slot: Element) => slot.querySelector('[data-testid="brief-why"]')!.getAttribute("aria-label")!.split("Why this card: ")[1];
     for (const w of plan.widgets) {
       const slot = q(`[data-widget="${w.kind}"]`)!;
-      expect(slot.getAttribute("title")).toBe(w.reason);
+      expect(why(slot)).toBe(w.reason);
       expect(slot.getAttribute("data-reason")).toBe(w.reason);
     }
-    expect(q('[data-widget="needs"]')!.getAttribute("title")).toBe('Shown for priority 1, "Cut the hq-core release": it and 3 more calls wait on you.');
+    expect(why(q('[data-widget="needs"]')!)).toBe('Shown for priority 1, "Cut the hq-core release": it and 3 more calls wait on you.');
     // Template 8 puts the hero at M, where the "First:" line is hidden by design.
     expect(plan.widgets[0]).toMatchObject({ kind: "sunrise", size: "M" });
     expect(q('[data-testid="brief-sunrise-first"]')).toBeNull();
@@ -153,39 +161,58 @@ describe("DailyBrief", () => {
     expect(q('[data-testid="brief-sunrise-eta"]')).toBeNull();
   });
 
-  it("shows the time to clear beside the meter once a call carries an effort size, and in the Needs you footer", () => {
+  it("shows the time to clear in the priorities footer, beside its progress bar, once a call carries an effort size", () => {
     const input = day();
     input.decisions[0]!.effort = "medium";
     render({ input });
-    expect(q('[data-testid="brief-sunrise-eta"]')?.textContent).toMatch(/^~\d+ min$/);
+    // Progress lives in the priorities card now; Sunrise has no meter.
+    expect(q('[data-testid="brief-sunrise-eta"]')).toBeNull();
     expect(q('[data-testid="brief-need-time"]')?.textContent).toMatch(/^~\d+ min$/);
+    expect(q('[data-testid="brief-need-progress"]')?.getAttribute("aria-valuenow")).toBe("0");
   });
 
-  it("the hero names priority 1 at L: the Oct 11 Sunday reads First: ... with its because", () => {
+  it("the priorities card takes the hero's L slot: on the Oct 11 Sunday it opens with priority 1 and its because", () => {
     const sunday = octoberEleven();
     render({ input: sunday });
     const plan = generateBrief(sunday);
     expect(plan.widgets[0]!.size).toBe("L");
-    expect(q('[data-testid="brief-sunrise-first"]')!.textContent!.replace(/\s+/g, " ").trim()).toBe(
-      "First: Close out the $20-cap SAFE allotment. Investors and the round close wait on it.",
-    );
+    // The page gives the priorities card the hero's size; the sunrise takes the smaller one and moves first.
+    const style = q("main.b-grid")!.getAttribute("style")!;
+    const firstRow = style.match(/grid-template-areas:\s*["']([^"']+)["']/)![1]!.split(/\s+/);
+    // The sunrise reads first; the priorities card beside it takes the hero's three columns.
+    expect(firstRow.slice(0, 5)).toEqual(["sunrise", "sunrise", "needs", "needs", "needs"]);
+    const first = q('[data-brief-row][data-priority="1"]')!;
+    expect(first.textContent!.replace(/\s+/g, " ")).toContain("Close out the $20-cap SAFE allotment");
+    expect(first.querySelector('[data-testid="brief-need-sub"]')?.textContent).toContain("Investors and the round close wait on it");
+    // Priority 1 lives in the main card now, so the sunrise no longer repeats it as "First: ...".
+    expect(q('[data-testid="brief-sunrise-first"]')).toBeNull();
   });
 
-  it("the lead chip's peek explains every card and lists what is not shown by card name; the live page has no strip", async () => {
+  it("in review mode the lead chip's peek explains every card and lists what is not shown by card name; the live page has neither", async () => {
     render({});
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true }));
+    flushSync();
     await hover(q('[data-testid="brief-lead"]')!);
     const peek = q('[data-testid="brief-peek"]')!;
     expect(peek.textContent).toContain("Why these cards");
+    // The generator's lead line lives in the peek, not on the page.
+    expect(peek.textContent).toContain("Lead: ");
+    expect(peek.textContent).toContain(generateBrief(day()).reason);
     expect(peek.textContent).toContain("Sunrise — Always first:");
     expect(peek.textContent).toContain("Not shown today");
-    expect(peek.querySelectorAll('[data-testid="brief-peek-line"]').length).toBeLessThanOrEqual(10);
-    expect(peek.textContent).toMatch(/\+\d+ more/);
+    // Peeks list in full (the card scrolls), never folding into "+N more".
+    const reviewPlan = generateBrief(day());
+    expect(peek.querySelectorAll('[data-testid="brief-peek-line"]').length).toBe(1 + reviewPlan.widgets.length + reviewPlan.dropped.length);
+    expect(peek.textContent).not.toMatch(/\+\d+ more/);
     // Dropped kinds read as card names, never camelCase ids.
     const plan = generateBrief(day());
     expect(plan.dropped.map((d) => d.kind)).toContain("team");
     expect(peek.textContent).toContain("Team:");
     expect(peek.textContent).not.toMatch(/\b(blockedByMe|oneThing|fleetRecovery|releaseTrain|weekArc)\b/);
-    // The live CEO page ends with the grid: the picker's reasoning stays behind the hover.
+    // Back on the live page: no chip and no dropped strip; the page ends with the grid.
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true }));
+    flushSync();
+    expect(q('[data-testid="brief-lead"]')).toBeNull();
     expect(q('[data-testid="brief-dropped"]')).toBeNull();
   });
 
@@ -203,7 +230,7 @@ describe("DailyBrief", () => {
     // Hovering a dropped kind shows the score parts behind it.
     const team = rows.find((el) => el.getAttribute("data-kind") === "team")!;
     expect(team.querySelector("b")!.textContent).toBe("Team");
-    expect(team.getAttribute("title")).toMatch(/^value \d+ · priority \d+ · day \d+ · pref -?\d+ · rotation -\d+$/);
+    expect(team.getAttribute("data-parts")).toMatch(/^value \d+ · priority \d+ · day \d+ · pref -?\d+ · rotation -\d+$/);
     await hover(qa(".b-dropped .more")[0]!);
     expect(q('[data-testid="brief-peek"]')!.textContent).toContain("more not shown");
   });
@@ -272,6 +299,42 @@ describe("DailyBrief", () => {
     await Promise.resolve();
     expect(writeText).toHaveBeenCalledWith(decisionPrompt(day().decisions[0]!));
     expect(onlaunch).not.toHaveBeenCalled();
+  });
+
+  it("greets by the local clock it is read at, not the time the brief was made", () => {
+    // Owner report, 2026-10-16: "Morning, Corey." at 7:35 PM on a brief made that morning.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date(2026, 9, 8, 19, 35));
+      render({ input: { ...day(), userName: "Corey" } });
+      expect(q('[data-testid="brief-greeting"]')?.textContent).toBe("Evening, Corey.");
+      if (app) unmount(app);
+      app = null;
+      target.remove();
+      vi.setSystemTime(new Date(2026, 9, 8, 13, 5));
+      render({ input: { ...day(), userName: "Corey" } });
+      expect(q('[data-testid="brief-greeting"]')?.textContent).toBe("Afternoon, Corey.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not say nothing needs you beside unread DMs, and counts calls without busy holds", () => {
+    // Owner report, 2026-10-16: "15 DMs" next to "Nothing needs you right now",
+    // and "2 calls today" from two busy holds beside "NO CALLS".
+    const input: BriefInput = {
+      ...day(),
+      decisions: [],
+      risks: [],
+      dmCount: 15,
+      calendarToday: day().calendarToday.filter((e) => e.busy),
+    };
+    render({ input });
+    const text = target.textContent ?? "";
+    expect(text).not.toContain("Nothing needs you right now");
+    expect(text).toContain("15 DMs to read.");
+    expect(text).not.toMatch(/\d+ calls? today\./);
+    expect(q('[data-stat="calls"] .num')?.textContent).toBe("0");
   });
 });
 
