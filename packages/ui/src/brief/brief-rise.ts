@@ -85,7 +85,7 @@ export interface RisePixel {
 }
 
 /** 6 px cells on the 8 px pitch, sunrise palette, in a ring around the 60 px mark. */
-export const RISE_HALO_ALPHA_DARK = 0.55;
+export const RISE_HALO_ALPHA_DARK = 0.45;
 export const RISE_HALO_ALPHA_LIGHT = 0.38;
 export const RISE_HALO_DARK = ["#ffb580", "#ff809f", "#ffa88c", "#ffbea0", "#ff9696"];
 export const RISE_HALO_LIGHT = ["#d67860", "#d46880", "#dc8c6e"];
