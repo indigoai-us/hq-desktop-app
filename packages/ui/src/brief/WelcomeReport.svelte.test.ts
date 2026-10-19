@@ -458,17 +458,18 @@ describe("WelcomeReport", () => {
     expect(q('[data-testid="welcome-edition-date"]')?.textContent).toBe("Saturday, October 17");
     expect([...document.querySelectorAll<HTMLElement>('[data-testid="welcome-edition-card"]')].map((c) => c.dataset.card)).toEqual(["decision", "day", "work"]);
     expect([...document.querySelectorAll('[data-testid="welcome-edition-section"] h3')].map((h) => h.textContent)).toEqual(["Northstar", "Fieldwork", "Studio"]);
-    // The unread calendar is one quiet line beside the head, never a headline card.
-    expect(q('[data-testid="welcome-edition-run"]')?.textContent).toBe("412 sessions read · 6 repos · Calendar could not be read.");
+    // The unread calendar is one quiet line under the greeting, never a headline card.
+    expect(q('[data-testid="welcome-edition-run"]')?.textContent).toBe("168 sessions read · 6 repos · Calendar could not be read.");
     expect(edition.textContent?.match(/Calendar could not be read/g)).toHaveLength(1);
     expect(edition.textContent).not.toContain("Your calendar can wait.");
-    expect(q('[data-card="day"] h3')?.textContent).toBe("5 things for you today.");
+    expect(q('[data-card="day"] h3')?.textContent).toBe("4 things for you today.");
+    expect(q('[data-card="day"] .kicker')?.textContent?.trim()).toBe("Today's priorities");
     expect(q('[data-card="work"] h3')?.textContent).toBe("Finish the welcome state.");
     expect(edition.textContent).not.toMatch(/\.svelte|apps\/desktop/);
-    const agenda = q('[data-card="day"] [data-testid="welcome-edition-action"]') as HTMLButtonElement;
-    expect(agenda.textContent).toBe("Open the agenda");
-    agenda.click();
-    expect(onopenmeetings).toHaveBeenCalledTimes(1);
+    // The calendar was not read, so there is no agenda to open.
+    expect(q('[data-card="day"] [data-testid="welcome-edition-action"]')).toBeNull();
+    expect(edition.textContent).not.toContain("Open the agenda");
+    expect(onopenmeetings).not.toHaveBeenCalled();
     // The purple sunrise card and the ticker are gone from the welcome page.
     expect(q('[data-testid="welcome-report-ready"] .b-head')).toBeNull();
     expect(q('[data-testid="welcome-report-ready"] [data-testid="brief-action-cards"]')).toBeNull();
@@ -492,10 +493,12 @@ describe("WelcomeReport", () => {
       { id: "fieldwork", name: "Fieldwork" },
     ];
     const sources = welcomeRiseSources(companies);
-    const ended = riseFrame(riseRevealAt(sources.length - 1), sources).countText;
+    // The reveal is frozen on its last frame, so the count on screen is known.
+    const elapsed = riseRevealAt(sources.length - 1) + 0.35;
+    const ended = riseFrame(elapsed, sources).countText;
     expect(ended).toMatch(/sessions? read/);
     const input = { ...welcomeRiseBriefInput(), runStats: null };
-    const report = { aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: false } }, companies };
+    const report = { aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: false } }, companies, elapsed };
 
     const props = $state({ ready: false });
     target = document.createElement("div");
@@ -512,9 +515,12 @@ describe("WelcomeReport", () => {
     });
     await settle();
     expect(q('[data-testid="brief-rise"]')).not.toBeNull();
+    // Gate review item 8: the brief repeats the exact count the reveal had on screen.
+    const shown = q('[data-testid="brief-rise-count"]')?.textContent;
+    expect(shown).toBe(ended);
     props.ready = true;
     await settle();
-    expect(q('[data-testid="welcome-edition-run"]')?.textContent).toBe(`${ended} · Calendar could not be read.`);
+    expect(q('[data-testid="welcome-edition-run"]')?.textContent).toBe(`${shown} · Calendar could not be read.`);
     await unmount(component);
     target.remove();
 
@@ -523,7 +529,7 @@ describe("WelcomeReport", () => {
     document.body.appendChild(target);
     component = mount(ReportWithBrief, { target, props: { input, report, ready: true } });
     await settle();
-    expect(q('[data-testid="welcome-edition-run"]')?.textContent).toBe("412 sessions read · Calendar could not be read.");
+    expect(q('[data-testid="welcome-edition-run"]')?.textContent).toBe("168 sessions read · Calendar could not be read.");
   });
 
   it("review mode (Shift+A) swaps the welcome edition back to the full catalogue", async () => {

@@ -27,7 +27,7 @@
   import BriefOpenTool from "./BriefOpenTool.svelte";
   import BriefRise from "./BriefRise.svelte";
   import type { BriefOpenToolAction } from "./brief-open-tool.js";
-  import { riseFrame, riseRevealAt, welcomeRiseSources, type RiseCompany } from "./brief-rise.js";
+  import { welcomeRiseSources, type RiseCompany } from "./brief-rise.js";
   import { setWelcomeAiApps, type WelcomeAiApps } from "./welcome-ai-apps.js";
   import { WelcomeConnectSession } from "./welcome-connect-session.svelte.js";
   import { assistantNameInSentence } from "./brief-action-cards.js";
@@ -118,9 +118,13 @@
   }
 
   const riseSources = $derived(welcomeRiseSources(companies));
-  /** The count the reveal ends on, so the brief after it says the same thing. Only when the reveal ran here. */
-  let revealed = $state(false);
-  const runStats = $derived(revealed ? riseFrame(riseRevealAt(riseSources.length - 1), riseSources).countText || null : null);
+  /** The count line the rise has on screen. */
+  let riseCount = $state<string | null>(null);
+  /** The last count the rise showed before the brief, so the brief says the same thing. Only when the rise ran here. */
+  let runStats = $state<string | null>(null);
+  $effect(() => {
+    if (rising) runStats = riseCount;
+  });
   /** The connect section's inputs: one scan for the AI apps and the suggested integrations. */
   const connectApps = $derived.by((): WelcomeAiApps | null => {
     if (!aiApps && !connect) return null;
@@ -155,7 +159,6 @@
   $effect(() => {
     if (rising) {
       holdRise = true;
-      revealed = true;
       return;
     }
     if (!holdRise) return;
@@ -189,6 +192,7 @@
         {elapsed}
         {theme}
         readyAt={null}
+        bind:count={riseCount}
         meter={rising ? { now: pct, label: WELCOME_REPORT_LOADING } : null}
       />
     </section>

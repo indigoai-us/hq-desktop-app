@@ -12,6 +12,12 @@ export const WELCOME_RISE_FINDING_CLAUDE = "Keep the offline installer in the fi
 export const WELCOME_RISE_FINDING_CODEX = "PR #248 · Restore offline install is ready for review.";
 export const WELCOME_RISE_FINDING_REPOS = "WelcomeReport.svelte still needs the new empty state.";
 export const WELCOME_RISE_CALENDAR_LINE = "Calendar could not be read.";
+/** The decision card's context line (round 11b). */
+export const WELCOME_RISE_DECISION_LINE = "PR #248 is ready. Maya needs your decision before the launch review.";
+/** Northstar's project row: the PR, then its status on the line below (round 11b), so "ready" is said once. */
+export const WELCOME_RISE_NORTHSTAR_TITLE = "PR #248 · Restore offline install";
+/** The decision and the PR are one piece of work: the agenda card counts them once. */
+export const WELCOME_RISE_PR_THREAD = "northstar/desktop#248";
 /** The pick-up card's plain title for the repos finding. A filename is never a headline. */
 export const WELCOME_RISE_WORK_TITLE = "Finish the welcome state.";
 export const WELCOME_RISE_FIELDWORK_TITLE = "Monday's research plan";
@@ -30,7 +36,9 @@ export const WELCOME_RISE_SOURCES: RiseSource[] = [
     id: "codex",
     label: "Codex",
     icon: "codex",
-    counts: { sessions: 244, repos: 3 },
+    // Codex reads the repos. Every session in this run comes from Claude Code, so the
+    // count the reveal shows from 9 seconds on is the session count the brief repeats.
+    counts: { repos: 3 },
     finding: WELCOME_RISE_FINDING_CODEX,
     detail: "northstar/desktop",
   },
@@ -55,7 +63,7 @@ const COMPANY = "northstar";
 /** The run's projects, as the mockup's project row shows them. */
 export const WELCOME_RISE_COMPANIES = [COMPANY, "fieldwork", "studio"];
 
-/** The count line the reveal ends on, once every source has been read ("412 sessions read · 6 repos"). */
+/** The count line the reveal ends on, once every source has been read ("168 sessions read · 6 repos"). */
 export function welcomeRiseRunStats(): string {
   return riseFrame(riseRevealAt(WELCOME_RISE_SOURCES.length - 1), WELCOME_RISE_SOURCES).countText;
 }
@@ -90,16 +98,18 @@ export function welcomeRiseBriefInput(now: Date = welcomeRiseNow()): BriefInput 
     {
       id: "rise-claude",
       title: WELCOME_RISE_FINDING_CLAUDE,
-      summary: "Session, yesterday at 4:42 PM.",
+      summary: WELCOME_RISE_DECISION_LINE,
       action: "go",
       origin,
+      thread: WELCOME_RISE_PR_THREAD,
     },
     {
       id: "rise-codex",
-      title: WELCOME_RISE_FINDING_CODEX,
+      title: WELCOME_RISE_NORTHSTAR_TITLE,
       summary: "Review ready · 1 decision",
       action: "go",
       origin,
+      thread: WELCOME_RISE_PR_THREAD,
     },
     {
       id: "rise-fieldwork",

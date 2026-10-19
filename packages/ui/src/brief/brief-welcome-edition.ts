@@ -12,6 +12,8 @@ export const WELCOME_EDITION_SUB = "Your decisions, your day, and the work worth
 export const WELCOME_EDITION_ZERO_HEADLINE = "A place to begin.";
 export const WELCOME_EDITION_ZERO_SUB = "Your personal brief is ready. No company needed.";
 export const WELCOME_EDITION_HEAD = "Your day, ready to read.";
+/** The day card's label when the calendar could not be read (the brief's own priorities heading). */
+export const WELCOME_EDITION_PRIORITIES = "Today's priorities";
 
 /** What a card's link does: hand the item's prompt to a session, or open the Meetings page. */
 export type WelcomeEditionAction =
@@ -40,7 +42,7 @@ export interface WelcomeEdition {
   sub: string;
   cards: WelcomeEditionCard[];
   sections: WelcomeEditionSection[];
-  /** One quiet line beside the head: the run stats and any source that could not be read. Null when empty. */
+  /** One quiet line under the greeting: the run stats and any source that could not be read. Null when empty. */
   note: string | null;
 }
 
@@ -123,7 +125,8 @@ function calendarFailed(input: BriefInput): boolean {
 
 /**
  * The agenda card. A calendar that could not be read is never its headline (that is
- * the quiet note beside the head); the card then counts what the page shows today.
+ * the quiet note under the greeting); the card then counts what the page shows today,
+ * under the priorities label, with no agenda link because there is no agenda to open.
  */
 function dayCard(input: BriefInput, now: Date, shown: number, names: readonly string[]): WelcomeEditionCard {
   const event = nextEvent(input.calendarToday, now);
@@ -143,11 +146,11 @@ function dayCard(input: BriefInput, now: Date, shown: number, names: readonly st
     return {
       id: "day",
       pill: null,
-      kicker: "Today · Personal",
+      kicker: WELCOME_EDITION_PRIORITIES,
       title: shown ? `${shown} ${shown === 1 ? "thing" : "things"} for you today.` : "Nothing is waiting on you.",
       lines: names.length ? [`Across ${listOf(names)}.`] : [],
-      label: "Open the agenda",
-      action: { kind: "meetings" },
+      label: null,
+      action: null,
     };
   }
   return {
@@ -252,9 +255,12 @@ export function welcomeEdition(
       action: launch(first, prompts),
     });
   }
-  // The agenda card counts exactly the items on this page, by the companies they belong to.
-  const shownNames = [...new Set(input.decisions.filter((d) => shown.has(d.id)).map(owner))];
-  cards.push(dayCard(input, now, shown.size, shownNames));
+  // The agenda card counts the distinct things on this page: a decision card and a project
+  // row about the same piece of work (one thread) are one thing. Named by their companies.
+  const onPage = input.decisions.filter((d) => shown.has(d.id));
+  const things = new Set(onPage.map((d) => d.thread?.trim() || `id:${d.id}`));
+  const shownNames = [...new Set(onPage.map(owner))];
+  cards.push(dayCard(input, now, things.size, shownNames));
   if (work) {
     cards.push({
       id: "work",

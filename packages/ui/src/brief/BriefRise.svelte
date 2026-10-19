@@ -45,6 +45,8 @@
     /** Accessible progress for the loading path only. Setup and blocked leave this off. */
     meter?: { now: number | null; label: string } | null;
     briefOpacity?: number;
+    /** The count line on screen ("168 sessions read · 6 repos"), null before the first source is read. The brief after the rise repeats it. */
+    count?: string | null;
     /** The date in the page header. Absent: today. */
     now?: Date | null;
     children?: Snippet;
@@ -58,6 +60,7 @@
     reducedMotion = null,
     meter = null,
     briefOpacity = $bindable(0),
+    count = $bindable(null),
     now = null,
     children,
   }: Props = $props();
@@ -115,6 +118,9 @@
   const stepLine = $derived(riseStepLine(t, sources));
   $effect(() => {
     briefOpacity = frame.briefOpacity;
+  });
+  $effect(() => {
+    count = frame.countText || null;
   });
 
   function markFor(source: RiseSource): BrandMark | null {

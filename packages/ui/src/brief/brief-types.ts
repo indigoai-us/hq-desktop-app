@@ -160,6 +160,8 @@ export interface BriefDecision {
   important?: boolean;
   /** Launch prompt written by the brief run; replaces the built-in one. */
   prompt?: string;
+  /** The piece of work this item is about ("owner/repo#248"). Items that share one are the same thing to the person. */
+  thread?: string;
   detail?: {
     why: string;
     unlocks: BriefLine[];

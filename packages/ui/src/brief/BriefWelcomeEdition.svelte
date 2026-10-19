@@ -83,11 +83,11 @@
     <p class="lede">{WELCOME_EDITION_EYEBROW}</p>
     <h2 data-testid="welcome-edition-greeting">{edition.headline}</h2>
     <p class="sub">{edition.sub}</p>
+    {#if edition.note}<p class="run" data-testid="welcome-edition-run">{edition.note}</p>{/if}
   </div>
   <article class="brief">
     <div class="head">
       <h3>{WELCOME_EDITION_HEAD}</h3>
-      {#if edition.note}<span class="run" data-testid="welcome-edition-run">{edition.note}</span>{/if}
     </div>
     <div class="cards">
       {#each edition.cards as card (card.id)}
@@ -207,25 +207,21 @@
     margin: 0;
     font-weight: 400;
   }
-  /* The mockup's brief head: the title left, one quiet run line right, set on the
-     bottom of the title row and nudged 4 px lower so it keeps about 16 px clear of
-     the horizon rows above it, still well above the cards. */
+  /* The mockup's brief head: the title alone, 18 px above the cards. */
   .head {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-end;
-    gap: 16px;
     margin-bottom: 18px;
   }
   .head h3 {
     font: 400 23px var(--serif);
   }
+  /* The run line sits in the sky with the greeting, clear of the waterline rows
+     (the mockup keeps the head row for the title alone). */
   .run {
-    position: relative;
-    top: 4px;
+    margin: 12px 0 0;
+    max-width: 430px;
     font-size: 12px;
+    line-height: 1.5;
     color: var(--ink-2);
-    text-align: right;
   }
   .cards {
     display: grid;

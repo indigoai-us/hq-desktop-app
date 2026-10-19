@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  WELCOME_EDITION_PRIORITIES,
   WELCOME_EDITION_SUB,
   WELCOME_EDITION_ZERO_HEADLINE,
   WELCOME_EDITION_ZERO_SUB,
@@ -12,7 +13,9 @@ import {
   WELCOME_RISE_CALENDAR_LINE,
   WELCOME_RISE_FIELDWORK_TITLE,
   WELCOME_RISE_FINDING_CLAUDE,
+  WELCOME_RISE_DECISION_LINE,
   WELCOME_RISE_FINDING_CODEX,
+  WELCOME_RISE_NORTHSTAR_TITLE,
   WELCOME_RISE_FINDING_REPOS,
   WELCOME_RISE_STUDIO_TITLE,
   WELCOME_RISE_WORK_TITLE,
@@ -62,14 +65,17 @@ describe("welcomeEdition", () => {
 
     const [decision, day, work] = e.cards;
     expect(decision).toMatchObject({ pill: "Your decision", kicker: "Northstar", title: WELCOME_RISE_FINDING_CLAUDE, label: "Review the decision" });
+    // The mockup's context line under the decision (gate review: restore PR #248 and Maya).
+    expect(decision!.lines).toEqual([WELCOME_RISE_DECISION_LINE]);
     expect(decision!.action).toEqual({ kind: "launch", itemId: "rise-claude", prompt: WELCOME_RISE_FINDING_CLAUDE });
-    // The agenda card keeps the mockup's middle slot. The unread calendar is not its headline.
+    // The agenda card keeps the mockup's middle slot. The calendar was not read, so the card
+    // is labelled for what it shows (today's priorities) and offers no agenda link.
     expect(day).toMatchObject({
-      kicker: "Today · Personal",
-      title: "5 things for you today.",
+      kicker: WELCOME_EDITION_PRIORITIES,
+      title: "4 things for you today.",
       lines: ["Across Northstar, Fieldwork, and Studio."],
-      label: "Open the agenda",
-      action: { kind: "meetings" },
+      label: null,
+      action: null,
     });
     expect(work).toMatchObject({
       pill: null,
@@ -81,7 +87,7 @@ describe("welcomeEdition", () => {
 
     // The project row names every project in the run, so the lower right is never empty.
     expect(e.sections).toEqual([
-      { name: "Northstar", lines: [WELCOME_RISE_FINDING_CODEX, "Review ready · 1 decision"] },
+      { name: "Northstar", lines: [WELCOME_RISE_NORTHSTAR_TITLE, "Review ready · 1 decision"] },
       { name: "Fieldwork", lines: [WELCOME_RISE_FIELDWORK_TITLE, "Maya added 3 interview notes."] },
       { name: "Studio", lines: [WELCOME_RISE_STUDIO_TITLE, "Jordan's wording is ready to read."] },
     ]);
@@ -89,7 +95,7 @@ describe("welcomeEdition", () => {
 
   it("says the unread calendar once, in the quiet run line, next to the count the reveal ended on", () => {
     const e = welcomeEdition(welcomeRiseBriefInput());
-    expect(e.note).toBe("412 sessions read · 6 repos · Calendar could not be read.");
+    expect(e.note).toBe("168 sessions read · 6 repos · Calendar could not be read.");
     const strings = [...e.cards.flatMap((c) => [c.kicker, c.title, ...c.lines, c.label ?? ""]), ...e.sections.flatMap((s) => [s.name, ...s.lines])];
     expect(strings.some((s) => /calendar/i.test(s))).toBe(false);
     expect(strings).not.toContain("Your calendar can wait.");
@@ -98,7 +104,7 @@ describe("welcomeEdition", () => {
 
   it("counts sessions for the run line when the host has no reveal stats, and leaves it out when there is nothing", () => {
     const input = { ...welcomeRiseBriefInput(), runStats: null, sourceNotes: [] };
-    expect(welcomeEdition(input).note).toBe("412 sessions read.");
+    expect(welcomeEdition(input).note).toBe("168 sessions read.");
     expect(welcomeEdition({ ...input, sessions: [] }).note).toBeNull();
   });
 
@@ -112,7 +118,7 @@ describe("welcomeEdition", () => {
     // The product name stands in for a title that is a file; a path line is left out.
     expect(work.title).toBe("Desktop app");
     expect(work.lines).toEqual([]);
-    expect(e.sections[0]!.lines).toEqual([WELCOME_RISE_FINDING_CODEX]);
+    expect(e.sections[0]!.lines).toEqual([WELCOME_RISE_NORTHSTAR_TITLE]);
     const titles = [...e.cards.flatMap((c) => [c.title, ...c.lines]), ...e.sections.flatMap((s) => s.lines)];
     for (const t of titles) expect(looksLikePath(t, "northstar/desktop")).toBe(false);
   });
@@ -206,17 +212,55 @@ describe("welcomeEdition", () => {
     ]);
   });
 
-  it("never shows a count that differs from the items on the page", () => {
-    const e = welcomeEdition(welcomeRiseBriefInput());
-    // Two linked cards and three company sections, each a different decision from the fixture.
+  it("never shows a count that differs from the distinct items on the page", () => {
+    const input = welcomeRiseBriefInput();
+    const e = welcomeEdition(input);
+    // Two linked cards and three company sections. The decision card and Northstar's row are
+    // the same PR, so the page shows four distinct things.
     const titles = [...e.cards.filter((c) => c.action?.kind === "launch").map((c) => c.title), ...e.sections.map((s) => s.lines[0]!)];
     expect(titles).toHaveLength(5);
-    expect(new Set(titles).size).toBe(5);
     expect(titles).not.toContain("On the cards above.");
     expect(titles).not.toContain("Nothing new for you today.");
-    expect(e.cards.find((c) => c.id === "day")!.title).toBe("5 things for you today.");
+    const byTitle = new Map(input.decisions.map((d) => [d.title, d]));
+    const things = new Set(titles.map((t) => byTitle.get(t)!).map((d) => d.thread ?? d.id));
+    expect(things.size).toBe(4);
+    expect(e.cards.find((c) => c.id === "day")!.title).toBe("4 things for you today.");
     const all = [...e.cards.flatMap((c) => [c.title, ...c.lines]), ...e.sections.flatMap((s) => s.lines)];
     expect(all.some((s) => /open items? for you/.test(s))).toBe(false);
+  });
+
+  it("counts the same item once when the decision card and a project row are about it (gate review item 9)", () => {
+    const input = welcomeRiseBriefInput();
+    const [decision, row] = input.decisions;
+    expect(decision!.thread).toBeTruthy();
+    expect(row!.thread).toBe(decision!.thread);
+    const e = welcomeEdition(input);
+    expect(e.cards[0]!.title).toBe(decision!.title);
+    expect(e.sections[0]!.lines[0]).toBe(row!.title);
+    expect(e.cards.find((c) => c.id === "day")!.title).toBe("4 things for you today.");
+    // Without the shared thread they are two things.
+    input.decisions[1] = { ...row!, thread: undefined };
+    expect(welcomeEdition(input).cards.find((c) => c.id === "day")!.title).toBe("5 things for you today.");
+    // A blank thread is no thread.
+    input.decisions[1] = { ...row!, thread: "  " };
+    expect(welcomeEdition(input).cards.find((c) => c.id === "day")!.title).toBe("5 things for you today.");
+  });
+
+  it("says ready once on the Northstar row and keeps the PR context on the decision card", () => {
+    const e = welcomeEdition(welcomeRiseBriefInput());
+    const northstar = e.sections.find((s) => s.name === "Northstar")!;
+    expect(northstar.lines.join(" ").match(/ready/gi)).toHaveLength(1);
+    expect(northstar.lines.join(" ")).not.toContain(WELCOME_RISE_FINDING_CODEX);
+    expect(e.cards[0]!.lines.join(" ")).toContain("PR #248");
+    expect(e.cards[0]!.lines.join(" ")).toContain("Maya");
+  });
+
+  it("never offers the agenda when the calendar was not read", () => {
+    const e = welcomeEdition(welcomeRiseBriefInput());
+    const all = e.cards.map((c) => c.label);
+    expect(all).not.toContain("Open the agenda");
+    expect(e.cards.some((c) => c.action?.kind === "meetings")).toBe(false);
+    expect(e.cards.map((c) => c.kicker)).not.toContain("Today · Personal");
   });
 
   it("with no company is the getting-started edition with no links", () => {
@@ -249,7 +293,7 @@ describe("welcomeEdition", () => {
     expect(e.cards[2]!.kicker).toBe("Pick up your work · Northstar");
     expect(e.sections).toEqual([
       { name: "Northstar", lines: [WELCOME_RISE_FIELDWORK_TITLE, "Maya added 3 interview notes."] },
-      { name: "Fieldwork", lines: [WELCOME_RISE_FINDING_CODEX, "Review ready · 1 decision"] },
+      { name: "Fieldwork", lines: [WELCOME_RISE_NORTHSTAR_TITLE, "Review ready · 1 decision"] },
     ]);
   });
 });

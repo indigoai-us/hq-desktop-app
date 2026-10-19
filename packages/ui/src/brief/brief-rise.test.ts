@@ -169,6 +169,32 @@ describe("rise pixels", () => {
     expect(riseRippleCells(0.2, "dark").every((cell) => cell.alpha === 1 && cell.color.startsWith("rgba("))).toBe(true);
     expect(riseRippleCells(-0.01, "dark")).toEqual([]);
     expect(riseRippleCells(0.61, "dark")).toEqual([]);
+    // Gate review: the ring is one joined shape (sides meet the bottom arc), never a bracket of
+    // lone side cells plus a separate dash. Cells touch when they are one pitch apart, diagonals too.
+    for (let age = 0; age <= 0.6; age += 0.05) {
+      const cells = riseRippleCells(age, "dark");
+      const key = (x: number, y: number) => x + "," + y;
+      const all = new Set(cells.map((c) => key(c.x, c.y)));
+      const seen = new Set<string>();
+      const stack = [cells[0]!];
+      while (stack.length) {
+        const c = stack.pop()!;
+        if (seen.has(key(c.x, c.y))) continue;
+        seen.add(key(c.x, c.y));
+        for (const dx of [-RISE_PITCH, 0, RISE_PITCH]) {
+          for (const dy of [-RISE_PITCH, 0, RISE_PITCH]) {
+            if (all.has(key(c.x + dx, c.y + dy))) stack.push({ ...c, x: c.x + dx, y: c.y + dy });
+          }
+        }
+      }
+      expect(seen.size, "age " + age.toFixed(2)).toBe(all.size);
+      // It starts at the waterline and dips below it, wider than the mark.
+      const ys = cells.map((c) => c.y);
+      expect(Math.min(...ys)).toBe(0);
+      expect(Math.max(...ys)).toBeGreaterThan(0);
+      const xs = cells.map((c) => c.x);
+      expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThanOrEqual(RISE_ICON - RISE_PITCH);
+    }
     const cleared = riseFrame(riseRevealAt(0) + RISE_ICON / 2 / RISE_SPEED + 0.02, SOURCES);
     const icon = cleared.icons[0]!;
     expect(icon.whole).toBe(true);

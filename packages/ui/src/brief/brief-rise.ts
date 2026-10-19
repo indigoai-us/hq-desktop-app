@@ -110,7 +110,7 @@ export function riseHaloCells(theme: "dark" | "light"): RisePixel[] {
   return cells;
 }
 
-/** Flat pixel ring on the two waterline rows. Age is seconds since emergence. */
+/** Flat pixel ring on the waterline and the two rows under it. Age is seconds since emergence. */
 export function riseRippleCells(age: number, theme: "dark" | "light"): RisePixel[] {
   if (age < 0 || age > RISE_RIPPLE_S) return [];
   const rr = RISE_ICON / 2 + age * 70;
@@ -118,11 +118,13 @@ export function riseRippleCells(age: number, theme: "dark" | "light"): RisePixel
   const color = theme === "light" ? `rgba(176, 100, 98, ${fade.toFixed(3)})` : `rgba(255, 190, 160, ${fade.toFixed(3)})`;
   const cells: RisePixel[] = [];
   const reach = Math.ceil((rr + RISE_PITCH) / RISE_PITCH) * RISE_PITCH;
-  for (const gy of [RISE_PITCH, RISE_PITCH * 2]) {
+  // The front half of a flat ellipse on three water rows, from the waterline down,
+  // so the sides join the bottom arc and it reads as one ring, not a bracket.
+  for (const gy of [0, RISE_PITCH, RISE_PITCH * 2]) {
     for (let gx = -reach; gx <= reach; gx += RISE_PITCH) {
       const ry = gy / (RISE_PITCH * 2);
       const dx = (gx + RISE_CELL / 2) / rr;
-      if (Math.abs(Math.hypot(dx, ry * 0.9) - 1) > 0.12) continue;
+      if (Math.abs(Math.hypot(dx, ry * 0.9) - 1) > 0.2) continue;
       cells.push({ x: gx, y: gy, color, alpha: 1 });
     }
   }

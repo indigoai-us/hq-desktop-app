@@ -19,6 +19,8 @@
   const theme = params.get('theme') === 'light' ? 'light' : 'dark';
   const elapsed = params.has('t') ? Number(params.get('t')) : null;
   let briefOpacity = $state(0);
+  /** The count line the rise shows. In record, the brief repeats the last one, as the app does. */
+  let riseCount = $state<string | null>(null);
 
   const SOURCES = WELCOME_RISE_SOURCES;
 
@@ -54,7 +56,8 @@
 
   const showRise = phase !== 'brief';
   const showBrief = phase === 'brief' || phase === 'record';
-  const briefInput = welcomeRiseBriefInput(welcomeRiseNow());
+  const runInput = welcomeRiseBriefInput(welcomeRiseNow());
+  const briefInput = $derived(phase === 'record' && riseCount ? { ...runInput, runStats: riseCount } : runInput);
 </script>
 
 <div class="window" data-testid="rise-window" data-theme={theme}>
@@ -84,6 +87,7 @@
       readyAt={phase === 'record' ? 23 : null}
       now={welcomeRiseNow()}
       bind:briefOpacity
+      bind:count={riseCount}
     />
     <div class="invite">
       <BriefConnectApps
