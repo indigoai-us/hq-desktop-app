@@ -295,7 +295,7 @@ describe("welcome edition components (US-019)", () => {
       brief({
         first_run: true,
         actions: [
-          { id: "raw", kind: "open_tree", label: "run `hq sync`", reason: "Look around.", launch_prompt: "tour", primary: true },
+          { id: "raw", kind: "open_tree", label: "Open ~/hq and run hq sync", reason: "Look around.", launch_prompt: "tour", primary: true },
           { id: "tree", kind: "open_tree", label: "Look around your HQ", reason: "2 projects so far.", launch_prompt: "tour", primary: false },
         ],
       }),
@@ -423,7 +423,7 @@ describe("welcome edition components (US-019)", () => {
           { id: "a1", kind: "import_history", label: "Bring in your past work", reason: "skill_not_found: import-claude", launch_prompt: "RAW PROMPT TEXT", primary: true },
         ],
         recent_work: [
-          { title: "packages/ui/src/brief/DailyBrief.svelte", project: "Harbor", at: "2026-10-07T21:10:00Z", harness: "claude-code" },
+          { title: "/Users/sam/hq/packages/ui/src/brief/DailyBrief.svelte", project: "Harbor", at: "2026-10-07T21:10:00Z", harness: "claude-code" },
           { title: "Fixed the coupon rounding", project: "/Users/sam/code/harbor", at: "2026-10-07T20:10:00Z", harness: "claude_code" },
         ],
         top_projects: [{ name: "Harbor", path: "/Users/sam/code/harbor", sessions: 3, last_active_at: null, harness: null }],

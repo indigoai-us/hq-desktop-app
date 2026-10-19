@@ -110,6 +110,31 @@ export function plainWelcomeText(text: string | null | undefined, max = 140): st
   return t;
 }
 
+/** A stack trace or traceback line: Python's header and frames, a JS frame, or an exception's first line. */
+const STACK = /\b[Tt]raceback \(most recent call last\)|^\s*File "[^"]*", line \d+|^\s*at \S.*\(\S*:\d+(?::\d+)?\)|^\s*[A-Z]\w*(?:Error|Exception): /;
+/** An absolute path into the machine: /Users/, /home/, /Volumes/, file://, or ~/ and ~user/ followed by a path. */
+const HOME_PATH = /(?:^|[^\w.-])(?:\/(?:Users|home|Volumes)\/|~[a-z_][\w.-]*\/|~\/\S)|\bfile:\/\//;
+/**
+ * High-confidence credential tokens: GitHub (ghp_, gho_, github_pat_), OpenAI-style sk- keys with a run of 20 or
+ * more letters and digits, Slack xox?- tokens, AWS key ids, JWTs, and Bearer with a long token. "sk-learn-notes"
+ * and "Bearer of good news" are names, not tokens.
+ */
+const CREDENTIAL =
+  /\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}|\bsk-(?:[A-Za-z0-9]+-)*[A-Za-z0-9_]{20,}|\bxox[a-z]-[A-Za-z0-9-]{10,}|\bAKIA[0-9A-Z]{16}\b|\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]+|\bbearer\s+[\w.~+/=-]{20,}/i;
+
+/**
+ * A welcome-edition name or title (a project, repo or integration name, a recent-work title, the headline, an
+ * action label) as one line, or null. Unlike plainLine, which guards activity details and errors, it hides only
+ * multi-line text, stack traces, home paths and credential tokens, so real titles such as "EOD: ship X" or
+ * "HTTP 404 page redesign" show. Core already turns a title that may hold a credential into "Session in <project>".
+ */
+export function welcomeName(text: string | null | undefined, max = 140): string | null {
+  if (!text?.trim() || /[\r\n]/.test(text)) return null;
+  const t = text.replace(/\s+/g, " ").trim();
+  if (t.length > max || STACK.test(t) || HOME_PATH.test(t) || CREDENTIAL.test(t)) return null;
+  return t;
+}
+
 /** "Good morning, Alex." by the brief's local hour; no name, no comma. */
 export function welcomeGreeting(now: Date, userName?: string | null): string {
   const h = now.getHours();
@@ -219,7 +244,7 @@ function actionKicker(a: WelcomeAction, fields: WelcomeBriefFields): string {
     case "connect_ai_apps":
       return "Your AI apps";
     case "connect_integration":
-      return plainWelcomeText(a.integration?.name) ?? "Your apps";
+      return welcomeName(a.integration?.name) ?? "Your apps";
     case "open_harness":
       return WELCOME_HARNESS_NAME[a.harness ?? fields.harness?.action.harness ?? fields.harness?.primary ?? "claude-code"];
     case "connect_company":
@@ -244,7 +269,7 @@ function hasComponents(f: WelcomeBriefFields): boolean {
 /** The welcome actions with plain labels; an action whose label is raw text is dropped, so no button shows it. */
 function plainActions(actions: readonly WelcomeAction[]): WelcomeAction[] {
   return actions.flatMap((a) => {
-    const label = plainWelcomeText(a.label);
+    const label = welcomeName(a.label);
     return label ? [{ ...a, label }] : [];
   });
 }
@@ -253,12 +278,12 @@ function plainActions(actions: readonly WelcomeAction[]): WelcomeAction[] {
 function welcomeSections(f: WelcomeBriefFields): WelcomeEditionSection[] {
   const out: WelcomeEditionSection[] = [];
   const projects = (f.top_projects ?? []).flatMap((p) => {
-    const name = plainWelcomeText(p.name);
+    const name = welcomeName(p.name);
     return name ? [p.sessions ? `${name} · ${sessions(p.sessions)}` : name] : [];
   }).slice(0, 3);
   const total = f.tree?.projects ?? 0;
   if (projects.length) out.push({ name: "Your projects", lines: total > projects.length ? [...projects, `${total} projects in all.`] : projects });
-  const repos = (f.top_repos ?? []).flatMap((r) => plainWelcomeText(r.name) ?? []).slice(0, 3);
+  const repos = (f.top_repos ?? []).flatMap((r) => welcomeName(r.name) ?? []).slice(0, 3);
   if (repos.length) out.push({ name: "Your repos", lines: repos });
   if (f.harness) {
     const keys: Record<WelcomeHarnessId, keyof NonNullable<WelcomeBriefFields["harness"]>["counts"]> = { "claude-code": "claude_code", codex: "codex", cursor: "cursor" };
@@ -327,9 +352,9 @@ function welcomeFieldsEdition(
     });
   }
   const work = (f.recent_work ?? []).flatMap((w, i): WelcomeEditionRow[] => {
-    const title = plainWelcomeText(w.title);
+    const title = welcomeName(w.title);
     if (!title) return [];
-    const detail = [plainWelcomeText(w.project), w.harness ? WELCOME_HARNESS_NAME[w.harness] : null, dayOf(w.at)].filter(Boolean).join(" · ");
+    const detail = [welcomeName(w.project), w.harness ? WELCOME_HARNESS_NAME[w.harness] : null, dayOf(w.at)].filter(Boolean).join(" · ");
     return [{ id: `work-${i}`, title, detail: detail || null, action: null }];
   });
   const total = f.sessions?.total ?? 0;
@@ -350,7 +375,7 @@ function welcomeFieldsEdition(
   const note = f.note ? (plainWelcomeText(f.note) ?? WELCOME_NOTE_FAILED) : error ? WELCOME_NOTE_FAILED : editionNote(input);
   return {
     zero: false,
-    headline: plainWelcomeText(f.headline) ?? welcomeGreeting(now, input.userName),
+    headline: welcomeName(f.headline) ?? welcomeGreeting(now, input.userName),
     sub: WELCOME_FIELDS_SUB,
     cards,
     sections: [...company, ...welcomeSections(f)],

@@ -159,6 +159,8 @@ export const WELCOME_IMPORT_LABEL = "Bring in your past work";
 const object = (value: unknown): Record<string, unknown> | null =>
   value != null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 const text = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.replace(/\s+/g, " ").trim() : null);
+/** A name, title, label or headline: spaces collapse but line breaks stay, so the edition can hide multi-line text. */
+const nameText = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.replace(/[^\S\r\n]+/g, " ").trim() : null);
 const count = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0);
 const when = (value: unknown): string | null => {
   const t = text(value);
@@ -187,11 +189,11 @@ const list = <T>(
 function action(row: Record<string, unknown>): WelcomeAction | null {
   const id = text(row.id);
   const kind = WELCOME_ACTION_KINDS.includes(row.kind as WelcomeActionKind) ? (row.kind as WelcomeActionKind) : null;
-  const label = text(row.label);
+  const label = nameText(row.label);
   if (!id || !kind || !label) return null;
   const integration = object(row.integration);
   const slug = text(integration?.slug);
-  const name = text(integration?.name);
+  const name = nameText(integration?.name);
   const target = kind === "open_harness" ? harnessId(row.harness) : null;
   return {
     id,
@@ -271,19 +273,19 @@ export function parseWelcomeFields(row: Record<string, unknown>): WelcomeBriefFi
   const treeRow = object(row.tree);
   const actions = onePrimary(list(row.actions, action) ?? (Array.isArray(row.actions) ? undefined : legacyActions(row.next_steps)));
   const fields: WelcomeBriefFields = {
-    headline: text(row.headline) ?? undefined,
+    headline: nameText(row.headline) ?? undefined,
     top_projects: list(row.top_projects, (p) => {
-      const name = text(p.name);
+      const name = nameText(p.name);
       return name ? { name, path: text(p.path) ?? "", sessions: count(p.sessions), last_active_at: when(p.last_active_at), harness: harnessId(p.harness) } : null;
     }),
     top_repos: list(row.top_repos, (r) => {
-      const name = text(r.name);
+      const name = nameText(r.name);
       return name ? { name, path: text(r.path) ?? "", sessions: count(r.sessions), last_commit_at: when(r.last_commit_at) } : null;
     }),
     recent_work: list(row.recent_work, (w) => {
-      const title = text(w.title);
+      const title = nameText(w.title);
       const at = when(w.at);
-      return title && at ? { title, project: text(w.project), at, harness: harnessId(w.harness) } : null;
+      return title && at ? { title, project: nameText(w.project), at, harness: harnessId(w.harness) } : null;
     }, (a, b) => Date.parse(b.at) - Date.parse(a.at)),
     harness: harness(object(row.harness)) ?? legacyHarness(sessionsRow),
     actions,
