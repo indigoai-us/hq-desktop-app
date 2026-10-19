@@ -62,7 +62,8 @@ describe("SetupBotFinale", () => {
     const { host } = render({ slackLabel: "Put Pickles in Slack", onslack });
     const slack = q(host, "setup-bot-finale-slack")!;
     expect(slack.textContent).toContain("Put Pickles in Slack");
-    expect(host.textContent).toContain("Workforce plan");
+    expect(host.textContent).toContain("A Slack bot runs on a hosted cloud box.");
+    expect(host.textContent).not.toContain("Workforce");
     expect(host.textContent!.toLowerCase()).not.toContain("agent");
     slack.click();
     expect(onslack).toHaveBeenCalledOnce();

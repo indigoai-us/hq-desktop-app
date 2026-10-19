@@ -9,6 +9,9 @@ import type { LocalBotRow } from "@hq/platform";
 import {
   briefBotLabel,
   BRIEF_LIVENESS_FILES,
+  BRIEF_BOT_FAILURE_POLL_MS,
+  BRIEF_DISPATCH_TIMEOUT_MESSAGE,
+  BRIEF_DISPATCH_TIMEOUT_MS,
   BRIEF_POLL_MS,
   BRIEF_QUIET_MS,
   BRIEF_STALL_GRACE_MS,
@@ -58,6 +61,12 @@ export interface BriefCreator {
   fix(fix: BriefBotFix, bot: LocalBotRow | null): Promise<string | null>;
   /** Tell the person the brief is ready (OS banner and/or in-app toast). */
   notify(title: string, body: string): void;
+  /**
+   * Did the bot report that its turn on the job failed since `sinceMs`? A
+   * plain sentence for the person when it did, else null. Optional: without
+   * it a failed turn ends at the start timeout.
+   */
+  botFailure?(bot: LocalBotRow, sinceMs: number): Promise<string | null>;
 }
 
 export interface BriefCreateDeps {
@@ -71,6 +80,12 @@ export interface BriefCreateDeps {
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
   log?: (message: string, err?: unknown) => void;
+  /**
+   * The bot check and send deadline's timer, apart from the poll timer so a
+   * host's poll loop is not shifted by it. Default: setTimeout.
+   */
+  setDeadline?: (fn: () => void, ms: number) => unknown;
+  clearDeadline?: (handle: unknown) => void;
   /** A run file's modified time in ms, when the host can tell; null when absent. Optional. */
   mtime?(relPath: string): Promise<number | null>;
   /** Where the active run id is kept so a reload resumes it. Default: localStorage. */
@@ -112,6 +127,9 @@ export class BriefCreateRun {
   private label = "brief";
   /** The automatic retry after a missing skill has been used. */
   private retried = false;
+  /** The bot the in-flight job went to, asked whether its turn failed. */
+  private sentBot: { runId: string; bot: LocalBotRow; sentAt: number } | null = null;
+  private lastFailureCheck = 0;
   private timer: unknown = null;
   private stopped = false;
   private readonly now: () => Date;
@@ -165,6 +183,23 @@ export class BriefCreateRun {
     return this.begin();
   }
 
+  /**
+   * `dispatch`, bounded: a bot check or send that never answers ends the run
+   * with a plain message instead of leaving the starting line up for good.
+   */
+  private async dispatchWithin(runId: string): Promise<void> {
+    let timer: unknown = null;
+    const expired = new Promise<"timeout">((resolve) => {
+      timer = (this.deps.setDeadline ?? ((fn, ms) => setTimeout(fn, ms)))(() => resolve("timeout"), BRIEF_DISPATCH_TIMEOUT_MS);
+    });
+    const outcome = await Promise.race([this.dispatch(runId).then(() => "done" as const), expired]);
+    if (timer != null) (this.deps.clearDeadline ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>)))(timer);
+    if (outcome === "timeout" && !this.stopped && this.phase.kind === "dispatching" && this.phase.runId === runId) {
+      this.log("bot check or send did not answer", `${BRIEF_DISPATCH_TIMEOUT_MS} ms`);
+      this.finish({ kind: "failed", runId: null, message: BRIEF_DISPATCH_TIMEOUT_MESSAGE });
+    }
+  }
+
   /** The sent run that had not started when its start window ended, if HQ still follows it. */
   private unstartedRun(): { runId: string; sentAt: number } | null {
     if (this.watch?.kind === "start" && this.watching) return { runId: this.watch.runId, sentAt: this.watch.sentAt };
@@ -197,7 +232,7 @@ export class BriefCreateRun {
     this.recheck = null;
     const runId = briefRunId(this.now());
     this.phase = { kind: "dispatching", runId };
-    return this.dispatch(runId);
+    return this.dispatchWithin(runId);
   }
 
   /**
@@ -238,7 +273,7 @@ export class BriefCreateRun {
       this.finish({ kind: "failed", runId: null, message: "Could not start your brief. Try again in a moment." });
       return;
     }
-    if (this.stopped) return;
+    if (this.stopped || !this.dispatchingRun(runId)) return;
     if (!check.ok) {
       this.blockedBot = check.bot;
       this.phase = { kind: "blocked", message: check.message, fix: check.fix };
@@ -250,7 +285,7 @@ export class BriefCreateRun {
     } catch (err) {
       this.log("skill check failed", err instanceof Error ? err.message : err);
     }
-    if (this.stopped) return;
+    if (this.stopped || !this.dispatchingRun(runId)) return;
     if (installed === "hq-folder") {
       // Not a missing skill: the status reads would fail too, so nothing is sent.
       this.log("could not read the HQ folder, so the brief job was not sent");
@@ -267,7 +302,7 @@ export class BriefCreateRun {
     } catch (err) {
       this.log("company check failed", err instanceof Error ? err.message : err);
     }
-    if (this.stopped) return;
+    if (this.stopped || !this.dispatchingRun(runId)) return;
     let error: string | null;
     try {
       error = await creator.dispatch(check.bot, briefJobMessage(runId, { personal: hasCompanies === false }), runId);
@@ -275,6 +310,7 @@ export class BriefCreateRun {
       this.log("dispatch failed", err instanceof Error ? err.message : err);
       error = "Could not start your brief. Try again in a moment.";
     }
+    if (!this.dispatchingRun(runId)) return;
     if (error) {
       this.finish({ kind: "failed", runId: null, message: error });
       return;
@@ -282,6 +318,8 @@ export class BriefCreateRun {
     this.company = null;
     this.remember(runId);
     this.deps.onsent?.(runId, null);
+    this.sentBot = { runId, bot: check.bot, sentAt: this.now().getTime() };
+    this.lastFailureCheck = this.now().getTime();
     const label = briefBotLabel(check.bot);
     const bot = label === "Your assistant" ? "your assistant" : label;
     this.phase = { kind: "waiting", runId, sentAt: this.now().getTime(), ...(bot ? { bot } : {}) };
@@ -364,6 +402,32 @@ export class BriefCreateRun {
       if (runId === stored) this.forget();
     }
     return false;
+  }
+
+  /** True while `runId` is still the run being dispatched (not timed out or replaced). */
+  private dispatchingRun(runId: string): boolean {
+    return this.phase.kind === "dispatching" && this.phase.runId === runId;
+  }
+
+  /**
+   * Ask the bot's conversation whether its turn on the job failed. A failed
+   * turn writes no status.json, so without this the page waits out the whole
+   * start window for a run that already ended (owner report, 2026-10-16:
+   * the assistant's Claude turn failed in under a second).
+   */
+  private async checkBotFailure(runId: string): Promise<string | null> {
+    const sent = this.sentBot;
+    const ask = this.deps.creator.botFailure;
+    if (!ask || !sent || sent.runId !== runId) return null;
+    const nowMs = this.now().getTime();
+    if (nowMs - this.lastFailureCheck < BRIEF_BOT_FAILURE_POLL_MS) return null;
+    this.lastFailureCheck = nowMs;
+    try {
+      return await ask.call(this.deps.creator, sent.bot, sent.sentAt);
+    } catch (err) {
+      this.log("bot failure check failed", err instanceof Error ? err.message : err);
+      return null;
+    }
   }
 
   /** Called with every finished run; returns the unsubscribe. */
@@ -556,6 +620,15 @@ export class BriefCreateRun {
       this.log("status read failed", reading.error);
     }
     if (this.stopped || this.phase !== phase) return;
+    // A bot that said its turn failed: end now, in its words made plain.
+    // Only before the run has reported progress; once status.json moves the
+    // run speaks for itself.
+    const botSaid = phase.kind === "waiting" ? await this.checkBotFailure(phase.runId) : null;
+    if (this.stopped || this.phase !== phase) return;
+    if (botSaid) {
+      this.finish({ kind: "failed", runId: phase.runId, message: botSaid });
+      return;
+    }
     const nowMs = this.now().getTime();
     const fc = this.folderChangeAt;
     const seen = phase.kind === "running" && fc && fc.runId === phase.runId && fc.at > phase.lastChangeAt ? { ...phase, lastChangeAt: fc.at } : phase;
@@ -619,6 +692,7 @@ export class BriefCreateRun {
 
   private finish(phase: Finished): void {
     this.phase = phase;
+    this.sentBot = null;
     this.forget();
     if (phase.kind === "ready") {
       this.deps.creator.notify("Your daily brief is ready", "Open HQ to read it.");

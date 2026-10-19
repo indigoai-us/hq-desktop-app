@@ -348,14 +348,14 @@
 <section class="new-bot-waking new-bot-upgrade" data-testid="new-bot-upgrade" data-kind={upgradeIsPlan ? "plan" : "other"}>
   <p class="new-bot-takeover-kicker">One step first</p>
   {#if upgradeIsPlan}
-  <h1 id="new-bot-takeover-title">Upgrade to add <em>cloud bots.</em></h1>
-  <p class="new-bot-waking-status" data-testid="new-bot-upgrade-copy">{upgradeCompany} is on the Starter plan. Cloud bots are part of HQ Workforce. Upgrade from the company's channel, then come back to create {name.trim()}.</p>
+  <h1 id="new-bot-takeover-title">Cloud bots need <em>a plan change.</em></h1>
+  <p class="new-bot-waking-status" data-testid="new-bot-upgrade-copy">{upgradeCompany}'s plan does not include cloud bots yet. See the options in the company's channel, then come back to create {name.trim()}.</p>
   {:else}
   <!-- Some other card, not the upgrade: say only what is known. -->
   <h1 id="new-bot-takeover-title">Finish a step <em>first.</em></h1>
   <p class="new-bot-waking-status" data-testid="new-bot-upgrade-copy">{upgradeCompany} has a step to finish before it can add a cloud bot. Open the company's channel to see it, then come back to create {name.trim()}.</p>
   {/if}
-  <button type="button" class="new-bot-create-submit" data-testid="new-bot-upgrade-open" onclick={() => { if (upgrade) onupgrade?.(upgrade); }}><RailIcon name="external" />{upgradeIsPlan ? "See upgrade options" : "Open the channel"}</button>
+  <button type="button" class="new-bot-create-submit" data-testid="new-bot-upgrade-open" onclick={() => { if (upgrade) onupgrade?.(upgrade); }}><RailIcon name="external" />{upgradeIsPlan ? "See plan options" : "Open the channel"}</button>
   <button type="button" class="new-bot-waking-link" data-testid="new-bot-upgrade-back" onclick={leaveUpgrade}><RailIcon name="folder" />{singleCompany ? "Back" : "Choose another company"}</button>
   {#if onopenlocal}<button type="button" class="new-bot-takeover-local" data-testid="new-bot-upgrade-local" onclick={onopenlocal}>{otherWay}</button>{/if}
 </section>

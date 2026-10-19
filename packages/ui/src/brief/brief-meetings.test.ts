@@ -2,7 +2,23 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import Harness from "./BriefMeetingsHarness.test-support.svelte";
-import { lengthText, meetingLabel, meetingWindowFrom, meetingsFooter, meetingsLimit, meetingsShown, shiftDay, signalsText } from "./brief-meetings.js";
+import {
+  capsuleLabel,
+  capsuleOf,
+  initials,
+  lengthText,
+  meetingAxis,
+  meetingLabel,
+  meetingPeople,
+  meetingWindowFrom,
+  meetingsFooter,
+  meetingsLimit,
+  meetingsMinutes,
+  meetingsShown,
+  shiftDay,
+  signalsText,
+} from "./brief-meetings.js";
+import { clockLabel } from "./brief-time.js";
 import type { BriefDay, BriefMeeting } from "./brief-types.js";
 
 // Sunday Oct 11 2026, 08:53 local: the real run's morning.
@@ -89,13 +105,90 @@ describe("meetings rows", () => {
     expect(shiftDay("nope", -1)).toBeNull();
   });
 
-  it("writes the footer only when both yesterday and the day before are known", () => {
-    expect(meetingsFooter(DAYS, "2026-10-11")).toBe("7 meetings · 2 the day before");
+  it("writes the day-over-day line in plain words, only when both yesterday and the day before are known", () => {
+    const pair = (y: number, b: number): BriefDay[] => [
+      { date: "2026-10-10", sessions: 1, meetings: y, merged: 0, opened: 0 },
+      { date: "2026-10-09", sessions: 1, meetings: b, merged: 0, opened: 0 },
+    ];
+    expect(meetingsFooter(DAYS, "2026-10-11")).toBe("Up from 2 the day before");
+    expect(meetingsFooter(pair(2, 3), "2026-10-11")).toBe("Down from 3 the day before");
+    expect(meetingsFooter(pair(4, 4), "2026-10-11")).toBe("Same as the day before");
+    expect(meetingsFooter(pair(1, 0), "2026-10-11")).toBe("Up from none the day before");
+    // A catch-up card counts more than yesterday, so the line names both days.
+    expect(meetingsFooter(DAYS, "2026-10-11", true)).toBe("7 yesterday, 2 the day before");
+    expect(meetingsFooter(pair(3, 0), "2026-10-11", true)).toBe("3 yesterday, none the day before");
     expect(meetingsFooter([{ date: "2026-10-10", sessions: 1, meetings: 1, merged: 0, opened: 0 }], "2026-10-11")).toBeNull();
     expect(meetingsFooter(DAYS, "2026-10-12")).toBeNull();
     expect(meetingsFooter(DAYS, null)).toBeNull();
     expect(meetingsFooter([], "2026-10-11")).toBeNull();
-    expect(meetingsFooter([{ date: "2026-10-10", sessions: 1, meetings: 1, merged: 0, opened: 0 }, { date: "2026-10-09", sessions: 1, meetings: 0, merged: 0, opened: 0 }], "2026-10-11")).toBe("1 meeting · 0 the day before");
+  });
+
+  it("reads who a meeting was with from `with`, named to-do owners, and a title made only of names", () => {
+    expect(meetingPeople({ title: "Jacob / Corey" })).toEqual(["Jacob", "Corey"]);
+    expect(meetingPeople({ title: "Don Ranns and Jacob Posel" })).toEqual(["Don Ranns", "Jacob Posel"]);
+    expect(meetingPeople({ title: "Matt Wahl" })).toEqual([]);
+    expect(meetingPeople({ title: "Matt Wahl", with: "Matt Wahl" })).toEqual(["Matt Wahl"]);
+    // A meeting word or an acronym in the title means it names a meeting, not people.
+    expect(meetingPeople({ title: "HQ <> Sales Sync" })).toEqual([]);
+    expect(meetingPeople({ title: "HQ Dev Standup" })).toEqual([]);
+    expect(meetingPeople({ title: "TG and Amir Torabi + Jacob Posel" })).toEqual([]);
+    // To-do owners are people who were there; your own to-do is not someone else; first names do not repeat.
+    expect(
+      meetingPeople({ title: "Jacob / Corey", with: "Jacob", todo: [{ text: "a", owner: "Hassaan" }, { text: "b", owner: "Corey", mine: true }, { text: "c", owner: "corey" }] }),
+    ).toEqual(["Jacob", "Corey", "Hassaan"]);
+    expect(initials("Jacob Posel")).toBe("JP");
+    expect(initials("Corey")).toBe("C");
+    expect(initials("ana maria de la cruz")).toBe("AC");
+    expect(initials("  ")).toBe("");
+  });
+
+  it("lays the meetings on a whole-hour axis at least four hours wide, with round-step hour ticks", () => {
+    const at = (h: number, m = 0) => new Date(2026, 9, 10, h, m).toISOString();
+    const axis = meetingAxis([
+      { startTime: at(10), durationMin: 30 },
+      { startTime: at(12, 15), durationMin: 45 },
+    ])!;
+    // 10 AM to 1 PM is three hours: the axis grows to four, the spare hour after the last meeting.
+    expect(new Date(axis.from).getHours()).toBe(10);
+    expect(new Date(axis.to).getHours()).toBe(14);
+    expect(axis.days).toBe(false);
+    expect(axis.ticks.map((t) => t.label)).toEqual(["10 AM", "11 AM", "12 PM", "1 PM", "2 PM"]);
+    expect(axis.ticks[0]!.at).toBe(0);
+    expect(axis.ticks[4]!.at).toBe(1);
+    // A long day steps its ticks so there are never more than asked for.
+    const long = meetingAxis([{ startTime: at(8), durationMin: 60 }, { startTime: at(18), durationMin: 60 }], 5)!;
+    expect(long.ticks.length).toBeLessThanOrEqual(5);
+    expect(long.ticks[0]!.label).toBe("8 AM");
+    // A capsule starts at its time and is as long as the meeting; an unknown length is a dot.
+    const c = capsuleOf({ startTime: at(10), durationMin: 30 }, axis);
+    expect(c.left).toBe(0);
+    expect(c.width).toBeCloseTo(0.125);
+    expect(capsuleOf({ startTime: at(12), durationMin: null }, axis)).toEqual({ left: 0.5, width: null });
+    // Clamped to the axis: a meeting running past the end stops at it.
+    expect(capsuleOf({ startTime: at(13), durationMin: 180 }, axis).width).toBeCloseTo(0.25);
+    expect(meetingAxis([])).toBeNull();
+    expect(meetingAxis([{ startTime: "nope" }])).toBeNull();
+  });
+
+  it("an axis over more than a day (a catch-up) runs midnight to midnight with weekday ticks", () => {
+    const axis = meetingAxis([
+      { startTime: new Date(2026, 9, 12, 15).toISOString() },
+      { startTime: new Date(2026, 9, 14, 9).toISOString() },
+    ])!;
+    expect(axis.days).toBe(true);
+    expect(new Date(axis.from).getHours()).toBe(0);
+    expect(axis.ticks.map((t) => t.label)).toEqual(["MON", "TUE", "WED"]);
+    expect(capsuleLabel({ startTime: new Date(2026, 9, 14, 9).toISOString() }, true)).toBe("WED 9 AM");
+  });
+
+  it("labels a capsule with its time and length, and totals time only when every length is known", () => {
+    const iso = new Date(2026, 9, 10, 10, 30).toISOString();
+    expect(capsuleLabel({ startTime: iso, durationMin: 45 })).toBe("10:30 AM · 45m");
+    expect(capsuleLabel({ startTime: iso })).toBe(clockLabel(iso));
+    expect(capsuleLabel({ startTime: "nope" })).toBe("");
+    expect(meetingsMinutes([{ durationMin: 30 }, { durationMin: 75 }])).toBe(105);
+    expect(meetingsMinutes([{ durationMin: 30 }, { durationMin: null }])).toBeNull();
+    expect(meetingsMinutes([])).toBeNull();
   });
 });
 
@@ -197,9 +290,9 @@ describe("Yesterday card", () => {
     expect(q('[data-testid="brief-peek"]')!.textContent).not.toContain("Length");
   });
 
-  it("the footer compares yesterday with the day before, only in a two-row slot", () => {
+  it("the caption compares yesterday with the day before, only in a two-row slot", () => {
     render({ rows: 2 });
-    expect(q('[data-testid="brief-meetings-foot"]')!.textContent).toBe("7 meetings · 2 the day before");
+    expect(q('[data-testid="brief-meetings-foot"]')!.textContent).toBe("Up from 2 the day before");
     unmount(app!);
     app = null;
     target.remove();
@@ -219,8 +312,92 @@ describe("Yesterday card", () => {
     expect(q('[data-testid="brief-meetings"]')!.textContent).not.toContain("Declined all-hands");
   });
 
-  it("a catch-up window reaches further back", () => {
+  it("a catch-up window reaches further back, and its comparison names both days", () => {
     render({ windowFrom: hoursAgo(4 * 24) });
     expect(q('[data-testid="brief-meetings-sub"]')!.textContent).toBe("decisions from 8 meetings");
+    expect(q('[data-testid="brief-meetings-foot"]')!.textContent).toBe("7 yesterday, 2 the day before");
+  });
+
+  it("each row shows when it started and how long it ran, on a capsule along the card's shared time axis", () => {
+    render({});
+    const rows = qa('[data-testid="brief-meeting-row"]');
+    const at = rows.map((r) => r.querySelector('[data-testid="brief-meeting-at"]')!.textContent);
+    expect(at[0]).toBe(`${clockLabel(hoursAgo(23))} · 30m`);
+    expect(at[1]).toBe(clockLabel(hoursAgo(22)));
+    expect(at[2]).toBe(`${clockLabel(hoursAgo(21))} · 1h 15m`);
+    // Capsules sit in time order along the same axis.
+    const lefts = rows.map((r) => Number(r.querySelector<HTMLElement>(".mark")!.style.getPropertyValue("--l")));
+    expect([...lefts].sort((a, b) => a - b)).toEqual(lefts);
+    expect(lefts[0]).toBeGreaterThanOrEqual(0);
+    expect(lefts[4]).toBeLessThanOrEqual(1);
+  });
+
+  it("shows who a meeting was with as initials, and the meeting that left you a to-do in the accent with a 'for you' pill", () => {
+    render({});
+    const rows = qa('[data-testid="brief-meeting-row"]');
+    const ppl = rows[1]!.querySelector('[role="img"]')!;
+    expect(ppl.getAttribute("aria-label")).toBe("With Jacob, Corey");
+    expect([...ppl.querySelectorAll("i")].map((i) => i.textContent)).toEqual(["J", "C"]);
+    expect(rows[0]!.querySelector('[role="img"]')).toBeNull(); // HQ Dev Standup names nobody
+    expect(rows.filter((r) => r.classList.contains("yours")).map((r) => r.getAttribute("aria-label"))).toEqual(["HQ GTM Sync"]);
+    expect(rows[2]!.querySelector('[data-testid="brief-meeting-yours"]')!.textContent).toBe("1 for you");
+    // One column: no room for initials or the pill; the accent capsule still marks it.
+    unmount(app!);
+    app = null;
+    target.remove();
+    render({ rows: 1, cols: 1 });
+    expect(q('[data-testid="brief-meetings"] [role="img"]')).toBeNull();
+    expect(q('[data-testid="brief-meeting-yours"]')).toBeNull();
+    expect(qa('[data-testid="brief-meeting-row"]')[2]!.classList.contains("yours")).toBe(true);
+  });
+
+  it("alone, it carries the decisions: the number counts them and each row shows its first", () => {
+    render({});
+    expect(q('[data-testid="brief-meetings-sub"]')!.textContent).toBe("decisions from 7 meetings");
+    expect(qa('[data-testid="brief-meeting-first"]').map((e) => e.textContent)).toEqual(["Ship the trial page Friday", "Move standup"]);
+    // The count pill only where the first decision does not already say it.
+    const decided = qa('[data-testid="brief-meeting-row"]').map((r) => r.querySelector('[data-testid="brief-meeting-decided"]')?.textContent ?? null);
+    expect(decided).toEqual(["2 decided", null, "3 decided", null, null]);
+  });
+
+  it("with the Settled card on the page it keeps to the meetings: the number counts meetings and no decision text repeats", () => {
+    render({ settled: true });
+    expect(q('[data-testid="brief-meetings-sub"]')!.textContent).toBe("meetings since yesterday");
+    expect(qa('[data-testid="brief-meeting-first"]')).toEqual([]);
+    expect(q('[data-testid="brief-meetings"]')!.textContent).not.toContain("Ship the trial page Friday");
+    const decided = qa('[data-testid="brief-meeting-row"]').map((r) => r.querySelector('[data-testid="brief-meeting-decided"]')?.textContent ?? null);
+    expect(decided).toEqual(["2 decided", "1 decided", "3 decided", null, null]);
+    unmount(app!);
+    app = null;
+    target.remove();
+    render({ settled: true, windowFrom: hoursAgo(4 * 24) });
+    expect(q('[data-testid="brief-meetings-sub"]')!.textContent).toBe("meetings while you were away");
+  });
+
+  it("the number counts decisions when the card carries them, meetings when Settled does", () => {
+    // Reduced motion: the number shows its value at once instead of counting up.
+    const mm = window.matchMedia;
+    window.matchMedia = ((query: string) => ({ matches: query.includes("reduce"), media: query })) as unknown as typeof window.matchMedia;
+    try {
+      render({ meetings: day().slice(0, 3) }); // 3 meetings, 6 decisions
+      expect(q('[data-testid="brief-meetings"] .num')!.textContent).toBe("6");
+      unmount(app!);
+      app = null;
+      target.remove();
+      render({ meetings: day().slice(0, 3), settled: true });
+      expect(q('[data-testid="brief-meetings"] .num')!.textContent).toBe("3");
+    } finally {
+      window.matchMedia = mm;
+    }
+  });
+
+  it("totals the time in meetings when every length is known", () => {
+    render({ meetings: [meeting("a", "One", { durationMin: 30 }), meeting("b", "Two", { startTime: hoursAgo(10), durationMin: 75 })] });
+    expect(q('[data-testid="brief-meetings"] .vs')!.textContent).toContain("1h 45m in meetings");
+    unmount(app!);
+    app = null;
+    target.remove();
+    render({ meetings: [meeting("a", "One", { durationMin: 30 }), meeting("b", "Two", { startTime: hoursAgo(10) })], days: [] });
+    expect(q('[data-testid="brief-meetings"] .vs')).toBeNull();
   });
 });

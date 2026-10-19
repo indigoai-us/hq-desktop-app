@@ -6,6 +6,8 @@
  * must not grow a second fetch stack.
  */
 
+import { createPersonalAppsBridge, personalAppsBridgeUrl } from "../personal-apps-bridge.js";
+import { createPersonalAppsApi, type PersonalAppLocalCallback } from "../personal-apps.js";
 import {
   type AdapterResult,
   type AdapterPromise,
@@ -1296,7 +1298,17 @@ export function createSyncPlatformAdapter(
         if (!attempted.result.ok && attempted.result.code === 'network') return attempted.result;
         return withHttpStatus(attempted.result, attempted.status);
       },
-      attachSlack: (agentUid) =>
+      disconnectSlack: (uid) => hqProRequestWithStatus("DELETE", AGENT_PATHS.slackChannel(uid)),
+    connectEmail: (uid) => hqProRequestWithStatus("POST", AGENT_PATHS.emailChannel(uid), {}),
+    disconnectEmail: (uid) => hqProRequestWithStatus("DELETE", AGENT_PATHS.emailChannel(uid)),
+    updateEmailAddress: (uid, localPart) => hqProRequestWithStatus("PATCH", AGENT_PATHS.emailAddress(uid), { localPart }),
+    channelStatus: (uid, channel) => hqProRequestWithStatus("GET", AGENT_PATHS.channelStatus(uid, channel)),
+    channelContacts: (uid, channel) => hqProRequestWithStatus("GET", AGENT_PATHS.channelContacts(uid, channel)),
+    addChannelContact: (uid, channel, personUid) => hqProRequestWithStatus("POST", AGENT_PATHS.channelContacts(uid, channel), { personUid }),
+    removeChannelContact: (uid, channel, personUid) => hqProRequestWithStatus("DELETE", AGENT_PATHS.channelContacts(uid, channel, personUid)),
+    connectTelegram: async (uid, input) => withoutSecret(await hqProRequestWithStatus<Json>("POST", AGENT_PATHS.telegramChannel(uid), input), "token" in input ? input.token : ""),
+    disconnectTelegram: (uid) => hqProRequestWithStatus("DELETE", AGENT_PATHS.telegramChannel(uid)),
+    attachSlack: (agentUid) =>
         hqProPostWithStatus(AGENT_PATHS.slackChannel(agentUid), { ...SLACK_ATTACH_BODY }),
       // The token goes in the body only. The path names the bot, nothing else.
       submitSlackAppToken: async (agentUid, appToken) =>
@@ -1429,6 +1441,15 @@ export function createSyncPlatformAdapter(
         hqProJson<{ url: string }>('POST', WEB_PATHS.companyBillingPortal(), {
           companyUid,
         }),
+      createBillingCheckoutSession: (companyUid) =>
+        hqProJson<{ url: string }>('POST', WEB_PATHS.companyBillingCheckout(), {
+          companyUid,
+        }),
+      getBillingSummary: (companyUid) =>
+        hqProJson('GET', WEB_PATHS.companyBillingSummary(companyUid)),
+      getUsageStatement: (companyUid) =>
+        hqProJson('GET', WEB_PATHS.companyUsageStatement(companyUid)),
+      getPricing: () => hqProJson('GET', WEB_PATHS.pricing),
       ensureHomeChannel: async (companyUid) => {
         const res = await call<string>('ensure_company_home_channel', {
           companyUid,
@@ -1768,6 +1789,22 @@ export function createSyncPlatformAdapter(
       loginCancel: (tool) => call('agent_provider_login_cancel', { tool }),
       bringToFront: () => call<void>('bring_desktop_window_to_front'),
     },
+
+    // Personal apps (bot-owned MCP servers) go through HQ's runtime-actions
+    // route. A local test build can point them at the spike bridge instead.
+    personalApps: personalAppsBridgeUrl()
+      ? createPersonalAppsBridge(personalAppsBridgeUrl()!)
+      : createPersonalAppsApi(
+          (agentUid, input) =>
+            hqProRequestWithStatus('POST', AGENT_PATHS.runtimeActions(agentUid), input),
+          // Apps that refuse HQ's public return page sign in back to this
+          // computer (src-tauri commands/personal_apps_signin.rs).
+          {
+            listen: (state) => call<string>('personal_apps_signin_listen', { state }),
+            wait: (state) => call<PersonalAppLocalCallback>('personal_apps_signin_wait', { state }),
+            cancel: async (state) => { await call<boolean>('personal_apps_signin_cancel', { state }); },
+          },
+        ),
 
     // local-bots US-009: desktop-only — every call shells to `hq bot … --json`
     // behind the host's launch boundary (src-tauri/src/commands/bots.rs).

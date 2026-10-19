@@ -260,6 +260,15 @@ export function fileTypeLabel(name: string, contentType: string): string {
   return "FILE";
 }
 
+/** Badge text for an attachment card: FOLDER for folders, else the file type. */
+export function attachmentBadgeLabel(item: {
+  name: string;
+  contentType: string;
+  kind?: string | null;
+}): string {
+  return item.kind === "folder" ? "FOLDER" : fileTypeLabel(item.name, item.contentType);
+}
+
 export function newAttachmentId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();

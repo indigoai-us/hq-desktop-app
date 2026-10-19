@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailButton from "../common/button/RailButton.svelte";
   /**
    * The Daily Brief page over brief runs. Reads workspace/brief/index.jsonl,
    * shows the newest ready run (or, with no runs yet, the per-day sweep and
@@ -15,6 +16,7 @@
   import { readRunWelcome, readRunExclusions, readRunFailedCompanies, type BriefFailedCompany, type BriefExclusion, type BriefWelcome as Welcome } from "./brief-welcome.js";
   import type { BriefActions } from "./brief-action-cards.js";
   import BriefRunBar from "./BriefRunBar.svelte";
+  import BriefCreateButton from "./BriefCreateButton.svelte";
   import BriefDawn from "./BriefDawn.svelte";
   import BriefActivity from "./BriefActivity.svelte";
   import BriefFindings from "./BriefFindings.svelte";
@@ -91,6 +93,11 @@
   const sections = $derived(input ? briefSections(input, companies.filter(c => !failedCompanies.some(f => f.company === c.uid || f.company === c.slug) && !exclusions.some(e => e.company === c.uid || e.company === c.slug))) : []);
   let housekeeping = $state<BriefHousekeeping | null>(null);
   let missing = $state<string[]>([]);
+  // The run Create brief is writing right now, if any.
+  const inFlightRunId = $derived.by(() => {
+    const p = run?.phase;
+    return p && (p.kind === "dispatching" || p.kind === "waiting" || p.kind === "running") ? p.runId : null;
+  });
   let failed = $state(false);
   let now = $state(new Date());
   let alive = true;
@@ -114,6 +121,7 @@
   const openedBefore = store?.getItem(LAST_KEY) ?? null;
   // The brief log: what was shown and what the person did with it. Hosts
   // without the append (web, harness, demo) log nothing.
+  // svelte-ignore state_referenced_locally
   const appendLog = demo ? null : adapter.files?.appendBriefLog?.bind(adapter.files);
   const logBrief = createBriefLogger(appendLog);
   let clearedItemIds = $state<string[]>([]);
@@ -198,7 +206,18 @@
    * brief. A run that finished while the page was closed does not replay it.
    */
   let bloomDone = $state(run?.phase.kind === "ready");
+  /**
+   * The run is playing on the full-page scene and that scene can draw: at
+   * ready it stays up until its ripple ends and then gives way to the brief
+   * in one swap, rather than handing a replayed bloom to the band over the brief.
+   */
+  let pageLive = $state(false);
   const cp = $derived(run?.phase ?? { kind: "idle" as const });
+  /** The ready run the page has already handed off to. */
+  let handedOff = $state<string | null>(null);
+  $effect.pre(() => {
+    if (cp.kind === "ready" && (bloomDone || !pageLive) && shownRunId === cp.runId) handedOff = cp.runId;
+  });
   /** Where the sun was when a run failed, so it stalls there. */
   let lastProgress = 0;
   $effect.pre(() => {
@@ -221,11 +240,22 @@
       case "ready":
         // Hold "Your brief is ready" until the new run's brief is loaded, so
         // the page swaps once and never flashes a placeholder brief.
-        return bloomDone && shownRunId === cp.runId ? null : { phase: "ready", progress: 1, step: "Your brief is ready" };
+        // A scene that cannot draw has no bloom to wait for. Once handed off,
+        // stepping to another brief never brings the scene back.
+        return handedOff === cp.runId || ((bloomDone || !pageLive) && shownRunId === cp.runId) ? null : { phase: "ready", progress: 1, step: "Your brief is ready" };
       case "failed":
         return { phase: "failed", progress: lastProgress, step: cp.message };
       default:
         return null;
+    }
+  });
+  // A run's scene ended: the next one decides afresh where it plays.
+  let hadDawn = false;
+  $effect.pre(() => {
+    if (dawn) hadDawn = true;
+    else if (hadDawn) {
+      hadDawn = false;
+      pageLive = false;
     }
   });
   // A one-second clock while a run is in flight, for the elapsed time and
@@ -281,6 +311,9 @@
     return dawn?.phase === "ready" && heldRunInfo ? { ...heldRunInfo, idle: null, still: null } : null;
   });
 
+  /** No brief before this run: the scene keeps its first-brief headline through ready. */
+  const firstRun = $derived(entries.every((e) => cp.kind !== "idle" && "runId" in cp && e.runId === cp.runId));
+
   /** No runs yet and a way to make one: the pre-dawn empty state. */
   const empty = $derived(!!run && entries.length === 0 && (cp.kind === "idle" || cp.kind === "blocked"));
 
@@ -308,65 +341,87 @@
 </script>
 
 {#snippet runBar()}
-  <BriefRunBar {entries} {selectedRunId} {latestRunId} {now} {missing} create={run} oncreate={createBrief} onselect={(id) => void show(id)} />
+  <!-- A run still being written is not missing anything yet. -->
+  <BriefRunBar {entries} {selectedRunId} {latestRunId} {now} missing={inFlightRunId && inFlightRunId === selectedRunId ? [] : missing} onselect={(id) => void show(id)} />
+{/snippet}
+
+{#snippet createTool()}
+  {#if run}<BriefCreateButton {entries} {now} create={run} oncreate={createBrief} />{/if}
 {/snippet}
 
 {#snippet dawnScene(size: "page" | "masthead")}
-  {#if dawn}
-    <BriefDawn
-      {size}
-      phase={dawn.phase}
-      progress={dawn.progress}
-      step={dawn.step}
-      headline={entries.length === 0 && dawn.phase !== "failed" ? "Your first brief is on its way" : ""}
-      onbloomdone={() => (bloomDone = true)}
-    >
-      {#if dawn.phase === "failed" && run?.duplicatePrompt}
-        <p class="blocked" data-testid="brief-duplicate-prompt">Your last brief is still being written. Wait for it?</p>
-        <!-- svelte-ignore a11y_autofocus -->
-        <button type="button" class="cta" autofocus onclick={() => run?.waitForLast()} data-testid="brief-wait">Wait for it</button>
-        <button type="button" class="ghost" onclick={() => { bloomDone = false; void run?.start({ force: true }); }} data-testid="brief-start-new">Start a new one</button>
-      {:else if dawn.phase === "failed"}
-        <button type="button" class="cta" onclick={createBrief} data-testid="brief-retry">Try again</button>
-        <!-- A run that never started (already retried once) offers one action only. -->
-        {#if !(cp.kind === "failed" && cp.heal)}
-          <button type="button" class="ghost" onclick={() => run?.dismiss()}>Dismiss</button>
-        {/if}
-      {:else if runInfo}
-        <!-- One column: the counters, then the status line in its own slot below. -->
-        <div class="loader" data-testid="brief-loader">
-          {#if runInfo.findings}
-            <BriefFindings findings={runInfo.findings} samples={runInfo.samples} cards={size === "page" ? 3 : 1} />
-          {/if}
-          <BriefActivity
-            activity={runInfo.activity}
-            visible={runInfo.findings ? 1 : size === "page" ? 5 : 2}
-            elapsed={runInfo.elapsed}
-            estimate={runInfo.estimate}
-            stillWorking={runInfo.still}
-            idle={runInfo.idle}
-          />
-        </div>
-      {/if}
-    </BriefDawn>
+  {#snippet runStatus()}
+    {#if runInfo}
+      <BriefActivity
+        activity={runInfo.activity}
+        visible={runInfo.findings ? 1 : size === "page" ? 5 : 2}
+        elapsed={runInfo.elapsed}
+        estimate={runInfo.estimate}
+        stillWorking={runInfo.still}
+        idle={runInfo.idle}
+      />
+    {/if}
+  {/snippet}
+  {#snippet loaderBody()}
+    {#if runInfo}
+      <!-- The bento beside the sun: counter tiles from the first frame, then the sample chips. -->
+      <div class="loader" data-testid="brief-loader">
+        <BriefFindings findings={runInfo.findings} samples={runInfo.samples} cards={size === "page" ? 3 : 1} {size} {companies} />
+      </div>
+    {/if}
+  {/snippet}
+  <!-- One scene from waiting to ready, so Create brief reshapes the same card instead of swapping it. -->
+  <BriefDawn
+    {size}
+    phase={dawn?.phase ?? "idle"}
+    progress={dawn?.progress ?? 0}
+    step={dawn?.step ?? ""}
+    headline={!dawn ? "Your first brief is waiting" : dawn.phase === "failed" ? "" : firstRun ? "Your first brief is on its way" : "Your new brief is on its way"}
+    onbloomdone={() => (bloomDone = true)}
+    onlive={() => (pageLive = size === "page")}
+    actions={!dawn ? idleActions : dawn.phase === "failed" ? failedActions : undefined}
+    status={dawn && dawn.phase !== "failed" && runInfo ? runStatus : undefined}
+    children={dawn && dawn.phase !== "failed" && runInfo ? loaderBody : undefined}
+  />
+{/snippet}
+
+
+
+{#snippet failedActions()}
+  {#if run?.duplicatePrompt}
+    <p class="blocked" data-testid="brief-duplicate-prompt">Your last brief is still being written. Wait for it?</p>
+    <!-- The app's standard buttons: the way forward primary, the other a quiet ghost. -->
+    <!-- svelte-ignore a11y_autofocus -->
+    <RailButton icon="check" variant="primary" autofocus onclick={() => run?.waitForLast()} data-testid="brief-wait">Wait for it</RailButton>
+    <RailButton icon="play" variant="ghost" onclick={() => { bloomDone = false; void run?.start({ force: true }); }} data-testid="brief-start-new">Start a new one</RailButton>
   {:else}
-    <BriefDawn {size} phase="idle" progress={0} headline="Your first brief is waiting">
-      {#if cp.kind === "blocked"}
-        <p class="blocked" data-testid="brief-blocked">{cp.message}</p>
-        <button type="button" class="cta" onclick={() => void run?.fix()} data-testid="brief-fix">{BRIEF_FIX_LABEL[cp.fix]}</button>
-        <button type="button" class="ghost" onclick={createBrief} data-testid="brief-create">Create brief</button>
-      {:else}
-        <button type="button" class="cta" onclick={createBrief} data-testid="brief-create">Create brief</button>
-      {/if}
-    </BriefDawn>
+    <RailButton icon="refresh" variant="primary" onclick={createBrief} data-testid="brief-retry">Try again</RailButton>
+    <!-- A run that never started (already retried once) offers one action only. -->
+    {#if !(cp.kind === "failed" && cp.heal)}
+      <RailButton icon="x" variant="ghost" onclick={() => run?.dismiss()} data-testid="brief-dismiss">Dismiss</RailButton>
+    {/if}
   {/if}
 {/snippet}
 
-{#if (empty || (dawn && (!input || entries.length === 0 || shownRunId === null))) && (input || run)}
-  <div class="daily-brief-dawn-page">{@render dawnScene("page")}</div>
+{#snippet idleActions()}
+  {#if cp.kind === "blocked"}
+    <p class="blocked" data-testid="brief-blocked">{cp.message}</p>
+    <button type="button" class="cta big" onclick={() => void run?.fix()} data-testid="brief-fix">{BRIEF_FIX_LABEL[cp.fix]}<svg viewBox="0 0 256 256" aria-hidden="true"><path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z" /></svg></button>
+  {:else}
+    <button type="button" class="cta big" onclick={createBrief} data-testid="brief-create">Create brief<svg viewBox="0 0 256 256" aria-hidden="true"><path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z" /></svg></button>
+  {/if}
+{/snippet}
+
+{#snippet briefHeader()}
+  {#if entries.length || run}{@render runBar()}{/if}
+{/snippet}
+
+<!-- Any run in flight, first brief or a refresh, plays on the full-page scene in place of the brief, then hands off to it. -->
+{#if (empty || dawn) && (input || run)}
+  <!-- The brief's own stage (.daily-brief: tokens, light and dark), so the scene and the brief it becomes match. -->
+  <div class="daily-brief daily-brief-dawn-page">{@render dawnScene("page")}</div>
 {:else if input}
   <div class="brief-content" data-testid="brief-content">
-  {#if dawn}<div class="masthead-wrap">{@render dawnScene("masthead")}</div>{/if}
   {#if welcome && !inWelcome}<BriefWelcome {welcome} {onconnectcompany} />{/if}
   <!-- In the welcome report nothing sits above the brief (US-019); its company sections say what is in it. -->
   {#if exclusions.length && !inWelcome}
@@ -386,7 +441,7 @@
     </aside>
   {/if}
   {#if sections.length && !inWelcome}
-    <DailyBrief summaryOnly {clearedItemIds} dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {actions} onlog={logItem} header={entries.length || run ? runBar : undefined} />
+    <DailyBrief summaryOnly {clearedItemIds} dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {actions} onlog={logItem} header={entries.length || run || dawn ? briefHeader : undefined} tools={run ? createTool : undefined} />
     <div class="brief-sections" data-testid="brief-sections">
       {#each sections as section, index (section.id)}
         <section aria-label={section.label} data-company={section.id}>
@@ -400,7 +455,7 @@
       {/each}
     </div>
   {:else}
-    <DailyBrief dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {housekeeping} {actions} {welcome} {onconnectcompany} onlog={logItem} header={entries.length || run ? runBar : undefined} />
+    <DailyBrief dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {housekeeping} {actions} {welcome} {onconnectcompany} onlog={logItem} header={entries.length || run || dawn ? briefHeader : undefined} tools={run ? createTool : undefined} />
   {/if}
   </div>
 {:else if failed}
@@ -416,32 +471,21 @@
   .brief-content :global(.daily-brief) { height: auto; overflow: visible; }
   .brief-exclusions { padding: 12px 26px; color: var(--b-t2, var(--muted)); font-size: 13px; }
   .company-heading { margin: 0; padding: 24px 26px 0; background: var(--b-bg, var(--bg)); color: var(--b-t1, var(--fg)); font: 500 20px var(--font-ui, "Geist", system-ui, sans-serif); }
-  .daily-brief-dawn-page,
-  .masthead-wrap {
-    padding: 22px 26px 0;
-    background: #1b1b1e;
-    font-family: var(--font-ui, "Geist", -apple-system, system-ui, sans-serif);
-  }
+  /* The scene fills the brief view (the stage's own padding around it). */
   .daily-brief-dawn-page {
-    min-height: 100%;
-    padding-bottom: 22px;
-  }
-  .masthead-wrap {
-    padding-bottom: 0;
+    display: flex;
+    flex-direction: column;
   }
   .loader {
     display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 12px;
     width: 100%;
+    min-width: 0;
   }
-  .cta,
-  .ghost {
+  .cta {
     font: inherit;
     font-size: 13px;
     border: 0;
-    border-radius: 999px;
+    border-radius: 8px;
     padding: 8px 18px;
     cursor: pointer;
   }
@@ -450,14 +494,59 @@
     background: #ffb580;
     font-weight: 500;
   }
-  .ghost {
-    color: rgba(255, 255, 255, 0.7);
-    background: transparent;
+  /* Waiting: the one action, white on the dusk card, in the page's button language: a mono caps
+     label and an arrow that nudges forward under the pointer, a faint white ring on hover and focus. */
+  .cta.big {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 48px;
+    padding: 0 22px 0 26px;
+    border-radius: 10px;
+    font-family: var(--b-code, ui-monospace, monospace);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #18181b;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(20, 10, 40, 0.12);
+    transition:
+      background-color 0.15s ease,
+      box-shadow 0.15s ease,
+      transform 0.1s ease;
+  }
+  .cta.big :global(svg) {
+    width: 14px;
+    height: 14px;
+    flex: none;
+    fill: currentColor;
+    transition: transform 0.18s ease;
+  }
+  .cta.big:hover,
+  .cta.big:focus-visible {
+    background: rgba(255, 255, 255, 0.92);
+    box-shadow:
+      0 1px 2px rgba(20, 10, 40, 0.12),
+      0 0 0 4px rgba(255, 255, 255, 0.18);
+    outline: none;
+  }
+  .cta.big:hover :global(svg) {
+    transform: translateX(3px);
+  }
+  .cta.big:active {
+    transform: translateY(1px);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .cta.big,
+    .cta.big :global(svg) {
+      transition: none;
+    }
   }
   .blocked {
     margin: 0;
     font-size: 13px;
-    color: rgba(255, 255, 255, 0.75);
+    color: rgb(var(--b-ink) / 0.75);
   }
   .loading {
     padding: 8px;

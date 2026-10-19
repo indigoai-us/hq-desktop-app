@@ -375,6 +375,38 @@ describe("navigation controller commit boundary", () => {
       controller.history.snapshot().entries.map((entry) => entry.destination.kind),
     ).toEqual(["messages", "channel"]);
   });
+
+  it("collapses adjacent equal entries when filterAccessible drops the company between them", () => {
+    const { controller } = controllerWith((destination) => ({
+      status: "ready",
+      destination,
+    }));
+    controller.navigate(dest("channel", "home"));
+    controller.navigate({
+      kind: "extra",
+      page: "sessions",
+      param: "new?company=cmp_gone&draft=1",
+    });
+    controller.navigate(dest("channel", "home"));
+    expect(controller.history.snapshot().entries).toHaveLength(3);
+    expect(controller.history.snapshot().index).toBe(2);
+
+    controller.filterAccessible(new Set(["cmp_acme"]));
+
+    const snap = controller.history.snapshot();
+    expect(snap.entries.map((entry) => entry.destination.kind)).toEqual([
+      "channel",
+    ]);
+    expect(
+      snap.entries.map((entry) =>
+        entry.destination.kind === "channel" ? entry.destination.channelId : null,
+      ),
+    ).toEqual(["chn_home"]);
+    expect(snap.index).toBe(0);
+    expect(controller.history.canGoBack()).toBe(false);
+    expect(controller.history.canGoForward()).toBe(false);
+    expect(controller.history.forward()).toBeNull();
+  });
 });
 
 describe("native/host destination conversion", () => {

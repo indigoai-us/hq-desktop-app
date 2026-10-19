@@ -621,6 +621,16 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       this.hqProJson("POST", AGENT_PATHS.reauth(agentUid), { brain }),
     submitClaudeLoginCode: (agentUid, code) =>
       this.hqProJson("POST", AGENT_PATHS.loginCode(agentUid), { code }),
+    disconnectSlack: (uid) => this.hqProRequestWithStatus("DELETE", AGENT_PATHS.slackChannel(uid)),
+    connectEmail: (uid) => this.hqProRequestWithStatus("POST", AGENT_PATHS.emailChannel(uid), {}),
+    disconnectEmail: (uid) => this.hqProRequestWithStatus("DELETE", AGENT_PATHS.emailChannel(uid)),
+    updateEmailAddress: (uid, localPart) => this.hqProRequestWithStatus("PATCH", AGENT_PATHS.emailAddress(uid), { localPart }),
+    channelStatus: (uid, channel) => this.hqProRequestWithStatus("GET", AGENT_PATHS.channelStatus(uid, channel)),
+    channelContacts: (uid, channel) => this.hqProRequestWithStatus("GET", AGENT_PATHS.channelContacts(uid, channel)),
+    addChannelContact: (uid, channel, personUid) => this.hqProRequestWithStatus("POST", AGENT_PATHS.channelContacts(uid, channel), { personUid }),
+    removeChannelContact: (uid, channel, personUid) => this.hqProRequestWithStatus("DELETE", AGENT_PATHS.channelContacts(uid, channel, personUid)),
+    connectTelegram: async (uid, input) => withoutSecret(await this.hqProRequestWithStatus<Json>("POST", AGENT_PATHS.telegramChannel(uid), input), "token" in input ? input.token : ""),
+    disconnectTelegram: (uid) => this.hqProRequestWithStatus("DELETE", AGENT_PATHS.telegramChannel(uid)),
     attachSlack: (agentUid) =>
       this.hqProPostWithStatus(AGENT_PATHS.slackChannel(agentUid), { ...SLACK_ATTACH_BODY }),
     // The token goes in the body only. The path names the bot, nothing else.
@@ -702,6 +712,13 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       this.hqProJson("POST", `/v1/companies/${companyUid}/home-channel`),
     createBillingPortalSession: (companyUid) =>
       this.hqProJson("POST", WEB_PATHS.companyBillingPortal(), { companyUid }),
+    createBillingCheckoutSession: (companyUid) =>
+      this.hqProJson("POST", WEB_PATHS.companyBillingCheckout(), { companyUid }),
+    getBillingSummary: (companyUid) =>
+      this.hqProJson("GET", WEB_PATHS.companyBillingSummary(companyUid)),
+    getUsageStatement: (companyUid) =>
+      this.hqProJson("GET", WEB_PATHS.companyUsageStatement(companyUid)),
+    getPricing: () => this.hqProJson("GET", WEB_PATHS.pricing),
     getFirstWeekReturnNudge: (companyUid) =>
       this.hqProJson("GET", WEB_PATHS.firstWeekReturnNudge(companyUid)),
   };

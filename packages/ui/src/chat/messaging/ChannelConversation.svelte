@@ -40,6 +40,8 @@
   import type { ChatArtifact } from "./artifact-model.js";
   import type { ImagePreviewCache } from "./image-preview-cache";
   import MessageAttachments from "./MessageAttachments.svelte";
+  import ShareStack from "./ShareStack.svelte";
+  import { isStackableShare, shareStackAttachments } from "./share-stack";
   import AttachmentTray from "./AttachmentTray.svelte";
   import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
   import {
@@ -126,6 +128,7 @@
     type ReactionMap,
   } from "./reactions";
   import { takeNewestWindow, TIMELINE_WINDOW } from "./timeline-window";
+  import { hoverMenuClippedAbove } from "./hover-menu-placement";
   import { coalesceScroll } from "./scroll-coalesce";
   import { formatComposerSendError } from "./composer-send-error";
   import { isQueuedSendToken } from "./message-outbox.js";
@@ -854,6 +857,68 @@
   let dragDepth = 0;
   let pasteCounter = 0;
   let scroller = $state<HTMLDivElement | null>(null);
+  /** Rows whose hover menu is flipped into the row because it would clip. */
+  let menuFlip = $state<Record<string, true>>({});
+
+  function setMenuFlip(id: string, on: boolean): void {
+    if (on === Boolean(menuFlip[id])) return;
+    const next = { ...menuFlip };
+    if (on) next[id] = true;
+    else delete next[id];
+    menuFlip = next;
+  }
+
+  function placeMessageMenu(row: HTMLElement, pointerY: number | null): void {
+    const id = row.dataset.eventId ?? "";
+    if (!id || !scroller) return;
+    const menu = row.querySelector<HTMLElement>(
+      ":scope > .dm-msg-column > .dm-quick-react",
+    );
+    if (!menu) return;
+    const rowRect = row.getBoundingClientRect();
+    // The pointer is already in the part of the menu that sticks out. Flipping
+    // would pull that menu out from under it.
+    if (pointerY !== null && pointerY < rowRect.top) return;
+    setMenuFlip(
+      id,
+      hoverMenuClippedAbove(
+        rowRect.top,
+        menu.offsetHeight,
+        scroller.getBoundingClientRect().top,
+      ),
+    );
+  }
+
+  function onMessagePointerEnter(event: PointerEvent): void {
+    const row = event.currentTarget;
+    if (!(row instanceof HTMLElement)) return;
+    placeMessageMenu(row, event.clientY);
+  }
+
+  function onMessagePointerLeave(event: PointerEvent): void {
+    const row = event.currentTarget;
+    if (!(row instanceof HTMLElement)) return;
+    if (row.matches(":focus-within")) return;
+    const related = event.relatedTarget;
+    if (related instanceof Node && row.contains(related)) return;
+    const id = row.dataset.eventId ?? "";
+    if (id) setMenuFlip(id, false);
+  }
+
+  function onMessageFocusIn(event: FocusEvent): void {
+    const row = event.currentTarget;
+    if (!(row instanceof HTMLElement)) return;
+    placeMessageMenu(row, null);
+  }
+
+  function onMessageFocusOut(event: FocusEvent): void {
+    const row = event.currentTarget;
+    if (!(row instanceof HTMLElement)) return;
+    const related = event.relatedTarget;
+    if (related instanceof Node && row.contains(related)) return;
+    const id = row.dataset.eventId ?? "";
+    if (id) setMenuFlip(id, false);
+  }
   /** The single box holding everything that scrolls — see the template note. */
   let threadContent = $state<HTMLDivElement | null>(null);
   /**
@@ -1528,6 +1593,8 @@
     systemModel: ReturnType<typeof systemModelForMessage>;
     workActivity: ReturnType<typeof parseWorkSessionEvent>;
     shareCard: ReturnType<typeof parseShareRequestEvent>;
+    /** Back-to-back share-only messages folded into this row, oldest first. */
+    shareStack: ConversationMessageWire[] | null;
     groupStart: boolean;
     startsNewDay: boolean;
     timeLabel: string;
@@ -1538,6 +1605,7 @@
     let prev: ConversationMessageWire | undefined;
     let prevSpecial = false;
     let prevDay = "";
+    let prevStackable = false;
     for (const msg of timeline) {
       const day = dayKey(msg.createdAt);
       const startsNewDay = prev === undefined || day !== prevDay;
@@ -1549,11 +1617,25 @@
       // work-mesh activity event is a mesh row and MUST NOT render, even if
       // the classifier missed it on the wire fields.
       if (humanOnly && hiddenInHumanOnly(msg)) continue;
+      const stackable = !special && !workActivity && isStackableShare(msg);
+      const leader = out.at(-1);
+      if (
+        stackable &&
+        prevStackable &&
+        leader &&
+        prev &&
+        messagesShareGroup(prev, msg, prevSpecial, special)
+      ) {
+        leader.shareStack = [...(leader.shareStack ?? [leader.msg]), msg];
+        prev = msg;
+        continue;
+      }
       out.push({
         msg,
         systemModel,
         workActivity,
         shareCard,
+        shareStack: null,
         groupStart:
           prev === undefined ||
           !messagesShareGroup(prev, msg, prevSpecial, special),
@@ -1564,6 +1646,7 @@
       prev = msg;
       prevSpecial = special;
       prevDay = day;
+      prevStackable = stackable;
     }
     return out;
   });
@@ -2304,6 +2387,11 @@
               data-queued={queuedLocalIds.includes(msg.eventId) ? "true" : undefined}
               data-event-id={msg.eventId}
               data-reply-count={msg.replyCount ?? 0}
+              data-menu-flip={menuFlip[msg.eventId] ? "" : undefined}
+              onpointerenter={onMessagePointerEnter}
+              onpointerleave={onMessagePointerLeave}
+              onfocusin={onMessageFocusIn}
+              onfocusout={onMessageFocusOut}
             >
               {#if groupStart}
                 <span class="dm-msg-avatar">
@@ -2364,6 +2452,15 @@
                     >
                       {@render bubbleContent(msg, rich)}
                     </ForwardedBlock>
+                  {:else if row.shareStack}
+                    <ShareStack
+                      {previewCache}
+                      {vaultCompanyUid}
+                      attachments={shareStackAttachments(row.shareStack)}
+                      onopen={openAttachment}
+                      resolveUrl={resolveAttachmentUrl}
+                      {onreleaseurl}
+                    />
                   {:else}
                     {@render bubbleContent(msg, rich)}
                   {/if}
@@ -2915,7 +3012,8 @@
     contain: layout paint;
     /* 16px bottom so the last message's reaction bar doesn't kiss the
        composer frame. Sides follow --conv-inset (set on .chat-stage). */
-    padding: 8px var(--conv-inset, 16px) 16px;
+    /* Room for the first row's hover menu, which sits above the row. */
+    padding: calc(var(--hq-btn-h) + 3px) var(--conv-inset, 16px) 16px;
     /* Float the 4px thumb 8px off the window edge, the way every other
        scroller in the design does — the sidebar already did this and the
        timeline did not, so the two rails disagreed down the same window. */
@@ -3562,10 +3660,14 @@
     font-size: 7px;
   }
 
-  /* Slack-style hover toolbar pinned to the message. */
+  /* Slack-style hover toolbar pinned to the message.
+     The column is the containing block, and it already starts one row-padding
+     below the row top, so `bottom: 100%` overlaps the row by that 3px of
+     padding and stops at the text. */
   .dm-quick-react {
     position: absolute;
-    top: -14px;
+    top: auto;
+    bottom: 100%;
     right: 8px;
     z-index: 2;
     display: flex;
@@ -3594,6 +3696,7 @@
 
   .dm-msg:hover .dm-quick-react,
   .dm-msg:focus-within .dm-quick-react,
+  .dm-quick-react:hover,
   .dm-quick-react:focus-within,
   .dm-quick-react:has([aria-expanded="true"]) {
     box-shadow: var(--panel-shadow, 0 8px 24px rgba(0, 0, 0, 0.4));
@@ -3601,9 +3704,27 @@
     pointer-events: auto;
   }
 
-  /* Touch input has no hover state, so a hover-only toolbar is unreachable. */
+  /* No room above this row: keep the toolbar in a gutter inside the column.
+     Padding on the row would move the column and the toolbar together. */
+  .dm-msg[data-menu-flip] > .dm-msg-column {
+    padding-top: calc(var(--hq-btn-h) + 8px);
+  }
+
+  .dm-msg[data-menu-flip] > .dm-msg-column > .dm-quick-react {
+    top: 0;
+    bottom: auto;
+  }
+
+  /* Touch input has no hover state, so a hover-only toolbar is unreachable.
+     Same gutter as the flip, after .dm-msg-group-start so the padding wins. */
   @media (hover: none) {
+    .dm-msg-column {
+      padding-top: calc(var(--hq-btn-h) + 8px);
+    }
+
     .dm-quick-react {
+      top: 0;
+      bottom: auto;
       box-shadow: var(--panel-shadow, 0 8px 24px rgba(0, 0, 0, 0.4));
       opacity: 1;
       pointer-events: auto;

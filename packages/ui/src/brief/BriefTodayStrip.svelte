@@ -50,7 +50,7 @@
 </script>
 
 <div class="cal" data-testid="brief-today" style="height:{height}px">
-  <div class="lbl">TODAY{#if sample}<span class="sample-tag" title="No live calendar in this preview">Sample</span>{/if}<b>{dateLabel}</b></div>
+  <div class="lbl">Today{#if sample}<span class="sample-tag">Sample</span>{/if}<b>{dateLabel}</b></div>
   <div class="trk" data-h0={layout.h0} data-h1={layout.h1}>
     {#each layout.ticks as h (h)}
       <div class="hr" style="left:{X(h)}%">{hourLabel(h)}</div>
@@ -84,35 +84,38 @@
     {/if}
     {#if layout.nowX != null}<div class="now" style="left:{layout.nowX}%"></div>{/if}
   </div>
-  <div class="sum">{named ? `${named} CALL${named === 1 ? "" : "S"}` : "NO CALLS"}{#if projected}<br />PROJECTED{/if}</div>
+  <div class="sum">{named ? `${named} call${named === 1 ? "" : "s"}` : "No calls"}{#if projected}<br />Projected{/if}</div>
 </div>
 
 <style>
+  /* A glass panel like the next-call card: the day as a row of pills. */
   .cal {
     min-height: 52px;
-    border-radius: 16px;
-    box-shadow: var(--b-well);
-    background: var(--strip-bg, #1d1d20);
+    border-radius: var(--b-r);
+    border: 1px solid var(--b-panel-line);
+    background: var(--b-panel);
     display: flex;
     align-items: center;
     padding: 0 16px;
     gap: 16px;
   }
   .lbl {
-    font-family: var(--b-mono);
-    font-size: 10px;
-    letter-spacing: 0.12em;
-    color: rgba(var(--strip-ink, 255, 255, 255), 0.32);
+    font-family: var(--b-ui);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0;
+    color: var(--b-t2);
     white-space: nowrap;
     width: 140px;
     flex: none;
   }
   .lbl b {
     display: block;
-    color: rgba(var(--strip-ink, 255, 255, 255), 0.56);
-    font-weight: 500;
+    color: var(--b-t3);
+    font-size: 11px;
+    font-weight: 400;
     margin-top: 3px;
-    letter-spacing: 0.04em;
+    letter-spacing: 0;
   }
   .trk {
     position: relative;
@@ -124,8 +127,8 @@
     position: absolute;
     top: 4px;
     font-family: var(--b-mono);
-    font-size: 9px;
-    color: rgba(var(--strip-ink, 255, 255, 255), 0.22);
+    font-size: 11px;
+    color: rgb(var(--b-ink) / 0.42);
     translate: -50% 0;
   }
   .hl {
@@ -133,15 +136,15 @@
     top: 18px;
     bottom: 6px;
     width: 1px;
-    background: rgba(var(--strip-ink, 255, 255, 255), 0.05);
+    background: rgb(var(--b-ink) / 0.05);
   }
   .ev {
     position: absolute;
     box-sizing: border-box;
     height: 15px;
-    border-radius: 6px;
-    padding: 0 6px;
-    font-size: 10.5px;
+    border-radius: 999px;
+    padding: 0 7px;
+    font-size: 11px;
     line-height: 15px;
     color: #fff;
     cursor: default;
@@ -156,30 +159,31 @@
     text-overflow: ellipsis;
   }
   .ev.team {
-    background: linear-gradient(180deg, #4a5260, #363c47);
+    background: var(--b-ev-team);
+    color: var(--b-ev-team-ink);
   }
   .ev.ext {
-    background: linear-gradient(180deg, #14b8a6, #0f766e);
+    background: #0f766e;
   }
   .ev.learn {
-    background: linear-gradient(180deg, #ffb580, #e07a5f);
+    background: #b8613f;
     color: #2a1408;
   }
   .ev.busy {
-    background: repeating-linear-gradient(135deg, rgba(var(--strip-ink, 255, 255, 255), 0.08) 0 3px, transparent 3px 7px);
-    box-shadow: inset 0 0 0 1px rgba(var(--strip-ink, 255, 255, 255), 0.08);
+    background: repeating-linear-gradient(135deg, rgb(var(--b-ink) / 0.08) 0 3px, transparent 3px 7px);
+    box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.08);
   }
   .ev.tent {
     background: transparent;
-    box-shadow: inset 0 0 0 1px rgba(var(--strip-ink, 255, 255, 255), 0.5);
-    border: 1px dashed rgba(var(--strip-ink, 255, 255, 255), 0.55);
+    box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.5);
+    border: 1px dashed rgb(var(--b-ink) / 0.55);
     line-height: 13px;
-    color: rgba(var(--strip-ink, 255, 255, 255), 0.8);
+    color: rgb(var(--b-ink) / 0.8);
   }
   .ev.proj {
     background: transparent;
-    box-shadow: inset 0 0 0 1px rgba(var(--strip-ink, 255, 255, 255), 0.35);
-    color: rgba(var(--strip-ink, 255, 255, 255), 0.56);
+    box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.35);
+    color: rgb(var(--b-ink) / 0.56);
   }
   .ev.past {
     opacity: 0.42;
@@ -188,7 +192,7 @@
   .ev:focus-visible {
     filter: brightness(1.2);
     opacity: 1;
-    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.25);
+    box-shadow: 0 0 0 2px rgb(var(--b-ink) / 0.25);
     z-index: 2;
     outline: none;
   }
@@ -199,9 +203,9 @@
     padding: 0 6px;
     border-radius: 6px;
     font-family: var(--b-mono);
-    font-size: 10px;
+    font-size: 11px;
     line-height: 15px;
-    color: rgba(var(--strip-ink, 255, 255, 255), 0.75);
+    color: rgb(var(--b-ink) / 0.75);
     background: var(--strip-more, #2a2a2f);
     box-shadow: var(--b-well);
     z-index: 3;
@@ -212,8 +216,8 @@
     bottom: 2px;
     width: 2px;
     border-radius: 2px;
-    background: #ff809f;
-    box-shadow: 0 0 10px rgba(255, 128, 159, 0.8);
+    background: var(--b-sun-2);
+    box-shadow: none;
     z-index: 4;
     pointer-events: none;
   }
@@ -225,12 +229,12 @@
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #ff809f;
+    background: var(--b-sun-2);
   }
   .sum {
     font-family: var(--b-mono);
-    font-size: 10px;
-    color: rgba(var(--strip-ink, 255, 255, 255), 0.32);
+    font-size: 11px;
+    color: var(--b-t3);
     white-space: nowrap;
     text-align: right;
     width: 90px;

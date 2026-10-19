@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import DailyBrief from "./DailyBrief.svelte";
 import { generateBrief } from "./brief-generate.js";
@@ -24,6 +24,7 @@ let app: ReturnType<typeof mount> | null = null;
 let target: HTMLElement | null = null;
 
 afterEach(() => {
+  vi.useRealTimers();
   if (app) unmount(app);
   app = null;
   target?.remove();
@@ -33,6 +34,9 @@ afterEach(() => {
 describe("welcome rise handoff", () => {
   it("uses one run for the rise and the brief, with no sample greeting", () => {
     const now = welcomeRiseNow();
+    // The greeting follows the reader's clock; read the brief at the run's own morning.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(now);
     const input = welcomeRiseBriefInput(now);
     const reveal = riseFrame(riseRevealAt(0), WELCOME_RISE_SOURCES);
     expect(input.today).toBe(WELCOME_RISE_TODAY);
@@ -86,11 +90,13 @@ describe("welcome rise handoff", () => {
     const rows = [...target.querySelectorAll("[data-testid='brief-priority']")];
     expect(rows.some((row) => row.textContent?.includes(WELCOME_RISE_CALENDAR_LINE))).toBe(false);
     // No company initials badge on the person's own items; only the other projects' rows say whose they are.
-    const badged = rows.filter((row) => row.querySelector("[data-testid='brief-priority-logo']"));
-    expect(badged.map((row) => row.querySelector("b")?.textContent)).toEqual([WELCOME_RISE_FIELDWORK_TITLE, WELCOME_RISE_STUDIO_TITLE]);
-    expect(rows.every((row) => !/\bNO\b/.test(row.textContent ?? ""))).toBe(true);
+    const needs = [...target.querySelectorAll("[data-testid='brief-need']")];
+    expect(needs.length).toBeGreaterThan(2);
+    const badged = needs.filter((row) => row.querySelector("[data-testid='brief-origin'] [data-testid='brief-logo']"));
+    expect(badged.map((row) => row.querySelector("[data-testid='brief-need-title']")?.textContent)).toEqual([WELCOME_RISE_FIELDWORK_TITLE, WELCOME_RISE_STUDIO_TITLE]);
+    expect(needs.every((row) => !/\bNO\b/.test(row.textContent ?? ""))).toBe(true);
     // The time stays on one line.
-    expect((target.querySelector("[data-testid='brief-date']") as HTMLElement).style.whiteSpace).toBe("nowrap");
+    expect((target.querySelector("[data-testid='brief-when']") as HTMLElement).style.whiteSpace).toBe("nowrap");
     expect(text).toContain("168");
     expect(text).not.toMatch(/no sessions/i);
     expect(text).not.toContain("Corey");

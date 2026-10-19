@@ -31,6 +31,7 @@ export type NotificationDisplayKind =
   | "channel_message"
   | "infra_flag"
   | "plan_limit"
+  | "badge_earned"
   | "generic";
 
 /** Icon key rendered beside each row (view maps to SVG). */
@@ -203,6 +204,10 @@ export function mapServerType(
   // A plan limit paused this company's uploads. Desktop-local row; the click
   // opens the company's upgrade page rather than a conversation.
   if (t === "plan_limit") return "plan_limit";
+
+  // hq-pro's badge award job: "You earned <Badge>". No actor; the row draws
+  // the badge's mark from `targetRef` ("badge:<id>:<tier>").
+  if (t === "badge_earned") return "badge_earned";
 
   if (
     t === "agent_finished_story" ||
@@ -413,9 +418,9 @@ export function mapNotificationRow(
     rawActorName ??
     (displayKind === "infra_flag" ? "System" : "Someone");
   const actorNameResolved =
-    (displayKind === "channel_message" && !authorName) || (displayKind === "new_file" && !rawActorName) ? "" : actorName;
+    (displayKind === "channel_message" && !authorName) || (displayKind === "new_file" && !rawActorName) || displayKind === "badge_earned" ? "" : actorName;
   const channelLabel = channelHandle ? formatChannelLabel(channelHandle) : null;
-  const contextLine = channelLabel ?? context ?? body ?? title ?? "";
+  const contextLine = displayKind === "badge_earned" ? (body ?? "") : (channelLabel ?? context ?? body ?? title ?? "");
   const verb = verbForKind(displayKind, serverType, title);
   const rawActionKind = asOptionalString(raw.actionKind);
   const actionButtons = actionButtonsFor(rawActionKind, serverType);
@@ -433,6 +438,8 @@ export function mapNotificationRow(
     verbText:
       displayKind === "plan_limit"
         ? (title ?? "Uploads are paused")
+        : displayKind === "badge_earned"
+          ? (title ?? "You earned a badge")
         : !actorNameResolved
           ? (displayKind === "new_file" ? "File added" : "New messages")
           : formatVerbLine(actorNameResolved, verb),

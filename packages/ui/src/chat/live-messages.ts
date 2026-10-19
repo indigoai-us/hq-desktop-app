@@ -496,6 +496,39 @@ export function botDmRows(
   return changed ? out : (rows as ConversationMessageWire[]);
 }
 
+export function missingBotDmRootIds(
+  raw: unknown,
+  knownRoots: readonly ConversationMessageWire[] = [],
+): string[] {
+  const pageRows = normalizeConversationMessages(raw, { keepAudience: true });
+  const roots = new Set<string>();
+  for (const row of [...knownRoots, ...pageRows]) {
+    if (!isReplyMessage(row)) roots.add(row.eventId);
+  }
+  const missing: string[] = [];
+  const seen = new Set<string>();
+  for (const row of pageRows) {
+    if (!isReplyMessage(row)) continue;
+    const rootEventId = (row.rootEventId ?? "").trim();
+    if (!rootEventId || roots.has(rootEventId) || seen.has(rootEventId)) continue;
+    seen.add(rootEventId);
+    missing.push(rootEventId);
+  }
+  return missing;
+}
+
+export function withFetchedTimelineRoots(
+  raw: unknown,
+  fetchedRoots: readonly unknown[],
+): unknown {
+  if (fetchedRoots.length === 0) return raw;
+  if (Array.isArray(raw)) return [...raw, ...fetchedRoots];
+  const record = asRecord(raw);
+  if (!record) return { messages: [...fetchedRoots] };
+  const messages = Array.isArray(record.messages) ? record.messages : [];
+  return { ...record, messages: [...messages, ...fetchedRoots] };
+}
+
 /**
  * The timeline plus one row per thread `agentUid` answered in, at the
  * thread's last reply. A bot's answer in its thread is folded off the

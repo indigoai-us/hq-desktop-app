@@ -1404,6 +1404,9 @@
 .hq-welcome .s-ready .copy {
   top: 64px;
 }
+.hq-welcome .s-ready .ready-retry {
+  margin: 18px auto 0;
+}
 .hq-welcome .prog {
   position: absolute;
   left: 50%;

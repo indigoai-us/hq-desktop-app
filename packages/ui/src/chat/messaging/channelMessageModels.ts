@@ -128,7 +128,7 @@ export interface FileAttachmentModel {
   sizeBytes: number;
   /** Formatted size caption, or null when sizeBytes is missing. */
   sizeLabel: string | null;
-  kind: "image" | "file";
+  kind: "image" | "file" | "folder";
   /** Caption line: "FILES · 12 KB" or just "FILES". */
   caption: string;
   previewUrl: string | null;
@@ -511,7 +511,7 @@ export function parseAttachment(raw: unknown): FileAttachmentModel | null {
   const vaultPath = asOptionalString(raw.vaultPath) ?? "";
   const name =
     asOptionalString(raw.name) ??
-    (vaultPath ? (vaultPath.split("/").pop() ?? vaultPath) : "");
+    (vaultPath ? (vaultPath.replace(/\/+$/, "").split("/").pop() ?? vaultPath) : "");
   if (!name && !vaultPath) return null;
 
   const sizeRaw = raw.sizeBytes;
@@ -526,12 +526,14 @@ export function parseAttachment(raw: unknown): FileAttachmentModel | null {
   const sizeLabel = formatAttachmentSize(sizeBytes);
   const contentType = asOptionalString(raw.contentType) ?? "";
   const kindRaw = asOptionalString(raw.kind);
-  const kind: "image" | "file" =
-    kindRaw === "image" ||
-    contentType.startsWith("image/") ||
-    isImageFileName(name || vaultPath)
-      ? "image"
-      : "file";
+  const kind: FileAttachmentModel["kind"] =
+    kindRaw === "folder" || vaultPath.endsWith("/")
+      ? "folder"
+      : kindRaw === "image" ||
+          contentType.startsWith("image/") ||
+          isImageFileName(name || vaultPath)
+        ? "image"
+        : "file";
   const caption = sizeLabel ? `FILES · ${sizeLabel}` : "FILES";
   const id =
     asOptionalString(raw.id) ??
