@@ -170,7 +170,9 @@ export class BriefCreateRun {
     if (this.watch?.kind === "start" && this.watching) return { runId: this.watch.runId, sentAt: this.watch.sentAt };
     const p = this.phase;
     if (p.kind === "failed" && p.heal === "start-timeout" && p.runId) {
-      return { runId: p.runId, sentAt: runIdTime(p.runId)?.getTime() ?? this.now().getTime() };
+      const sentAt = runIdTime(p.runId)?.getTime() ?? this.now().getTime();
+      // Past the start window and the watch after it, that run is not coming: send a new job.
+      if (this.now().getTime() - sentAt < BRIEF_START_TIMEOUT_MS + BRIEF_STALL_GRACE_MS) return { runId: p.runId, sentAt };
     }
     return null;
   }
@@ -559,6 +561,8 @@ export class BriefCreateRun {
     const seen = phase.kind === "running" && fc && fc.runId === phase.runId && fc.at > phase.lastChangeAt ? { ...phase, lastChangeAt: fc.at } : phase;
     const next = advanceBriefRun(seen, reading, nowMs);
     const recheck = this.recheck?.runId === phase.runId ? this.recheck : null;
+    // The first run started after Try again: from here it is followed like any run.
+    if (recheck && next.kind === "running") this.recheck = null;
     if (recheck && next.kind === "failed" && !next.stalled) {
       if (next.heal === "start-timeout" && nowMs < recheck.until) {
         // Try again is still waiting on the first run.

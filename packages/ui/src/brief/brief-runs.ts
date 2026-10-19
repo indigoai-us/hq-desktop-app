@@ -195,6 +195,30 @@ export function parseActivity(raw: unknown): BriefActivity[] {
   return out.slice(-12);
 }
 
+/**
+ * CLI and exception markers: gh commands, tracebacks, `Error:` lines, exit
+ * codes, flags, file and registry paths, env var names. Text carrying any of
+ * these is tool output, not a sentence for the person.
+ */
+const RAW_MARKERS =
+  /\bgh (?:auth|api|pr|repo|run|issue)\b|github cli|traceback|error:|\berrno\b|\bexit (?:code|status)\b|exception|\bhk(?:cu|lm)\b|failed:|\brun:|(?:^|\s)--?[a-z]|\\|\b[a-z]:[\\/]|\/[\w.-]+\/[\w.-]+|\.(?:py|ts|js|sh)\b|\bstd(?:err|out)\b|\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b|populate the/i;
+
+/**
+ * `text` as one short plain line, or null when it is long, spans lines, or
+ * carries CLI or exception markers (the 16.0.30 skill wrote raw gh output
+ * into activity details and errors).
+ */
+export function plainLine(text: string | null | undefined, max: number): string | null {
+  const t = text?.trim();
+  if (!t || t.length > max || /[\r\n]/.test(t) || RAW_MARKERS.test(t)) return null;
+  return t;
+}
+
+/** The detail an activity row may show: never on a failed row, else one short plain line. */
+export function shownDetail(a: BriefActivity): string | null {
+  return a.state === "failed" ? null : plainLine(a.detail, 80);
+}
+
 /** A run the person stopped: terminal like failed, but not the bot's fault. */
 export type BriefStatusState = BriefRunState | "cancelled";
 
@@ -284,7 +308,8 @@ const CANCELLED_MESSAGE = "You cancelled this brief.";
 export function failedMessage(status: Pick<BriefRunStatus, "state" | "error" | "message">): string {
   // The bot's own words about a missing skill are operator text.
   if (isSkillNotFound(status)) return slowStartMessage();
-  const said = status.message ?? (status.error && /\s/.test(status.error) ? status.error : null);
+  // `error` is the skill's raw reason and stays in status.json; only a plain message shows.
+  const said = plainLine(status.message, 160);
   if (status.state === "cancelled") return said ?? CANCELLED_MESSAGE;
   return said ?? DEFAULT_FAILED_MESSAGE;
 }

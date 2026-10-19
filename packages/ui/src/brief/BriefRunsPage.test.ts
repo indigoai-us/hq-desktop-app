@@ -366,4 +366,79 @@ describe("BriefRunsPage", () => {
     expect(q("brief-dawn")?.querySelectorAll("button")).toHaveLength(1);
     expect(document.body.textContent).not.toMatch(/pickles|bot|skill/i);
   });
+
+  describe("raw gh or exception text never reaches the page", () => {
+    const LIVE_GH = "To get started with GitHub CLI, please run:  gh auth login\nAlternatively, popula";
+    const TRACEBACK = 'Traceback (most recent call last):\n  File "/Users/x/brief-sweep.py", line 1668, in main\nKeyError: \'total\'';
+    const RAW = /gh auth|GitHub CLI|Alternatively|popula|Traceback|brief-sweep|KeyError|line 1668/;
+    const rawActivity = [
+      { at: "1", label: "Looking at your PRs", state: "failed", detail: LIVE_GH },
+      { at: "2", label: "Read your calendar", state: "done", detail: TRACEBACK },
+      { at: "3", label: "Housekeeping", state: "done", detail: `failed: ${LIVE_GH}` },
+      { at: "4", label: "Writing your brief", state: "running", detail: null },
+    ];
+
+    async function runWith(existing: Record<string, string>, status: (key: string) => Record<string, unknown>) {
+      const bot = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
+      const f: Record<string, string> = { ...existing };
+      const creator: BriefCreator = {
+        company: () => "indigo",
+        check: async () => ({ ok: true, bot }),
+        dispatch: vi.fn(async (_b, _body: string, key: string) => {
+          f[`workspace/brief/${key}/status.json`] = JSON.stringify({ run_id: key, ...status(key) });
+          return null;
+        }),
+        fix: vi.fn(async () => null),
+        notify: vi.fn(),
+      };
+      render(f, { creator });
+      await settle();
+      q("brief-create")!.click();
+      await settle();
+      await vi.advanceTimersByTimeAsync(2_100);
+      await settle();
+    }
+
+    for (const [where, existing] of [["the first-run sunrise", {}], ["the masthead", null]] as const) {
+      it(`activity details on failed, done and housekeeping rows never show on ${where}`, async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        try {
+          await runWith(existing ?? files(), () => ({ state: "running", step: "Sweeping your day", progress: 0.4, activity: rawActivity }));
+          expect(q("brief-dawn")?.getAttribute("data-phase")).toBe("running");
+          const labels = [...target.querySelectorAll<HTMLElement>('[data-testid="brief-activity-item"]')].map((i) => i.textContent ?? "");
+          expect(labels.join(" ")).toContain("Writing your brief");
+          expect(target.textContent).not.toMatch(RAW);
+          expect(target.textContent).not.toContain("failed:");
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      for (const [kind, raw] of [["gh", LIVE_GH], ["traceback", TRACEBACK]] as const) {
+        it(`a failed run's ${kind} status.error never shows on ${where}; the plain failed line and Try again do`, async () => {
+          vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+          try {
+            await runWith(existing ?? files(), () => ({ state: "failed", error: raw, activity: rawActivity }));
+            expect(q("brief-dawn")?.getAttribute("data-phase")).toBe("failed");
+            expect(q("brief-dawn-step")?.textContent?.trim()).toBe("The brief stopped before it finished.");
+            expect(q("brief-retry")?.textContent?.trim()).toBe("Try again");
+            expect(target.textContent).not.toMatch(RAW);
+          } finally {
+            vi.useRealTimers();
+          }
+        });
+
+        it(`a failed run's ${kind} text written as its message never shows on ${where}`, async () => {
+          vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+          try {
+            await runWith(existing ?? files(), () => ({ state: "failed", error: raw, message: raw }));
+            expect(q("brief-dawn-step")?.textContent?.trim()).toBe("The brief stopped before it finished.");
+            expect(target.textContent).not.toMatch(RAW);
+          } finally {
+            vi.useRealTimers();
+          }
+        });
+      }
+    }
+  });
 });

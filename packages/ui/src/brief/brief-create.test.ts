@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { LocalBotRow } from "@hq/platform";
 import { ACTIVE_RUN_KEY, BriefCreateRun, type BriefCreator } from "./brief-create.svelte.js";
-import { BRIEF_POLL_MS, BRIEF_START_TIMEOUT_MS, BRIEF_TRY_AGAIN_WAIT_MS, BRIEF_WATCH_POLL_MS } from "./brief-runs.js";
+import { BRIEF_POLL_MS, BRIEF_STALL_GRACE_MS, BRIEF_START_TIMEOUT_MS, BRIEF_TRY_AGAIN_WAIT_MS, BRIEF_WATCH_POLL_MS } from "./brief-runs.js";
 
 const BOT = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
 const RUN = "brief-20261008-090000";
@@ -111,13 +111,13 @@ describe("BriefCreateRun", () => {
     expect(h.creator.notify).not.toHaveBeenCalled();
   });
 
-  it("a failed status ends the run with the skill's error and no ready notice", async () => {
+  it("a failed status ends the run with the plain failed line, never the skill's error, and no ready notice", async () => {
     const h = harness();
     await h.run.start();
     h.files[`workspace/brief/${RUN}/status.json`] = JSON.stringify({ run_id: RUN, state: "failed", error: "The sweep could not read GitHub." });
     await h.tick();
-    expect(h.run.phase).toEqual({ kind: "failed", runId: RUN, message: "The sweep could not read GitHub." });
-    expect(h.onfinish).toHaveBeenCalledWith({ kind: "failed", runId: RUN, message: "The sweep could not read GitHub." });
+    expect(h.run.phase).toEqual({ kind: "failed", runId: RUN, message: "The brief stopped before it finished." });
+    expect(h.onfinish).toHaveBeenCalledWith({ kind: "failed", runId: RUN, message: "The brief stopped before it finished." });
     expect(h.creator.notify).not.toHaveBeenCalled();
   });
 
@@ -426,5 +426,36 @@ describe("BriefCreateRun", () => {
     await h.tick();
     off();
     expect(seen).toEqual(["failed"]);
+  });
+
+  it("Try again stops re-checking once the first run starts: a later failure of that run shows, with no second job", async () => {
+    const h = harness();
+    await h.run.start();
+    await h.tick(BRIEF_START_TIMEOUT_MS + 1);
+    await h.run.start();
+    expect(h.run.phase).toMatchObject({ kind: "waiting", runId: RUN });
+    const path = `workspace/brief/${RUN}/status.json`;
+    h.files[path] = JSON.stringify({ run_id: RUN, state: "running", step: "Sweeping your day", progress: 0.2 });
+    await h.tick();
+    expect(h.run.phase).toMatchObject({ kind: "running", runId: RUN });
+    h.files[path] = JSON.stringify({ run_id: RUN, state: "failed", message: "GitHub is not signed in." });
+    await h.tick();
+    expect(h.run.phase).toMatchObject({ kind: "failed", runId: RUN, message: "GitHub is not signed in." });
+    expect(h.creator.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("a late Try again, after HQ stopped watching the first run, sends a new job at once", async () => {
+    const h = harness();
+    await h.run.start();
+    await h.tick(BRIEF_START_TIMEOUT_MS + 1);
+    expect(h.run.phase).toMatchObject({ kind: "failed", heal: "start-timeout" });
+    h.advance(BRIEF_STALL_GRACE_MS + 1);
+    await h.run.pollWatch();
+    expect(h.run.watching).toBe(false);
+    await h.run.start();
+    await vi.waitFor(() => expect(h.creator.dispatch).toHaveBeenCalledTimes(2));
+    const second = (h.creator.dispatch as ReturnType<typeof vi.fn>).mock.calls[1]![2] as string;
+    expect(second).not.toBe(RUN);
+    expect(h.run.phase).toMatchObject({ kind: "waiting", runId: second });
   });
 });

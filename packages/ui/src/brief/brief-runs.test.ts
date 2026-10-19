@@ -7,6 +7,7 @@ import {
   advanceBriefRun,
   briefJobMessage,
   failedMessage,
+  plainLine,
   stillWorkingLine,
   waitingStep,
   briefRunFolder,
@@ -193,7 +194,7 @@ describe("status polling state machine", () => {
     expect(advanceBriefRun(running, status({ state: "failed", error: "Calendar is not connected." }), 6_000)).toEqual({
       kind: "failed",
       runId: RUN,
-      message: "Calendar is not connected.",
+      message: "The brief stopped before it finished.",
     });
     // A fast run that wrote running then ready between two polls still lands.
     expect(advanceBriefRun(waiting, status({ state: "ready", progress: 1 }), 2_000)).toEqual({ kind: "ready", runId: RUN });
@@ -237,12 +238,12 @@ describe("status polling state machine", () => {
     expect(gone.kind).toBe("failed");
   });
 
-  it("ends ready or failed, carrying the skill's error", () => {
+  it("ends ready or failed, with the plain failed line in place of the skill's error", () => {
     expect(advanceBriefRun(waiting, status({ state: "ready", progress: 1 }), 5_000)).toEqual({ kind: "ready", runId: RUN });
     expect(advanceBriefRun(waiting, status({ state: "failed", error: "GitHub is not signed in." }), 5_000)).toEqual({
       kind: "failed",
       runId: RUN,
-      message: "GitHub is not signed in.",
+      message: "The brief stopped before it finished.",
     });
     expect(advanceBriefRun(waiting, status({ state: "failed" }), 5_000)).toMatchObject({ kind: "failed", message: expect.any(String) });
   });
@@ -271,7 +272,7 @@ describe("status polling state machine", () => {
     expect(failedMessage({ state: "failed", error: "skill_not_found", message: "No daily-brief skill is installed in this HQ." })).toBe(
       "Your brief is taking longer than expected.",
     );
-    expect(failedMessage({ state: "failed", error: "The sweep could not read GitHub.", message: null })).toBe("The sweep could not read GitHub.");
+    expect(failedMessage({ state: "failed", error: "The sweep could not read GitHub.", message: null })).toBe("The brief stopped before it finished.");
   });
 
   it("the missing-skill code lands on the heal path in any case or spelling, and its sentence never shows", () => {
@@ -443,5 +444,25 @@ describe("previousReadyRun", () => {
   it("with no run id, the latest ready run; with no entries, null", () => {
     expect(previousReadyRun(entries, null)?.runId).toBe("brief-20261011-090000");
     expect(previousReadyRun([], "brief-20261011-090000")).toBeNull();
+  });
+
+  it("failedMessage never shows status.error, and shows a message only when it is one short plain line", () => {
+    const LIVE_GH = "To get started with GitHub CLI, please run:  gh auth login\nAlternatively, popula";
+    const TRACEBACK = 'Traceback (most recent call last):\n  File "/Users/x/brief-sweep.py", line 1668, in main\nKeyError: \'total\'';
+    const RAW = /gh auth|GitHub CLI|Alternatively|popula|Traceback|brief-sweep|KeyError|line 1668/;
+    for (const raw of [LIVE_GH, TRACEBACK, "The sweep could not read GitHub.", "exit code 1"]) {
+      expect(failedMessage({ state: "failed", error: raw, message: null })).toBe("The brief stopped before it finished.");
+      expect(failedMessage({ state: "cancelled", error: raw, message: null })).toBe("You cancelled this brief.");
+    }
+    for (const raw of [LIVE_GH, TRACEBACK, "Error: gh exited with exit code 4", "See C:\\Users\\x\\log.txt", "HKCU\\Software\\HQ"]) {
+      expect(failedMessage({ state: "failed", error: null, message: raw })).toBe("The brief stopped before it finished.");
+    }
+    expect(failedMessage({ state: "failed", error: LIVE_GH, message: "GitHub is not signed in." })).toBe("GitHub is not signed in.");
+    expect(plainLine("Oct 4–9", 80)).toBe("Oct 4–9");
+    expect(plainLine("Run /hq-sync first", 80)).toBe("Run /hq-sync first");
+    expect(plainLine(`failed: ${LIVE_GH}`, 80)).toBeNull();
+    expect(plainLine("x".repeat(81), 80)).toBeNull();
+    expect(plainLine("see /Users/x/brief-sweep.py", 80)).toBeNull();
+    expect(plainLine("GH_TOKEN is missing", 80)).toBeNull();
   });
 });
