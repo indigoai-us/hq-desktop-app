@@ -179,6 +179,9 @@ function shiftTestChannelMessages(channelId: string): unknown[] {
   }));
 }
 
+/** First fetch_and_extract_template fails; a full reload resets the count. */
+let readyRequiredFailureAttempts = 0;
+
 function harnessScenario(): string | null {
   const params = new URLSearchParams(window.location.search);
   const explicitScenario = params.get('scenario');
@@ -2233,6 +2236,11 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
     const counts = ((window as Window & { __hqInvokeCounts?: Record<string, number> })
       .__hqInvokeCounts ??= {});
     counts[cmd] = (counts[cmd] ?? 0) + 1;
+    // ?scenario=ready-required-failure: the required workspace step fails once.
+    if (cmd === 'fetch_and_extract_template' && harnessScenario() === 'ready-required-failure') {
+      readyRequiredFailureAttempts += 1;
+      if (readyRequiredFailureAttempts === 1) throw new Error('permission denied');
+    }
   }
   const clt = commandLineToolsAnswer(cmd);
   if (clt !== NOT_HANDLED) return clt as T;
