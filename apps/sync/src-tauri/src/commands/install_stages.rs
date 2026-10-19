@@ -577,12 +577,38 @@ fn git_is_macos_shim(git: &str, is_macos: bool) -> bool {
         && (git == "git" || crate::commands::install_deps::is_macos_clt_shim("git", Path::new(git)))
 }
 
+/// The git first-run setup runs. Normally `resolve_bin("git")`, which finds
+/// HQ's managed git ahead of `/usr/bin`. A Claude settings `env.PATH` that
+/// starts with `/usr/bin` resolves the macOS stub instead; HQ's managed git
+/// wrapper wins in that case when the deps stage has installed it.
+fn first_run_git() -> String {
+    let resolved = paths::resolve_bin("git");
+    #[cfg(not(target_os = "windows"))]
+    if let Some(home) = paths::home_dir() {
+        return prefer_managed_git(resolved, &home, cfg!(target_os = "macos"));
+    }
+    resolved
+}
+
+#[cfg(not(target_os = "windows"))]
+fn prefer_managed_git(resolved: String, home: &Path, is_macos: bool) -> String {
+    if !git_is_macos_shim(&resolved, is_macos) {
+        return resolved;
+    }
+    let managed = paths::managed_git_shim_dir_in(home).join("git");
+    if managed.is_file() {
+        managed.display().to_string()
+    } else {
+        resolved
+    }
+}
+
 fn git_init_path(
     path: &Path,
     name: Option<&str>,
     email: Option<&str>,
 ) -> Result<(), StageCommandFailure> {
-    let git = paths::resolve_bin("git");
+    let git = first_run_git();
     let path_env = paths::child_path();
 
     run_git(
@@ -647,7 +673,7 @@ pub fn git_init(
                 message,
                 error_category: OnboardingErrorCategory::Unknown,
             })?;
-        let git = paths::resolve_bin("git");
+        let git = first_run_git();
         // Never run the macOS git stub: it opens Apple's install prompt. The
         // deps stage installs HQ's managed git before this stage runs.
         if git_is_macos_shim(&git, cfg!(target_os = "macos")) {
@@ -689,7 +715,7 @@ pub fn git_init(
 /// Read global git user identity for legacy installer UI pre-fill.
 #[tauri::command]
 pub fn git_probe_user() -> Result<Option<GitUser>, String> {
-    let git = paths::resolve_bin("git");
+    let git = first_run_git();
     if git_is_macos_shim(&git, cfg!(target_os = "macos")) {
         return Ok(None);
     }
@@ -1230,6 +1256,103 @@ mod tests {
         assert!(!git_is_macos_shim("/opt/homebrew/bin/git", true));
         assert!(!git_is_macos_shim("/usr/bin/git", false));
         assert!(!git_is_macos_shim("git", false));
+    }
+
+    #[cfg(not(windows))]
+    fn write_managed_git_wrapper(home: &Path) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let wrapper = paths::managed_git_shim_dir_in(home).join("git");
+        fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
+        fs::write(&wrapper, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+        wrapper
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn prefer_managed_git_replaces_the_macos_stub_with_the_managed_wrapper() {
+        let _guard = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let previous_xdg = std::env::var_os("XDG_DATA_HOME");
+        std::env::remove_var("XDG_DATA_HOME");
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join("home");
+
+        // No managed git yet: keep the resolved path so git_init refuses it.
+        assert_eq!(
+            prefer_managed_git("/usr/bin/git".to_string(), &home, true),
+            "/usr/bin/git"
+        );
+
+        let wrapper = write_managed_git_wrapper(&home);
+        let wrapper = wrapper.display().to_string();
+        assert_eq!(
+            prefer_managed_git("/usr/bin/git".to_string(), &home, true),
+            wrapper
+        );
+        assert_eq!(prefer_managed_git("git".to_string(), &home, true), wrapper);
+        // A real git the settings PATH chose is kept, and nothing changes off macOS.
+        assert_eq!(
+            prefer_managed_git("/opt/homebrew/bin/git".to_string(), &home, true),
+            "/opt/homebrew/bin/git"
+        );
+        assert_eq!(
+            prefer_managed_git("/usr/bin/git".to_string(), &home, false),
+            "/usr/bin/git"
+        );
+
+        match previous_xdg {
+            Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
+    }
+
+    // Review finding: a Claude settings env.PATH that starts with /usr/bin made
+    // resolve_bin("git") return the Apple stub, so git-init failed even though
+    // the deps stage had installed HQ's git.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn first_run_git_uses_the_managed_git_when_settings_path_starts_with_usr_bin() {
+        let _guard = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let previous_xdg = std::env::var_os("XDG_DATA_HOME");
+        let previous_path = std::env::var_os("PATH");
+        std::env::remove_var("XDG_DATA_HOME");
+        std::env::set_var("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let hq = tmp.path().join("hq");
+        fs::create_dir_all(home.join(".hq")).unwrap();
+        fs::create_dir_all(hq.join(".claude")).unwrap();
+        fs::write(
+            home.join(".hq/menubar.json"),
+            serde_json::json!({ "hqPath": hq }).to_string(),
+        )
+        .unwrap();
+        fs::write(
+            hq.join(".claude/settings.local.json"),
+            r#"{"env":{"PATH":"/usr/bin:/bin"}}"#,
+        )
+        .unwrap();
+        let wrapper = write_managed_git_wrapper(&home);
+        let _home = crate::util::test_support::scoped_home(&home);
+
+        let resolved = paths::resolve_bin("git");
+        let chosen = first_run_git();
+
+        match previous_xdg {
+            Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
+        match previous_path {
+            Some(value) => std::env::set_var("PATH", value),
+            None => std::env::remove_var("PATH"),
+        }
+
+        assert_eq!(resolved, "/usr/bin/git", "fixture puts /usr/bin first");
+        assert_eq!(chosen, wrapper.display().to_string());
     }
 
     fn position_of(path: &str, dir: &Path) -> Option<usize> {
