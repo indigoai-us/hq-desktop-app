@@ -280,6 +280,17 @@
     flex: 1;
     min-height: 780px;
   }
+  /* While rising the stage fills the whole report, so the open bar under it sits on the sky, not on a plain strip. */
+  .welcome.rising .rise-hold {
+    position: absolute;
+    inset: 0;
+    min-height: 0;
+  }
+  .welcome.rising .after-rise {
+    position: relative;
+    z-index: 4;
+    margin-top: 780px;
+  }
   .rise-hold.out {
     position: absolute;
     inset: 0;

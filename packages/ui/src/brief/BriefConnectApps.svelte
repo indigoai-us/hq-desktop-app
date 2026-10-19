@@ -262,8 +262,10 @@
     box-shadow: none;
     animation: none;
   }
+  /* Light: the sunrise's warm card ground and edge (BriefRise finding cards), so the strip reads as part of the sky. */
   .connect.quiet[data-theme="light"] {
-    background: color-mix(in srgb, #f3f1ef 94%, transparent);
+    background: color-mix(in srgb, #fffaf0 94%, transparent);
+    box-shadow: inset 0 0 0 1px rgba(176, 100, 98, 0.22);
     color: #2a1c16;
   }
   .strip-title,
