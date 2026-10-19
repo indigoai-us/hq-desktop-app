@@ -387,7 +387,7 @@ describe("BriefRunsPage", () => {
     shared.stop();
   });
 
-  it("inside the welcome report, a person with companies gets the welcome edition, each item under its own company", async () => {
+  it("inside the welcome report, a person with companies gets the first view, and review mode lists each item under its own company", async () => {
     const run: Record<string, string> = {
       "workspace/brief/index.jsonl": entry(NEW, "2026-10-08T16:00:00Z"),
       [`workspace/brief/${NEW}/brief-data.json`]: "{}",
@@ -415,19 +415,28 @@ describe("BriefRunsPage", () => {
         report: { aiApps: { detect: async () => null, cli: { claudeCode: true, codex: false } } },
       },
     });
-    await vi.waitFor(() => expect(q("welcome-edition")).not.toBeNull(), { timeout: 5_000 });
+    await vi.waitFor(() => expect(q("first-view-grid")).not.toBeNull(), { timeout: 5_000 });
     // One brief, not the summary plus per-company split.
     expect(q("brief-sections")).toBeNull();
     expect(target.querySelectorAll('[data-testid="daily-brief"]')).toHaveLength(1);
-    const kicker = (card: string) => target.querySelector(`[data-card="${card}"] .kicker`)?.textContent?.replace(/\s+/g, " ").trim();
-    expect(kicker("decision")).toBe("Your decision Northstar");
-    expect(kicker("work")).toBe("Pick up your work · Northstar");
-    const sections = [...target.querySelectorAll<HTMLElement>('[data-testid="welcome-edition-section"]')].map((el) => [
-      el.querySelector("h3")?.textContent,
-      el.querySelector("p")?.innerHTML.replace(/<!---->/g, "").split("<br>").map((l) => l.trim()),
+    // The first view is the welcome; the run's items wait in review mode.
+    expect(q("first-view-grid")?.textContent).not.toContain("Approve the launch copy");
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true }));
+    await settle();
+    expect(q("first-view-grid")).toBeNull();
+    // Each item carries its own company, in the order the run wrote them.
+    const needs = [...target.querySelectorAll<HTMLElement>('[data-testid="brief-need"]')].map((el) => [
+      el.querySelector('[data-testid="brief-need-title"]')?.textContent?.trim(),
+      el.querySelector('[data-testid="company-label-initials"]')?.getAttribute("aria-label"),
     ]);
-    // Northstar's work is all on the cards, so only Fieldwork has a section.
-    expect(sections).toEqual([["Fieldwork", ["Pick the pricing page"]]]);
+    expect(needs).toEqual([
+      ["Approve the launch copy", "Northstar"],
+      ["Pick the pricing page", "Fieldwork"],
+      ["Merge the installer fix", "Northstar"],
+    ]);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true }));
+    await settle();
+    expect(q("first-view-grid")).not.toBeNull();
   });
 
   // The bot's own operator text (its name, "Check that it is running", the

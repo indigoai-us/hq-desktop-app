@@ -9,6 +9,7 @@
   import type { BriefActions } from "./brief-action-cards.js";
   import type { BriefInput } from "./brief-types.js";
   import type { BriefLaunch } from "./brief-context.svelte.js";
+  import type { BriefWelcome } from "./brief-welcome.js";
 
   interface Props {
     input: BriefInput;
@@ -18,10 +19,13 @@
     ready?: boolean;
     onlaunch?: BriefLaunch;
     onopenmeetings?: () => void;
+    /** brief.json `welcome`: the first view's actions and found work. */
+    welcome?: BriefWelcome | null;
+    onconnectcompany?: () => void;
   }
-  let { input, actions, report, ready = true, onlaunch = async () => null, onopenmeetings }: Props = $props();
+  let { input, actions, report, ready = true, onlaunch = async () => null, onopenmeetings, welcome = null, onconnectcompany }: Props = $props();
 </script>
 
 <WelcomeReport {ready} {...report}>
-  <DailyBrief {input} {actions} {onlaunch} {onopenmeetings} />
+  <DailyBrief {input} {actions} {onlaunch} {onopenmeetings} {welcome} {onconnectcompany} />
 </WelcomeReport>

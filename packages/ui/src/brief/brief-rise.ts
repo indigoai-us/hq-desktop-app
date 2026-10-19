@@ -343,3 +343,81 @@ export function riseStepLine(t: number, sources: readonly RiseSource[]): string 
   if ((source.counts.sessions ?? 0) > 0) return `Reading your ${label} sessions`;
   return `Reading your ${label.toLowerCase()}`;
 }
+
+/** The rise's shortest stage: below this the page scrolls instead of squeezing the sky. */
+export const RISE_MIN_HEIGHT = 560;
+/** The round 11b stage height the offsets below were drawn at. */
+export const RISE_DESIGN_HEIGHT = 780;
+
+export interface RiseGeometry {
+  /** Side inset, px. */
+  pad: number;
+  /** Text and offset scale against the design height, never above 1. */
+  scale: number;
+  headerTop: number;
+  heroTop: number;
+  /** Headline size, px. */
+  headline: number;
+  /** Top of the invite (connect) slot, under the headline. */
+  inviteTop: number;
+  /** The waterline, px from the top, on the 8 px pitch. */
+  horizon: number;
+  /** Space kept under the progress block, px. */
+  bottom: number;
+}
+
+/**
+ * Where the rise puts its parts in a stage of this size. Everything follows
+ * the stage: offsets scale with its height (floored at RISE_MIN_HEIGHT) and
+ * the side inset with its width, so the sky fits the window at any size.
+ */
+export function riseGeometry(width: number, height: number): RiseGeometry {
+  const w = Number.isFinite(width) && width > 0 ? width : 0;
+  const h = Math.max(RISE_MIN_HEIGHT, Number.isFinite(height) ? height : 0);
+  const scale = Math.min(1, h / RISE_DESIGN_HEIGHT);
+  // The horizon keeps its share of a taller stage too, up to 40% more sky.
+  const sky = Math.min(1.4, h / RISE_DESIGN_HEIGHT);
+  return {
+    pad: w ? Math.round(Math.min(52, Math.max(24, w * 0.05))) : 52,
+    scale,
+    headerTop: Math.round(29 * scale),
+    heroTop: Math.round(92 * scale),
+    headline: Math.round(56 * scale),
+    inviteTop: Math.round(300 * scale),
+    horizon: Math.round((320 * sky) / RISE_PITCH) * RISE_PITCH,
+    bottom: Math.round(32 * scale),
+  };
+}
+
+/** Where the striped sea ends: just above the progress block, no longer than the design's run under a taller sky. */
+export function riseSeaBottom(horizon: number, readoutTop: number): number {
+  const longest = horizon + 224;
+  if (!Number.isFinite(readoutTop) || readoutTop <= 0) return longest;
+  return Math.max(horizon + 48, Math.min(longest, readoutTop - 14));
+}
+
+/** What the rise reports back to its host: the geometry plus the progress block's measured height. */
+export interface RiseLayout extends RiseGeometry {
+  /** Height of the progress block (status, meter, findings), px. */
+  readout: number;
+}
+
+/** Space between the invite slot's content and the progress block, px. */
+export const RISE_INVITE_GAP = 24;
+
+/**
+ * The shortest stage that fits the invite slot's content and the progress
+ * block (plus `clear` px of content in the slot and under the block) without
+ * overlap. The invite top and the bottom inset scale with the height up to
+ * the design height, so below it the height is solved for that scale. Depends
+ * only on the content, never on the stage's own height, so it cannot feed
+ * back into itself.
+ */
+export function riseMinHeight(clear: number): number {
+  const c = (Number.isFinite(clear) && clear > 0 ? clear : 0) + RISE_INVITE_GAP;
+  const scaled = 300 + 32;
+  let h = c / (1 - scaled / RISE_DESIGN_HEIGHT);
+  if (h >= RISE_DESIGN_HEIGHT) h = scaled + c;
+  // Two px for the rounding in riseGeometry.
+  return Math.max(RISE_MIN_HEIGHT, Math.ceil(h) + 2);
+}

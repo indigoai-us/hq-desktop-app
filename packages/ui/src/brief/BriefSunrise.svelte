@@ -33,6 +33,8 @@
     lead?: HeroLead | null;
     /** Say "Morning, name." (by the local clock) above the line; off when the page greets in its own header. */
     greet?: boolean;
+    /** The eyebrow in place of the decision count; the first view owes nothing yet, so it says only "Sunrise". */
+    eyebrow?: string | null;
   }
   let {
     total,
@@ -46,6 +48,7 @@
     now = new Date().toISOString(),
     lead = null,
     greet = true,
+    eyebrow = null,
   }: Props = $props();
   const leadLine = $derived(firstLine(lead));
   const end = $derived(Date.parse(now));
@@ -270,7 +273,7 @@
 >
   <canvas bind:this={canvas} aria-hidden="true"></canvas>
   <div class="over">
-    <div class="eyebrow" style="color:rgba(255,255,255,.8)">Sunrise · {total ? (cleared ? "decisions cleared" : "decisions today") : "nothing owed"}</div>
+    <div class="eyebrow" style="color:rgba(255,255,255,.8)">{eyebrow ?? `Sunrise · ${total ? (cleared ? "decisions cleared" : "decisions today") : "nothing owed"}`}</div>
     <div class="greet" class:big>
       {#if greet}{partOfDay(new Date())}{userName ? `, ${userName}` : ""}.<br />{/if}<span class="line" aria-label={line}>{lineParts.pre}{#if lineParts.em}<em class="accent-word">{lineParts.em}</em>{/if}{lineParts.post}</span>
     </div>
@@ -278,7 +281,8 @@
     <div class="sub lede" class:big>{sub}</div>
     <div class="tl">
       <div class="tl-head" data-testid="brief-timeline-head" data-hidden={tl.background ? `${tl.background} background session${tl.background === 1 ? "" : "s"} hidden` : undefined}>
-        <span class="eyebrow">Last 24h · {tl.work ? `${tl.work} session${tl.work === 1 ? "" : "s"}` : "no sessions"}</span>
+        <!-- The first view (an eyebrow passed) never says "no sessions": it states what HQ found, not what is missing. -->
+        {#if tl.work || !eyebrow}<span class="eyebrow">Last 24h · {tl.work ? `${tl.work} session${tl.work === 1 ? "" : "s"}` : "no sessions"}</span>{/if}
         {#if busiest}<span class="tl-meta">{busiest}</span>{/if}
       </div>
       <!-- A pixel strip in the card's mosaic: 24 hour columns, each session a lit cell; the latest is warm. -->
