@@ -32,7 +32,6 @@ function buttonAround(src: string, label: string): string {
 describe("labelled buttons in the separate windows carry a leading icon", () => {
   it.each([
     ["components/SignInPrompt.svelte", 'data-testid="retry-signin"', "refresh"],
-    ["components/onboarding/CompanyStep.svelte", 'data-testid="onboarding-checkout-done"', "check-circle"],
     ["components/QuickWindowSidePane.svelte", "Open full desktop view", "external"],
     ["call/CallShell.svelte", "Start a transcription session", "plus"],
     ["call/CallShell.svelte", 'data-testid="call-permission-open-settings"', "settings"],

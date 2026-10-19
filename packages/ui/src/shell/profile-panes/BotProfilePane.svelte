@@ -1,20 +1,23 @@
 <script lang="ts">
+  import BotChannelsPanel from "./BotChannelsPanel.svelte";
+  import { channelRows } from "./bot-channels.js";
+  import BotFeatureIntro from "./BotFeatureIntro.svelte";
+  import NewBotOrbIcon from "../../chat/create-bot/NewBotOrbIcon.svelte";
   import RailIcon from "../../common/button/RailIcon.svelte";
   import ReadLoader from "../../common/ReadLoader.svelte";
   import CompanyLabel from "../../company/CompanyLabel.svelte";
   import ProfileBadges from "../../badges/ProfileBadges.svelte";
   import type { EarnedBadge, ResolvedBadge } from "../../badges/badge-catalog.js";
   /**
-   * 340 px bot profile. Follows the Messages profile pane rhythm
+   * Responsive bot management workspace. Follows the Messages profile pane rhythm
    * (MemberProfilePanel): 12px 14px header with a hairline, 13px text,
    * sentence-case labels, a 20px name. Paints from the cached snapshot.
    *
-   * This pane owns every bot control: UID with Copy, runtime chip, scheduled
-   * jobs, 30-day usage, Pause / Resume, Open session, Edit (each section's
-   * Edit opens that tab of the edit sheet) and Stop. Other surfaces link here.
+   * The details section preserves existing bot controls: UID with Copy, runtime chip, scheduled
+   * jobs, 30-day usage, Pause / Resume and Stop. Profile fields are edited
+   * inline; chat remains in the adjacent conversation.
    */
   import {
-    PROFILE_PANE_WIDTH,
     metadata,
     profilePhase,
     type BotProfileSnapshot,
@@ -23,7 +26,10 @@
   import type { EditBotTab } from "./profile-pane-model.js";
   import type { Snippet } from "svelte";
 
-  export type BotPaneTab = "profile" | "jobs";
+  export type BotPaneTab = "channels" | "routines" | "apps" | "brain";
+  const tabs = ["channels", "routines", "apps", "brain"] as const;
+  const tabIcons = { channels: "send", routines: "arrows-clockwise", apps: "plug", brain: "sliders" } as const;
+  const labels = { channels: "Channels", routines: "Routines", apps: "Apps", brain: "Brain" };
 
   interface BotUsageSummary {
     status: "loading" | "ready" | "unavailable";
@@ -57,12 +63,16 @@
     onpause?: () => void;
     onresume?: () => void;
     onstop?: () => void;
-    /** Profile | Jobs. Tabs show only when a Jobs panel is given. */
+    /** Controlled tab; standalone previews manage their own selection. */
     tab?: BotPaneTab;
     ontab?: (tab: BotPaneTab) => void;
-    /** Job count beside the Jobs tab; null while unknown. */
+    /** Routine count; null while unknown. */
     jobsCount?: number | null;
     jobsPanel?: Snippet;
+    detailsEditor?: Snippet;
+    channelsPanel?: Snippet;
+    appsPanel?: Snippet;
+    brainPanel?: Snippet;
   }
 
   let {
@@ -77,18 +87,42 @@
     onbadge,
     onbadges,
     onclose,
-    onmessage,
-    onsession,
-    onedit,
     onpause,
     onresume,
     onstop,
-    tab = "profile",
+    tab = $bindable("channels"),
     ontab,
     jobsCount = null,
     jobsPanel,
+    detailsEditor,
+    channelsPanel,
+    appsPanel,
+    brainPanel,
   }: Props = $props();
 
+  const paneId = $props.id();
+  let detailsOpen = $state(false);
+  let detailsVisited = $state(false);
+  const stableUid = $derived(uid);
+  $effect(() => { void stableUid; detailsOpen = false; detailsVisited = false; });
+  function selectTab(next: BotPaneTab): void {
+    detailsOpen = false;
+    tab = next;
+    ontab?.(next);
+  }
+  function navigateTabs(event: KeyboardEvent): void {
+    const index = tabs.indexOf(tab);
+    const next = event.key === "ArrowRight" ? (index + 1) % tabs.length
+      : event.key === "ArrowLeft" ? (index + tabs.length - 1) % tabs.length
+      : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : -1;
+    if (next < 0) return;
+    event.preventDefault();
+    selectTab(tabs[next]);
+    const list = (event.currentTarget as HTMLElement).parentElement;
+    list?.querySelector<HTMLButtonElement>(`[data-tab="${tabs[next]}"]`)?.focus();
+  }
+
+  const brainRuntime = $derived((snapshot?.runtime ?? []).filter(row => /^(provider|model)$/i.test(row.label)));
   const phase = $derived(profilePhase(snapshot?.name));
   void metadata;
   let copied = $state(false);
@@ -107,44 +141,53 @@
   }
 </script>
 
-<aside
-  class="pane"
-  style:width="{PROFILE_PANE_WIDTH}px"
-  aria-label={snapshot ? `${snapshot.name} profile` : "Bot profile"}
-  data-testid="bot-profile-pane"
-  data-phase={phase}
-  data-live={snapshot?.live ? "true" : "false"}
->
+<aside class="pane" aria-label={snapshot ? `${snapshot.name} bot management` : "Bot management"}
+  data-testid="bot-profile-pane" data-phase={phase} data-live={snapshot?.live ? "true" : "false"}>
   <header class="phead">
-    {#if jobsPanel}
-      <div class="ptabs" role="tablist" aria-label="Bot pane">
-        <button type="button" class="ptab" role="tab" aria-selected={tab === "profile"} data-testid="bot-pane-tab-profile" onclick={() => ontab?.("profile")}>Profile</button>
-        <button type="button" class="ptab" role="tab" aria-selected={tab === "jobs"} data-testid="bot-pane-tab-jobs" onclick={() => ontab?.("jobs")}>Jobs{#if jobsCount !== null && jobsCount > 0}<span class="count">{jobsCount}</span>{/if}</button>
-      </div>
-    {:else}
-      <span class="pp-title">Profile</span>
-    {/if}
-    <button type="button" class="icon" data-testid="bot-profile-close" aria-label="Close profile" onclick={() => onclose?.()}>×</button>
-  </header>
-  {#if tab === "jobs" && jobsPanel}
-    <div class="body" data-testid="bot-pane-jobs-body">{@render jobsPanel()}</div>
-  {:else if phase === "shimmer" || !snapshot}
-    <div class="body" aria-busy="true">
-      <ReadLoader testid="bot-profile-loading" />
+    <span class="pp-title"><span class="hq-mark">HQ</span> / <span>Manage bot</span></span>
+    <div class="header-actions">
+      {#if snapshot && phase !== "shimmer"}
+        <button type="button" class="details-button" aria-expanded={detailsOpen} aria-controls="{paneId}-details" onclick={() => { detailsOpen = !detailsOpen; detailsVisited = true; }}><RailIcon name="sliders" />Bot details</button>
+      {/if}
+    <button type="button" class="icon" data-testid="bot-profile-close" aria-label="Close bot management" onclick={() => onclose?.()}><RailIcon name="x" /></button>
     </div>
-  {:else}
-    <div class="body">
+  </header>
+  {#if snapshot && phase !== "shimmer"}
+    <div class="identity">
       <div class="top">
-        <span class="mark lg" aria-hidden="true">{snapshot.name.slice(0, 1).toUpperCase()}{#if snapshot.live}<i class="ld"></i>{/if}</span>
+        <span class="mark lg" aria-hidden="true"><span class="orb"><NewBotOrbIcon kind={runtimeKind === "cloud" ? "cloud" : "local"} size={40} /></span>{#if snapshot.live}<i class="ld"></i>{/if}</span>
         <div>
           <div class="nm">{snapshot.name}</div>
-          <div class="hd">{snapshot.handle} · {snapshot.email}</div>
-          <div class="hd">
-            Bot · owned by {snapshot.owner}
+          <div class="hd">{snapshot.handle}
             {#if runtimeKind}<span class="chip rt" data-testid="bot-profile-runtime-chip">{runtimeKind === "cloud" ? "Cloud" : "Local"}</span>{/if}
           </div>
         </div>
       </div>
+      <div class="header-meta">
+        <span class="st" class:live={snapshot.live}>{snapshot.live ? "Live · working" : snapshot.idleNote}</span>
+        {#each snapshot.companies as company (company.name)}<CompanyLabel name={company.name} />{/each}
+      </div>
+
+    </div>
+  {/if}
+  <div class="ptabs" role="tablist" aria-label="Bot management">
+    {#each tabs as item}
+      <button type="button" class="ptab" role="tab" id="{paneId}-tab-{item}" aria-controls="{paneId}-panel-{item}"
+        aria-selected={tab === item} tabindex={tab === item ? 0 : -1} data-tab={item}
+        data-testid="bot-pane-tab-{item}" onclick={() => selectTab(item)} onkeydown={navigateTabs}>
+        <span class="tab-icon"><RailIcon name={tabIcons[item]} /></span>{labels[item]}{#if item === "routines" && jobsCount !== null && jobsCount > 0}<span class="count">{jobsCount}</span>{/if}
+      </button>
+    {/each}
+  </div>
+  <div class="body">
+    {#if phase === "shimmer" || !snapshot}
+      <div aria-busy="true"><ReadLoader testid="bot-profile-loading" /></div>
+    {:else}
+      <section class="details" id="{paneId}-details" hidden={!detailsOpen} aria-label="Bot details">
+        <div class="section-heading"><h2>Bot details</h2></div>
+        {#if detailsVisited && detailsEditor}{@render detailsEditor()}{/if}
+        <details class="operational-details"><summary>Activity, runtime & access</summary><div class="operational-body">
+        <div class="kv"><b>Owner</b><span>{snapshot.owner}</span><b>Email</b><span>{snapshot.email}</span></div>
       {#if uid}
         <div class="uid" data-testid="bot-profile-uid">
           <span class="k0">UID</span>
@@ -152,22 +195,10 @@
           <button type="button" class="link" data-testid="bot-profile-copy-uid" onclick={() => void copyUid()}><RailIcon name="copy" />{copied ? "Copied" : "Copy"}</button>
         </div>
       {/if}
-      <button type="button" class="btn primary" data-testid="bot-profile-message" onclick={() => onmessage?.()}><RailIcon name="send" />Message</button>
-      <div class="act">
-        <button
-          type="button"
-          class="btn"
-          data-testid="bot-profile-pause"
-          disabled={busy}
-          onclick={() => (paused ? onresume?.() : onpause?.())}
-        ><RailIcon name="stop" />{paused ? "Resume" : "Pause"}</button>
-        <button type="button" class="btn" data-testid="bot-profile-session" onclick={() => onsession?.()}><RailIcon name="external" />Open session</button>
-        <button type="button" class="btn" data-testid="bot-profile-edit" onclick={() => onedit?.("identity")}><RailIcon name="pencil" />Edit</button>
-        <button type="button" class="btn" data-testid="bot-profile-stop" disabled={busy} onclick={() => onstop?.()}><RailIcon name="stop" />Stop</button>
-      </div>
-      {#if actionError}
-        <p class="err" role="alert" data-testid="bot-profile-action-error">{actionError}</p>
-      {/if}
+        <div class="act">
+          <button type="button" class="btn" data-testid="bot-profile-pause" disabled={busy} onclick={() => paused ? onresume?.() : onpause?.()}><RailIcon name="stop" />{paused ? "Resume" : "Pause"}</button>
+          <button type="button" class="btn" data-testid="bot-profile-stop" disabled={busy} onclick={() => onstop?.()}><RailIcon name="stop" />Stop</button>
+        </div>
       <section class="g">
         <div class="k">Now</div>
         <div class="now">
@@ -182,7 +213,7 @@
       </section>
       <ProfileBadges {badges} onselect={onbadge} onseeall={onbadges} />
       <section class="g">
-        <div class="k">Runtime {#if snapshot.runtimeVersion}<span class="count">{snapshot.runtimeVersion}</span>{/if} <button type="button" class="link" data-testid="bot-profile-edit-runtime" onclick={() => onedit?.("runtime")}><RailIcon name="pencil" />Edit</button></div>
+        <div class="k">Runtime {#if snapshot.runtimeVersion}<span class="count">{snapshot.runtimeVersion}</span>{/if}</div>
         <div class="kv">
           {#each snapshot.runtime as row (row.label)}
             <b>{row.label}</b><span>{row.value}</span>
@@ -191,7 +222,7 @@
       </section>
       {#if snapshot.companies.length}
         <section class="g">
-          <div class="k" data-testid="bot-profile-companies-label">{#if snapshot.companiesScope === "all"}Companies <span class="count">{snapshot.companies.length}</span>{:else}In this company{/if} <button type="button" class="link" data-testid="bot-profile-edit-membership" onclick={() => onedit?.("membership")}><RailIcon name="pencil" />Edit</button></div>
+          <div class="k" data-testid="bot-profile-companies-label">{#if snapshot.companiesScope === "all"}Companies <span class="count">{snapshot.companies.length}</span>{:else}In this company{/if}</div>
           {#each snapshot.companies as co (co.name)}
             <div class="co" data-testid="bot-profile-company"><CompanyLabel name={co.name} /><span class="r">{co.role}</span></div>
           {/each}
@@ -199,7 +230,7 @@
       {/if}
       {#if snapshot.capabilities.length}
         <section class="g">
-          <div class="k">Capabilities <button type="button" class="link" data-testid="bot-profile-edit-capabilities" onclick={() => onedit?.("capabilities")}><RailIcon name="pencil" />Edit</button></div>
+          <div class="k">Capabilities</div>
           <div class="chips">{#each snapshot.capabilities as cap (cap)}<span class="chip">{cap}</span>{/each}</div>
         </section>
       {/if}
@@ -213,7 +244,7 @@
       {/if}
       {#if snapshot.jobs.length}
         <section class="g">
-          <div class="k">Scheduled jobs <span class="count">{snapshot.jobs.length}</span>{#if jobsPanel}<button type="button" class="link" data-testid="bot-profile-open-jobs" onclick={() => ontab?.("jobs")}>Open Jobs</button>{/if}</div>
+          <div class="k">Scheduled jobs <span class="count">{snapshot.jobs.length}</span>{#if jobsPanel}<button type="button" class="link" data-testid="bot-profile-open-jobs" onclick={() => selectTab("routines")}>Open routines</button>{/if}</div>
           {#if !jobsPanel}
             {#each snapshot.jobs as job (job.id)}
               <div class="run"><span class="mk"></span><div><div class="t">{job.title}</div><span class="meta">{job.meta}</span></div><span class="trail">{job.trailing}</span></div>
@@ -243,14 +274,32 @@
       {/if}
       {#if snapshot.grants.length}
         <section class="g">
-          <div class="k">Vault access <button type="button" class="link" data-testid="bot-profile-edit-access" onclick={() => onedit?.("access")}><RailIcon name="pencil" />Edit</button></div>
+          <div class="k">Vault access</div>
           {#each snapshot.grants as grant (grant.path)}
             <div class="va"><span class="d">{grant.path}</span><span class:w={grant.level.includes("write")}>{grant.level}</span></div>
           {/each}
         </section>
       {/if}
-    </div>
-  {/if}
+        </div></details>
+      </section>
+      {#if actionError}<p class="err" role="alert" data-testid="bot-profile-action-error">{actionError}</p>{/if}
+      <div role="tabpanel" hidden={detailsOpen} id="{paneId}-panel-{tab}" aria-labelledby="{paneId}-tab-{tab}" tabindex="0" class="panel">
+        {#if tab === "channels"}
+          {#if channelsPanel}{@render channelsPanel()}{:else}<BotChannelsPanel rows={channelRows(null, null, false)} />{/if}
+        {:else if tab === "routines"}
+          {#if jobsPanel}<div data-testid="bot-pane-jobs-body">{@render jobsPanel()}</div>
+          {:else}<BotFeatureIntro kind="routines" />{/if}
+        {:else if tab === "apps"}
+          {#if appsPanel}{@render appsPanel()}{:else}<BotFeatureIntro kind="apps" />{/if}
+        {:else}
+          {#if brainPanel}{@render brainPanel()}{:else}
+          {#if brainRuntime.length}<div class="brain-summary"><h3>Current runtime</h3><div class="kv">{#each brainRuntime as row (row.label)}<b>{row.label}</b><span>{row.value}</span>{/each}</div></div>{/if}
+          <BotFeatureIntro kind="brain" />
+          {/if}
+        {/if}
+      </div>
+    {/if}
+  </div>
 </aside>
 
 <style>
@@ -260,11 +309,13 @@
     min-height: 0;
     height: 100%;
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: auto auto auto minmax(0, 1fr);
+    width: 680px;
     background: var(--v4-secondary-sidebar, var(--side-bg));
     color: var(--v4-text-2);
     font: 400 13px/1.45 var(--font-ui, var(--font-sans));
   }
+  .pane[data-phase="shimmer"] { grid-template-rows: auto auto minmax(0, 1fr); }
   .phead {
     display: flex;
     align-items: center;
@@ -272,16 +323,19 @@
     padding: 12px 14px;
     border-bottom: 1px solid var(--v4-rowline, var(--line));
   }
-  .pp-title { color: var(--v4-text-1); font-size: 13px; font-weight: 500; }
+  .pp-title { display: flex; align-items: center; gap: 10px; color: var(--v4-text-1); font-size: 13px; font-weight: 500; }
+  .hq-mark { font-weight: 500; letter-spacing: -0.05em; color: var(--v4-text-1); }
   /* The tab label lines up with the 20px content edge below the header. */
-  .ptabs { display: inline-flex; gap: 2px; margin-left: -2px; }
+  .ptabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; padding: 4px; margin: 0 16px; border: 1px solid var(--v4-rowline, var(--line)); border-radius: 14px; background: color-mix(in srgb, var(--v4-text-1) 3%, transparent); }
   .ptab {
     display: inline-flex; align-items: center; gap: 6px;
-    height: 24px; padding: 0 8px; border: 0; border-radius: 6px;
+    justify-content: center; min-width: 0; height: 34px; padding: 0 6px; border: 0; border-radius: 10px;
     background: transparent; color: var(--v4-text-2); font: inherit; font-weight: 500; cursor: pointer;
   }
   .ptab:hover { background: var(--hover, var(--v4-hover)); color: var(--v4-text-1); }
-  .ptab[aria-selected="true"] { background: var(--sel, var(--v4-control-bg)); color: var(--v4-text-1); }
+  .ptab[aria-selected="true"] { background: color-mix(in srgb, var(--v4-text-1) 10%, transparent); color: var(--v4-text-1); box-shadow: 0 1px 3px rgb(0 0 0 / .08); }
+  .tab-icon { display: inline-flex; opacity: .65; }
+  .ptab { transition: background 160ms ease, color 160ms ease; }
   .icon {
     display: inline-flex;
     align-items: center;
@@ -297,13 +351,35 @@
     cursor: pointer;
   }
   .icon:hover { background: var(--hover, var(--v4-hover)); color: var(--v4-text-1); }
-  .body { min-height: 0; overflow: auto; padding: 24px 20px; display: flex; flex-direction: column; gap: 16px; }
+  .identity { padding: 16px; display: grid; gap: 8px; min-width: 0; }
+  .identity .top > div { min-width: 0; }
+  .nm, .hd { overflow-wrap: anywhere; }
+  .header-meta { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+  .header-actions { display: flex; align-items: center; gap: 8px; }
+  .details-button { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--v4-text-2); font: inherit; cursor: pointer; }
+  .details-button:hover, .details-button[aria-expanded="true"] { background: var(--v4-hover); }
+  .operational-details summary { cursor: pointer; color: var(--v4-text-2); padding: 10px 0; }
+  .operational-body { display: grid; gap: 16px; padding-top: 12px; }
+  .panel { min-width: 0; }
+  .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  h2, h3 { margin: 0; font-size: 13px; font-weight: 500; color: var(--v4-text-1); }
+  .section-heading h2 { font-size: 20px; font-weight: 400; }
+  .details .section-heading h2 { font-size: 13px; font-weight: 500; }
+  .brain-summary { padding: 20px; border: 1px solid var(--v4-rowline, var(--line)); border-radius: 12px; background: var(--v4-control-bg); }
+  .brain-summary { margin-bottom: 12px; }
+  .brain-summary h3 { margin-bottom: 12px; }
+  .details:not([hidden]) { display: grid; gap: 16px; padding-bottom: 20px; border-bottom: 1px solid var(--v4-rowline, var(--line)); }
+  .details[hidden] { display: none; }
+  button:focus-visible, .panel:focus-visible { outline: 2px solid var(--v4-text-2); outline-offset: 2px; }
+  @media (max-width: 480px) { .ptabs { margin-inline: 12px; gap: 0; } .ptab .count { display: none; } .identity { padding: 16px 12px; } .brain-summary { padding: 20px 16px; } .tab-icon { display: none; } }
+  .body { min-height: 0; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
   .top { display: flex; gap: 12px; align-items: center; }
   .mark {
     width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center;
     background: var(--v4-control-bg); color: var(--v4-text-1); font-size: 13px; flex: none;
   }
-  .mark.lg { width: 44px; height: 44px; border-radius: 10px; position: relative; }
+  .mark.lg { width: 40px; height: 40px; border-radius: 50%; position: relative; background: none; }
+  .orb { display: flex; filter: grayscale(1); }
   .ld {
     position: absolute; right: -2px; bottom: -2px; width: 10px; height: 10px; border-radius: 50%;
     background: var(--v4-ok); border: 2px solid var(--v4-secondary-sidebar, var(--side-bg));
@@ -326,18 +402,8 @@
     text-overflow: ellipsis;
     cursor: pointer;
   }
+  @media (prefers-reduced-motion: reduce) { .ptab { transition: none; } }
   .btn:hover:not(:disabled) { background: var(--hover, var(--v4-hover)); }
-  .btn.primary {
-    flex: none;
-    width: 100%;
-    height: var(--hq-btn-h);
-    border-radius: 8px;
-    border-color: transparent;
-    background: var(--v4-primary-bg, var(--t1));
-    color: var(--v4-primary-fg, var(--v4-bg));
-    font-weight: 500;
-  }
-  .btn.primary:hover { background: var(--v4-primary-bg, var(--t1)); filter: brightness(1.08); }
   .g { border-top: 1px solid var(--v4-rowline, var(--line)); padding-top: 12px; }
   .k {
     color: var(--v4-text-2);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LocalBotRow } from "@hq/platform";
 import {
+  missingNote,
   BRIEF_QUIET_MS,
   BRIEF_START_TIMEOUT_MS,
   BRIEF_STALL_TIMEOUT_MS,
@@ -365,5 +366,15 @@ describe("previousReadyRun", () => {
   it("with no run id, the latest ready run; with no entries, null", () => {
     expect(previousReadyRun(entries, null)?.runId).toBe("brief-20261011-090000");
     expect(previousReadyRun([], "brief-20261011-090000")).toBeNull();
+  });
+});
+
+describe("missingNote", () => {
+  it("says what is wrong in plain words and never names a file", () => {
+    expect(missingNote([])).toBeNull();
+    const both = missingNote(["brief-data.json", "brief.json"]);
+    expect(both).toBe("This brief did not finish. Create a new one to see it in full.");
+    expect(missingNote(["brief.json"])).toBe("Part of this brief did not finish, so some cards may be empty.");
+    for (const line of [both, missingNote(["brief.json"]), missingNote(["housekeeping.json"])]) expect(line).not.toMatch(/\.json/);
   });
 });

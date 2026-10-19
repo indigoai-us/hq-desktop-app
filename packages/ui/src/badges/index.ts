@@ -12,6 +12,8 @@ export {
   badgesFor,
   setBadgeProgressSource,
   badgeProgressFor,
+  setBadgesEnabledSource,
+  badgesEnabledFor,
   type BadgeSource,
   type BadgeSubject,
   type BadgeProgress,
@@ -23,6 +25,8 @@ export { default as TierMark } from "./TierMark.svelte";
 export { default as BadgeMark } from "./BadgeMark.svelte";
 export { default as ProfileBadges } from "./ProfileBadges.svelte";
 export { announceBadgeEarned, announceBadgesEarned, revealBadgeCard, revealBadgeCards } from "./badge-announce.js";
+export { setLaunchPreview } from "./badge-launch.js";
+export { default as BadgeLaunchAnnouncement } from "./BadgeLaunchAnnouncement.svelte";
 export { default as BadgeCard } from "./BadgeCard.svelte";
 export { default as BadgeCardModal } from "./BadgeCardModal.svelte";
 export { default as BadgesPane } from "./BadgesPane.svelte";

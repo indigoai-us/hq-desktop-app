@@ -2739,11 +2739,11 @@ async fn run_streaming<R: tauri::Runtime>(
     program: &str,
     args: &[&str],
 ) -> Result<String, String> {
-    run_streaming_with_npm_cache(app, program, args, None).await
+    run_streaming_with_npm_cache_blocking(app, program, args, None)
 }
 
 #[cfg(not(windows))]
-async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
+fn run_streaming_with_npm_cache_blocking<R: tauri::Runtime>(
     app: &AppHandle<R>,
     program: &str,
     args: &[&str],
@@ -2842,9 +2842,23 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
         let tx = tx.clone();
         std::thread::spawn(move || {
             let mut err = None;
+            let mut unlisted_scripts = NpmUnlistedScriptsWatch::default();
             for line_result in BufReader::new(stderr).lines() {
                 match line_result {
                     Ok(line) => {
+                        if let Some(warning) = unlisted_scripts.observe(&line) {
+                            log("npm-install-scripts", &warning);
+                            let _ = app.emit(
+                                "install:progress",
+                                InstallProgress {
+                                    setup_run_id: setup_run_id.clone(),
+                                    handle: handle_id.clone(),
+                                    line: warning,
+                                    finished: false,
+                                    error: None,
+                                },
+                            );
+                        }
                         recover_lock(&stderr_lines).push(line.clone());
                         append_setup_diagnostic_tail(&mut recover_lock(&stderr_tail), &line);
                         let _ = app.emit(
@@ -4140,6 +4154,393 @@ fn npm_public_registry_args(prefix: &str, spec: &str, extra_args: &[&str]) -> Ve
     npm_args_with_public_registry(&args)
 }
 
+/// Flags every managed `npm install -g` carries.
+///
+/// `--fetch-timeout` is not a whole-download limit for package tarballs, so
+/// 60 s does not cut off a large tarball (claude-code win32 is ~123 MB) on a
+/// slow link. Source, npm 11.19.1:
+/// - `@npmcli/config/lib/definitions/definitions.js:817-827` maps
+///   `fetch-timeout` (default 300000) to `timeout`;
+///   `npm-registry-fetch/lib/index.js:132` passes it on.
+/// - `minipass-fetch/lib/index.js:104-112,136` arms it on socket connect and
+///   clears it when response headers arrive.
+/// - `@npmcli/agent/lib/options.js:25-27` and `agents.js:155-157` reuse it
+///   as the socket idle timeout, which resets whenever bytes arrive.
+/// - The whole-body timer in `minipass-fetch/lib/body.js:136-143` only runs
+///   for `json()`/`text()`/`buffer()`; pacote streams tarballs through
+///   `res.body.pipe()` (`pacote/lib/remote.js:44-54`), so it never applies to
+///   them. It does apply to packuments (`pacote/lib/registry.js:98`), which
+///   are a few MB at most.
+/// So 60 s bounds a stalled connection instead of npm's 5 minutes, and
+/// `--fetch-retries=4` (default 2) retries it.
+const MANAGED_NPM_INSTALL_FLAGS: [&str; 4] = [
+    "--no-audit",
+    "--no-fund",
+    "--fetch-timeout=60000",
+    "--fetch-retries=4",
+];
+
+/// First npm release that defines `allow-scripts`
+/// (`@npmcli/config/lib/definitions/definitions.js`, absent in 11.15.0).
+const NPM_ALLOW_SCRIPTS_MIN_VERSION: (u32, u32) = (11, 16);
+
+/// Watches npm's stderr for the install-scripts report that npm 11.16+
+/// prints after `npm install` (`lib/utils/reify-output.js`). npm 11 lists
+/// packages whose install scripts ran without an allow-list entry; npm 12
+/// lists the ones it blocked. Either means `managed_npm_allow_scripts` is out
+/// of date, so each package gets one loud line in the install log.
+#[derive(Default)]
+struct NpmUnlistedScriptsWatch {
+    in_list: bool,
+    blocked: bool,
+}
+
+impl NpmUnlistedScriptsWatch {
+    fn observe(&mut self, line: &str) -> Option<String> {
+        let line = line.trim_end();
+        if line.contains("covered by allowScripts:") {
+            self.in_list = true;
+            self.blocked = line.contains("blocked");
+            return None;
+        }
+        if !self.in_list {
+            return None;
+        }
+        let entry = line
+            .strip_prefix("npm warn ")
+            .and_then(|rest| rest.split_once(' ').map(|(_, entry)| entry))
+            .unwrap_or("")
+            .trim();
+        if entry.is_empty() || entry.starts_with("Run `") {
+            self.in_list = false;
+            return None;
+        }
+        Some(if self.blocked {
+            format!(
+                "[npm] WARNING: npm blocked the install script of {entry} because it is not in this app's allow list"
+            )
+        } else {
+            format!(
+                "[npm] WARNING: the install script of {entry} ran without an entry in this app's allow list; npm 12 will block it"
+            )
+        })
+    }
+}
+
+/// Packages whose install scripts a managed install must run, passed as
+/// `--allow-scripts=<name>` on every platform. npm 11.16 to 11.x still runs
+/// the install scripts of packages that are not listed and only warns
+/// (`npm warn install-scripts ... not yet covered by allowScripts`); npm 12
+/// blocks them (`... had install scripts blocked ...`). npm 10 accepts the
+/// flag silently and npm 11.15 accepts it with an `Unknown cli config`
+/// warning; both run every install script anyway.
+///
+/// `managed_npm_install_scripts.json` lists the packages with install
+/// scripts in each managed package's resolved dependency tree, and a test
+/// keeps this list equal to it. Regenerate it with
+/// `apps/sync/scripts/managed-npm-install-scripts.mjs`.
+fn managed_npm_allow_scripts(package_name: &str) -> &'static [&'static str] {
+    const QMD_NATIVE: [&str; 7] = [
+        "better-sqlite3",
+        "node-llama-cpp",
+        "tree-sitter-go",
+        "tree-sitter-python",
+        "tree-sitter-rust",
+        "tree-sitter-typescript",
+        "tree-sitter-javascript",
+    ];
+    const HQ_CLI: [&str; 8] = [
+        "@indigoai-us/hq-cli",
+        "better-sqlite3",
+        "node-llama-cpp",
+        "tree-sitter-go",
+        "tree-sitter-python",
+        "tree-sitter-rust",
+        "tree-sitter-typescript",
+        "tree-sitter-javascript",
+    ];
+    match package_name {
+        "@anthropic-ai/claude-code" => &["@anthropic-ai/claude-code"],
+        "@xai-official/grok" => &["@xai-official/grok"],
+        "@tobilu/qmd" => &QMD_NATIVE,
+        "@indigoai-us/hq-cli" => &HQ_CLI,
+        _ => &[],
+    }
+}
+
+/// `(major, minor)` from `npm --version` output such as `11.19.1\n`.
+fn npm_version_major_minor(output: &str) -> Option<(u32, u32)> {
+    let mut parts = output.trim().split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
+}
+
+/// Managed flags plus caller flags, without repeating a managed flag, plus
+/// one `--allow-scripts=<name>` per listed package unless this npm is known
+/// to predate the option. An unknown version (`None`, the probe failed) gets
+/// the flags: npm 11.16+ needs them and older npm only warns.
+///
+/// npm matches a registry package by name but a local tarball only by its
+/// path, so a path `spec` (the bundled hq-cli) is also allowed by path.
+fn managed_npm_install_extra_args(
+    package_name: &str,
+    spec: &str,
+    npm_version: Option<(u32, u32)>,
+    extra_args: &[&str],
+) -> Vec<String> {
+    let mut args = MANAGED_NPM_INSTALL_FLAGS
+        .iter()
+        .map(|flag| (*flag).to_string())
+        .collect::<Vec<_>>();
+    let allow_scripts = match npm_version {
+        Some(version) => version >= NPM_ALLOW_SCRIPTS_MIN_VERSION,
+        None => true,
+    };
+    let allowed = managed_npm_allow_scripts(package_name);
+    if allow_scripts && !allowed.is_empty() {
+        args.extend(allowed.iter().map(|name| format!("--allow-scripts={name}")));
+        if npm_package_name_from_spec(spec).is_none() {
+            args.push(format!("--allow-scripts={spec}"));
+        }
+    }
+    args.extend(
+        extra_args
+            .iter()
+            .filter(|arg| !MANAGED_NPM_INSTALL_FLAGS.contains(arg))
+            .map(|arg| (*arg).to_string()),
+    );
+    args
+}
+
+const NPM_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Runs `<npm> --version`, stopping npm and its children if it has not
+/// exited within `deadline`.
+fn npm_version_output(npm: &str, deadline: Duration) -> Result<String, String> {
+    let search_path = extended_search_path();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let resolved = which::which_in(npm, Some(&search_path), &cwd)
+        .map_err(|error| format!("{npm} was not found: {error}"))?;
+    let mut command = Command::new(resolved);
+    command
+        .arg("--version")
+        .env("PATH", &search_path)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    run_version_probe(command, deadline)
+}
+
+/// Spawns `command` with stdout piped and returns its output if it exits
+/// successfully within `deadline`. On timeout the child's process tree is
+/// killed and reaped, so a hung npm is not left running.
+fn run_version_probe(mut command: Command, deadline: Duration) -> Result<String, String> {
+    command.stdout(Stdio::piped());
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("could not start npm --version: {error}"))?;
+    let stdout = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let mut output = String::new();
+        if let Some(mut stdout) = stdout {
+            let _ = stdout.read_to_string(&mut output);
+        }
+        output
+    });
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => {
+                return reader
+                    .join()
+                    .map_err(|_| "npm --version output reader panicked".to_string());
+            }
+            Ok(Some(status)) => return Err(format!("npm --version exited with {status}")),
+            Ok(None) if started.elapsed() >= deadline => {
+                kill_version_probe(&mut child);
+                return Err(format!(
+                    "npm --version did not finish within {deadline:?} and was stopped"
+                ));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(error) => {
+                kill_version_probe(&mut child);
+                return Err(format!("could not wait for npm --version: {error}"));
+            }
+        }
+    }
+}
+
+fn kill_version_probe(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    let _ = nix::sys::signal::killpg(
+        nix::unistd::Pid::from_raw(child.id() as i32),
+        nix::sys::signal::Signal::SIGKILL,
+    );
+    #[cfg(windows)]
+    {
+        // npm is npm.cmd: cmd.exe runs node, so kill the whole tree.
+        let mut taskkill = Command::new("taskkill");
+        taskkill
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW);
+        let _ = taskkill.status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+type NpmVersionProbe = Result<(u32, u32), String>;
+
+/// One npm version probe per setup run and npm binary. Installs that run in
+/// parallel share the probe in flight.
+#[derive(Default)]
+struct NpmVersionCache {
+    probes: Mutex<HashMap<(Option<String>, String), Arc<tokio::sync::OnceCell<NpmVersionProbe>>>>,
+}
+
+impl NpmVersionCache {
+    async fn get_or_probe<F, Fut>(
+        &self,
+        setup_run_id: Option<String>,
+        npm: &str,
+        probe: F,
+    ) -> NpmVersionProbe
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = NpmVersionProbe>,
+    {
+        let cell = recover_lock(&self.probes)
+            .entry((setup_run_id, npm.to_string()))
+            .or_default()
+            .clone();
+        cell.get_or_init(probe).await.clone()
+    }
+}
+
+static NPM_VERSION_CACHE: std::sync::LazyLock<NpmVersionCache> =
+    std::sync::LazyLock::new(NpmVersionCache::default);
+
+async fn probe_npm_version(npm: &str) -> NpmVersionProbe {
+    NPM_VERSION_CACHE
+        .get_or_probe(current_setup_run_id(), npm, || async {
+            let npm = npm.to_string();
+            let output = tokio::task::spawn_blocking(move || {
+                npm_version_output(&npm, NPM_VERSION_PROBE_TIMEOUT)
+            })
+            .await
+            .map_err(|error| format!("npm --version probe stopped: {error}"))??;
+            npm_version_major_minor(&output)
+                .ok_or_else(|| format!("unrecognised npm --version output {:?}", output.trim()))
+        })
+        .await
+}
+
+const MANAGED_NPM_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Runs `future`, calling `beat` with the elapsed time every `interval`
+/// until it finishes, so a quiet npm install still shows it is alive.
+async fn with_install_heartbeat<T>(
+    future: impl Future<Output = T>,
+    interval: Duration,
+    mut beat: impl FnMut(Duration),
+) -> T {
+    tokio::pin!(future);
+    let started = tokio::time::Instant::now();
+    let mut ticker = tokio::time::interval_at(started + interval, interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            biased;
+            output = &mut future => return output,
+            _ = ticker.tick() => beat(started.elapsed()),
+        }
+    }
+}
+
+/// The setup task-locals a blocking install runner reads, carried onto the
+/// blocking thread that runs it.
+#[derive(Default)]
+struct SetupTaskLocals {
+    failure_scope: Option<OnboardingFailureScope>,
+    diagnostics: Option<SetupDiagnosticCollector>,
+    dependency: Option<&'static str>,
+    cancellation: Option<InstallCancellationCollector>,
+}
+
+impl SetupTaskLocals {
+    fn capture() -> Self {
+        Self {
+            failure_scope: ACTIVE_ONBOARDING_FAILURE_SCOPE
+                .try_with(|scope| scope.clone())
+                .ok(),
+            diagnostics: ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR
+                .try_with(|collector| collector.clone())
+                .ok(),
+            dependency: ACTIVE_SETUP_DEPENDENCY
+                .try_with(|dependency| *dependency)
+                .ok(),
+            cancellation: ACTIVE_INSTALL_CANCELLATION_COLLECTOR
+                .try_with(|collector| collector.clone())
+                .ok(),
+        }
+    }
+
+    fn run<T>(self, f: impl FnOnce() -> T) -> T {
+        let Self {
+            failure_scope,
+            diagnostics,
+            dependency,
+            cancellation,
+        } = self;
+        let f = move || match cancellation {
+            Some(collector) => ACTIVE_INSTALL_CANCELLATION_COLLECTOR.sync_scope(collector, f),
+            None => f(),
+        };
+        let f = move || match dependency {
+            Some(dependency) => ACTIVE_SETUP_DEPENDENCY.sync_scope(dependency, f),
+            None => f(),
+        };
+        let f = move || match diagnostics {
+            Some(collector) => ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.sync_scope(collector, f),
+            None => f(),
+        };
+        match failure_scope {
+            Some(scope) => ACTIVE_ONBOARDING_FAILURE_SCOPE.sync_scope(scope, f),
+            None => f(),
+        }
+    }
+}
+
+/// Runs a blocking install `runner` with the heartbeat. The runner waits on
+/// its child process without yielding, so it runs on a blocking thread: on
+/// the async task it would hold the executor and the ticker would never fire.
+async fn run_blocking_with_install_heartbeat<T: Send + 'static>(
+    runner: impl FnOnce() -> Result<T, String> + Send + 'static,
+    interval: Duration,
+    beat: impl FnMut(Duration),
+) -> Result<T, String> {
+    let locals = SetupTaskLocals::capture();
+    let task = tokio::task::spawn_blocking(move || locals.run(runner));
+    with_install_heartbeat(task, interval, beat)
+        .await
+        .unwrap_or_else(|error| Err(format!("npm install runner stopped: {error}")))
+}
+
+fn managed_npm_heartbeat_line(tag: &str, package_name: &str, elapsed: Duration) -> String {
+    format!(
+        "[{tag}] still installing {package_name} ({}s so far)",
+        elapsed.as_secs()
+    )
+}
+
 async fn run_managed_npm_install<R: tauri::Runtime>(
     app: &AppHandle<R>,
     npm: &str,
@@ -4191,13 +4592,43 @@ async fn run_managed_npm_install_with_cancellation<R: tauri::Runtime>(
         );
         error
     })?;
-    let base_args = npm_install_args(prefix, spec, extra_args);
-    let public_registry_args = retry_public_registry
-        .then(|| npm_public_registry_args(prefix, spec, extra_args));
+    let npm_version = match probe_npm_version(npm).await {
+        Ok(version) => Some(version),
+        Err(reason) => {
+            let line = format!(
+                "[{tag}] could not read the npm version ({reason}); passing --allow-scripts anyway"
+            );
+            log("install", &line);
+            emit_install_line(app, &line);
+            None
+        }
+    };
+    let install_args = managed_npm_install_extra_args(package_name, spec, npm_version, extra_args);
+    let install_arg_refs = install_args.iter().map(String::as_str).collect::<Vec<_>>();
+    let base_args = npm_install_args(prefix, spec, &install_arg_refs);
+    let public_registry_args =
+        retry_public_registry.then(|| npm_public_registry_args(prefix, spec, &install_arg_refs));
     let npm_cache = npm_cache.as_path();
     let mut run = |args: Vec<String>| async move {
-        let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-        run_streaming_with_npm_cache(app, npm, &arg_refs, Some(npm_cache)).await
+        let runner_app = app.clone();
+        let runner_npm = npm.to_string();
+        let runner_cache = npm_cache.to_path_buf();
+        run_blocking_with_install_heartbeat(
+            move || {
+                let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+                run_streaming_with_npm_cache_blocking(
+                    &runner_app,
+                    &runner_npm,
+                    &arg_refs,
+                    Some(&runner_cache),
+                )
+            },
+            MANAGED_NPM_HEARTBEAT_INTERVAL,
+            |elapsed| {
+                emit_install_line(app, &managed_npm_heartbeat_line(tag, package_name, elapsed))
+            },
+        )
+        .await
     };
     let mut cleanup = |scope: &Path, package_name: &str| {
         crate::commands::hq_cli_update::clean_partial_install_scope(scope, package_name);
@@ -5437,11 +5868,11 @@ async fn run_streaming<R: tauri::Runtime>(
     program: &str,
     args: &[&str],
 ) -> Result<String, String> {
-    run_streaming_with_npm_cache(app, program, args, None).await
+    run_streaming_with_npm_cache_blocking(app, program, args, None)
 }
 
 #[cfg(windows)]
-async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
+fn run_streaming_with_npm_cache_blocking<R: tauri::Runtime>(
     app: &AppHandle<R>,
     program: &str,
     args: &[&str],
@@ -5590,9 +6021,23 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
         let tx = tx.clone();
         std::thread::spawn(move || {
             let mut err = None;
+            let mut unlisted_scripts = NpmUnlistedScriptsWatch::default();
             for line_result in BufReader::new(stderr).lines() {
                 match line_result {
                     Ok(line) => {
+                        if let Some(warning) = unlisted_scripts.observe(&line) {
+                            log("npm-install-scripts", &warning);
+                            let _ = app.emit(
+                                "install:progress",
+                                InstallProgress {
+                                    setup_run_id: setup_run_id.clone(),
+                                    handle: handle_id.clone(),
+                                    line: warning,
+                                    finished: false,
+                                    error: None,
+                                },
+                            );
+                        }
                         recover_lock(&stderr_lines).push(line.clone());
                         append_setup_diagnostic_tail(&mut recover_lock(&stderr_tail), &line);
                         let _ = app.emit(
@@ -6425,7 +6870,7 @@ async fn install_qmd_windows(app: AppHandle) -> Result<String, String> {
         &qmd_spec,
         "@tobilu/qmd",
         "qmd",
-        &["--no-audit", "--no-fund"],
+        &[],
         false,
     )
     .await?;
@@ -6783,6 +7228,7 @@ mod rsync_core_update_rescue_tests {
 /// the npm-prefix shims when no real `rsync.exe` is present.
 #[cfg(windows)]
 pub(crate) async fn ensure_rsync_for_core_update_rescue() -> RsyncRescueProvisioning {
+    repair_managed_cwrsync_fstab("core-update preflight");
     if rescue_rsync_is_ready().await.is_ok() {
         return RsyncRescueProvisioning::AlreadyRescueReady;
     }
@@ -6908,7 +7354,7 @@ async fn install_rsync_with_progress_inner(
         let _ = std::fs::remove_dir_all(&staged_bin);
         return Err(e);
     }
-    activate_staged_bin_files(&staged_bin, &bin_dir)?;
+    activate_managed_rsync(&staged_bin, &managed_toolchain_dir())?;
 
     append_user_path(&bin_dir)?;
 
@@ -6971,6 +7417,102 @@ fn extract_rsync_zip_to_bin(bytes: &[u8], staged_bin: &Path) -> Result<(), Strin
                 .to_string(),
         )
     }
+}
+
+/// Cygwin mount table for the managed cwRsync. Cygwin reads `/etc/fstab`
+/// from the parent of the directory holding `cygwin1.dll`, so for the
+/// managed install (`<toolchain>/bin/rsync.exe`) that is
+/// `<toolchain>/etc/fstab`. Without a `noacl` cygdrive mount, cwRsync reads
+/// Windows ACLs for every new directory once rsync runs with `--no-perms`
+/// (hq-cloud 6.18.76+ passes it on win32), logs
+/// `unpack_smb_acl: sys_acl_get_info(): Invalid argument (22)` and exits 23,
+/// which fails every Core update. This is the stock cwRsync line.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const CWRSYNC_FSTAB_BODY: &str = "# Written by HQ Desktop for the managed cwRsync.\n\
+# noacl stops rsync from reading Windows ACLs (exit 23 with --no-perms).\n\
+none /cygdrive cygdrive binary,posix=0,user,noacl 0 0\n";
+
+/// True when `body` has an active (uncommented) mount line for `/cygdrive`
+/// whose options include `noacl`.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn fstab_has_noacl_cygdrive_mount(body: &str) -> bool {
+    body.lines().any(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            return false;
+        }
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        fields.len() >= 4
+            && fields[1] == "/cygdrive"
+            && fields[3].split(',').any(|opt| opt == "noacl")
+    })
+}
+
+/// Makes sure `<toolchain_dir>/etc/fstab` has a `noacl` cygdrive mount.
+/// Leaves a correct file alone; writes the stock table when the file is
+/// missing or lacks the mount. Returns `true` when it wrote the file.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn ensure_cwrsync_fstab_in(toolchain_dir: &Path) -> Result<bool, String> {
+    let etc_dir = toolchain_dir.join("etc");
+    let fstab = etc_dir.join("fstab");
+    match std::fs::read_to_string(&fstab) {
+        Ok(body) if fstab_has_noacl_cygdrive_mount(&body) => return Ok(false),
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("read {fstab:?}: {e}")),
+    }
+    std::fs::create_dir_all(&etc_dir).map_err(|e| format!("mkdir {etc_dir:?}: {e}"))?;
+    let staged = etc_dir.join(format!(".fstab-{}", Uuid::new_v4()));
+    std::fs::write(&staged, CWRSYNC_FSTAB_BODY).map_err(|e| format!("write {staged:?}: {e}"))?;
+    if let Err(e) = std::fs::rename(&staged, &fstab) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(format!("replace {fstab:?}: {e}"));
+    }
+    Ok(true)
+}
+
+/// Repairs the mount table of an existing managed cwRsync install. Installs
+/// made before the fstab was written have `bin/rsync.exe` and no
+/// `etc/fstab`, and the rescue preflight treats them as ready, so they are
+/// never reinstalled. Does nothing when HQ did not install rsync.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn repair_managed_cwrsync_fstab_in(toolchain_dir: &Path) -> Result<bool, String> {
+    if !toolchain_dir.join("bin").join("rsync.exe").is_file() {
+        return Ok(false);
+    }
+    ensure_cwrsync_fstab_in(toolchain_dir)
+}
+
+#[cfg(windows)]
+fn repair_managed_cwrsync_fstab(context: &str) {
+    match repair_managed_cwrsync_fstab_in(&managed_toolchain_dir()) {
+        Ok(true) => log(
+            "rsync-fstab",
+            &format!("{context}: wrote noacl etc/fstab for the managed cwRsync"),
+        ),
+        Ok(false) => {}
+        Err(e) => log(
+            "rsync-fstab",
+            &format!("{context}: could not write etc/fstab for the managed cwRsync: {e}"),
+        ),
+    }
+}
+
+/// App-start repair for managed cwRsync installs that predate the fstab.
+#[cfg(windows)]
+pub fn setup_cwrsync_fstab_repair() {
+    if !crate::scratch_build::launch_side_effect_allowed("cwRsync fstab repair") {
+        return;
+    }
+    std::thread::spawn(|| repair_managed_cwrsync_fstab("app start"));
+}
+
+/// Moves the staged rsync binaries into `<toolchain_dir>/bin` and writes
+/// the cwRsync mount table next to them.
+#[cfg(windows)]
+fn activate_managed_rsync(staged_bin: &Path, toolchain_dir: &Path) -> Result<(), String> {
+    activate_staged_bin_files(staged_bin, &toolchain_dir.join("bin"))?;
+    ensure_cwrsync_fstab_in(toolchain_dir).map(|_| ())
 }
 
 #[cfg(windows)]
@@ -8628,16 +9170,52 @@ async fn run_lean_npm_install(app: &AppHandle, lean: &Path, tag: &str) -> Result
                 );
                 error
             })?;
-        let base_args: Vec<String> = ["install", "--prefix", prefix.as_str(), "--no-audit", "--no-fund"]
+        let npm_version = match probe_npm_version(&npm).await {
+            Ok(version) => Some(version),
+            Err(reason) => {
+                let line = format!(
+                    "[{tag}] could not read the npm version ({reason}); passing --allow-scripts anyway"
+                );
+                log("install", &line);
+                emit_install_line(app, &line);
+                None
+            }
+        };
+        // The same bounded fetch flags and install-script allow list as a
+        // managed global install of qmd.
+        let mut base_args: Vec<String> = ["install", "--prefix", prefix.as_str()]
             .into_iter()
             .map(str::to_string)
             .collect();
+        base_args.extend(managed_npm_install_extra_args(
+            "@tobilu/qmd",
+            "@tobilu/qmd",
+            npm_version,
+            &[],
+        ));
         let public_registry_args = Some(npm_args_with_public_registry(&base_args));
         let npm_cache = npm_cache.as_path();
         let npm = npm.as_str();
         let mut run = |args: Vec<String>| async move {
-            let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-            run_streaming_with_npm_cache(app, npm, &arg_refs, Some(npm_cache)).await
+            let runner_app = app.clone();
+            let runner_npm = npm.to_string();
+            let runner_cache = npm_cache.to_path_buf();
+            run_blocking_with_install_heartbeat(
+                move || {
+                    let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+                    run_streaming_with_npm_cache_blocking(
+                        &runner_app,
+                        &runner_npm,
+                        &arg_refs,
+                        Some(&runner_cache),
+                    )
+                },
+                MANAGED_NPM_HEARTBEAT_INTERVAL,
+                |elapsed| {
+                    emit_install_line(app, &managed_npm_heartbeat_line(tag, "@tobilu/qmd", elapsed))
+                },
+            )
+            .await
         };
         let mut cleanup = |scope: &Path, package_name: &str| {
             crate::commands::hq_cli_update::clean_partial_install_scope(scope, package_name);
@@ -10812,6 +11390,32 @@ mod windows_tests {
         assert!(err.contains("bin/rsync.exe"), "{err}");
     }
 
+    /// feedback_33684c6f: the installed cwRsync tree must carry
+    /// `etc/fstab` with a `noacl` cygdrive mount, or rsync with
+    /// `--no-perms` reads Windows ACLs and exits 23 on every Core update.
+    #[test]
+    fn installed_cwrsync_tree_has_noacl_fstab() {
+        let toolchain = tempfile::tempdir().unwrap();
+        let staged = toolchain.path().join(".rsync-bin-test");
+        let bytes = zip_fixture(&[
+            ("portable-rsync/bin/rsync.exe", b"rsync"),
+            ("portable-rsync/bin/cygwin1.dll", b"dll"),
+        ]);
+        extract_rsync_zip_to_bin(&bytes, &staged).expect("rsync zip should extract");
+        activate_managed_rsync(&staged, toolchain.path()).expect("activate managed rsync");
+
+        assert!(toolchain.path().join("bin").join("rsync.exe").is_file());
+        assert!(toolchain.path().join("bin").join("cygwin1.dll").is_file());
+        assert!(!staged.exists(), "staging dir must be removed");
+        let fstab = std::fs::read_to_string(toolchain.path().join("etc").join("fstab"))
+            .expect("installed cwRsync tree must contain etc/fstab");
+        assert!(fstab_has_noacl_cygdrive_mount(&fstab), "{fstab}");
+        assert!(
+            fstab.contains("none /cygdrive cygdrive binary,posix=0,user,noacl 0 0"),
+            "{fstab}"
+        );
+    }
+
     #[test]
     fn shim_writers_emit_expected_files() {
         let tmp = tempfile::tempdir().unwrap();
@@ -12118,6 +12722,449 @@ mod npm_setup_recovery_tests {
     }
 
     #[test]
+    fn npm_version_major_minor_parses_npm_version_output() {
+        assert_eq!(npm_version_major_minor("11.19.1\n"), Some((11, 19)));
+        assert_eq!(npm_version_major_minor("10.9.2"), Some((10, 9)));
+        assert_eq!(npm_version_major_minor("12.0.0-pre.1\r\n"), Some((12, 0)));
+        assert_eq!(npm_version_major_minor(""), None);
+        assert_eq!(npm_version_major_minor("npm WARN config\n"), None);
+    }
+
+    #[test]
+    fn managed_npm_install_args_carry_quiet_timeout_and_retry_flags() {
+        let extra = managed_npm_install_extra_args("pnpm", "pnpm@9", Some((10, 9)), &[]);
+        let extra_refs = extra.iter().map(String::as_str).collect::<Vec<_>>();
+        assert_eq!(
+            npm_install_args("/tmp/setup-prefix", "pnpm@9", &extra_refs),
+            [
+                "install",
+                "-g",
+                "--prefix",
+                "/tmp/setup-prefix",
+                "--no-audit",
+                "--no-fund",
+                "--fetch-timeout=60000",
+                "--fetch-retries=4",
+                "pnpm@9",
+            ]
+        );
+        let public = npm_public_registry_args("/tmp/setup-prefix", "pnpm@9", &extra_refs);
+        for flag in MANAGED_NPM_INSTALL_FLAGS {
+            assert!(
+                public.iter().any(|arg| arg == flag),
+                "public-registry retry must keep {flag}: {public:?}"
+            );
+        }
+        assert_eq!(public.last().map(String::as_str), Some("pnpm@9"));
+    }
+
+    #[test]
+    fn managed_npm_install_args_do_not_repeat_caller_flags() {
+        let extra = managed_npm_install_extra_args(
+            "@indigoai-us/hq-cli",
+            "@indigoai-us/hq-cli",
+            Some((10, 9)),
+            &[
+                "--no-audit",
+                "--no-fund",
+                "--registry=https://registry.npmjs.org/",
+            ],
+        );
+        assert_eq!(
+            extra,
+            [
+                "--no-audit",
+                "--no-fund",
+                "--fetch-timeout=60000",
+                "--fetch-retries=4",
+                "--registry=https://registry.npmjs.org/",
+            ]
+        );
+    }
+
+    #[test]
+    fn managed_npm_allow_scripts_only_on_npm_that_defines_it() {
+        let allow = |package: &str, version: Option<(u32, u32)>| {
+            managed_npm_install_extra_args(package, package, version, &[])
+                .into_iter()
+                .filter_map(|arg| arg.strip_prefix("--allow-scripts=").map(str::to_string))
+                .collect::<Vec<_>>()
+        };
+        for version in [Some((10, 9)), Some((11, 15))] {
+            assert!(
+                allow("@anthropic-ai/claude-code", version).is_empty(),
+                "npm {version:?} has no allow-scripts option and runs scripts by default"
+            );
+        }
+        // `None`: the version probe failed. npm 11.16+ needs the flags and
+        // older npm only warns about an unknown option, so pass them.
+        for version in [None, Some((11, 16)), Some((11, 19)), Some((12, 0))] {
+            assert_eq!(
+                allow("@anthropic-ai/claude-code", version),
+                ["@anthropic-ai/claude-code"]
+            );
+        }
+        let npm_11 = Some((11, 19));
+        assert_eq!(allow("@xai-official/grok", npm_11), ["@xai-official/grok"]);
+        assert!(allow("@openai/codex", npm_11).is_empty());
+        assert!(allow("pnpm", npm_11).is_empty());
+        let qmd_native = [
+            "better-sqlite3",
+            "node-llama-cpp",
+            "tree-sitter-go",
+            "tree-sitter-python",
+            "tree-sitter-rust",
+            "tree-sitter-typescript",
+            "tree-sitter-javascript",
+        ];
+        assert_eq!(allow("@tobilu/qmd", npm_11), qmd_native);
+        let mut hq_cli = vec!["@indigoai-us/hq-cli"];
+        hq_cli.extend(qmd_native);
+        assert_eq!(allow("@indigoai-us/hq-cli", npm_11), hq_cli);
+    }
+
+    #[test]
+    fn managed_npm_allow_scripts_allow_a_tarball_spec_by_path() {
+        // npm matches a local tarball's install script only by its path, so
+        // the bundled hq-cli tarball must be allowed by path as well as name.
+        let tarball = "/Applications/HQ.app/Contents/Resources/hq-cli.tgz";
+        let extra =
+            managed_npm_install_extra_args("@indigoai-us/hq-cli", tarball, Some((12, 0)), &[]);
+        assert!(extra
+            .iter()
+            .any(|arg| arg == "--allow-scripts=@indigoai-us/hq-cli"));
+        assert!(
+            extra
+                .iter()
+                .any(|arg| *arg == format!("--allow-scripts={tarball}")),
+            "{extra:?}"
+        );
+        let registry = managed_npm_install_extra_args(
+            "@indigoai-us/hq-cli",
+            "@indigoai-us/hq-cli@5",
+            Some((12, 0)),
+            &[],
+        );
+        assert!(
+            !registry.iter().any(|arg| arg.contains("hq-cli@5")),
+            "{registry:?}"
+        );
+        assert!(
+            managed_npm_install_extra_args("pnpm", "/tmp/pnpm.tgz", Some((12, 0)), &[])
+                .iter()
+                .all(|arg| !arg.starts_with("--allow-scripts="))
+        );
+    }
+
+    #[derive(Deserialize)]
+    struct InstallScriptsFixture {
+        packages: std::collections::BTreeMap<String, InstallScriptsPackage>,
+    }
+
+    #[derive(Deserialize)]
+    struct InstallScriptsPackage {
+        version: String,
+        install_scripts: Vec<InstallScriptsEntry>,
+    }
+
+    #[derive(Deserialize)]
+    struct InstallScriptsEntry {
+        name: String,
+    }
+
+    /// `managed_npm_install_scripts.json` is every package with an install
+    /// script in the resolved dependency tree of each managed install
+    /// (`apps/sync/scripts/managed-npm-install-scripts.mjs`). A dependency
+    /// that gains an install script must be added to the allow list, or npm
+    /// 12 blocks it.
+    #[test]
+    fn managed_allow_lists_cover_every_install_script_in_the_resolved_tree() {
+        let fixture: InstallScriptsFixture =
+            serde_json::from_str(include_str!("managed_npm_install_scripts.json"))
+                .expect("install-scripts fixture parses");
+        let managed = [
+            "@anthropic-ai/claude-code",
+            "@openai/codex",
+            "@xai-official/grok",
+            "@tobilu/qmd",
+            "@indigoai-us/hq-cli",
+            "pnpm",
+        ];
+        assert_eq!(
+            fixture
+                .packages
+                .keys()
+                .map(String::as_str)
+                .collect::<HashSet<_>>(),
+            managed.into_iter().collect::<HashSet<_>>(),
+            "the fixture covers each managed package"
+        );
+        assert_eq!(
+            fixture.packages["@tobilu/qmd"].version, MANAGED_QMD_VERSION,
+            "regenerate the fixture when the qmd pin moves"
+        );
+        for (package, entry) in &fixture.packages {
+            let resolved = entry
+                .install_scripts
+                .iter()
+                .map(|script| script.name.as_str())
+                .collect::<HashSet<_>>();
+            let allowed = managed_npm_allow_scripts(package)
+                .iter()
+                .copied()
+                .collect::<HashSet<_>>();
+            assert_eq!(
+                allowed, resolved,
+                "{package}: the allow list must equal the packages with install scripts in its resolved tree"
+            );
+        }
+    }
+
+    fn unlisted_script_warnings(stderr: &str) -> Vec<String> {
+        let mut watch = NpmUnlistedScriptsWatch::default();
+        stderr
+            .lines()
+            .filter_map(|line| watch.observe(line))
+            .collect()
+    }
+
+    #[test]
+    fn npm_unlisted_install_scripts_are_reported_loudly() {
+        // npm 11.16.0
+        assert_eq!(
+            unlisted_script_warnings(
+                "npm warn allow-scripts 1 package has install scripts not yet covered by allowScripts:\n\
+                 npm warn allow-scripts   esbuild@0.25.10 (postinstall: node install.js)\n\
+                 npm warn allow-scripts\n\
+                 npm warn allow-scripts Run `npm install -g --allow-scripts=esbuild` to allow them.\n"
+            ),
+            ["[npm] WARNING: the install script of esbuild@0.25.10 (postinstall: node install.js) ran without an entry in this app's allow list; npm 12 will block it"]
+        );
+        // npm 11.19.1, two packages
+        assert_eq!(
+            unlisted_script_warnings(
+                "added 3 packages in 2s\n\
+                 npm warn install-scripts 2 packages have install scripts not yet covered by allowScripts:\n\
+                 npm warn install-scripts   esbuild@0.25.10 (postinstall: node install.js)\n\
+                 npm warn install-scripts   better-sqlite3@12.10.0 (install: prebuild-install || node-gyp rebuild --release)\n\
+                 npm warn install-scripts\n\
+                 npm warn install-scripts Run `npm install -g --allow-scripts=esbuild` to allow them.\n"
+            )
+            .len(),
+            2
+        );
+        // npm 12.2.0
+        assert_eq!(
+            unlisted_script_warnings(
+                "npm warn install-scripts 1 package had install scripts blocked because they are not covered by allowScripts:\n\
+                 npm warn install-scripts   esbuild@0.25.10 (postinstall: node install.js)\n\
+                 npm warn install-scripts\n\
+                 npm warn install-scripts Run `npm install -g --allow-scripts=esbuild` to allow them.\n\
+                 npm warn deprecated something@1.0.0: old\n"
+            ),
+            ["[npm] WARNING: npm blocked the install script of esbuild@0.25.10 (postinstall: node install.js) because it is not in this app's allow list"]
+        );
+        assert!(unlisted_script_warnings(
+            "npm warn deprecated inflight@1.0.6: leaks memory\nadded 12 packages in 3s\n"
+        )
+        .is_empty());
+    }
+
+    #[tokio::test]
+    async fn npm_version_probe_runs_once_per_setup_run_and_npm() {
+        let cache = NpmVersionCache::default();
+        let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let probe = || {
+            let probes = Arc::clone(&probes);
+            move || async move {
+                probes.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                Ok((11, 19))
+            }
+        };
+        let run = Some("run-1".to_string());
+        let (a, b, c) = tokio::join!(
+            cache.get_or_probe(run.clone(), "npm", probe()),
+            cache.get_or_probe(run.clone(), "npm", probe()),
+            cache.get_or_probe(run.clone(), "npm", probe()),
+        );
+        assert_eq!((a, b, c), (Ok((11, 19)), Ok((11, 19)), Ok((11, 19))));
+        assert_eq!(
+            cache.get_or_probe(run.clone(), "npm", probe()).await,
+            Ok((11, 19))
+        );
+        assert_eq!(
+            probes.load(Ordering::SeqCst),
+            1,
+            "one probe for every attempt in a setup run"
+        );
+        let _ = cache
+            .get_or_probe(Some("run-2".to_string()), "npm", probe())
+            .await;
+        let _ = cache.get_or_probe(run, "/opt/other/npm", probe()).await;
+        assert_eq!(probes.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn a_failed_npm_version_probe_is_not_retried_within_a_setup_run() {
+        let cache = NpmVersionCache::default();
+        let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        for _ in 0..3 {
+            let probes = Arc::clone(&probes);
+            let result = cache
+                .get_or_probe(Some("run".to_string()), "npm", move || async move {
+                    probes.fetch_add(1, Ordering::SeqCst);
+                    Err("npm --version did not finish within 30s and was stopped".to_string())
+                })
+                .await;
+            assert!(result.is_err());
+        }
+        assert_eq!(probes.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn npm_version_probe_stops_a_hung_npm_and_its_children() {
+        let dir = tempfile::tempdir().expect("fixture dir");
+        let pid_file = dir.path().join("grandchild.pid");
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg(format!(
+            "sleep 30 & echo $! > '{}'; wait",
+            pid_file.display()
+        ));
+        let started = std::time::Instant::now();
+        let result = run_version_probe(command, Duration::from_millis(300));
+        assert_eq!(
+            result,
+            Err("npm --version did not finish within 300ms and was stopped".to_string())
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the probe waited for npm"
+        );
+        let grandchild: i32 = std::fs::read_to_string(&pid_file)
+            .expect("grandchild pid")
+            .trim()
+            .parse()
+            .expect("pid");
+        let gone = (0..100).any(|_| {
+            if signal::kill(Pid::from_raw(grandchild), None).is_err() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+            false
+        });
+        assert!(
+            gone,
+            "the hung probe's child process {grandchild} is still running"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn npm_version_probe_returns_output_of_a_fast_npm() {
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg("echo 11.19.1");
+        assert_eq!(
+            run_version_probe(command, Duration::from_secs(10)).as_deref(),
+            Ok("11.19.1\n")
+        );
+        let mut failing = Command::new("/bin/sh");
+        failing.arg("-c").arg("exit 3");
+        assert!(run_version_probe(failing, Duration::from_secs(10)).is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn install_heartbeat_reports_elapsed_time_while_npm_runs() {
+        let mut beats = Vec::new();
+        let output = with_install_heartbeat(
+            async {
+                tokio::time::sleep(Duration::from_secs(40)).await;
+                "installed"
+            },
+            MANAGED_NPM_HEARTBEAT_INTERVAL,
+            |elapsed| beats.push(elapsed.as_secs()),
+        )
+        .await;
+        assert_eq!(output, "installed");
+        assert_eq!(
+            beats,
+            [15, 30],
+            "one line every 15 s while npm is still running"
+        );
+        assert_eq!(
+            managed_npm_heartbeat_line("qmd", "@tobilu/qmd", Duration::from_secs(30)),
+            "[qmd] still installing @tobilu/qmd (30s so far)"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn install_heartbeat_stays_quiet_for_a_fast_install() {
+        let mut beats = 0;
+        let output = with_install_heartbeat(
+            async {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                7
+            },
+            MANAGED_NPM_HEARTBEAT_INTERVAL,
+            |_| beats += 1,
+        )
+        .await;
+        assert_eq!(output, 7);
+        assert_eq!(beats, 0);
+    }
+
+    /// The real runner waits on npm with a blocking `recv_timeout` loop and
+    /// never yields. The heartbeat must still fire while it holds its thread.
+    #[tokio::test]
+    async fn install_heartbeat_fires_while_a_blocking_runner_holds_its_thread() {
+        let mut beats = 0;
+        let output = run_blocking_with_install_heartbeat(
+            || {
+                std::thread::sleep(Duration::from_millis(400));
+                Ok("installed".to_string())
+            },
+            Duration::from_millis(50),
+            |_| beats += 1,
+        )
+        .await;
+        assert_eq!(output.as_deref(), Ok("installed"));
+        assert!(
+            beats >= 2,
+            "expected heartbeats while the runner blocked for 400 ms at a 50 ms interval, got {beats}"
+        );
+    }
+
+    #[tokio::test]
+    async fn blocking_install_runner_sees_the_setup_task_locals() {
+        let collector = InstallCancellationCollector::new();
+        let seen = ACTIVE_SETUP_DEPENDENCY
+            .scope(
+                "qmd",
+                ACTIVE_INSTALL_CANCELLATION_COLLECTOR.scope(collector, async {
+                    run_blocking_with_install_heartbeat(
+                        || {
+                            Ok((
+                                ACTIVE_SETUP_DEPENDENCY
+                                    .try_with(|dependency| *dependency)
+                                    .ok(),
+                                ACTIVE_INSTALL_CANCELLATION_COLLECTOR
+                                    .try_with(|_| ())
+                                    .is_ok(),
+                                ACTIVE_ONBOARDING_FAILURE_SCOPE.try_with(|_| ()).is_ok(),
+                            ))
+                        },
+                        MANAGED_NPM_HEARTBEAT_INTERVAL,
+                        |_| {},
+                    )
+                    .await
+                }),
+            )
+            .await;
+        assert_eq!(seen, Ok((Some("qmd"), true, false)));
+    }
+
+    #[test]
     fn setup_npm_command_carries_the_app_owned_cache_for_both_layouts() {
         for (layout, prefix, cache_path) in [
             ("macOS", "/tmp/setup-prefix", "/tmp/app-cache/npm"),
@@ -12155,10 +13202,7 @@ mod npm_setup_recovery_tests {
     fn setup_npm_install_wires_the_resolved_cache_into_the_runner() {
         let source = include_str!("install_deps.rs");
         // Split so this needle does not count itself in the source.
-        let call = concat!(
-            "run_streaming_with_npm_cache(app, npm, &arg_refs, ",
-            "Some(npm_cache)).await"
-        );
+        let call = concat!("Some(&runner_", "cache),");
 
         assert_eq!(
             source.matches(call).count(),
@@ -13592,5 +14636,99 @@ mod cancellation_reporting_tests {
             event.message.as_deref(),
             Some("Desktop setup dependency installation failed")
         );
+    }
+}
+
+#[cfg(test)]
+mod cwrsync_fstab_tests {
+    use super::*;
+
+    fn read_fstab(toolchain: &Path) -> String {
+        std::fs::read_to_string(toolchain.join("etc").join("fstab")).unwrap()
+    }
+
+    #[test]
+    fn stock_body_has_noacl_cygdrive_mount() {
+        assert!(fstab_has_noacl_cygdrive_mount(CWRSYNC_FSTAB_BODY));
+        assert!(CWRSYNC_FSTAB_BODY
+            .lines()
+            .any(|l| l == "none /cygdrive cygdrive binary,posix=0,user,noacl 0 0"));
+    }
+
+    #[test]
+    fn noacl_detection_ignores_comments_and_other_mounts() {
+        assert!(!fstab_has_noacl_cygdrive_mount(""));
+        assert!(!fstab_has_noacl_cygdrive_mount(
+            "# none /cygdrive cygdrive binary,posix=0,user,noacl 0 0\n"
+        ));
+        assert!(!fstab_has_noacl_cygdrive_mount(
+            "none /cygdrive cygdrive binary,posix=0,user 0 0\n"
+        ));
+        assert!(!fstab_has_noacl_cygdrive_mount(
+            "C:/tmp /tmp ntfs binary,noacl 0 0\n"
+        ));
+        assert!(fstab_has_noacl_cygdrive_mount(
+            "  none   /cygdrive  cygdrive  noacl,binary  0 0\r\n"
+        ));
+    }
+
+    #[test]
+    fn writes_fstab_when_missing() {
+        let toolchain = tempfile::tempdir().unwrap();
+        assert!(ensure_cwrsync_fstab_in(toolchain.path()).unwrap());
+        assert!(fstab_has_noacl_cygdrive_mount(&read_fstab(
+            toolchain.path()
+        )));
+        let leftovers: Vec<_> = std::fs::read_dir(toolchain.path().join("etc"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|n| n != "fstab")
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "staged files left behind: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn rewrites_fstab_without_noacl_and_keeps_a_correct_one() {
+        let toolchain = tempfile::tempdir().unwrap();
+        let etc = toolchain.path().join("etc");
+        std::fs::create_dir_all(&etc).unwrap();
+        std::fs::write(
+            etc.join("fstab"),
+            "none /cygdrive cygdrive binary,posix=0,user 0 0\n",
+        )
+        .unwrap();
+        assert!(ensure_cwrsync_fstab_in(toolchain.path()).unwrap());
+        assert_eq!(read_fstab(toolchain.path()), CWRSYNC_FSTAB_BODY);
+
+        let custom = "none /cygdrive cygdrive binary,noacl 0 0\n";
+        std::fs::write(etc.join("fstab"), custom).unwrap();
+        assert!(!ensure_cwrsync_fstab_in(toolchain.path()).unwrap());
+        assert_eq!(read_fstab(toolchain.path()), custom);
+    }
+
+    /// Existing installs: a managed `bin/rsync.exe` with no `etc/fstab`
+    /// gets the mount table on the next app start or Core-update preflight.
+    #[test]
+    fn repair_writes_fstab_for_existing_managed_install() {
+        let toolchain = tempfile::tempdir().unwrap();
+        let bin = toolchain.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("rsync.exe"), b"rsync").unwrap();
+
+        assert!(repair_managed_cwrsync_fstab_in(toolchain.path()).unwrap());
+        assert!(fstab_has_noacl_cygdrive_mount(&read_fstab(
+            toolchain.path()
+        )));
+        assert!(!repair_managed_cwrsync_fstab_in(toolchain.path()).unwrap());
+    }
+
+    #[test]
+    fn repair_leaves_toolchain_without_managed_rsync_alone() {
+        let toolchain = tempfile::tempdir().unwrap();
+        assert!(!repair_managed_cwrsync_fstab_in(toolchain.path()).unwrap());
+        assert!(!toolchain.path().join("etc").exists());
     }
 }

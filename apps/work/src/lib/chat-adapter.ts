@@ -9,6 +9,12 @@
  * error-classification logic keeps working unchanged.
  */
 
+import {
+  WORK_FEED_PATH,
+  WorkFeedPagingError,
+  fetchWorkFeedPages,
+  workFeedPagePath,
+} from "@hq/core";
 import type { AdapterResult, PlatformAdapter } from "@hq/platform";
 import {
   createLiveNotificationsApi,
@@ -90,17 +96,29 @@ function isPagedDirectoryCursor(cursor: string | undefined): cursor is string {
   );
 }
 
-async function loadWorkFeed(
-  personUid: string,
-  fetchImpl: HqProFetch = hqProFetch,
-): Promise<WorkFeedItem[]> {
-  const now = Date.now();
-  if (
-    workFeedCache?.key === personUid &&
-    now - workFeedCache.at < WORK_FEED_TTL_MS
+type WorkFeedFailureEvent =
+  | "http-error"
+  | "timeout"
+  | "body-error"
+  | "transport-error";
+
+class WorkFeedPageError extends Error {
+  constructor(
+    readonly event: WorkFeedFailureEvent,
+    readonly status?: number,
   ) {
-    return workFeedCache.items;
+    super(`work feed ${event}`);
   }
+}
+
+/**
+ * One GET /v1/work-mesh/work page under its own deadline. The first page is
+ * requested with no query params, exactly as before paging existed.
+ */
+async function fetchWorkFeedPage(
+  fetchImpl: HqProFetch,
+  pageCursor: string | undefined,
+): Promise<unknown> {
   const controller = new AbortController();
   let timeoutElapsed = false;
   let rejectDeadline!: (reason: Error) => void;
@@ -115,31 +133,73 @@ async function loadWorkFeed(
   }, WORK_FEED_REQUEST_TIMEOUT_MS);
   try {
     const res = await Promise.race([
-      fetchImpl("/v1/work-mesh/work", { signal: controller.signal }),
+      fetchImpl(workFeedPagePath(WORK_FEED_PATH, undefined, pageCursor), {
+        signal: controller.signal,
+      }),
       deadline,
     ]);
-    if (!res.ok) {
-      console.warn("[hq-work-feed] request failed", {
-        event: "http-error",
-        status: res.status,
-      });
-      return workFeedCache?.key === personUid ? workFeedCache.items : [];
-    }
+    if (!res.ok) throw new WorkFeedPageError("http-error", res.status);
     phase = "body";
-    const items = parseWorkFeed(await Promise.race([res.json(), deadline]));
-    workFeedCache = { key: personUid, at: now, items };
-    return items;
-  } catch {
-    console.warn("[hq-work-feed] request failed", {
-      event: timeoutElapsed
+    return await Promise.race([res.json(), deadline]);
+  } catch (error) {
+    if (error instanceof WorkFeedPageError) throw error;
+    throw new WorkFeedPageError(
+      timeoutElapsed
         ? "timeout"
         : phase === "body"
           ? "body-error"
           : "transport-error",
-    });
-    return workFeedCache?.key === personUid ? workFeedCache.items : [];
+    );
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+function workFeedFailureDetail(error: unknown): Record<string, unknown> {
+  if (error instanceof WorkFeedPageError) {
+    return error.status === undefined
+      ? { event: error.event }
+      : { event: error.event, status: error.status };
+  }
+  return { event: "transport-error" };
+}
+
+async function loadWorkFeed(
+  personUid: string,
+  fetchImpl: HqProFetch = hqProFetch,
+): Promise<WorkFeedItem[]> {
+  const now = Date.now();
+  if (
+    workFeedCache?.key === personUid &&
+    now - workFeedCache.at < WORK_FEED_TTL_MS
+  ) {
+    return workFeedCache.items;
+  }
+  const cached = (): WorkFeedItem[] | null =>
+    workFeedCache?.key === personUid ? workFeedCache.items : null;
+  try {
+    // Large feeds come back in pages (hq-pro #5004). Servers that predate
+    // paging send no `hasMore`, so the first response is the whole feed.
+    // A capped walk (logged by fetchWorkFeedPages) still holds the newest
+    // rows, so it is cached like a full read.
+    const { state } = await fetchWorkFeedPages((pageCursor) =>
+      fetchWorkFeedPage(fetchImpl, pageCursor),
+    );
+    const items = parseWorkFeed(state);
+    workFeedCache = { key: personUid, at: now, items };
+    return items;
+  } catch (error) {
+    if (error instanceof WorkFeedPagingError) {
+      // A later page failed. Prefer the last complete read; without one, use
+      // the newest rows already fetched. Neither is cached as a full read.
+      console.warn("[hq-work-feed] request failed", {
+        ...workFeedFailureDetail(error.failure),
+        page: error.partial.pages + 1,
+      });
+      return cached() ?? parseWorkFeed(error.partial.state);
+    }
+    console.warn("[hq-work-feed] request failed", workFeedFailureDetail(error));
+    return cached() ?? [];
   }
 }
 

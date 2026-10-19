@@ -42,6 +42,8 @@ interface Scenario {
   readyReads?: number;
   /** GET /entity/cmp_new waits for this before answering (holds "Setting up…"). */
   entityGate?: Promise<void>;
+  /** GET /v1/pricing answers 200 with this body (otherwise 503: the bundled card). */
+  pricing?: unknown;
 }
 
 let host: HTMLDivElement;
@@ -91,8 +93,8 @@ function stubInvoke(scenario: Scenario = {}): void {
             }),
           };
         }
-        if (args?.url === '/v1/billing/checkout/team') {
-          return { status: 200, body: JSON.stringify({ url: 'https://checkout.stripe.com/c/pay/cs_test' }) };
+        if (args?.url === '/v1/pricing' && scenario.pricing) {
+          return { status: 200, body: JSON.stringify(scenario.pricing) };
         }
         return { status: 503, body: '{}' };
       }
@@ -112,7 +114,7 @@ function mountStep(props: Record<string, unknown> = {}) {
   const oncomplete = vi.fn();
   const onTelemetry = vi.fn();
   const onbackchange = vi.fn();
-  const openUrl = vi.fn(async () => {});
+  const openUrl = vi.fn(async (_url: string) => {});
   component = mount(CompanyStep, {
     target: host,
     props: {
@@ -205,13 +207,13 @@ async function createAcme(): Promise<void> {
   typeInto('onboarding-company-field-name', 'Acme');
   await settle();
   click('onboarding-company-create');
-  await flushUntil(() => Boolean(byId('onboarding-plan-choose-starter')), 'the plan screen');
+  await flushUntil(() => Boolean(byId('onboarding-plan-choose-free')), 'the plan screen');
 }
 
-/** Create "Acme", start on Starter, and land on the invite screen. */
+/** Create "Acme", sign up free, and land on the invite screen. */
 async function reachInvites(): Promise<void> {
   await createAcme();
-  click('onboarding-plan-choose-starter');
+  click('onboarding-plan-choose-free');
   await flushUntil(() => phase() === 'invite', 'the invite screen');
 }
 
@@ -266,7 +268,7 @@ describe('CompanyStep: Back from its first question', () => {
     expect(phase()).toBe('provisioning');
 
     release();
-    await flushUntil(() => Boolean(byId('onboarding-plan-choose-starter')), 'the plan screen');
+    await flushUntil(() => Boolean(byId('onboarding-plan-choose-free')), 'the plan screen');
     // The company exists: no way back to "Name your company" from the plans.
     expect(onbackchange).toHaveBeenLastCalledWith(false);
     expect(stepBack()).toBe(false);
@@ -367,7 +369,7 @@ describe('CompanyStep: Back inside the step', () => {
     expect(stepBack()).toBe(true);
     await flush();
     expect(phase()).toBe('plan');
-    expect(byId('onboarding-plan-choose-starter')).not.toBeNull();
+    expect(byId('onboarding-plan-choose-free')).not.toBeNull();
     expect(onbackchange).toHaveBeenLastCalledWith(false);
     // The plan screen has no Back of its own.
     expect(stepBack()).toBe(false);
@@ -419,7 +421,7 @@ describe('CompanyStep: Back inside the step', () => {
   });
 
   it('has no Back on the invites when the plan was picked on the website', async () => {
-    const { onbackchange } = mountStep({ priorPlan: 'starter' });
+    const { onbackchange } = mountStep({ priorPlan: 'free' });
     await flushUntil(() => Boolean(byId('onboarding-company-field-name')), 'the company form');
     typeInto('onboarding-company-field-name', 'Acme');
     await settle();
@@ -436,34 +438,6 @@ describe('CompanyStep: Back inside the step', () => {
     await flush();
     expect(phase()).toBe('invite');
     expect(onbackchange).toHaveBeenLastCalledWith(false);
-  });
-
-  it('has no Back on the invites after Workforce checkout was paid', async () => {
-    const { onbackchange } = mountStep();
-    await createAcme();
-    click('onboarding-plan-choose-workforce');
-    await flushUntil(() => Boolean(byId('onboarding-checkout-done')), 'the checkout screen');
-    // No Back on the checkout screen either.
-    expect(onbackchange).toHaveBeenLastCalledWith(false);
-    expect(stepBack()).toBe(false);
-    listeners.get('messages:open-setup')?.({ companyUid: 'cmp_new', checkout: 'done' });
-    await flushUntil(() => phase() === 'invite', 'the invite screen');
-    expect(onbackchange).toHaveBeenLastCalledWith(false);
-    expect(stepBack()).toBe(false);
-    expect(phase()).toBe('invite');
-  });
-
-  it('keeps Back to the plans after "Start on Starter for now"', async () => {
-    const { onbackchange } = mountStep();
-    await createAcme();
-    click('onboarding-plan-choose-workforce');
-    await flushUntil(() => Boolean(byId('onboarding-checkout-starter')), 'the checkout screen');
-    click('onboarding-checkout-starter');
-    await flushUntil(() => phase() === 'invite', 'the invite screen');
-    expect(onbackchange).toHaveBeenLastCalledWith(true);
-    expect(stepBack()).toBe(true);
-    await flush();
-    expect(phase()).toBe('plan');
   });
 });
 
@@ -497,35 +471,83 @@ describe('CompanyStep: name, set up, plan', () => {
   });
 
   it('goes from a plan picked on the website straight to the invites', async () => {
-    const { onTelemetry } = mountStep({ priorPlan: 'starter' });
+    const { onTelemetry } = mountStep({ priorPlan: 'free' });
     await flushUntil(() => Boolean(byId('onboarding-company-field-name')), 'the company form');
     typeInto('onboarding-company-field-name', 'Acme');
     await settle();
     click('onboarding-company-create');
     await flushUntil(() => phase() === 'invite', 'the invite screen');
-    expect(byId('onboarding-plan-choose-starter')).toBeNull();
-    expect(telemetry(onTelemetry, 'plan_chosen')).toEqual([{ action: 'plan_chosen', companyUid: 'cmp_new', plan: 'starter' }]);
+    expect(byId('onboarding-plan-choose-free')).toBeNull();
+    expect(telemetry(onTelemetry, 'plan_chosen')).toEqual([{ action: 'plan_chosen', companyUid: 'cmp_new', plan: 'free' }]);
   });
 
-  it.each([
-    ['the checkout return', 'return', true],
-    ['"I finished checkout"', 'onboarding-checkout-done', false],
-    ['"Start on Starter for now"', 'onboarding-checkout-starter', false],
-  ])('goes on to the invites after Workforce checkout, from %s', async (_label, how, paid) => {
-    const { oncomplete } = mountStep();
+  it('shows one usage card, no Workforce, and goes on to the invites from "Sign up free"', async () => {
+    const { oncomplete, onTelemetry } = mountStep();
     await createAcme();
-    click('onboarding-plan-choose-workforce');
-    await flushUntil(() => Boolean(byId('onboarding-checkout-done')), 'the checkout screen');
-    if (how === 'return') listeners.get('messages:open-setup')?.({ companyUid: 'cmp_new', checkout: 'done' });
-    else click(how);
+    const cards = [...host.querySelectorAll('[data-testid="onboarding-plan-options"] .plan-card')];
+    expect(cards).toHaveLength(1);
+    expect(byId('onboarding-plan-choose-workforce')).toBeNull();
+    expect(host.textContent).not.toMatch(/Workforce|Starter|checkout/i);
+    const card = byId('onboarding-plan-card-free')!;
+    const text = card.textContent!.replace(/\s+/g, ' ');
+    expect(card.querySelector('.plan-price')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('$10 included every month');
+    for (const line of [
+      'Sync $0.10 per sync',
+      'Gateway call $0.05 per call',
+      'HQ MCP call $0.05 per call',
+      'Agent run $0.05 per run',
+      'Storage $2.00 per GB-month',
+      'Secret $0.50 per secret-month',
+      'Vault $5 per vault a month',
+      'Cloud bot boxes $100 to $800 a month',
+      'small $100 · medium $200 · large $400 · xlarge $800',
+      'Deploys, DMs and background AI',
+    ]) {
+      expect(text).toContain(line);
+    }
+    expect(byId('onboarding-plan-trial')?.textContent).toBe('30-day trial, usage capped at $500');
+    expect(byId('onboarding-plan-choose-free')?.textContent).toBe('Sign up free');
+    expect(byId('onboarding-plan-enterprise')?.textContent).toBe('Request an enterprise demo');
+    expect(byId('onboarding-plan-self-hosted')?.textContent).toBe('Use HQ free, self-hosted or on-prem');
+
+    click('onboarding-plan-choose-free');
     await flushUntil(() => phase() === 'invite', 'the invite screen');
+    expect(telemetry(onTelemetry, 'plan_chosen')).toEqual([{ action: 'plan_chosen', companyUid: 'cmp_new', plan: 'free' }]);
+    expect(invoke.mock.calls.some(([, args]) => (args as { url?: string } | undefined)?.url === '/v1/billing/checkout/team')).toBe(false);
     expect(oncomplete).not.toHaveBeenCalled();
 
     click('onboarding-company-invite-skip');
     await flushUntil(() => phase() === 'done', 'the ready moment');
+    expect(byId('onboarding-company')?.textContent).toContain('Usage pricing, $10 included every month');
     click('onboarding-company-ready-continue');
-    const plan = how === 'onboarding-checkout-starter' ? 'starter' : 'workforce';
-    expect(oncomplete).toHaveBeenCalledWith({ outcome: 'created', companyUid: 'cmp_new', plan: paid ? 'workforce' : plan, paid });
+    expect(oncomplete).toHaveBeenCalledWith({ outcome: 'created', companyUid: 'cmp_new', plan: 'free' });
+  });
+
+  it('opens the enterprise demo and the self-hosted guide in the browser', async () => {
+    const { openUrl, onTelemetry } = mountStep();
+    await createAcme();
+    click('onboarding-plan-enterprise');
+    click('onboarding-plan-self-hosted');
+    await flush();
+    expect(openUrl.mock.calls.map(([url]) => url)).toEqual([
+      'https://hqforwork.com/call#book',
+      'https://docs.hq.computer/hq/guide/use-hq-for-free/',
+    ]);
+    expect(telemetry(onTelemetry, 'plan_link_opened').map((event) => event.link)).toEqual(['enterprise', 'self_hosted']);
+    expect(phase()).toBe('plan');
+  });
+
+  it('reads the card from GET /v1/pricing when the server answers', async () => {
+    const { PRICING_FALLBACK } = await import('@hq/ui');
+    const pricing = {
+      usage: { ...PRICING_FALLBACK.usage, includedUsd: 15, trial: { days: 30, capUsd: 250 } },
+      signup: PRICING_FALLBACK.signup,
+    };
+    stubInvoke({ pricing });
+    mountStep();
+    await createAcme();
+    await flushUntil(() => byId('onboarding-plan-trial')?.textContent === '30-day trial, usage capped at $250', 'the live card');
+    expect(byId('onboarding-plan-card-free')?.querySelector('.plan-amount')?.textContent).toBe('$15');
   });
 
   it('never shows the internal step name when provisioning fails', async () => {
@@ -653,7 +675,7 @@ describe('CompanyStep: Invite your team', () => {
     expect(host.querySelector('.cs-summary')?.textContent).toContain('2 teammates invited');
     expect(oncomplete).not.toHaveBeenCalled();
     click('onboarding-company-ready-continue');
-    expect(oncomplete).toHaveBeenCalledWith({ outcome: 'created', companyUid: 'cmp_new', plan: 'starter', paid: false });
+    expect(oncomplete).toHaveBeenCalledWith({ outcome: 'created', companyUid: 'cmp_new', plan: 'free' });
   });
 
   it('moves on at once under Reduce Motion', async () => {
@@ -749,7 +771,7 @@ describe('CompanyStep: Invite your team', () => {
     expect(oncomplete).not.toHaveBeenCalled();
     click('onboarding-company-ready-continue');
     expect(oncomplete).toHaveBeenCalledTimes(1);
-    expect(oncomplete).toHaveBeenCalledWith({ outcome: 'created', companyUid: 'cmp_new', plan: 'starter', paid: false });
+    expect(oncomplete).toHaveBeenCalledWith({ outcome: 'created', companyUid: 'cmp_new', plan: 'free' });
   });
 });
 

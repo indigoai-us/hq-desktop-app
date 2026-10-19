@@ -16,6 +16,9 @@ import {
   MeshClient,
   PresenceStore,
   createWebCredentialProvider,
+  fetchWorkFeedPages,
+  isWorkFeedPath,
+  workFeedPagePath,
   type PresenceSnapshot,
 } from "@hq/core";
 import type { PlatformAdapter } from "@hq/platform";
@@ -40,15 +43,12 @@ export function createHqReconcileFetcher(
   route: { path: string },
   cursor?: string,
 ) => Promise<{ state: unknown; cursor?: string }> {
-  return async (route, cursor) => {
-    const url = new URL(route.path, "http://local.invalid");
-    if (cursor) url.searchParams.set("cursor", cursor);
-    const path = `${url.pathname}${url.search}`;
+  const fetchJson = async (routePath: string, path: string): Promise<unknown> => {
     const res = await fetchImpl(path);
     if (!res.ok) {
-      throw new Error(`reconcile ${route.path} failed (${res.status})`);
+      throw new Error(`reconcile ${routePath} failed (${res.status})`);
     }
-    const state = await res.json().catch((error: unknown) => {
+    return res.json().catch((error: unknown) => {
       // Reconcile runs on wakes. A SyntaxError message can quote the body,
       // so the log keeps only the name. Debug, not warn: this is a poll.
       console.debug(
@@ -57,14 +57,29 @@ export function createHqReconcileFetcher(
       );
       return null;
     });
+  };
+  const cursorOf = (state: unknown): string | undefined => {
     const rec =
       state && typeof state === "object"
         ? (state as { cursor?: unknown })
         : null;
-    return {
-      state,
-      cursor: typeof rec?.cursor === "string" ? rec.cursor : undefined,
-    };
+    return typeof rec?.cursor === "string" ? rec.cursor : undefined;
+  };
+  return async (route, cursor) => {
+    if (isWorkFeedPath(route.path)) {
+      // GET /v1/work-mesh/work pages large feeds (hq-pro #5004). Merge every
+      // page; a later-page failure throws so the sync cursor is not advanced
+      // past rows that were never read. When the page cap stops the walk,
+      // keep the previous cursor for the same reason.
+      const { state, truncated } = await fetchWorkFeedPages((pageCursor) =>
+        fetchJson(route.path, workFeedPagePath(route.path, cursor, pageCursor)),
+      );
+      return { state, cursor: truncated ? undefined : cursorOf(state) };
+    }
+    const url = new URL(route.path, "http://local.invalid");
+    if (cursor) url.searchParams.set("cursor", cursor);
+    const state = await fetchJson(route.path, `${url.pathname}${url.search}`);
+    return { state, cursor: cursorOf(state) };
   };
 }
 

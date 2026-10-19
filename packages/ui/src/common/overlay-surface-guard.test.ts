@@ -79,7 +79,7 @@ describe("overlay surface guard (OWNER-006)", () => {
     for (const token of ["--overlay-bg", "--overlay-border", "--overlay-shadow", "--overlay-field-bg", "--overlay-field-border", "--overlay-hover"]) {
       expect(css).toContain(`${token}:`);
     }
-    expect(css).toMatch(/--overlay-bg:\s*var\(--v4-popover-strong\)/);
+    expect(css).toMatch(/--overlay-bg:\s*var\(--v4-popover-solid, var\(--v4-popover-strong\)\);/);
   });
 
   it.each(OVERLAYS)("%s paints no hardcoded or tinted surface", (file) => {
@@ -158,3 +158,18 @@ describe("overlay surface guard (OWNER-006)", () => {
   });
 });
 
+
+/**
+ * Owner, 2026-10-16: "fix transparency on popovers if you aren't able to get
+ * backdrop blur working". Overlays carry no blur (above), so their surface is
+ * the popover colour with no window transparency in every appearance.
+ */
+describe("overlay surface is solid", () => {
+  it.each(TOKEN_FILES)("%s resolves --overlay-bg to an opaque popover colour", (file) => {
+    const css = readFileSync(join(src, file), "utf8");
+    const solids = [...css.matchAll(/--v4-popover-solid:\s*([^;]+);/g)].map((m) => m[1].trim());
+    expect(solids.length).toBeGreaterThanOrEqual(3);
+    for (const value of solids) expect(value).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(css).not.toMatch(/--overlay-bg:\s*var\(--v4-popover-strong\)\s*;/);
+  });
+});

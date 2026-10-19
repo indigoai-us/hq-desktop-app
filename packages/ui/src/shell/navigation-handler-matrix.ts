@@ -173,6 +173,9 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   // Visual first run: puts the takeover away and records it as finished.
   // The caller picks the conversation (the assistant's DM or #welcome).
   closeVisualFirstRun: "none",
+  // Badges launch announcement (US-016): puts it away and records it as seen.
+  // "See your badges" navigates afterwards through openSelfProfile.
+  closeLaunch: "none",
   applyEmbeddedNavigation: "push",
   applyInboxDeepLink: "push",
   applyCompanyDeepLink: "push",

@@ -3788,7 +3788,7 @@ describe('invite teammate onboarding step', () => {
       host.querySelector('[data-testid="onboarding-invite-error"]') !== null,
     );
 
-    expect(host.textContent).toContain('Your plan has no free seats for another teammate.');
+    expect(host.textContent).toContain("This company's plan does not allow another teammate right now.");
     expect(host.textContent).not.toContain('HQ could not send the invitation.');
     expect(inviteRequestBodies()).toHaveLength(1);
     expect(
@@ -4460,7 +4460,6 @@ describe('company onboarding step', () => {
     /** Delay, in ms, before GET /membership/me answers. */
     membershipDelayMs?: number;
     pendingInvites?: Array<{ slug: string; displayName: string }>;
-    checkout?: { status: number; body: unknown };
     /** Whether GET /entity/cmp_new reports the new company provisioned. */
     provisioned?: boolean;
     /** Polls of GET /entity/cmp_new that answer "provisioning" before it is ready. */
@@ -4670,13 +4669,6 @@ describe('company onboarding step', () => {
                 },
               }),
             };
-          }
-          if (args?.url === '/v1/billing/checkout/team') {
-            const answer = options.checkout ?? {
-              status: 200,
-              body: { url: 'https://checkout.stripe.com/c/pay/cs_test' },
-            };
-            return { status: answer.status, body: JSON.stringify(answer.body) };
           }
           return { status: 200, body: '{}' };
         }

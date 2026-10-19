@@ -67,7 +67,7 @@
     align-items: center;
     gap: 12px;
     padding: 10px 12px;
-    border-radius: 12px;
+    border-radius: 6px;
     box-shadow: var(--b-well);
   }
   .txt {
@@ -89,7 +89,7 @@
     font: inherit;
     font-size: 13px;
     padding: 6px 12px;
-    border-radius: 999px;
+    border-radius: 8px;
     border: 0;
     color: var(--b-t1);
     background: var(--b-card-hi);

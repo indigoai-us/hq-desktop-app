@@ -1,11 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("@hq/core", () => ({
-  LiveReadStore: class {},
-  MeshClient: class {},
-  PresenceStore: class {},
-  createWebCredentialProvider: () => ({}),
-}));
+vi.mock("@hq/core", async () => {
+  const actual = await vi.importActual<typeof import("@hq/core")>("@hq/core");
+  return {
+    LiveReadStore: class {},
+    MeshClient: class {},
+    PresenceStore: class {},
+    createWebCredentialProvider: () => ({}),
+    fetchWorkFeedPages: actual.fetchWorkFeedPages,
+    isWorkFeedPath: actual.isWorkFeedPath,
+    workFeedPagePath: actual.workFeedPagePath,
+  };
+});
 
 vi.mock("@hq/ui", () => ({
   bindLiveReadStore: () => () => {},

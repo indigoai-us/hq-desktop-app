@@ -18,7 +18,7 @@
 </script>
 
 {#if company || label}
-  <span class="org" class:product title={origin.repo ?? ""} data-testid="brief-origin">
+  <span class="org" class:product data-testid="brief-origin">
     {#if company || (product && origin.companyUid)}
       <span class="lgo" class:big={product}><BriefLogo {company} fallback={origin.companyUid} size={product ? 20 : 16} /></span>
     {/if}
@@ -37,7 +37,7 @@
     max-width: none;
     overflow: visible;
     font-family: var(--b-ui, system-ui);
-    font-size: 11.5px;
+    font-size: 11px;
     letter-spacing: 0;
   }
 </style>
