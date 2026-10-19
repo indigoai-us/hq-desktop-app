@@ -767,6 +767,56 @@ export async function readAccountUsage(
 }
 
 /** The switcher row total for an account's view: "$8.00", "At least $8.00", or a word. */
+/**
+ * How the Core menu offers other accounts. "switcher": the account name opens
+ * a list of every account (Option A). "top": the menu always lists Personal and
+ * the five companies with the most usage this month, with a link to
+ * Settings > Usage for the rest (Option B, owner review 2026-10-19).
+ */
+export type UsageMenuLayout = "switcher" | "top";
+export const USAGE_MENU_LAYOUT: UsageMenuLayout = "top";
+/** How many companies the "top" layout lists. */
+export const TOP_USAGE_COMPANIES = 5;
+
+/** This month's total in cents, or null when the view has no readable total. */
+export function accountTotalCents(view: CoreUsageView | null | undefined): number | null {
+  if (!view || view.kind !== "ready" || !view.usage) return null;
+  return view.usage.totalCents;
+}
+
+/**
+ * The rows the "top" layout lists: Personal first, then up to `limit`
+ * companies. Companies with a readable total come first, most usage first
+ * (ties by name); companies without one ("Owner only", no usage, unavailable)
+ * follow in their given order. Until every company row has finished loading
+ * the companies keep their given (name) order, so rows don't jump as totals
+ * arrive.
+ */
+export function topUsageAccounts(
+  accounts: readonly UsageAccount[],
+  views: Readonly<Record<string, CoreUsageView | undefined>>,
+  limit: number = TOP_USAGE_COMPANIES,
+): { rows: UsageAccount[]; ranked: boolean; hidden: number } {
+  const personal = accounts.filter((a) => a.kind === "personal");
+  const companies = accounts.filter((a) => a.kind === "company");
+  const settled = companies.every((a) => {
+    const v = views[usageAccountKey(a)];
+    return v !== undefined && v.kind !== "loading";
+  });
+  let ordered = companies;
+  if (settled) {
+    const readable = companies
+      .map((a) => ({ a, cents: accountTotalCents(views[usageAccountKey(a)]) }))
+      .flatMap((r) => (r.cents === null ? [] : [{ a: r.a, cents: r.cents }]))
+      .sort((x, y) => y.cents - x.cents || x.a.name.localeCompare(y.a.name))
+      .map((r) => r.a);
+    const rest = companies.filter((a) => accountTotalCents(views[usageAccountKey(a)]) === null);
+    ordered = [...readable, ...rest];
+  }
+  const shown = ordered.slice(0, Math.max(0, limit));
+  return { rows: [...personal, ...shown], ranked: settled, hidden: companies.length - shown.length };
+}
+
 export function accountTotalText(view: CoreUsageView | null | undefined): string {
   if (!view || view.kind === "loading") return "…";
   if (view.kind === "owner-only") return "Owner only";

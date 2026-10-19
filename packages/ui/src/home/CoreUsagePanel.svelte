@@ -28,6 +28,10 @@
     cachedCoreUsage,
     PERSONAL_ACCOUNT_KEY,
     accountTotalText,
+    TOP_USAGE_COMPANIES,
+    USAGE_MENU_LAYOUT,
+    topUsageAccounts,
+    type UsageMenuLayout,
     readAccountUsage,
     setPreferredUsageAccount,
     usageAccountKey,
@@ -73,6 +77,8 @@
     onopenusage?: () => void;
     /** Open the Sync section of Settings (repointed to US-016's per-vault section when it lands). */
     onopensync?: () => void;
+    /** "switcher" (Option A) or "top" (Option B: Personal plus the top companies, always listed). */
+    layout?: UsageMenuLayout;
     /** Test seam: waits between automatic retries. */
     retryDelays?: readonly number[];
     /** Test seam: the refresh interval while the menu is open. */
@@ -89,6 +95,7 @@
     onopenurl,
     onopenusage,
     onopensync,
+    layout = USAGE_MENU_LAYOUT,
     retryDelays,
     refreshMs = USAGE_REFRESH_MS,
   }: Props = $props();
@@ -126,6 +133,15 @@
   let listOpen = $state(false);
   /** Switcher row views, keyed by account; read when the list opens. */
   let rowViews = $state<Record<string, CoreUsageView>>({});
+  const topLayout = $derived(layout === "top" && switchable);
+  const top = $derived(topUsageAccounts(accounts, rowViews, TOP_USAGE_COMPANIES));
+
+  // The "top" layout lists the accounts as soon as the menu opens, so their
+  // totals are read on mount (cached reads paint at once).
+  $effect(() => {
+    if (!topLayout) return;
+    untrack(() => loadRows());
+  });
 
   $effect(() => {
     void refreshNonce;
@@ -241,7 +257,11 @@
   function toggleList(): void {
     listOpen = !listOpen;
     if (!listOpen) return;
-    // Read each account's total once per open; cached reads paint at once.
+    loadRows();
+  }
+
+  /** Read each account's total once per open; cached reads paint at once. */
+  function loadRows(): void {
     for (const acct of accounts) {
       const key = usageAccountKey(acct);
       const cached = cachedCoreUsage(key);
@@ -255,6 +275,11 @@
       }
       if (acct.kind === "company" && !canReadBilling(acct.role)) {
         rowViews = { ...rowViews, [key]: { kind: "owner-only", companyName: acct.name } };
+        continue;
+      }
+      // The shown account's row is filled by the meter's own read.
+      if (key === currentKey && view.kind === "loading") {
+        rowViews = { ...rowViews, [key]: view };
         continue;
       }
       rowViews = { ...rowViews, [key]: { kind: "loading", companyName: acct.name } };
@@ -320,7 +345,7 @@
   aria-label="Usage this month"
 >
   <div class="core-usage-head">
-    {#if switchable}
+    {#if switchable && !topLayout}
       <button
         type="button"
         class="core-usage-switch"
@@ -340,9 +365,12 @@
     {/if}
   </div>
 
-  {#if listOpen}
-    <ul class="core-usage-accounts" role="listbox" aria-label="Accounts" data-testid="core-usage-accounts">
-      {#each accounts as acct (usageAccountKey(acct))}
+  {#if topLayout}
+    <p class="core-usage-top-label" data-testid="core-usage-top-label">Top {TOP_USAGE_COMPANIES} by usage this month</p>
+  {/if}
+  {#if listOpen || topLayout}
+    <ul class="core-usage-accounts" class:top={topLayout} role="listbox" aria-label="Accounts" data-testid="core-usage-accounts" data-ranked={topLayout ? String(top.ranked) : undefined}>
+      {#each topLayout ? top.rows : accounts as acct (usageAccountKey(acct))}
         {@const key = usageAccountKey(acct)}
         <li>
           <button
@@ -362,6 +390,14 @@
         </li>
       {/each}
     </ul>
+    {#if topLayout && onopenusage}
+      <button
+        type="button"
+        class="core-usage-link core-usage-all"
+        data-testid="core-usage-all"
+        onclick={openDetails}
+      >All usage in Settings{top.hidden > 0 ? ` (${top.hidden} more)` : ""}</button>
+    {/if}
   {/if}
 
   {#if notice}
@@ -550,6 +586,11 @@
     align-items: center;
   }
 
+  .core-usage-top-label {
+    margin: 2px 0 0;
+    font-size: 11px;
+    color: var(--t3);
+  }
   .core-usage-accounts {
     display: flex;
     flex-direction: column;

@@ -19,26 +19,27 @@ async function openCoreMenu(page: Page, query = '', account: 'indigo' | 'persona
   await page.getByTestId('titlebar-core-pill').click();
   await expect(page.getByTestId('core-popover')).toBeVisible({ timeout: 10_000 });
   if (account === 'indigo') {
-    await page.getByTestId('core-usage-switch').click();
     await page.locator('[data-testid="core-usage-account"][data-key="cmp_indigo"]').click();
     await expect(page.getByTestId('core-usage-company')).toContainText('Indigo');
   }
 }
 
-test('with no company open the meter shows the personal account, and the switcher lists companies and Personal', async ({ page }) => {
+test('with no company open the meter shows the personal account, with Personal and the top companies listed', async ({ page }) => {
   await openCoreMenu(page, '', 'personal');
   const panel = page.getByTestId('core-usage');
   await expect(panel).toHaveAttribute('data-state', 'ready', { timeout: 10_000 });
   await expect(page.getByTestId('core-usage-company')).toHaveText('Personal');
   await expect(page.getByTestId('core-usage-used')).toHaveText('$3.40 of $10.00 free');
-  await page.getByTestId('core-usage-switch').click();
+  await expect(page.getByTestId('core-usage-top-label')).toHaveText('Top 5 by usage this month');
   const rows = page.getByTestId('core-usage-account');
   await expect(rows).toHaveCount(2);
-  await expect(rows.nth(0)).toContainText('Indigo');
-  await expect(rows.nth(0)).toContainText('Owner');
-  await expect(rows.nth(0)).toContainText('$8.00', { timeout: 10_000 });
-  await expect(rows.nth(1)).toContainText('Personal');
-  await expect(rows.nth(1)).toContainText('$3.40');
+  await expect(rows.nth(0)).toContainText('Personal');
+  await expect(rows.nth(0)).toContainText('$3.40');
+  await expect(rows.nth(1)).toContainText('Indigo');
+  await expect(rows.nth(1)).toContainText('Owner');
+  await expect(rows.nth(1)).toContainText('$8.00', { timeout: 10_000 });
+  await page.getByTestId('core-usage-all').click();
+  await expect(page.getByTestId('settings-usage-pane')).toBeVisible({ timeout: 10_000 });
 });
 
 test('shows month-to-date usage under the sync row', async ({ page }) => {
@@ -55,7 +56,7 @@ test('shows month-to-date usage under the sync row', async ({ page }) => {
 
   await expect(page.getByTestId('core-popover-sync-state')).toContainText('HQ is synced');
   await expect(page.getByTestId('core-usage-plan')).toHaveText('Usage plan');
-  await expect(panel.getByText('Usage this month')).toBeVisible();
+  await expect(panel.getByText('Usage this month', { exact: true })).toBeVisible();
   await expect(page.getByTestId('core-usage-used')).toHaveText('$8.00 of $10.00 free');
   await expect(page.getByTestId('core-usage-reset')).toHaveText('Resets Nov 1');
 
