@@ -124,7 +124,6 @@
     --ring: #68656a;
     --glyph: #ebebeb;
     --tab-on: #2f2c33;
-    --rail-dot: #3a2a33;
     --avatar-ring: #383037;
     position: relative;
     height: 100vh;
@@ -140,7 +139,6 @@
     --ring: #bab1a4;
     --glyph: #171616;
     --tab-on: #e9decc;
-    --rail-dot: #e6d2bf;
     --avatar-ring: #dbcebb;
   }
   .titlebar {
@@ -181,17 +179,6 @@
     align-items: center;
     padding-top: 29px;
     background: linear-gradient(180deg, var(--rail-top), var(--rail-bottom));
-  }
-  /* The reference lets the backdrop's dot grid show through the lower rail. */
-  .rail::after {
-    content: "";
-    position: absolute;
-    left: 6px;
-    right: 5px;
-    top: 330px;
-    height: 216px;
-    background: radial-gradient(circle, var(--rail-dot) 1.1px, transparent 1.6px) 0 0 / 12px 12px;
-    pointer-events: none;
   }
   .mark {
     margin-bottom: 26px;
