@@ -78,15 +78,16 @@ test.describe('daily brief: user path', () => {
     expect(errors).toEqual([]);
   });
 
-  test('a run that fails shows the bot\'s own sentence and offers Try again', async ({ page }) => {
+  test('a run that fails shows the plain failed line, never the bot\'s raw error, and offers Try again', async ({ page }) => {
     test.setTimeout(60_000);
     const errors = await openBrief(page, `${BRIEF}&briefDemo=fail`);
     const create = page.getByTestId('brief-create').first();
     await expect(create).toBeVisible({ timeout: 30_000 });
     await create.click();
-    // The simulated bot fails partway through the sweep with a plain sentence.
+    // The simulated bot fails partway through the sweep with a raw gh error; only the plain line shows.
     const step = page.getByTestId('brief-dawn-step');
-    await expect(step).toContainText('The sweep could not reach GitHub', { timeout: 30_000 });
+    await expect(step).toContainText('The brief stopped before it finished.', { timeout: 30_000 });
+    await expect(page.locator('body')).not.toContainText('gh auth login');
     await expect(step).not.toContainText('skill_not_found');
     await expect(page.getByTestId('brief-retry')).toBeVisible();
     expect(errors).toEqual([]);
