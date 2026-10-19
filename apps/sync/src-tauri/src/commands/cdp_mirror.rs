@@ -1956,6 +1956,7 @@ mod tests {
             "pub fn launch_claude_code(path: String, permission_mode: Option<String>, prompt: Option<String>) -> Result<(), String> {",
             "pub fn launch_cli_in_terminal(path: String, tool: String, prompt: Option<String>) -> Result<(), String> {",
             "pub fn launch_codex_workspace(path: String, prompt: Option<String>) -> Result<(), String> {",
+            "pub fn launch_cursor_workspace(path: String) -> Result<(), String> {",
         ] {
             let bodies: Vec<_> = launch.split(command).skip(1).collect();
             assert!(!bodies.is_empty(), "{command} missing");

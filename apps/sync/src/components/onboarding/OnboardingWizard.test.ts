@@ -1273,6 +1273,48 @@ describe('first-run sign-in screen', () => {
     expect(providerButtons().every((button) => !button.disabled)).toBe(true);
   });
 
+  it('logs each sign-in timeout and the retry after it to the first-run timing log', async () => {
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
+    const attempts = stubOAuthAttempts('Timed out waiting for sign-in (5 minutes).');
+    const accountSignInLines = () =>
+      tauri.invoke.mock.calls
+        .filter(([command, args]) => command === 'frontend_log' && (args as { tag?: string })?.tag === 'first-run')
+        .map(([, args]) => String((args as { message: string }).message))
+        .filter((message) => message.startsWith('kind=account-signin'))
+        .map((message) => message.replace(/ elapsed_ms=\d+$/, ''));
+
+    await clickGoogleSignIn();
+    await flushUntil(
+      () =>
+        attempts.starts() === 2 &&
+        host.textContent?.includes('Sign-in took too long. Choose a provider to try again.') === true &&
+        providerButtons().every((button) => !button.disabled),
+    );
+    await flushUntil(() => accountSignInLines().length === 3);
+    expect(accountSignInLines()).toEqual([
+      'kind=account-signin event=timeout provider=google next=auto-retry',
+      'kind=account-signin event=retry provider=google trigger=auto',
+      'kind=account-signin event=timeout provider=google next=shown',
+    ]);
+
+    // The person tries again after "Sign-in took too long".
+    providerButtons()[0]?.click();
+    // That attempt gets its own automatic retry, as the first one did.
+    await flushUntil(() => attempts.starts() === 4 && accountSignInLines().length === 7);
+    expect(accountSignInLines().slice(3)).toEqual([
+      'kind=account-signin event=retry provider=google trigger=person',
+      'kind=account-signin event=timeout provider=google next=auto-retry',
+      'kind=account-signin event=retry provider=google trigger=auto',
+      'kind=account-signin event=timeout provider=google next=shown',
+    ]);
+    for (const message of tauri.invoke.mock.calls
+      .filter(([command]) => command === 'frontend_log')
+      .map(([, args]) => String((args as { message: string }).message))
+      .filter((message) => message.startsWith('kind=account-signin'))) {
+      expect(message).not.toMatch(/state|code|@|authorize/);
+    }
+  });
+
   it('restarts sign-in once after an OAuth state mismatch', async () => {
     stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
     const attempts = stubOAuthAttempts('OAuth state mismatch — possible CSRF, aborting.');

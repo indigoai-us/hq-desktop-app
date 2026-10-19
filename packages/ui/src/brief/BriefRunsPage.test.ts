@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
 import type { LocalBotRow } from "@hq/platform";
 import BriefRunsPage from "./BriefRunsPage.svelte";
+import WelcomeRunsHarness from "./WelcomeReportRunsHarness.test-support.svelte";
 import { BriefCreateRun, type BriefCreator } from "./brief-create.svelte.js";
 import type { BriefSweepSource } from "./brief-data.js";
 
@@ -239,7 +240,7 @@ describe("BriefRunsPage", () => {
       q("brief-create")!.click();
       await settle();
       // No runs yet: the progress plays in the full-page sunrise.
-      expect(q("brief-dawn-step")?.textContent).toContain("waiting for it to start");
+      expect(q("brief-dawn-step")?.textContent).toContain("Getting your brief started");
       expect(q("brief-dawn")?.getAttribute("data-progress")).toBe("0.00");
       await vi.advanceTimersByTimeAsync(2_100);
       await settle();
@@ -365,7 +366,7 @@ describe("BriefRunsPage", () => {
     q("brief-create")!.click();
     // The first frame is the sunrise, painted before the bot check resolves.
     flushSync();
-    expect(q("brief-dawn-step")?.textContent).toContain("Waking your bot");
+    expect(q("brief-dawn-step")?.textContent).toContain("Getting your brief started…");
     await settle();
     const runId = (shared.phase as { runId: string }).runId;
     unmount(app!);
@@ -384,5 +385,264 @@ describe("BriefRunsPage", () => {
     expect(q("brief-create")).toBeNull();
     expect(creator.dispatch).toHaveBeenCalledTimes(1);
     shared.stop();
+  });
+
+  it("inside the welcome report, a person with companies gets the welcome edition, each item under its own company", async () => {
+    const run: Record<string, string> = {
+      "workspace/brief/index.jsonl": entry(NEW, "2026-10-08T16:00:00Z"),
+      [`workspace/brief/${NEW}/brief-data.json`]: "{}",
+      [`workspace/brief/${NEW}/brief.json`]: JSON.stringify({
+        items: {
+          decisions: [
+            { id: "d1", title: "Approve the launch copy", company: "co-north" },
+            { id: "d2", title: "Pick the pricing page", company: "co-field" },
+            { id: "d3", title: "Merge the installer fix", company: "co-north" },
+          ],
+        },
+      }),
+    };
+    const source: BriefSweepSource = { readHqFile: async (p) => run[p] ?? null };
+    target = document.createElement("div");
+    document.body.appendChild(target);
+    app = mount(WelcomeRunsHarness, {
+      target,
+      props: {
+        source,
+        companies: [
+          { uid: "co-north", slug: "northstar", label: "Northstar" },
+          { uid: "co-field", slug: "fieldwork", label: "Fieldwork" },
+        ],
+        report: { aiApps: { detect: async () => null, cli: { claudeCode: true, codex: false } } },
+      },
+    });
+    await vi.waitFor(() => expect(q("welcome-edition")).not.toBeNull(), { timeout: 5_000 });
+    // One brief, not the summary plus per-company split.
+    expect(q("brief-sections")).toBeNull();
+    expect(target.querySelectorAll('[data-testid="daily-brief"]')).toHaveLength(1);
+    const kicker = (card: string) => target.querySelector(`[data-card="${card}"] .kicker`)?.textContent?.replace(/\s+/g, " ").trim();
+    expect(kicker("decision")).toBe("Your decision Northstar");
+    expect(kicker("work")).toBe("Pick up your work · Northstar");
+    const sections = [...target.querySelectorAll<HTMLElement>('[data-testid="welcome-edition-section"]')].map((el) => [
+      el.querySelector("h3")?.textContent,
+      el.querySelector("p")?.innerHTML.replace(/<!---->/g, "").split("<br>").map((l) => l.trim()),
+    ]);
+    // Northstar's work is all on the cards, so only Fieldwork has a section.
+    expect(sections).toEqual([["Fieldwork", ["Pick the pricing page"]]]);
+  });
+
+  // The bot's own operator text (its name, "Check that it is running", the
+  // skill's skill_not_found sentence) never renders: the person sees one
+  // plain line and one action.
+  it("a run that never starts shows one plain line and Try again, never the raw operator text", async () => {
+    const bot = { name: "pickles", agentUid: "agt_1", runtime: "claude", displayName: "Jellybean" } as LocalBotRow;
+    const f: Record<string, string> = {};
+    const creator: BriefCreator = {
+      company: () => "indigo",
+      check: async () => ({ ok: true, bot }),
+      dispatch: vi.fn(async (_b, _body: string, key: string) => {
+        f[`workspace/brief/${key}/status.json`] = JSON.stringify({
+          run_id: key,
+          status: "failed",
+          error: "skill_not_found",
+          message: "No daily-brief skill is installed in this HQ. Check that Jellybean is running.",
+        });
+        return null;
+      }),
+      fix: vi.fn(async () => null),
+      notify: vi.fn(),
+    };
+    const timers: (() => void)[] = [];
+    let clock = new Date(2026, 9, 8, 9, 0, 0).getTime();
+    const shared = new BriefCreateRun({
+      creator,
+      read: async (p) => f[p] ?? null,
+      storage: null,
+      now: () => new Date(clock),
+      setTimer: (fn) => (timers.push(fn), timers.length),
+      clearTimer: () => {},
+      log: () => {},
+    });
+    render(f, { creator, run: shared });
+    await settle();
+    q("brief-create")!.click();
+    await settle();
+    expect(document.body.textContent).not.toMatch(/Jellybean|pickles|your bot/i);
+    for (let i = 0; i < 2; i++) {
+      clock += 2_000;
+      timers.shift()!();
+      await settle();
+    }
+    expect(creator.dispatch).toHaveBeenCalledTimes(2);
+    expect(q("brief-dawn")?.getAttribute("data-phase")).toBe("failed");
+    expect(q("brief-dawn-step")?.textContent?.trim()).toBe("Your HQ needs an update before it can build a brief. Update HQ Core in Settings, under Updates, then try again.");
+    expect(q("brief-retry")?.textContent?.trim()).toBe("Try again");
+    expect(q("brief-dawn")?.querySelectorAll("button")).toHaveLength(1);
+    const text = document.body.textContent ?? "";
+    expect(text).not.toMatch(/Jellybean|pickles|skill_not_found|No daily-brief skill|check that|is running|your bot/i);
+    shared.stop();
+  });
+
+  it("a bot check that never answers shows the plain slow-start line and Try again after the deadline, never bot text", async () => {
+    const creator: BriefCreator = {
+      company: () => "indigo",
+      check: () => new Promise<never>(() => {}),
+      dispatch: vi.fn(async () => null),
+      fix: vi.fn(async () => null),
+      notify: vi.fn(),
+    };
+    const deadlines: (() => void)[] = [];
+    const logs: string[] = [];
+    const shared = new BriefCreateRun({
+      creator,
+      read: async () => null,
+      storage: null,
+      now: () => new Date(2026, 9, 8, 9, 0, 0),
+      setTimer: () => 0,
+      clearTimer: () => {},
+      setDeadline: (fn) => (deadlines.push(fn), deadlines.length),
+      clearDeadline: () => {},
+      log: (m) => void logs.push(m),
+    });
+    render({}, { creator, run: shared });
+    await settle();
+    q("brief-create")!.click();
+    await settle();
+    expect(deadlines).toHaveLength(1);
+    deadlines[0]!();
+    await settle();
+    expect(creator.dispatch).not.toHaveBeenCalled();
+    expect(q("brief-dawn")?.getAttribute("data-phase")).toBe("failed");
+    expect(q("brief-dawn-step")?.textContent?.trim()).toBe("Your brief is taking longer than expected.");
+    expect(q("brief-retry")?.textContent?.trim()).toBe("Try again");
+    expect(q("brief-dawn")?.querySelectorAll("button")).toHaveLength(1);
+    expect(document.body.textContent ?? "").not.toMatch(/bot|is running|check that/i);
+    expect(logs.some((m) => m.includes("did not answer"))).toBe(true);
+    shared.stop();
+  });
+
+  it("a missing daily-brief skill (a core older than 16.0.30) never sends the job and shows the update line at once", async () => {
+    const bot = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
+    const skillInstalled = vi.fn(async () => false);
+    const creator: BriefCreator = {
+      company: () => "indigo",
+      check: async () => ({ ok: true, bot }),
+      skillInstalled,
+      dispatch: vi.fn(async () => null),
+      fix: vi.fn(async () => null),
+      notify: vi.fn(),
+    };
+    render(files(), { creator });
+    await settle();
+    q("brief-create")!.click();
+    await settle();
+    expect(creator.dispatch).not.toHaveBeenCalled();
+    expect(skillInstalled).toHaveBeenCalledTimes(2);
+    expect(q("brief-dawn-step")?.textContent?.trim()).toBe("Your HQ needs an update before it can build a brief. Update HQ Core in Settings, under Updates, then try again.");
+    expect(q("brief-retry")?.textContent?.trim()).toBe("Try again");
+    expect(q("brief-dawn")?.querySelectorAll("button")).toHaveLength(1);
+    expect(document.body.textContent).not.toMatch(/pickles|bot|skill|taking longer/i);
+    // Try again while the file is still missing: one more look, the same line, no automatic retry.
+    q("brief-retry")!.click();
+    await settle();
+    expect(skillInstalled).toHaveBeenCalledTimes(3);
+    expect(creator.dispatch).not.toHaveBeenCalled();
+    expect(q("brief-dawn-step")?.textContent?.trim()).toBe("Your HQ needs an update before it can build a brief. Update HQ Core in Settings, under Updates, then try again.");
+    expect(q("brief-retry")?.textContent?.trim()).toBe("Try again");
+  });
+
+  it("an HQ folder that cannot be read shows the HQ folder line with Try again, never the slow-start line", async () => {
+    const bot = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
+    const creator: BriefCreator = {
+      company: () => "indigo",
+      check: async () => ({ ok: true, bot }),
+      skillInstalled: async () => "hq-folder" as const,
+      dispatch: vi.fn(async () => null),
+      fix: vi.fn(async () => null),
+      notify: vi.fn(),
+    };
+    render(files(), { creator });
+    await settle();
+    q("brief-create")!.click();
+    await settle();
+    expect(creator.dispatch).not.toHaveBeenCalled();
+    expect(q("brief-dawn-step")?.textContent?.trim()).toBe("HQ could not open your HQ folder. Change it in Settings, under Sync, then try again.");
+    expect(q("brief-retry")?.textContent?.trim()).toBe("Try again");
+    expect(q("brief-dawn")?.querySelectorAll("button")).toHaveLength(1);
+    expect(document.body.textContent).not.toMatch(/pickles|bot|skill|taking longer/i);
+  });
+
+  describe("raw gh or exception text never reaches the page", () => {
+    const LIVE_GH = "To get started with GitHub CLI, please run:  gh auth login\nAlternatively, popula";
+    const TRACEBACK = 'Traceback (most recent call last):\n  File "/Users/x/brief-sweep.py", line 1668, in main\nKeyError: \'total\'';
+    const RAW = /gh auth|GitHub CLI|Alternatively|popula|Traceback|brief-sweep|KeyError|line 1668/;
+    const rawActivity = [
+      { at: "1", label: "Looking at your PRs", state: "failed", detail: LIVE_GH },
+      { at: "2", label: "Read your calendar", state: "done", detail: TRACEBACK },
+      { at: "3", label: "Housekeeping", state: "done", detail: `failed: ${LIVE_GH}` },
+      { at: "4", label: "Writing your brief", state: "running", detail: null },
+    ];
+
+    async function runWith(existing: Record<string, string>, status: (key: string) => Record<string, unknown>) {
+      const bot = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
+      const f: Record<string, string> = { ...existing };
+      const creator: BriefCreator = {
+        company: () => "indigo",
+        check: async () => ({ ok: true, bot }),
+        dispatch: vi.fn(async (_b, _body: string, key: string) => {
+          f[`workspace/brief/${key}/status.json`] = JSON.stringify({ run_id: key, ...status(key) });
+          return null;
+        }),
+        fix: vi.fn(async () => null),
+        notify: vi.fn(),
+      };
+      render(f, { creator });
+      await settle();
+      q("brief-create")!.click();
+      await settle();
+      await vi.advanceTimersByTimeAsync(2_100);
+      await settle();
+    }
+
+    for (const [where, existing] of [["the first-run sunrise", {}], ["the masthead", null]] as const) {
+      it(`activity details on failed, done and housekeeping rows never show on ${where}`, async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        try {
+          await runWith(existing ?? files(), () => ({ state: "running", step: "Sweeping your day", progress: 0.4, activity: rawActivity }));
+          expect(q("brief-dawn")?.getAttribute("data-phase")).toBe("running");
+          const labels = [...target.querySelectorAll<HTMLElement>('[data-testid="brief-activity-item"]')].map((i) => i.textContent ?? "");
+          expect(labels.join(" ")).toContain("Writing your brief");
+          expect(target.textContent).not.toMatch(RAW);
+          expect(target.textContent).not.toContain("failed:");
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      for (const [kind, raw] of [["gh", LIVE_GH], ["traceback", TRACEBACK]] as const) {
+        it(`a failed run's ${kind} status.error never shows on ${where}; the plain failed line and Try again do`, async () => {
+          vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+          try {
+            await runWith(existing ?? files(), () => ({ state: "failed", error: raw, activity: rawActivity }));
+            expect(q("brief-dawn")?.getAttribute("data-phase")).toBe("failed");
+            expect(q("brief-dawn-step")?.textContent?.trim()).toBe("The brief stopped before it finished.");
+            expect(q("brief-retry")?.textContent?.trim()).toBe("Try again");
+            expect(target.textContent).not.toMatch(RAW);
+          } finally {
+            vi.useRealTimers();
+          }
+        });
+
+        it(`a failed run's ${kind} text written as its message never shows on ${where}`, async () => {
+          vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+          try {
+            await runWith(existing ?? files(), () => ({ state: "failed", error: raw, message: raw }));
+            expect(q("brief-dawn-step")?.textContent?.trim()).toBe("The brief stopped before it finished.");
+            expect(target.textContent).not.toMatch(RAW);
+          } finally {
+            vi.useRealTimers();
+          }
+        });
+      }
+    }
   });
 });

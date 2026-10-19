@@ -814,6 +814,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       this.call("launch_claude_code", claudeLaunchArgs(path, opts)),
     launchCodexWorkspace: (path, prompt) =>
       this.call("launch_codex_workspace", { path, prompt: prompt ?? null }),
+    launchCursorWorkspace: (path) => this.call("launch_cursor_workspace", { path }),
     launchCliInTerminal: (args) =>
       this.call("launch_cli_in_terminal", { args }),
     detectAiTools: () => this.call("detect_ai_tools"),

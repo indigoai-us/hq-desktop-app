@@ -1514,3 +1514,56 @@
 .daily-brief .slot [data-testid="brief-focus-foot"] {
   border-top: 0;
 }
+
+/* Light appearance, the parts the tokens above do not reach: the strip's "+N more"
+   pill and the action cards, which draw in fixed white ink (welcome edition). */
+@media (prefers-color-scheme: light) {
+  :root:not([data-force-theme="dark"]) .daily-brief [data-testid="brief-today"] {
+    --strip-more: #efe6da;
+  }
+  :root:not([data-force-theme="dark"]) .daily-brief .action-card {
+    border-color: rgba(42, 28, 22, 0.12);
+    background: rgba(42, 28, 22, 0.03);
+  }
+  :root:not([data-force-theme="dark"]) .daily-brief .action-card .why {
+    color: rgba(42, 28, 22, 0.82);
+  }
+  :root:not([data-force-theme="dark"]) .daily-brief .action-card :is(.evidence, .note) {
+    color: rgba(42, 28, 22, 0.68);
+  }
+  :root:not([data-force-theme="dark"]) .daily-brief .action-card button {
+    border-color: rgba(42, 28, 22, 0.18);
+    background: rgba(42, 28, 22, 0.05);
+    color: #2a1c16;
+  }
+}
+:root[data-force-theme="light"] .daily-brief [data-testid="brief-today"],
+[data-theme="light"] .daily-brief [data-testid="brief-today"] {
+  --strip-more: #efe6da;
+}
+:root[data-force-theme="light"] .daily-brief .action-card,
+[data-theme="light"] .daily-brief .action-card {
+  border-color: rgba(42, 28, 22, 0.12);
+  background: rgba(42, 28, 22, 0.03);
+}
+:root[data-force-theme="light"] .daily-brief .action-card .why,
+[data-theme="light"] .daily-brief .action-card .why {
+  color: rgba(42, 28, 22, 0.82);
+}
+:root[data-force-theme="light"] .daily-brief .action-card :is(.evidence, .note),
+[data-theme="light"] .daily-brief .action-card :is(.evidence, .note) {
+  color: rgba(42, 28, 22, 0.68);
+}
+:root[data-force-theme="light"] .daily-brief .action-card button,
+[data-theme="light"] .daily-brief .action-card button {
+  border-color: rgba(42, 28, 22, 0.18);
+  background: rgba(42, 28, 22, 0.05);
+  color: #2a1c16;
+}
+
+/* A source that could not be read: one quiet line, not a card (welcome edition). */
+.daily-brief .b-source-note {
+  margin: 10px 2px 0;
+  font-size: 12px;
+  color: var(--b-t3);
+}

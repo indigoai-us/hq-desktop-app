@@ -616,6 +616,12 @@ pub fn evict_frontend_asset_cache_once(
                 }
 
                 let mut reload_failures = Vec::new();
+                if !reload_windows.is_empty() {
+                    crate::first_run_log::shell(
+                        crate::first_run_log::ShellEvent::Reload,
+                        "webkit-cache-eviction",
+                    );
+                }
                 for (label, window) in reload_windows {
                     if let Err(error) = window.reload() {
                         reload_failures.push(label.clone());

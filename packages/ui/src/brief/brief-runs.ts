@@ -208,11 +208,73 @@ export function parseActivity(raw: unknown): BriefActivity[] {
   return out.slice(-12);
 }
 
+/**
+ * Error-shaped markers: gh commands and CLI help text, tracebacks, `Error:`,
+ * `fatal:` and `usage:` lines, exit codes, flags, Windows and registry paths.
+ * Text carrying any of these is tool output, not a sentence for the person.
+ * Single identifiers (HQ_TOOLS, my_project) and short relative paths
+ * (src/brief/index) are ordinary names and are not markers.
+ */
+const RAW_MARKERS =
+  /\bgh (?:auth|api|pr|repo|run|issue)\b|github cli|traceback|error:|fatal:|usage:|\berrno\b|\bexit (?:code|status)\b|exception|\bhk(?:cu|lm)\b|failed:|\brun:|(?:^|\s)--?[a-z]|\\|\b[a-z]:[\\/]|\bstd(?:err|out)\b|populate the/i;
+
+/**
+ * The case-sensitive markers: errno codes followed by a colon (ENOENT:,
+ * EACCES:) and the network errno codes, `npm ERR!`, HTTP status errors
+ * (HTTP 401, HTTP/1.1 500), and absolute paths into the machine (/Users/…,
+ * /Volumes/…, ~/…, file://) in any position, including after `path:`, a
+ * backtick or a bracket. A date like 10/18/2026, a command like /hq-sync or
+ * a relative path like src/brief/index is none of these.
+ */
+const RAW_MARKERS_CASED =
+  /\bE[A-Z]{2,}:|\bE(?:CONNREFUSED|CONNRESET|CONNABORTED|TIMEDOUT|NOTFOUND|HOSTUNREACH|NETUNREACH|ADDRINUSE|PIPE|AI_AGAIN)\b|\bERR!|\bHTTP(?:\/\d(?:\.\d)?)? \d{3}\b|\bfile:\/\/|(?:^|[^\w.-])(?:~|\/(?:Users|home|Volumes|private|var|tmp|opt|etc|usr))\//;
+
+/**
+ * Credential shapes: GitHub, OpenAI and Slack tokens, AWS key ids, JWTs, a
+ * Bearer or token word followed by a value with a digit, and NAME=value where
+ * NAME ends in TOKEN, KEY, SECRET or PASSWORD. Upper-case names on their own
+ * (HQ_TOOLS, API_KEYS_PAGE) are not credentials.
+ */
+const SECRET_MARKERS =
+  /\b(?:gh[pousr]_|github_pat_)\w{8,}|\bsk-[\w-]{8,}|\bxox[abpr]-[\w-]{6,}|\bAKIA[0-9A-Z]{16}\b|\beyJ[\w-]{10,}\.|\b[A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD)\s*[=:]\s*\S/;
+const SECRET_MARKERS_ANY_CASE = /\b(?:bearer|token)[\s:=]+["']?(?=[\w.~+/-]*\d)[\w.~+/-]{12,}/i;
+
+/** A JSON object or array of objects or strings: tool output, not a sentence. */
+const JSON_MARKERS = /\{\s*"[^"]*"\s*:|^\s*\[\s*(?:\{|"[^"]*"\s*[,\]])/;
+
+/**
+ * `text` as one short plain line, or null when it is long, spans lines, or
+ * carries CLI or exception markers (the 16.0.30 skill wrote raw gh output
+ * into activity details and errors).
+ */
+export function plainLine(text: string | null | undefined, max: number): string | null {
+  const t = text?.trim();
+  if (!t || t.length > max || /[\r\n]/.test(t)) return null;
+  for (const marker of [RAW_MARKERS, RAW_MARKERS_CASED, SECRET_MARKERS, SECRET_MARKERS_ANY_CASE, JSON_MARKERS]) {
+    if (marker.test(t)) return null;
+  }
+  return t;
+}
+
+/** The detail an activity row may show: never on a failed row, else one short plain line. */
+export function shownDetail(a: BriefActivity): string | null {
+  return a.state === "failed" ? null : plainLine(a.detail, 80);
+}
+
 /** A run the person stopped: terminal like failed, but not the bot's fault. */
 export type BriefStatusState = BriefRunState | "cancelled";
 
 function statusState(v: unknown): BriefStatusState | null {
   return v === "cancelled" ? v : runState(v);
+}
+
+/** The skill's code for a run whose HQ has no daily-brief skill. */
+export const SKILL_NOT_FOUND = "skill_not_found";
+
+/** A failed run whose bot wrote the missing-skill code, in any case or spelling ("skill not found", "Skill-Not-Found"). */
+export function isSkillNotFound(status: Pick<BriefRunStatus, "state" | "error">): boolean {
+  if (status.state !== "failed" || typeof status.error !== "string") return false;
+  return status.error.trim().toLowerCase().replace(/[\s-]+/g, "_") === SKILL_NOT_FOUND;
 }
 
 export interface BriefRunStatus {
@@ -237,19 +299,27 @@ export interface BriefRunStatus {
   company: string | null;
 }
 
-export function parseBriefStatus(text: string): BriefRunStatus | null {
+/**
+ * One run's status.json. `expectedRunId` is the run whose folder the file was
+ * read from: a file there with no `run_id` is that run's (the sweep's status
+ * writer can create the file before the skill fills `run_id` in). A file with
+ * a run id and a state word this app does not know still means the run
+ * started, so it reads as running.
+ */
+export function parseBriefStatus(text: string, expectedRunId?: string): BriefRunStatus | null {
   let raw: unknown;
   try {
     raw = JSON.parse(text);
   } catch {
     return null;
   }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const r = rec(raw);
+  const runId = str(r.run_id) || expectedRunId || "";
+  if (!runId) return null;
   // The skill writes `state`; a failure written by hand as `status` (seen
   // 2026-10-13, skill_not_found) must still end the run instead of timing out.
-  const state = statusState(r.state) ?? (r.state === undefined ? statusState(r.status) : null);
-  const runId = str(r.run_id);
-  if (!state || !runId) return null;
+  const state = statusState(r.state) ?? (r.state === undefined ? statusState(r.status) : null) ?? "running";
   return {
     runId,
     state,
@@ -278,15 +348,83 @@ const CANCELLED_MESSAGE = "You cancelled this brief.";
  * never shown on their own.
  */
 export function failedMessage(status: Pick<BriefRunStatus, "state" | "error" | "message">): string {
-  const said = status.message ?? (status.error && /\s/.test(status.error) ? status.error : null);
+  // The bot's own words about a missing skill are operator text.
+  if (isSkillNotFound(status)) return BRIEF_SKILL_MISSING_MESSAGE;
+  // `error` is the skill's raw reason and stays in status.json; only a plain message shows.
+  const said = plainLine(status.message, 160);
   if (status.state === "cancelled") return said ?? CANCELLED_MESSAGE;
   return said ?? DEFAULT_FAILED_MESSAGE;
 }
 
-/** "Sent to Jellybean, waiting for it to start". Shown while the bot has not written status.json. */
-export function waitingStep(bot: string | null | undefined): string {
-  const name = bot?.trim();
-  return name ? `Sent to ${name}, waiting for it to start` : "Sent to your bot, waiting for it to start";
+/** Shown from the click until the run writes status.json. Never names the bot. */
+export const BRIEF_STARTING_STEP = "Getting your brief started";
+/** The quiet line while the run has not started yet. */
+export const BRIEF_STILL_STARTING = "Still getting your brief started…";
+
+/** Shown while the job was sent and status.json does not exist yet. */
+export function waitingStep(_bot?: string | null): string {
+  return BRIEF_STARTING_STEP;
+}
+
+/**
+ * The one line shown when a run did not start in time (start timeout or
+ * dispatch timeout). `label` names the brief: "brief" or "welcome brief".
+ */
+export function slowStartMessage(label = "brief"): string {
+  return `Your ${label} is taking longer than expected.`;
+}
+
+/**
+ * The person's HQ has no daily-brief skill (a core older than 16.0.30). It
+ * names the existing HQ Core update in Settings > Updates; no new button.
+ */
+export const BRIEF_SKILL_MISSING_MESSAGE =
+  "Your HQ needs an update before it can build a brief. Update HQ Core in Settings, under Updates, then try again.";
+
+/** The HQ folder could not be read. It names the existing folder row in Settings > Sync. */
+export const BRIEF_HQ_FOLDER_MESSAGE = "HQ could not open your HQ folder. Change it in Settings, under Sync, then try again.";
+
+/** The line for a run that never started, by cause. */
+export function healMessage(why: "start-timeout" | "skill-not-found" | "hq-folder" | "dispatch-timeout", label = "brief"): string {
+  if (why === "skill-not-found") return BRIEF_SKILL_MISSING_MESSAGE;
+  if (why === "hq-folder") return BRIEF_HQ_FOLDER_MESSAGE;
+  return slowStartMessage(label);
+}
+
+/**
+ * Every place the bot can resolve the daily-brief skill from: the core skill
+ * and the personal overlay. The `.claude/skills/personal:daily-brief` mirror
+ * is a symlink to the personal skill, and the desktop file command rejects
+ * any path segment with a colon, so the personal path covers it.
+ */
+export const BRIEF_SKILL_PATHS = [".claude/skills/daily-brief/SKILL.md", "personal/skills/daily-brief/SKILL.md"] as const;
+
+/**
+ * Whether the person's HQ has the daily-brief skill. True when any location
+ * has it; "hq-folder" when the HQ folder did not resolve; false only when
+ * every location is confirmed absent; null when nothing was found and a read
+ * failed for another reason (the job is sent and the bot reports
+ * skill_not_found if it cannot find the skill). An unexpected error on one
+ * path never stops the check of the others.
+ */
+export async function briefSkillInstalled(
+  read: (path: string) => Promise<{ ok: true } | { ok: false; why: string }>,
+  warn: (msg: string, why: string) => void = () => {},
+): Promise<boolean | "hq-folder" | null> {
+  let unknown = false;
+  for (const path of BRIEF_SKILL_PATHS) {
+    const res = await read(path);
+    if (res.ok) return true;
+    // The HQ folder itself did not resolve: not a missing skill.
+    if (/could not resolve HQ folder/i.test(res.why)) {
+      warn("[daily-brief] could not read the HQ folder", res.why);
+      return "hq-folder";
+    }
+    if (/no such file|not found|os error 2/i.test(res.why)) continue;
+    warn("[daily-brief] could not check the skill", res.why);
+    unknown = true;
+  }
+  return unknown ? null : false;
 }
 
 /**
@@ -323,6 +461,19 @@ export type BriefCreatePhase =
       message: string;
       /** A stall verdict, not the bot's: HQ keeps watching the run and flips to ready if it finishes. */
       stalled?: true;
+      /**
+       * The run never started, shown with Try again (healMessage gives the line).
+       * start-timeout: no status in time; the slow-start line. HQ keeps watching
+       * the same run and sends no second job.
+       * skill-not-found: no daily-brief skill (a core older than 16.0.30); the
+       * update line. HQ checks once more by itself on the first start only.
+       * hq-folder: the HQ folder could not be read, so nothing was sent; the
+       * HQ folder line.
+       * dispatch-timeout: the bot check or send did not answer within
+       * BRIEF_DISPATCH_TIMEOUT_MS; the slow-start line. Nothing more is sent
+       * until Try again.
+       */
+      heal?: "start-timeout" | "skill-not-found" | "hq-folder" | "dispatch-timeout";
     };
 
 /**
@@ -333,6 +484,11 @@ export type BriefCreatePhase =
  * skill, which the 3-minute limit called a failure one minute early).
  */
 export const BRIEF_START_TIMEOUT_MS = 5 * 60_000;
+/**
+ * Try again on a run that never started waits this much longer on the same
+ * run before it sends a new job: a busy bot may still pick the first one up.
+ */
+export const BRIEF_TRY_AGAIN_WAIT_MS = 2 * 60_000;
 /**
  * Nothing in the run folder has changed this long: a soft "stalled" verdict.
  * Older skills write status.json only at start and end, and a full sweep can
@@ -348,11 +504,11 @@ const STALL_MESSAGE = "Your brief has not reported progress in a while. HQ is st
 export const BRIEF_POLL_MS = 2_000;
 /**
  * Checking the bot and sending the job must finish within this. A bot list
- * or send that never answers otherwise leaves "Waking your bot…" on screen
- * for good (owner report, 2026-10-16).
+ * or send that never answers otherwise leaves the starting line on screen
+ * for good (owner report, 2026-10-16). The person sees the slow-start line;
+ * the detail goes to the log only.
  */
 export const BRIEF_DISPATCH_TIMEOUT_MS = 60_000;
-export const BRIEF_DISPATCH_TIMEOUT_MESSAGE = "Your bot did not answer. Check that it is running, then try again.";
 /** How often a sent run asks the bot's conversation whether its turn failed. */
 export const BRIEF_BOT_FAILURE_POLL_MS = 10_000;
 
@@ -368,9 +524,12 @@ export type BriefPollReading = { text: string | null } | { error: string };
 export function advanceBriefRun(phase: BriefCreatePhase, reading: BriefPollReading, now: number): BriefCreatePhase {
   if (phase.kind !== "waiting" && phase.kind !== "running") return phase;
   const { runId, sentAt } = phase;
-  const status = "text" in reading && reading.text != null ? parseBriefStatus(reading.text) : null;
+  const status = "text" in reading && reading.text != null ? parseBriefStatus(reading.text, runId) : null;
   if (status && status.runId === runId) {
     if (status.state === "ready") return { kind: "ready", runId };
+    if (isSkillNotFound(status)) {
+      return { kind: "failed", runId, message: BRIEF_SKILL_MISSING_MESSAGE, heal: "skill-not-found" };
+    }
     if (status.state === "failed" || status.state === "cancelled") {
       return { kind: "failed", runId, message: failedMessage(status) };
     }
@@ -404,9 +563,7 @@ export function advanceBriefRun(phase: BriefCreatePhase, reading: BriefPollReadi
     return phase;
   }
   if (now - sentAt > BRIEF_START_TIMEOUT_MS) {
-    const who = phase.bot?.trim() || "Your bot";
-    const minutes = Math.round(BRIEF_START_TIMEOUT_MS / 60_000);
-    return { kind: "failed", runId, message: `${who} has not started the brief after ${minutes} minutes. Check that it is running, then try again.` };
+    return { kind: "failed", runId, message: slowStartMessage(), heal: "start-timeout" };
   }
   return phase;
 }
@@ -503,7 +660,7 @@ export function stillWorkingLine(
   const since = phase.kind === "running" ? phase.lastChangeAt : phase.sentAt;
   if (now - since < BRIEF_QUIET_MS) return null;
   const running = phase.kind === "running" ? [...(phase.activity ?? [])].reverse().find((a) => a.state === "running") : undefined;
-  if (phase.kind === "waiting") return `Still waiting for ${phase.bot?.trim() || "your bot"} to start…`;
+  if (phase.kind === "waiting") return BRIEF_STILL_STARTING;
   const what = running?.label ?? phaseFromFiles(files, phase.step);
   return `Still working on ${what.charAt(0).toLowerCase()}${what.slice(1)}…`;
 }
@@ -583,14 +740,22 @@ export const BRIEF_FIX_LABEL: Record<BriefBotFix, string> = {
   "connect-model": "Connect a model",
 };
 
-/** Person-scoped job: personal work plus all permitted companies, with one run id. */
-export function briefJobMessage(runId: string, options: { welcome?: boolean } = {}): string {
+/**
+ * The daily-brief job, with one run id. A person with companies gets the
+ * person brief (`--all`: personal work plus each permitted company); a person
+ * with none gets `--personal`. The skill picks the welcome edition by itself
+ * on the first ready run, so the app never forces it.
+ */
+export function briefJobMessage(runId: string, options: { personal?: boolean } = {}): string {
+  const scope = options.personal
+    ? `Build a personal brief: this person has no company yet, so read only their own work. `
+    : `Include personal scope and every company in the person's lock, keeping each company's items in its own section. `;
   return (
-    `/daily-brief --all --run-id ${runId}${options.welcome ? " --welcome" : ""}\n\n` +
+    `/daily-brief ${options.personal ? "--personal" : "--all"} --run-id ${runId}\n\n` +
     `Run the daily-brief skill now with run_id ${runId} for this person across their HQ. ` +
-    `Include personal scope and every company in the person's lock, keeping each company's items in its own section. ` +
-    `With zero companies, write the getting-started welcome brief. ` +
-    `Write workspace/brief/${runId}/status.json at every step and append workspace/brief/index.jsonl when the run ends.`
+    scope +
+    `Write workspace/brief/${runId}/status.json at every step and append workspace/brief/index.jsonl when the run ends. ` +
+    `If the daily-brief skill is not installed, write workspace/brief/${runId}/status.json with run_id ${runId}, state "failed" and error "${SKILL_NOT_FOUND}", and stop.`
   );
 }
 

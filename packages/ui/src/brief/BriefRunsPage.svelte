@@ -12,6 +12,7 @@
   import BriefWelcome from "./BriefWelcome.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import { briefSections } from "./brief-sections.js";
+  import { getWelcomeAiApps } from "./welcome-ai-apps.js";
   import { readRunWelcome, readRunExclusions, readRunFailedCompanies, type BriefFailedCompany, type BriefExclusion, type BriefWelcome as Welcome } from "./brief-welcome.js";
   import type { BriefActions } from "./brief-action-cards.js";
   import BriefRunBar from "./BriefRunBar.svelte";
@@ -21,7 +22,7 @@
   import BriefFindings from "./BriefFindings.svelte";
   import { parseFindings, parseSamples } from "./brief-findings.js";
   import { parseActivity } from "./brief-runs.js";
-  import { BRIEF_IDLE_MS, elapsedLabel, estimateLabel, stillWorkingLine, waitingStep } from "./brief-runs.js";
+  import { BRIEF_IDLE_MS, BRIEF_STARTING_STEP, elapsedLabel, estimateLabel, stillWorkingLine, waitingStep } from "./brief-runs.js";
   import { briefDemoFromUrl } from "./brief-demo.js";
   import { createBriefLogger } from "./brief-log.js";
   import type { BriefItemEvent } from "./brief-context.svelte.js";
@@ -77,6 +78,20 @@
   let welcome = $state<Welcome | null>(null);
   let exclusions = $state<BriefExclusion[]>([]);
   let failedCompanies = $state<BriefFailedCompany[]>([]);
+  // Inside the welcome report the page is one brief, so the welcome edition
+  // (which carries its own company sections) replaces the split layout.
+  const welcomeSource = getWelcomeAiApps();
+  const inWelcome = !!welcomeSource;
+  // While the welcome brief loads the report's open-tool bar stays out, so it never flashes before
+  // the edition (which carries its own open action) or before a brief that gets the bar under it.
+  let loadingClaim: (() => void) | null = welcomeSource?.claimOpenTool?.() ?? null;
+  $effect(() => {
+    if ((input || failed) && loadingClaim) {
+      loadingClaim();
+      loadingClaim = null;
+    }
+  });
+  onDestroy(() => loadingClaim?.());
   const sections = $derived(input ? briefSections(input, companies.filter(c => !failedCompanies.some(f => f.company === c.uid || f.company === c.slug) && !exclusions.some(e => e.company === c.uid || e.company === c.slug))) : []);
   let housekeeping = $state<BriefHousekeeping | null>(null);
   let missing = $state<string[]>([]);
@@ -219,7 +234,7 @@
     }
     switch (cp.kind) {
       case "dispatching":
-        return { phase: "running", progress: 0, step: "Waking your bot…" };
+        return { phase: "running", progress: 0, step: `${BRIEF_STARTING_STEP}…` };
       case "waiting":
         return { phase: "running", progress: 0, step: waitingStep(cp.bot) };
       case "running":
@@ -383,7 +398,10 @@
     <RailButton icon="play" variant="ghost" onclick={() => { bloomDone = false; void run?.start({ force: true }); }} data-testid="brief-start-new">Start a new one</RailButton>
   {:else}
     <RailButton icon="refresh" variant="primary" onclick={createBrief} data-testid="brief-retry">Try again</RailButton>
-    <RailButton icon="x" variant="ghost" onclick={() => run?.dismiss()} data-testid="brief-dismiss">Dismiss</RailButton>
+    <!-- A run that never started (already retried once) offers one action only. -->
+    {#if !(cp.kind === "failed" && cp.heal)}
+      <RailButton icon="x" variant="ghost" onclick={() => run?.dismiss()} data-testid="brief-dismiss">Dismiss</RailButton>
+    {/if}
   {/if}
 {/snippet}
 
@@ -406,8 +424,9 @@
   <div class="daily-brief daily-brief-dawn-page">{@render dawnScene("page")}</div>
 {:else if input}
   <div class="brief-content" data-testid="brief-content">
-  {#if welcome}<BriefWelcome {welcome} {onconnectcompany} returning={firstView?.returning === true} companyNames={companies.map(c => c.label)} />{/if}
-  {#if exclusions.length}
+  {#if welcome && !inWelcome}<BriefWelcome {welcome} {onconnectcompany} returning={firstView?.returning === true} companyNames={companies.map(c => c.label)} />{/if}
+  <!-- In the welcome report nothing sits above the brief (US-019); its company sections say what is in it. -->
+  {#if exclusions.length && !inWelcome}
     <aside class="brief-exclusions" data-testid="brief-exclusions" aria-label="Not included">
       {#each exclusions as excluded}
         {@const excludedCompany = companies.find(c => c.uid === excluded.company || c.slug === excluded.company)}
@@ -415,7 +434,7 @@
       {/each}
     </aside>
   {/if}
-  {#if failedCompanies.length}
+  {#if failedCompanies.length && !inWelcome}
     <aside class="brief-exclusions" data-testid="brief-company-failures">
       {#each failedCompanies as failure}
         {@const failedCompany = companies.find(c => c.uid === failure.company || c.slug === failure.company)}
@@ -423,7 +442,7 @@
       {/each}
     </aside>
   {/if}
-  {#if sections.length}
+  {#if sections.length && !inWelcome}
     <DailyBrief summaryOnly {clearedItemIds} dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {actions} onlog={logItem} header={entries.length || run || dawn ? briefHeader : undefined} tools={run ? createTool : undefined} />
     <div class="brief-sections" data-testid="brief-sections">
       {#each sections as section, index (section.id)}
@@ -438,7 +457,7 @@
       {/each}
     </div>
   {:else}
-    <DailyBrief dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {housekeeping} {actions} onlog={logItem} header={entries.length || run || dawn ? briefHeader : undefined} tools={run ? createTool : undefined} />
+    <DailyBrief dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {housekeeping} {actions} {welcome} {onconnectcompany} onlog={logItem} header={entries.length || run || dawn ? briefHeader : undefined} tools={run ? createTool : undefined} />
   {/if}
   </div>
 {:else if failed}

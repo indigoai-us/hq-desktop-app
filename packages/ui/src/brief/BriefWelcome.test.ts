@@ -83,3 +83,22 @@ it("names one, two and three returning companies in a plain list", () => {
   expect(returningWelcomeLine(["Acme", "Beta"])).toBe("Here is today's brief for Acme and Beta.");
   expect(returningWelcomeLine(["Acme", "Beta", "Gamma"])).toBe("Here is today's brief for Acme, Beta and Gamma.");
 });
+
+for (const [kind, raw] of [
+  ["gh", "To get started with GitHub CLI, please run:  gh auth login\nAlternatively, popula"],
+  ["traceback", 'Traceback (most recent call last):\n  File "/Users/x/brief-sweep.py", line 1668, in main\nKeyError: \'total\''],
+] as const) {
+  it(`never renders a ${kind} welcome.error; shows one fixed sentence instead`, async () => {
+    const run = "brief-20261017-090000";
+    const files: Record<string, string> = {
+      "workspace/brief/index.jsonl": JSON.stringify({run_id: run, created_at: "2026-10-17T16:00:00Z", state: "ready", counts: {}}),
+      [`workspace/brief/${run}/brief.json`]: JSON.stringify({mode: "personal", company: null, items: {}, welcome: {first_run: true, sessions: {total: 31}, error: raw}}),
+      [`workspace/brief/${run}/brief-data.json`]: "{}",
+    };
+    target = document.createElement("div"); document.body.appendChild(target);
+    app = mount(BriefRunsPage, {target, props: {adapter: {}, companies: [], source: {readHqFile: async p => files[p] ?? null}}});
+    await vi.waitFor(async () => { await tick(); expect(target.querySelector('[data-testid="brief-welcome"]')).not.toBeNull(); });
+    expect(target.querySelector('[data-testid="brief-welcome-error"]')?.textContent?.trim()).toBe("Some of your welcome details could not be loaded this time.");
+    expect(target.textContent).not.toMatch(/gh auth|GitHub CLI|Alternatively|popula|Traceback|brief-sweep|KeyError|line 1668/);
+  });
+}

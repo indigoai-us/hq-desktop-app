@@ -206,7 +206,7 @@
     font-size: 11px;
     line-height: 15px;
     color: rgb(var(--b-ink) / 0.75);
-    background: #2a2a2f;
+    background: var(--strip-more, #2a2a2f);
     box-shadow: var(--b-well);
     z-index: 3;
   }

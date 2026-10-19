@@ -75,10 +75,12 @@
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import BriefRailHost from "./BriefRailHost.svelte";
   import WelcomeReport from "../brief/WelcomeReport.svelte";
+  import { finishNavigatesToCompany } from "../brief/welcome-finish.js";
   import { welcomeMadeBy } from "../brief/welcome-made-by.js";
   import { briefActionsFor } from "../brief/brief-action-cards.js";
-  import type { WelcomeConnectMemory } from "../chat/first-run/WelcomeConnectCard.svelte";
-  import { BRIEF_CLAUDE_PERMISSION_MODE, BRIEF_FIX_LABEL, briefBotLabel, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
+  import { welcomeAppsCompanyFor } from "../brief/welcome-ai-apps.js";
+  import { WelcomeConnectSession } from "../brief/welcome-connect-session.svelte.js";
+  import { BRIEF_CLAUDE_PERMISSION_MODE, BRIEF_FIX_LABEL, BRIEF_STARTING_STEP, briefBotLabel, briefSkillInstalled, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
   import { BriefCreateRun, type BriefCreator } from "../brief/brief-create.svelte.js";
   import { briefBotFailure } from "../brief/brief-bot-failure.js";
   import {
@@ -353,7 +355,7 @@
   import FirstRunHeldBackdrop from "../chat/first-run/FirstRunHeldBackdrop.svelte";
   import type { FirstRunHandoffHint } from "../chat/first-run/first-run-handoff.js";
   import { mostUsedTool } from "../chat/first-run/visual-first-run.js";
-  import { continueInTool, openPreparedCodingTool } from "../chat/first-run/continue-in-tool.js";
+  import { continueInTool, openPreparedCodingTool, openWelcomeHarness, WELCOME_OPENABLE_HARNESSES } from "../chat/first-run/continue-in-tool.js";
   import {
     briefOpenToolConnectorId,
     briefInstallAfterCheck,
@@ -407,6 +409,8 @@
     createRouteLogger,
     formatFlagLookup,
     formatSetupRunSet,
+    formatShell,
+    formatWelcomeNav,
     formatWelcomeReport,
     writeFirstRunLine,
     type FlagLateOutcome,
@@ -4316,6 +4320,13 @@
     return null;
   }
   /** Open on the welcome edition, and the same action later on the Daily Brief. */
+  /** The welcome edition's "Open HQ in <harness>": opens the harness the button names (US-019). */
+  const welcomeOpenHarness = {
+    harnesses: WELCOME_OPENABLE_HARNESSES,
+    open: (harness: "claude-code" | "codex" | "cursor", prompt: string) =>
+      openWelcomeHarness({ harness, prompt, settings: adapter.settings, shell: adapter.shell }),
+  };
+
   async function openRememberedCodingTool(): Promise<void> {
     const runtime = briefOpenTool;
     if (!runtime || briefOpenToolBusy) return;
@@ -4581,11 +4592,63 @@
    * US-009: every way out of the visual first run lands on the welcome
    * report (the Daily Brief view), never the bare shell or #welcome. Set for
    * the rest of the session, so the view stays open to this person even where
-   * the rail keeps the Daily Brief hidden (`briefVisible`).
+   * the rail keeps the Daily Brief hidden (`briefVisible`). Kept in
+   * sessionStorage, so a reload of the window keeps the Daily Brief in the
+   * rail, and puts the report back on screen if the person had not left it.
    */
-  let welcomeReportOwed = $state(false);
+  const WELCOME_REPORT_SESSION_KEY = "hq.welcome-report.session";
+  function welcomeReportSession(): "open" | "left" | null {
+    const uid = self?.uid;
+    if (!uid || typeof window === "undefined") return null;
+    try {
+      const value = window.sessionStorage.getItem(WELCOME_REPORT_SESSION_KEY);
+      if (value === `open:${uid}`) return "open";
+      if (value === `left:${uid}`) return "left";
+    } catch (err) {
+      console.warn("[hq-desktop] welcome report: could not read the session marker", err);
+    }
+    return null;
+  }
+  function keepWelcomeReportSession(state: "open" | "left"): void {
+    const uid = self?.uid;
+    if (!uid || firstRunDev.dry || typeof window === "undefined") return;
+    try {
+      window.sessionStorage.setItem(WELCOME_REPORT_SESSION_KEY, `${state}:${uid}`);
+    } catch (err) {
+      // The in-memory state still holds until the window reloads.
+      console.warn("[hq-desktop] welcome report: could not keep the session marker", err);
+    }
+  }
+  /** Sign-out ends the session, so the next sign-in starts without the marker. */
+  function forgetWelcomeReportSession(): void {
+    if (typeof window === "undefined") return;
+    try {
+      window.sessionStorage.removeItem(WELCOME_REPORT_SESSION_KEY);
+    } catch (err) {
+      console.warn("[hq-desktop] welcome report: could not clear the session marker", err);
+    }
+  }
+  const welcomeReportAtMount = welcomeReportSession();
+  // One line per shell mount, so a reload or remount mid-first-run shows in
+  // the log with what the session marker restored.
+  firstRunTimingLog(
+    formatShell(
+      "mount",
+      welcomeReportAtMount === "open" ? "report-open" : welcomeReportAtMount === "left" ? "report-left" : "none",
+    ),
+  );
+  let welcomeReportOwed = $state(welcomeReportAtMount !== null);
+  // The takeover was left in this session, so the reload must not set off
+  // the automatic start either (`closeVisualFirstRun`).
+  if (welcomeReportAtMount !== null) setupBotAutoStarted = true;
+  /** The report was on screen when the window reloaded: open it again once the shell is up. */
+  let welcomeReportReopen = welcomeReportAtMount === "open";
+  /** The report has been on screen since it was opened, so another page means the person left it. */
+  let welcomeReportShown = false;
   /** The assistant the welcome report's brief job reached (one job per assistant). */
   const WELCOME_REPORT_SENT_KEY = "hq.welcome-report.sent";
+  /** The welcome report's name in the brief's slow-start line. The job itself is a plain brief: the skill picks the welcome edition. */
+  const WELCOME_BRIEF_LABEL = "welcome brief";
   function welcomeReportSentTo(uid: string): boolean {
     try {
       return window.localStorage.getItem(WELCOME_REPORT_SENT_KEY) === uid;
@@ -4636,12 +4699,12 @@
         if (welcomeReportBlockedOn === null) welcomeReportBlockedOn = botState;
         else if (welcomeReportBlockedOn !== botState) {
           welcomeReportBlockedOn = botState;
-          void run.start({ welcome: true });
+          void run.start({ label: WELCOME_BRIEF_LABEL });
         }
         return;
       }
       welcomeReportBlockedOn = null;
-      void run.start({ welcome: true });
+      void run.start({ label: WELCOME_BRIEF_LABEL });
     });
   });
   // A job held back on the assistant (a terminal or browser sign-in, the
@@ -4655,7 +4718,7 @@
     if (!welcomeReportUnsent(uid)) return;
     const onBack = (): void => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-      if (run.phase.kind === "blocked") void run.start({ welcome: true });
+      if (run.phase.kind === "blocked") void run.start({ label: WELCOME_BRIEF_LABEL });
     };
     window.addEventListener("focus", onBack);
     document.addEventListener("visibilitychange", onBack);
@@ -4688,32 +4751,22 @@
   });
   /**
    * The company the welcome report's connect card connects apps to: the
-   * tenant company, else the takeover's own default (the person's only
-   * company, `defaultTeamChoice`). With neither there is no card; apps never
-   * land in a company the person did not pick. (The visual takeover settles no
-   * team here, so `firstRunSettled.team` is never read.)
+   * tenant company, else the most recently used one, else the only one, else
+   * the first in the roster. Null only with no company at all, where Connect
+   * asks for a new company first. (The visual takeover settles no team here,
+   * so `firstRunSettled.team` is never read.)
    */
   const welcomeAppsCompany = $derived.by(() => {
-    const company =
-      railCompanyRoster.find((c) => c.uid === tenantCompanyId) ??
-      (railCompanyRoster.length === 1 ? railCompanyRoster[0] : undefined) ??
-      null;
+    const company = welcomeAppsCompanyFor(railCompanyRoster, tenantCompanyId, companyRecentIds);
     return company ? { uid: company.uid, name: company.label } : null;
   });
   /**
-   * What the connect card already did per company (the auto-connect ran, the
-   * apps the person undid). Held by the shell so a later Daily Brief visit
-   * never re-installs an app the person took back out.
+   * The connect card's session (the scan, the sign-ins running, the Connect
+   * waiting on a new company, what it did per company). Held by the shell so
+   * the report turning ready or a later Daily Brief visit keeps it.
    */
-  const welcomeConnectMemory = new Map<string, WelcomeConnectMemory>();
-  function welcomeConnectMemoryFor(companyUid: string): WelcomeConnectMemory {
-    let memory = welcomeConnectMemory.get(companyUid);
-    if (!memory) {
-      memory = { autoRan: false, undone: new Set<string>() };
-      welcomeConnectMemory.set(companyUid, memory);
-    }
-    return memory;
-  }
+  const welcomeConnectSession = new WelcomeConnectSession();
+  onDestroy(() => welcomeConnectSession.dispose());
   /** Detection and connects for the connect card: the shared "Your apps" host. */
   // svelte-ignore state_referenced_locally
   const welcomeAppsHost = adapter.integrations
@@ -4735,18 +4788,36 @@
         dry: firstRunDev.dry,
       })
     : null;
-  /** The connect card's inputs; `desktop.first-run-found-apps-v1` is its kill switch. */
+  /**
+   * The suggested integrations' inputs; `desktop.first-run-found-apps-v1` is
+   * its kill switch. With no company the suggestions still show, and Connect
+   * opens the new-company sheet first: integrations always belong to a company.
+   */
   const welcomeConnect = $derived(
-    foundAppsFlag && welcomeAppsHost && welcomeAppsCompany
+    foundAppsFlag && welcomeAppsHost
       ? {
           host: welcomeAppsHost,
           company: welcomeAppsCompany,
-          assistantName: assistantLabel,
           onopenintegrations: openCompanyIntegrations,
-          memory: welcomeConnectMemoryFor(welcomeAppsCompany.uid),
+          onnewcompany: openNewCompanyFromWelcome,
         }
       : null,
   );
+  /** Set while the new-company sheet is open for a welcome report Connect; answers with the new company's uid. */
+  let welcomeNewCompanyResolve: ((companyUid: string | null) => void) | null = null;
+  function openNewCompanyFromWelcome(): Promise<string | null> {
+    welcomeNewCompanyResolve?.(null);
+    return new Promise((resolve) => {
+      welcomeNewCompanyResolve = resolve;
+      newCompanyOpen = true;
+    });
+  }
+  function answerWelcomeNewCompany(companyUid: string | null): boolean {
+    const resolve = welcomeNewCompanyResolve;
+    welcomeNewCompanyResolve = null;
+    resolve?.(companyUid);
+    return resolve !== null;
+  }
   /**
    * No assistant to write the welcome report (none here yet, the create
    * failed, or a dry walk's pretend one): the report offers #welcome, where
@@ -4776,8 +4847,25 @@
   });
   function openWelcomeReport(): void {
     welcomeReportOwed = true;
+    keepWelcomeReportSession("open");
     void navigate({ kind: "extra", page: railPlaceholderPage("brief") });
   }
+  $effect(() => {
+    if (!welcomeReportReopen || !tourShellReady) return;
+    welcomeReportReopen = false;
+    untrack(() => void navigate({ kind: "extra", page: railPlaceholderPage("brief") }));
+  });
+  $effect(() => {
+    if (!welcomeReportOwed) return;
+    const onReport = railPlaceholder?.id === "brief";
+    untrack(() => {
+      if (onReport) welcomeReportShown = true;
+      else if (welcomeReportShown && !welcomeReportReopen) {
+        welcomeReportShown = false;
+        keepWelcomeReportSession("left");
+      }
+    });
+  });
   /** The takeover is done on this computer: it never opens again. */
   function closeVisualFirstRun(): void {
     // The report view is selected before the takeover goes, so the empty
@@ -6815,11 +6903,30 @@
           await loadLocalBotRuntimeReady(true);
           return checkBriefBot(localBots, localBotRuntimeReady);
         },
+        // Null until the roster has loaded (the shell starts it as an empty list):
+        // only a loaded roster with no company sends the personal brief.
+        hasCompanies: () => {
+          if (memberCompanies(companies).length > 0 || localCompanies.length > 0) return true;
+          if (companies == null || (rosterStatus != null && rosterStatus !== "ready")) return null;
+          return false;
+        },
+        async skillInstalled() {
+          const files = adapter.files;
+          if (!files?.getFileContent) return null;
+          // Core skill or the personal overlay: missing only when both are.
+          return briefSkillInstalled(
+            async (path) => {
+              const res = await files.getFileContent(path);
+              return res.ok ? { ok: true } : { ok: false, why: res.message ?? res.reason };
+            },
+            (msg, why) => console.warn(msg, why),
+          );
+        },
         async dispatch(bot, body, idempotencyKey) {
           const res = await adapter.messaging.sendDm(bot.agentUid, body, { audience: "agent", idempotencyKey });
           if (res.ok) return null;
           console.warn("[daily-brief] job send failed", res.reason, res.code ?? "", res.message ?? "");
-          return `Could not send the brief job to ${bot.displayName?.trim() || bot.name}. Try again in a moment.`;
+          return "Could not start your brief. Try again in a moment.";
         },
         async fix(fix, bot) {
           if (fix === "create-bot") {
@@ -6909,7 +7016,7 @@
   const briefRailRun = $derived.by(() => {
     const p = briefRun?.phase;
     if (!p) return null;
-    if (p.kind === "dispatching") return { progress: 0, step: "Waking your bot…" };
+    if (p.kind === "dispatching") return { progress: 0, step: `${BRIEF_STARTING_STEP}…` };
     if (p.kind === "waiting") return { progress: 0, step: waitingStep(p.bot) };
     if (p.kind === "running") {
       const latest = p.activity?.at(-1)?.label;
@@ -11320,7 +11427,10 @@
       const pinned = pinCompany(pinnedCompanyIds ?? [], result.companyUid);
       if (pinned.status === "pinned") setPinnedCompanies(pinned.ids);
     }
-    if (!result.companyUid) return;
+    if (!result.companyUid) {
+      answerWelcomeNewCompany(null);
+      return;
+    }
     if (result.invites.length > 0) {
       void sendCompanyInvites(
         conversationApi,
@@ -11331,6 +11441,12 @@
     const nextRecent = rememberCompanyId(companyRecentIds, result.companyUid);
     companyRecentIds = nextRecent;
     writeSettingsPrefs({ companyRecentIds: nextRecent });
+    if (!finishNavigatesToCompany(welcomeNewCompanyResolve != null)) {
+      // From a welcome report Connect: stay on the report. Do not open the company sidepane.
+      setTenantScope(result.companyUid);
+      answerWelcomeNewCompany(result.companyUid);
+      return;
+    }
     companyPaneOpen = true;
     changeTenantCompany(result.companyUid);
     void navigate(companyRowDestination("atlas", result.companyUid));
@@ -11371,13 +11487,16 @@
               createCompanyRequested = true;
               const uid = result.company.companyUid;
               const channelId = result.company.companyChannelId;
-              if (uid) changeTenantCompany(uid);
-              if (channelId) {
-                requestChannelOpen(channelId, {
-                  companyUid: uid,
-                  focusCardId: null,
-                  focusCardKind: null,
-                });
+              // Welcome Connect finishes on the report. Switching here would leave that page.
+              if (finishNavigatesToCompany(welcomeNewCompanyResolve != null)) {
+                if (uid) changeTenantCompany(uid);
+                if (channelId) {
+                  requestChannelOpen(channelId, {
+                    companyUid: uid,
+                    focusCardId: null,
+                    focusCardKind: null,
+                  });
+                }
               }
             }
             return result;
@@ -12663,6 +12782,7 @@
         settingsSection = null;
         extraPageId = null;
         extraPageParam = null;
+        firstRunTimingLog(formatWelcomeNav("setup-checkout-link"));
         requestChannelOpen(SETUP_CHANNEL_ID, { companyUid: next.companyUid });
         const row = selectedRow;
         if (alreadySetup && row) void catchUpTimeline(row);
@@ -13980,6 +14100,7 @@
     navigation.clear();
     stopScrollRestore();
     pendingRestoreScroll = null;
+    forgetWelcomeReportSession();
     const cache = imagePreviewCache;
     await onsignout?.();
     // The next account to sign in here may be new (US-023 m3); only its own setup status marks it returning.
@@ -15549,7 +15670,10 @@
             .map((id) => railCompanyRoster.find((company) => company.uid === id)?.label ?? "")
             .filter(Boolean)
             .map((label) => label.slice(0, 2).toUpperCase()),
-          onclose: () => (newCompanyOpen = false),
+          onclose: () => {
+            newCompanyOpen = false;
+            answerWelcomeNewCompany(null);
+          },
           oncheckout: (url: string) => onopenurl?.(url),
           oncreate: createCompanyFromSheet,
           onfinish: finishNewCompany,
@@ -15867,6 +15991,9 @@
               preserveView: options?.automatic === true && view !== "conversation",
               automatic: options?.automatic === true,
             });
+            if (options?.automatic === true && isSetupChannel(row.channelId)) {
+              firstRunTimingLog(formatWelcomeNav(options.reason));
+            }
           }}
           oncompanyscopechange={changeTenantCompany}
           oncommand={() => (paletteOpen = true)}
@@ -16221,8 +16348,11 @@
               onsetup={welcomeReportNeedsAssistant ? openWelcomeSetup : null}
               madeBy={welcomeMadeByLine}
               aiApps={welcomeAiApps}
+              session={welcomeConnectSession}
               blocked={welcomeReportBlocked}
               openTool={briefOpenToolAction}
+              openHarness={welcomeOpenHarness}
+              companies={railCompanyRoster.map((company) => ({ id: company.uid, name: company.label }))}
             >
               {@render briefPage(false)}
             </WelcomeReport>

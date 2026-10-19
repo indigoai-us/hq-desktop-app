@@ -3,7 +3,10 @@
   import {
     FIRST_RUN_TIMING_TAG,
     createScreenTimer,
+    formatAccountSignInRetry,
+    formatAccountSignInTimeout,
     startInstallTimer,
+    writeFirstRunLine,
     type InstallTimer,
   } from '@hq/ui/first-run-timing';
   import {
@@ -64,7 +67,7 @@
     friendlyPath,
     homeDirFromDefaultHqPath,
   } from '../../lib/onboarding-path';
-  import { mapSignInError, type SignInProvider } from '../../lib/onboarding-signin';
+  import { isSignInTimeout, mapSignInError, type SignInProvider } from '../../lib/onboarding-signin';
   import {
     continuationDeps,
     loadContinuationContext,
@@ -1253,6 +1256,10 @@
     }
   }
 
+  // Set when the last sign-in attempt ran out of time, so the next attempt
+  // writes a retry line saying whether the wizard or the person started it.
+  let signInTimedOut = false;
+
   async function handleSignIn(provider: SignInProvider, stateRecoveryAttempt = false) {
     if (provider === 'Microsoft' && microsoftEmail.trim() === '') {
       microsoftEmailPrompt = true;
@@ -1266,6 +1273,14 @@
     loadingProvider = provider;
     signInError = '';
     const telemetryProvider = provider === 'Google' ? 'google' : 'microsoft';
+    if (signInTimedOut) {
+      signInTimedOut = false;
+      writeFirstRunLine(
+        firstRunTimingLog,
+        formatAccountSignInRetry(telemetryProvider, stateRecoveryAttempt ? 'auto' : 'person'),
+      );
+    }
+    const attemptStartedAt = Date.now();
     const progressSessionId = crypto.randomUUID();
     let authStep: DesktopAuthProgressStep = 'sign_in_started';
     void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep, sessionId: progressSessionId });
@@ -1338,7 +1353,15 @@
       );
       void emitDesktopAuthFailure({ provider: telemetryProvider, step: authStep, error: err });
       console.error('[onboarding-signin] sign-in failed:', err);
-      if (!stateRecoveryAttempt && (errorKind === 'expired' || errorKind === 'state_mismatch')) {
+      const autoRetry = !stateRecoveryAttempt && (errorKind === 'expired' || errorKind === 'state_mismatch');
+      if (isSignInTimeout(errorMessage(err))) {
+        signInTimedOut = true;
+        writeFirstRunLine(
+          firstRunTimingLog,
+          formatAccountSignInTimeout(telemetryProvider, autoRetry ? 'auto-retry' : 'shown', Date.now() - attemptStartedAt),
+        );
+      }
+      if (autoRetry) {
         console.warn('[onboarding-signin] restarting once after an expired or mismatched attempt');
         void handleSignIn(provider, true);
         return;
