@@ -34,7 +34,7 @@ const SETUP_DM_ROW = { id: `dm:${SETUP_UID}`, kind: "dm", title: "setup", person
 const ME = { uid: "prs_me", displayName: "Corey", email: "me@example.com" };
 
 const TEAM_FIRST =
-  "Hi, I'm Pickles, your setup bot.\n\n" + "```hq-block\n" + JSON.stringify({ v: 1, blocks: [{ kind: "team" }] }) + "\n```";
+  "Hi, I'm Pickles, your HQ assistant.\n\n" + "```hq-block\n" + JSON.stringify({ v: 1, blocks: [{ kind: "team" }] }) + "\n```";
 const teamMessage = {
   eventId: "evt_team",
   body: TEAM_FIRST,

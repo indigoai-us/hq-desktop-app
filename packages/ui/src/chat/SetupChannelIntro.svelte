@@ -352,7 +352,7 @@
   );
   /**
    * No coding tool is signed in and the host can install and sign one in:
-   * the install guide owns the next step, so the hero's own Open Setup Agent
+   * the install guide owns the next step, so the hero's own Open your assistant
    * button and the Retry button (both of which would only fail again) step
    * aside and the guide's Continue takes over once a tool is signed in.
    */
@@ -603,7 +603,7 @@
               />
             {/await}
           {/if}
-          <div class="hero-actions" role="group" aria-label="Setup bot recovery">
+          <div class="hero-actions" role="group" aria-label="Assistant recovery">
             {#if !showInstallGuide}
               <SetupButton data-testid="setup-bot-retry" disabled={botBusy} onclick={() => void runSetupBot()}>
                 {copy.retry}

@@ -419,6 +419,7 @@
   import { runFirstRunSignIn, waitForToolInstall, type FirstRunSignInHost } from "../chat/first-run/first-run-signin.js";
   import { createImportScanHost } from "../chat/first-run/knowledge-tree/import-host.js";
   import { createNativeScanHost } from "../chat/first-run/knowledge-tree/native-scan-host.js";
+  import { importReportInputFromEvents, importReportInputFromScan, tapImportHost } from "../chat/first-run/knowledge-tree/import-report.js";
   import { createYourAppsHost } from "../chat/first-run/your-apps-host.js";
   import { FIRST_RUN_DEV_SWITCHES, FIRST_RUN_DRY_DELAY_MS } from "../chat/first-run/dev-switches.js";
   import type { FirstRunSettled } from "../chat/first-run/first-run-hosts.js";
@@ -940,6 +941,7 @@
   import RuntimeRepairCard from "../chat/messaging/RuntimeRepairCard.svelte";
   import type {
     BotRestoreResult,
+    ImportReportInput,
     LocalBotCreateInput,
     LocalBotRow,
     LocalBotWorkerOption,
@@ -4211,11 +4213,25 @@
    * Without either the flow has no context step. The desktop host's native
    * launch scan (`adapter.localScan`, counts and names only) comes first, so
    * hq-cli is not on the critical path; the hq-cli import is the fallback.
+   * Whichever scan ran writes the import report the first view reads.
    */
   const firstRunImportHost =
     createNativeScanHost(adapter.localScan, (scan) => {
       firstRunScanTools = scan.tools;
-    }) ?? createImportScanHost(adapter.contextImport, syncEvents);
+      writeFirstRunImportReport(importReportInputFromScan(scan));
+    }) ??
+    tapImportHost(createImportScanHost(adapter.contextImport, syncEvents), (events) =>
+      writeFirstRunImportReport(importReportInputFromEvents(events)),
+    );
+  /** Saves the scan's import report; a failed write only costs the first view its numbers. */
+  function writeFirstRunImportReport(input: ImportReportInput): void {
+    void adapter.importReport
+      ?.write(input)
+      .then((result) => {
+        if (!result.ok) console.warn("[first-run] import report not written:", result.message ?? result.code);
+      })
+      .catch((err: unknown) => console.warn("[first-run] import report not written:", err));
+  }
   /** Per-tool session counts from the launch scan: picks the most-used tool for the decision. */
   let firstRunScanTools = $state<FirstRunToolUsage[] | null>(null);
   /** Skip sign-in: create the assistant and show the held welcome report only. */
@@ -7511,7 +7527,7 @@
       : inSetupChannelWithAgent && setupAgent.listening
       ? setupAgent.state?.question?.kind === "choice"
         ? "Type your answer…"
-        : "Reply to Setup bot…"
+        : `Reply to ${SETUP_AGENT_NAME}…`
       : agentSetupPending
         ? agentComposerPlaceholder(provisioning.agentName || headerTitle)
         : composerPlaceholderFor(selectedRow, headerTitle),
