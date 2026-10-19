@@ -16,7 +16,7 @@
   import BriefDawn from "./BriefDawn.svelte";
   import { WELCOME_HORIZON_Y, welcomeSunX } from "./brief-dawn.js";
   import { RISE_CRUMB, riseDateLine } from "./brief-rise.js";
-  import { WELCOME_EDITION_EYEBROW, WELCOME_EDITION_HEAD, type WelcomeEdition, type WelcomeEditionAction } from "./brief-welcome-edition.js";
+  import { WELCOME_EDITION_EYEBROW, WELCOME_EDITION_HEAD, runnableEdition, type WelcomeEdition, type WelcomeEditionAction } from "./brief-welcome-edition.js";
   import type { WelcomeAction, WelcomeActionKind } from "./brief-welcome-contract.js";
   import { getWelcomeAiApps } from "./welcome-ai-apps.js";
 
@@ -31,7 +31,7 @@
     /** Opens the start-or-join-a-company flow. */
     onconnectcompany?: () => void;
   }
-  let { edition, now, onlaunch, launched = () => null, onopenmeetings, onconnectcompany }: Props = $props();
+  let { edition: source, now, onlaunch, launched = () => null, onopenmeetings, onconnectcompany }: Props = $props();
 
   /** The welcome report's connect inputs and open action; absent outside the report. */
   const welcomeApps = getWelcomeAiApps();
@@ -46,12 +46,14 @@
     import_history: "Import",
     open_tree: "Open",
   };
+  // Only what this host can run: no dead row, and a lead card that always has its action.
+  const edition = $derived(runnableEdition(source, canRun));
   const welcomeActions = $derived(
     edition.cards.flatMap((c) => [c.action, ...(c.rows ?? []).map((r) => r.action)]).flatMap((a) => (a?.kind === "welcome" ? [a.action] : [])),
   );
-  // The edition shows the open action itself, so the report leaves out its own bar.
+  // The edition shows an open action it can run, so the report leaves out its own bar.
   // Claimed while the edition first renders, so the bar never shows for a frame.
-  const showsOpen = $derived(welcomeActions.some((a) => a.kind === "open_harness"));
+  const showsOpen = $derived(welcomeActions.some((a) => a.kind === "open_harness" && canRunWelcome(a)));
   let release: (() => void) | null = untrack(() => showsOpen) ? (welcomeApps?.claimOpenTool?.() ?? null) : null;
   $effect(() => {
     if (showsOpen && !release) release = welcomeApps?.claimOpenTool?.() ?? null;
@@ -431,6 +433,10 @@
   /* The welcome components: a lead card with room for its sentence, then two list cards. */
   .welcome .cards {
     grid-template-columns: 1.15fr 1fr 1fr;
+  }
+  /* The lead card ends under its button, as in the r11b frame, instead of stretching to the watch list. */
+  .welcome .card.lead {
+    align-self: start;
   }
   .card.list h3 {
     font-size: 21px;
