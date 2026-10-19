@@ -1,3 +1,5 @@
+import { thisComputerNounFor, type OnboardingHostOs } from './onboarding-platform';
+
 export const DEPS_OPERATIONS = [
   'node',
   'yq',
@@ -1386,4 +1388,69 @@ export function depsFailureRecovery(error: string | null | undefined): DepsFailu
     };
   }
   return null;
+}
+
+// ─── Windows onboarding run 007 ─────────────────────────────────────
+
+/** How long each setup step stays on screen before the next one shows. */
+export const SETUP_BAND_DWELL_MS = 1500;
+
+export interface SetupBandPacer {
+  /** The percent to show for `target` at time `now` (ms). */
+  pace(target: number, now: number): number;
+}
+
+/**
+ * Shows every setup step (20% per step) for at least `dwellMs`, so a jump
+ * from step 3 to step 5 in one tick still shows step 4 (run 007 note-0022).
+ * Progress inside the current step passes through unchanged. A clock that
+ * moves back restarts the dwell rather than stalling it.
+ */
+export function createSetupBandPacer(dwellMs = SETUP_BAND_DWELL_MS): SetupBandPacer {
+  let band: number | null = null;
+  let changedAt = 0;
+  const bandOf = (p: number) => Math.min(5, Math.floor(Math.max(0, p) / 20));
+  return {
+    pace(target, now) {
+      const targetBand = bandOf(target);
+      if (band === null || targetBand <= band) {
+        if (band !== targetBand) changedAt = now;
+        band = targetBand;
+        return target;
+      }
+      if (now < changedAt) changedAt = now;
+      if (now - changedAt >= dwellMs) {
+        band += 1;
+        changedAt = now;
+      }
+      return band === targetBand ? target : Math.min(target, band * 20 + 19.9);
+    },
+  };
+}
+
+/**
+ * Body copy on the ready screen. While setup runs it must not say HQ is
+ * already in the tray or ask the person to open it (run 007).
+ */
+export function readyBodyCopy({
+  installPending,
+  os,
+}: {
+  installPending: boolean;
+  os: OnboardingHostOs;
+}): string {
+  if (installPending) {
+    return `HQ is still setting up on ${thisComputerNounFor(os)}. You can open HQ Desktop when setup finishes.`;
+  }
+  const place = os === 'macos' ? 'menu bar' : 'system tray';
+  return [
+    `HQ lives in your ${place} now and keeps everything in sync.`,
+    'Open HQ Desktop and your setup bot will walk you through the rest.',
+  ].join('\n');
+}
+
+/** Why the AI tool buttons wait while setup runs (run 007 note-0018). */
+export function toolsWaitHint(names: readonly string[]): string | null {
+  if (names.length === 0) return null;
+  return `You can open ${names.join(' or ')} when setup finishes.`;
 }

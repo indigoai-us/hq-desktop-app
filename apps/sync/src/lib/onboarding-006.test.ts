@@ -131,3 +131,67 @@ describe('shortcut screen hint (run 006 grid-0023: Next looked disabled)', () =>
     expect(SHORTCUT_NEXT_BUSY_HINT).toBe('Checking your account. This takes a few seconds.');
   });
 });
+
+// ─── Windows run 007 ────────────────────────────────────────────────
+
+import {
+  createSetupBandPacer,
+  readyBodyCopy,
+  toolsWaitHint,
+} from './onboarding-setup';
+import { readyGate } from './welcome-flow';
+
+describe('createSetupBandPacer (run 007 note-0022)', () => {
+  it('shows step 4 before step 5 when the install jumps two steps at once', () => {
+    const pacer = createSetupBandPacer(1500);
+    expect(setupStepSummary(pacer.pace(45, 0)).step).toBe(3);
+    // The install finishes step 3 and step 4 in the same tick.
+    expect(setupStepSummary(pacer.pace(85, 100)).step).toBe(3);
+    expect(setupStepSummary(pacer.pace(85, 1600)).step).toBe(4);
+    expect(setupStepSummary(pacer.pace(85, 2000)).step).toBe(4);
+    expect(setupStepSummary(pacer.pace(85, 3200)).step).toBe(5);
+  });
+
+  it('passes progress inside the current step through unchanged', () => {
+    const pacer = createSetupBandPacer(1500);
+    expect(pacer.pace(41, 0)).toBe(41);
+    expect(pacer.pace(58, 10)).toBe(58);
+  });
+
+  it('does not stall when the clock moves back', () => {
+    const pacer = createSetupBandPacer(1500);
+    pacer.pace(45, 10_000);
+    pacer.pace(65, 4_000);
+    expect(setupStepSummary(pacer.pace(65, 5_600)).step).toBe(4);
+  });
+});
+
+describe('readyBodyCopy (run 007)', () => {
+  it('does not say HQ is in the tray or offer Open while setup runs', () => {
+    const text = readyBodyCopy({ installPending: true, os: 'windows' });
+    expect(text).toBe('HQ is still setting up on this PC. You can open HQ Desktop when setup finishes.');
+    expect(text).not.toMatch(/system tray now/);
+  });
+
+  it('keeps the finished copy once setup is done', () => {
+    expect(readyBodyCopy({ installPending: false, os: 'windows' })).toEqual([
+      'HQ lives in your system tray now and keeps everything in sync.',
+      'Open HQ Desktop and your setup bot will walk you through the rest.',
+    ].join('\n'));
+    expect(readyBodyCopy({ installPending: true, os: 'macos' })).toContain('this Mac');
+  });
+
+  it('labels the HQ Desktop button as waiting, not Open, while setup runs', () => {
+    const gate = readyGate({ installPending: true, consent: 'clear', finishing: false, launching: false });
+    expect(gate.enabled).toBe(false);
+    expect(gate.label).not.toMatch(/^Open/);
+  });
+});
+
+describe('toolsWaitHint (run 007 note-0018)', () => {
+  it('says why the tool button is not available yet', () => {
+    expect(toolsWaitHint(['Claude Code'])).toBe('You can open Claude Code when setup finishes.');
+    expect(toolsWaitHint(['Claude Code', 'Codex'])).toBe('You can open Claude Code or Codex when setup finishes.');
+    expect(toolsWaitHint([])).toBeNull();
+  });
+});

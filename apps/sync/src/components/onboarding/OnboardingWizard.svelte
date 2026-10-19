@@ -130,6 +130,10 @@
     type StageState,
     GIT_PERMISSION_NOTICE,
     createStageClock,
+    createSetupBandPacer,
+    readyBodyCopy,
+    toolsWaitHint,
+    SETUP_BAND_DWELL_MS,
     depsFailureRecovery,
     depsToolDetail,
     setupHeading,
@@ -814,6 +818,20 @@
     trackSetupProgress(setupProgressTracker, rawOverallPercent),
   );
   const setupBands = $derived(friendlySetupBands(overallPercent));
+  // Run 007 note-0022: show every setup step for a moment, so a jump from
+  // step 3 to step 5 still shows step 4. Only the step counter and the card
+  // bar are paced; the progressbar value stays the real one.
+  const setupBandPacer = createSetupBandPacer();
+  let setupBandTick = $state(0);
+  const shownPercent = $derived.by(() => {
+    void setupBandTick;
+    return setupBandPacer.pace(overallPercent, Date.now());
+  });
+  $effect(() => {
+    if (setupCompleted || shownPercent >= overallPercent) return;
+    const timer = setTimeout(() => (setupBandTick += 1), SETUP_BAND_DWELL_MS);
+    return () => clearTimeout(timer);
+  });
   // US-004: honest expectation-setting under "Getting your HQ ready". The UA
   // read is one-shot at render - the host cannot change during onboarding -
   // and stays neutral when the UA has not landed yet.
@@ -823,7 +841,7 @@
   const setupExpectation = $derived(setupExpectationCopy(setupHostOs));
   const depsExpectation = $derived(depsExpectationCopy(setupHostOs));
   const setupStep = $derived(
-    setupStepSummary(setupCompleted ? 100 : Math.min(99, overallPercent)),
+    setupStepSummary(setupCompleted ? 100 : Math.min(99, shownPercent)),
   );
   // One line under the sub-status for the tools step: the Windows permission
   // warning, a Try again reason, or the honest Windows time.
@@ -895,7 +913,7 @@
   );
   const installCard = $derived(
     installCardModel({
-      percent: overallPercent,
+      percent: shownPercent,
       completed: setupCompleted,
       retryText:
         setupRetry && setupRetry.stageId === currentStageId
@@ -916,6 +934,10 @@
     }),
   );
   const storyOrder = $derived(storyScenes(replay));
+  /** Run 007 note-0018: why the Claude Code and Codex buttons wait. */
+  const toolsHint = $derived(
+    installPending ? toolsWaitHint(installedToolSlots.map((slot) => toolName(slot.kind))) : null,
+  );
 
   $effect(() => {
     if (activeInitialStep === initialStep) return;
@@ -5161,8 +5183,8 @@
         <h2 class="h h-lg" id="onboarding-title-ready" tabindex="-1" data-scene-heading>
           {setupHeading({ installPending, step: setupStep })}
         </h2>
-        <p class="body">
-          HQ lives in your {setupHostOs === 'macos' ? 'menu bar' : 'system tray'} now and keeps everything in sync.<br />Open HQ Desktop and your setup bot will walk you through the rest.
+        <p class="body" data-testid="welcome-ready-body">
+          {#each readyBodyCopy({ installPending, os: setupHostOs }).split('\n') as line, i (i)}{#if i > 0}<br />{/if}{line}{/each}
         </p>
       </div>
       <div class="prog" class:done={!installPending} bind:this={refs.readyProg}>
@@ -5184,7 +5206,7 @@
           class="tool-card tool-card-desktop"
           type="button"
           data-testid="onboarding-open-desktop"
-          aria-label="Open HQ Desktop"
+          aria-label={openDesktop.label}
           disabled={!openDesktop.enabled}
           aria-busy={finishing || installPending}
           onclick={() => void handleFinish()}
@@ -5229,6 +5251,8 @@
                 type="button"
                 data-testid="onboarding-launch-{slot.kind}"
                 disabled={finishing || launching !== null || finishBlocked}
+                title={toolsHint ?? undefined}
+                aria-describedby={toolsHint ? 'onboarding-tools-wait-hint' : undefined}
                 aria-busy={finishing || launching === slot.kind || (launching === slot.kind && probeInFlight)}
                 aria-label={slot.label}
                 onclick={() => void handleLaunch(slot.kind)}
@@ -5246,6 +5270,9 @@
               </button>
             {/each}
           </div>
+          {#if toolsHint}
+            <p class="tools-wait-hint" id="onboarding-tools-wait-hint" data-testid="onboarding-tools-wait-hint">{toolsHint}</p>
+          {/if}
         {/if}
       </div>
       <div class="alt-block" bind:this={refs.readyAlt}>
