@@ -378,13 +378,44 @@ fn marker_matches(home: &Path, runtime: GlobalRuntime) -> bool {
     fingerprint_identifies_install(stored) && stored == install_fingerprint(home, runtime)
 }
 
+/// True when an uninstall started and has not finished yet.
+fn marker_uninstall_pending(home: &Path, runtime: GlobalRuntime) -> bool {
+    read_desktop_record(home, runtime)
+        .and_then(|record| record.get("uninstall_pending").and_then(Value::as_bool))
+        .unwrap_or(false)
+}
+
 fn write_desktop_marker(home: &Path, runtime: GlobalRuntime, origin: MarkerOrigin) {
+    write_desktop_record(
+        home,
+        runtime,
+        serde_json::json!({
+            "v": 2,
+            "origin": origin.as_str(),
+            "fingerprint": install_fingerprint(home, runtime),
+        }),
+    );
+}
+
+/// Marks the record before `hq uninstall --global` runs. The CLI removes the
+/// MCP entry first and its install record last, so an uninstall that fails
+/// or times out part way leaves files that no longer match the fingerprint.
+/// The mark keeps the next launch with the setting off removing the rest.
+fn mark_uninstall_pending(home: &Path, runtime: GlobalRuntime) {
+    let mut record = read_desktop_record(home, runtime)
+        .filter(Value::is_object)
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "v": 2,
+                "fingerprint": install_fingerprint(home, runtime),
+            })
+        });
+    record["uninstall_pending"] = Value::Bool(true);
+    write_desktop_record(home, runtime, record);
+}
+
+fn write_desktop_record(home: &Path, runtime: GlobalRuntime, body: Value) {
     let marker = desktop_marker_file(home, runtime);
-    let body = serde_json::json!({
-        "v": 2,
-        "origin": origin.as_str(),
-        "fingerprint": install_fingerprint(home, runtime),
-    });
     let written = serde_json::to_vec(&body)
         .map_err(|error| error.to_string())
         .and_then(|bytes| {
@@ -631,6 +662,10 @@ where
                 && marker_matches(home, runtime);
             if !desktop_made_this_install {
                 write_desktop_marker(home, runtime, MarkerOrigin::Adopted);
+            } else if marker_uninstall_pending(home, runtime) {
+                // An uninstall failed before it changed anything and the
+                // switch is on again, so drop the pending removal.
+                write_desktop_marker(home, runtime, MarkerOrigin::Installed);
             }
             log(
                 LOG_TAG,
@@ -659,6 +694,7 @@ where
         } else if !enabled
             && trigger == GlobalInstallTrigger::Reconcile
             && !marker_matches(home, runtime)
+            && !marker_uninstall_pending(home, runtime)
         {
             clear_desktop_marker(home, runtime);
             log(
@@ -681,6 +717,9 @@ where
     for runtime in pending {
         let argv = global_runtime_args(action, runtime);
         log(LOG_TAG, &format!("running hq {}", argv.join(" ")));
+        if !enabled {
+            mark_uninstall_pending(home, runtime);
+        }
         match tokio::time::timeout(command_deadline, run_hq(argv, hq_root.clone())).await {
             Ok(Ok(())) => {
                 if enabled {
@@ -782,6 +821,18 @@ mod tests {
             r#"{"mcpServers":{"hq":{"_hqPack":"hq-anywhere"}}}"#,
         )
         .unwrap();
+        write_cli_install_record(home, "claude");
+    }
+
+    /// `hq install --global` writes `~/.hq/anywhere/<runtime>-install.json` on
+    /// every install, plugin or not, so the fakes do too.
+    fn write_cli_install_record(home: &Path, runtime: &str) {
+        fs::create_dir_all(home.join(".hq/anywhere")).unwrap();
+        fs::write(
+            home.join(format!(".hq/anywhere/{runtime}-install.json")),
+            format!(r#"{{"runtime":"{runtime}","version":"1.0.0"}}"#),
+        )
+        .unwrap();
     }
 
     fn write_codex_install(home: &Path) {
@@ -796,6 +847,7 @@ mod tests {
             "[mcp_servers.hq]\ncommand = \"hq-mcp\"\n_hqPack = \"hq-anywhere\"\n",
         )
         .unwrap();
+        write_cli_install_record(home, "codex");
     }
 
     fn write_desktop_marker_for(home: &Path, runtime: &str) {
@@ -1426,6 +1478,185 @@ mod tests {
         assert!(
             !desktop_adopted_install(home.path()),
             "an unrelated edit relabeled the desktop install as adopted"
+        );
+    }
+
+    /// Runs one launch sync with the setting off, using `run_hq` in place of
+    /// the CLI and `deadline` as the command deadline.
+    fn launch_sync_off_with<F, Fut>(
+        home: &Path,
+        deadline: Duration,
+        run_hq: F,
+    ) -> Result<(), String>
+    where
+        F: FnMut(Vec<String>, PathBuf) -> Fut,
+        Fut: std::future::Future<Output = Result<(), String>>,
+    {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        runtime.block_on(apply_global_install(
+            &production(),
+            false,
+            GlobalInstallTrigger::Reconcile,
+            Some(GlobalRuntime::Claude),
+            home,
+            &[],
+            deadline,
+            || Ok(PathBuf::from("/tmp/hq-root-for-test")),
+            run_hq,
+        ))
+    }
+
+    /// `hq uninstall --global` removes the HQ MCP entry first. Stands in for
+    /// a run that got that far and then stopped.
+    fn remove_claude_mcp_entry(home: &Path) {
+        fs::write(home.join(".claude.json"), r#"{"mcpServers":{}}"#).unwrap();
+    }
+
+    /// The CLI removes the MCP entry first and its install record last. A
+    /// launch uninstall that fails in between changes the HQ-owned content,
+    /// so the record no longer matches. The next launch with the setting off
+    /// must still finish the removal instead of dropping the record and
+    /// leaving the rest of the install behind.
+    #[test]
+    fn a_partly_failed_launch_uninstall_is_retried_on_the_next_launch() {
+        let home = TempHome::new();
+        fs::create_dir_all(home.path().join(".claude")).unwrap();
+        let (result, _) = apply_in(home.path(), true, GlobalInstallTrigger::PersonChoice);
+        assert_eq!(result, Ok(()));
+        let marker = home.path().join(".hq/anywhere/claude-desktop-enabled");
+
+        let home_path = home.path().to_path_buf();
+        let result =
+            launch_sync_off_with(home.path(), Duration::from_secs(20), move |_argv, _root| {
+                remove_claude_mcp_entry(&home_path);
+                async { Err("hooks could not be removed".to_string()) }
+            });
+        assert!(result.is_err());
+        assert!(
+            marker.is_file(),
+            "a failed uninstall dropped the desktop record"
+        );
+
+        let calls = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+        let result = launch_sync_off_with(home.path(), Duration::from_secs(20), {
+            let calls = calls.clone();
+            move |argv, _root| {
+                calls.lock().unwrap().push(argv);
+                async { Ok(()) }
+            }
+        });
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            calls.lock().unwrap().clone(),
+            [["uninstall", "--global", "--runtime", "claude"]],
+            "the next launch did not finish the removal"
+        );
+        assert!(
+            !marker.exists(),
+            "a finished uninstall kept the desktop record"
+        );
+    }
+
+    /// The same for an uninstall that the 20 s deadline stops after the CLI
+    /// removed the MCP entry.
+    #[test]
+    fn a_timed_out_launch_uninstall_is_retried_on_the_next_launch() {
+        let home = TempHome::new();
+        fs::create_dir_all(home.path().join(".claude")).unwrap();
+        let (result, _) = apply_in(home.path(), true, GlobalInstallTrigger::PersonChoice);
+        assert_eq!(result, Ok(()));
+        let marker = home.path().join(".hq/anywhere/claude-desktop-enabled");
+
+        let home_path = home.path().to_path_buf();
+        let result = launch_sync_off_with(
+            home.path(),
+            Duration::from_millis(80),
+            move |_argv, _root| {
+                remove_claude_mcp_entry(&home_path);
+                std::future::pending::<Result<(), String>>()
+            },
+        );
+        assert!(result.is_err());
+        assert!(
+            marker.is_file(),
+            "a timed-out uninstall dropped the desktop record"
+        );
+
+        let calls = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+        let result = launch_sync_off_with(home.path(), Duration::from_secs(20), {
+            let calls = calls.clone();
+            move |argv, _root| {
+                calls.lock().unwrap().push(argv);
+                async { Ok(()) }
+            }
+        });
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            calls.lock().unwrap().clone(),
+            [["uninstall", "--global", "--runtime", "claude"]],
+            "the next launch did not finish the removal"
+        );
+        assert!(!marker.exists());
+    }
+
+    /// Turning the setting back on after a failed uninstall installs again
+    /// and leaves a plain record, so a later launch is back to matching the
+    /// fingerprint only.
+    #[test]
+    fn turning_the_setting_on_after_a_failed_uninstall_clears_the_pending_removal() {
+        let home = TempHome::new();
+        fs::create_dir_all(home.path().join(".claude")).unwrap();
+        let (result, _) = apply_in(home.path(), true, GlobalInstallTrigger::PersonChoice);
+        assert_eq!(result, Ok(()));
+        let home_path = home.path().to_path_buf();
+        let result =
+            launch_sync_off_with(home.path(), Duration::from_secs(20), move |_argv, _root| {
+                remove_claude_mcp_entry(&home_path);
+                async { Err("boom".to_string()) }
+            });
+        assert!(result.is_err());
+
+        let (result, calls) = apply_in(home.path(), true, GlobalInstallTrigger::Reconcile);
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls, [["install", "--global", "--runtime", "claude"]]);
+        let record =
+            fs::read_to_string(home.path().join(".hq/anywhere/claude-desktop-enabled")).unwrap();
+        assert!(
+            !record.contains("uninstall_pending"),
+            "the reinstall kept the pending removal: {record}"
+        );
+    }
+
+    /// The real CLI rewrites its install record on every install. A later
+    /// same-version reinstall that writes byte-identical files still gives
+    /// that record a new modified time, so launch sync leaves it.
+    #[test]
+    fn a_same_version_cli_reinstall_is_left_by_launch_sync() {
+        let home = TempHome::new();
+        fs::create_dir_all(home.path().join(".claude")).unwrap();
+        let (result, _) = apply_in(home.path(), true, GlobalInstallTrigger::PersonChoice);
+        assert_eq!(result, Ok(()));
+
+        let record = home.path().join(".hq/anywhere/claude-install.json");
+        let bytes = fs::read(&record).unwrap();
+        let modified = fs::metadata(&record).unwrap().modified().unwrap();
+        write_claude_install(home.path());
+        fs::write(&record, &bytes).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&record)
+            .unwrap()
+            .set_modified(modified + Duration::from_secs(60))
+            .unwrap();
+
+        let (result, calls) = apply_in(home.path(), false, GlobalInstallTrigger::Reconcile);
+        assert_eq!(result, Ok(()));
+        assert!(
+            calls.is_empty(),
+            "launch sync removed a CLI reinstall: {calls:?}"
         );
     }
 
