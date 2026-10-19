@@ -465,19 +465,43 @@ describe("previousReadyRun", () => {
     expect(plainLine(`failed: ${LIVE_GH}`, 80)).toBeNull();
     expect(plainLine("x".repeat(81), 80)).toBeNull();
     expect(plainLine("see /Users/x/brief-sweep.py", 80)).toBeNull();
-    expect(plainLine("GH_TOKEN is missing", 80)).toBeNull();
+    expect(plainLine("ENOENT: no such file or directory", 80)).toBeNull();
   });
 
-  it("plainLine keeps dates and lowercase snake_case words, and still hides env names and paths", () => {
-    expect(plainLine("Next review on 10/18/2026", 80)).toBe("Next review on 10/18/2026");
-    expect(plainLine("Shipped 3 fixes between 10/12 and 10/18/2026", 80)).toBe("Shipped 3 fixes between 10/12 and 10/18/2026");
-    expect(plainLine("Waiting on the follow_up from design", 80)).toBe("Waiting on the follow_up from design");
-    expect(plainLine("Read 4 threads in daily_brief and team_sync", 80)).toBe("Read 4 threads in daily_brief and team_sync");
-    expect(plainLine("HQ_FOLDER is not set", 80)).toBeNull();
-    expect(plainLine("set GITHUB_TOKEN first", 80)).toBeNull();
-    expect(plainLine("read src/brief/index.json", 80)).toBeNull();
-    expect(plainLine("see /Users/x/notes", 80)).toBeNull();
-    expect(plainLine("wrote workspace/brief/2026", 80)).toBeNull();
+  it("plainLine keeps ordinary names, dates and short relative paths, and hides error-shaped text", () => {
+    // Project names, repo names and work titles (the welcome edition runs them through plainLine).
+    for (const name of [
+      "HQ_TOOLS",
+      "Shipped 3 fixes in HQ_TOOLS",
+      "my_project",
+      "Waiting on the follow_up from design",
+      "Read 4 threads in daily_brief and team_sync",
+      "src/brief/index",
+      "Tidy src/brief/index and src/brief/index.ts",
+      "10/18/2026",
+      "Next review on 10/18/2026",
+      "Shipped 3 fixes between 10/12 and 10/18/2026",
+      "Run /hq-sync first",
+    ]) {
+      expect(plainLine(name, 80)).toBe(name);
+    }
+    const LIVE_GH = "To get started with GitHub CLI, please run:  gh auth login\nAlternatively, populate the GH_TOKEN environment variable";
+    const TRACEBACK = 'Traceback (most recent call last):\n  File "/Users/x/brief-sweep.py", line 1668, in main\nKeyError: \'total\'';
+    for (const raw of [
+      LIVE_GH,
+      LIVE_GH.split("\n")[0],
+      TRACEBACK,
+      TRACEBACK.split("\n")[0],
+      "KeyError: 'total'",
+      "Error: gh exited with exit code 4",
+      "fatal: not a git repository",
+      "ENOENT: no such file or directory, open 'status.json'",
+      "EACCES: permission denied",
+      "usage: hq sync [--all] [--personal]",
+      "see /Users/x/notes",
+    ]) {
+      expect(plainLine(raw, 200)).toBeNull();
+    }
   });
 });
 

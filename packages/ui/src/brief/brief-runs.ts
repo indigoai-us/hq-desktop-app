@@ -209,19 +209,21 @@ export function parseActivity(raw: unknown): BriefActivity[] {
 }
 
 /**
- * CLI and exception markers: gh commands, tracebacks, `Error:` lines, exit
- * codes, flags, file and registry paths, env var names. Text carrying any of
- * these is tool output, not a sentence for the person.
+ * Error-shaped markers: gh commands and CLI help text, tracebacks, `Error:`,
+ * `fatal:` and `usage:` lines, exit codes, flags, Windows and registry paths.
+ * Text carrying any of these is tool output, not a sentence for the person.
+ * Single identifiers (HQ_TOOLS, my_project) and short relative paths
+ * (src/brief/index) are ordinary names and are not markers.
  */
 const RAW_MARKERS =
-  /\bgh (?:auth|api|pr|repo|run|issue)\b|github cli|traceback|error:|\berrno\b|\bexit (?:code|status)\b|exception|\bhk(?:cu|lm)\b|failed:|\brun:|(?:^|\s)--?[a-z]|\\|\b[a-z]:[\\/]|\.(?:py|ts|js|sh)\b|\bstd(?:err|out)\b|populate the/i;
+  /\bgh (?:auth|api|pr|repo|run|issue)\b|github cli|traceback|error:|fatal:|usage:|\berrno\b|\bexit (?:code|status)\b|exception|\bhk(?:cu|lm)\b|failed:|\brun:|(?:^|\s)--?[a-z]|\\|\b[a-z]:[\\/]|\bstd(?:err|out)\b|populate the/i;
 
 /**
- * The case-sensitive markers: env var names (HQ_FOLDER, never a lowercase
- * word like follow_up) and paths with two slashes and a letter between the
- * first two (src/brief/index, never a date like 10/18/2026).
+ * The case-sensitive markers: errno codes followed by a colon (ENOENT:,
+ * EACCES:) and absolute paths into the machine (/Users/…, ~/…). A date like
+ * 10/18/2026 or a command like /hq-sync is neither.
  */
-const RAW_MARKERS_CASED = /\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b|\/[\w.-]*[A-Za-z_][\w.-]*\/[\w.-]+/;
+const RAW_MARKERS_CASED = /\bE[A-Z]{2,}:|(?:^|[\s"'(=])(?:~|\/(?:Users|home|private|var|tmp|opt|etc|usr))\//;
 
 /**
  * `text` as one short plain line, or null when it is long, spans lines, or
