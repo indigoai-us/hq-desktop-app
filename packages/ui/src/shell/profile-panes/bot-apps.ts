@@ -23,6 +23,7 @@ export function supportedApps(payload: unknown): SupportedApp[] {
     return [{ id, domain, name: entry.name || domain, description: entry.description || 'Connect this MCP to give your bot more tools.', authClass: entry.authClass as SupportedApp['authClass'], entryId: entry.entryId ?? null }];
   });
 }
+export function botHasApp(app: BotApp): boolean { return app.enabled || app.id.startsWith('attention:'); }
 export function botApps(connections: CompanyConnection[], access: Record<string, ConnectionAccess | null>, profile: AgentProfileView | null, uid: string, controls: boolean): BotApp[] {
   const fresh = profile?.freshness.source === 'live';
   const normalize = (provider: string) => provider.toLowerCase().replace(/^factory:/, '');

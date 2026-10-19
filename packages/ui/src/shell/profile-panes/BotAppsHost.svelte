@@ -110,7 +110,7 @@
       if (!result.ok) { notice = result.reason || 'Sign-in check cancelled. Refresh if you completed sign-in in the browser.'; throw new Error('Connection not verified'); }
     }
     await refresh();
-    if (version === generation) notice = 'Connection setup completed. Open the company connection below to check or add this bot’s access.';
+    if (version === generation) notice = 'Connection setup completed. Open Browse apps and choose it under Company connections to add it to this bot.';
   }
   $effect(() => {
     void stableUid; void stableCompanyUid; void stableAdapter;
@@ -124,7 +124,7 @@
 {#if keyApp && adapter && uid && onopenurl}
   <IntegrationConnectModal frame={{ open: true, title: `Connect ${keyApp.name}`, icon: 'integration', logo: appLogo(keyApp.domain), art: art.url, artPosition: art.position, onclose: () => { keyApp = null; void refresh(); } }}
     agentUid={uid} botName={name} target="integration" {companyUid} companySlug={null} status={null} statusDenied={false} checkedAt={0} {adapter} openUrl={onopenurl} refresh={refresh} started={() => {}}
-    integration={{ domain: keyApp.domain, name: keyApp.name, authClass: keyApp.authClass, catalogEntryId: keyApp.entryId, connected: () => { notice = 'App connected to the company. Check or add this bot’s access below.'; void refresh(); } }} />
+    integration={{ domain: keyApp.domain, name: keyApp.name, authClass: keyApp.authClass, catalogEntryId: keyApp.entryId, connected: () => { notice = 'App connected to the company. Open Browse apps and choose it under Company connections to add it to this bot.'; void refresh(); } }} />
 {/if}
 
 {#if configuring && companyUid && adapter}

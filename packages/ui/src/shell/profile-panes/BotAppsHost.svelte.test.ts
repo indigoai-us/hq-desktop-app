@@ -27,10 +27,13 @@ async function click(label: string) {
   expect(button).toBeTruthy(); button!.click(); await settle();
 }
 async function openApp() { target.querySelector<HTMLButtonElement>('[data-testid="bot-app"]')!.click(); await settle(); }
+async function openCompanyApp() { await click('Browse apps'); document.querySelector<HTMLButtonElement>('[data-testid="company-app"]')!.click(); await settle(); }
 it('reads apps without mutations and grants access only to the selected bot', async () => {
   const api = await setup();
   expect(api.install).not.toHaveBeenCalled(); expect(api.grantConnectionAccess).not.toHaveBeenCalled();
-  await openApp(); await click('Add to bot');
+  expect(target.querySelector('[data-testid="bot-app"]')).toBeNull();
+  expect(target.querySelector('[data-testid="bot-apps-empty"]')?.textContent).toContain('No company apps are connected to this bot.');
+  await openCompanyApp(); await click('Add to bot');
   expect(api.grantConnectionAccess).toHaveBeenCalledWith({ companyUid: 'cmp_a', connectionId: 'connection_1', granteeUid: 'agt_a' });
   expect(target.querySelector('[role="dialog"]')?.textContent).toContain('Available to bot');
 });
@@ -42,13 +45,13 @@ it('requires confirmation to revoke bot access and never uninstalls company apps
   expect(api.uninstall).not.toHaveBeenCalled();
 });
 it('honors the per-bot control feature gate', async () => {
-  const api = await setup(false); await openApp();
+  const api = await setup(false); await openCompanyApp();
   expect(target.querySelector('[role="dialog"]')?.textContent).toContain('not enabled');
   expect([...target.querySelectorAll('button')].some(button => button.textContent?.trim() === 'Add to bot')).toBe(false);
   expect(api.grantConnectionAccess).not.toHaveBeenCalled();
 });
 it('retains existing access after a refused mutation', async () => {
-  await setup(true, false, false); await openApp(); await click('Add to bot');
+  await setup(true, false, false); await openCompanyApp(); await click('Add to bot');
   expect(target.querySelector('[role="alert"]')?.textContent).toContain('Could not complete');
   expect(target.querySelector('[role="dialog"]')?.textContent).toContain('Company connection');
 });
@@ -61,21 +64,21 @@ it('uses catalog IDs for no-auth setup without silently granting bot access', as
 });
 
 it('opens existing credential settings without changing connection or bot access', async () => {
-  const api = await setup(); await openApp(); await click('Connection settings');
+  const api = await setup(); await openCompanyApp(); await click('Connection settings');
   expect(target.querySelector('[aria-label="Connection settings"]')).not.toBeNull();
   expect(target.querySelector('input[type="password"]')).not.toBeNull();
   expect(api.install).not.toHaveBeenCalled(); expect(api.grantConnectionAccess).not.toHaveBeenCalled();
 });
 
 it('keeps old app cards hidden until connection access has finished refreshing', async () => {
-  const api = await setup();
+  const api = await setup(true, true);
   let finish!: (value: never) => void;
   api.getConnectionAccess.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
   target.querySelector<HTMLButtonElement>('[aria-label="Refresh apps"]')!.click();
   await settle();
   expect(target.querySelector('[data-testid="bot-apps-loading"]')).not.toBeNull();
   expect(target.querySelector('[data-testid="bot-app"]')).toBeNull();
-  finish({ ok: true, value: { canManage: true, access: { mode: 'shared' }, entries: [] } } as never);
+  finish({ ok: true, value: { canManage: true, access: { mode: 'shared' }, entries: [{ granteeType: 'person', granteeId: 'agt_a', permission: 'read' }] } } as never);
   await settle();
   expect(target.querySelector('[data-testid="bot-apps-loading"]')).toBeNull();
   expect(target.querySelector('[data-testid="bot-app"]')).not.toBeNull();

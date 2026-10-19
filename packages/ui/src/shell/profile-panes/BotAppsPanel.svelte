@@ -2,8 +2,7 @@
   import BotTabSkeleton from './BotTabSkeleton.svelte';
   import RailIcon from '../../common/button/RailIcon.svelte';
   import ConnectionCardLogo from '../../chat/messaging/ConnectionCardLogo.svelte';
-  import Dropdown from '../../common/Dropdown.svelte';
-  import { botAppLogo } from './bot-apps.js';
+  import { botAppLogo, botHasApp } from './bot-apps.js';
   import { portal, focusOnMount } from '../../chat/portal.js';
   import { dismissable } from '../../common/dismissable.js';
   import type { BotApp, SupportedApp } from './bot-apps.js';
@@ -14,8 +13,6 @@
     onsearch?: (query: string) => Promise<void>; onrefresh?: () => Promise<void>; onconnect?: (app: SupportedApp) => Promise<void>; ontoggle?: (id: string, enabled: boolean) => Promise<void>;
   } = $props();
   let query = $state('');
-  let filter = $state('all');
-  const statusOptions = [{ value: 'all', label: 'All statuses' }, { value: 'ready', label: 'Available to bot' }, { value: 'available', label: 'Company connections' }, { value: 'attention', label: 'Needs attention' }, { value: 'unknown', label: 'Access unverified' }];
   let browsing = $state(false);
   let view = $state<'list' | 'grid'>('grid');
   let catalogQuery = $state('');
@@ -25,8 +22,13 @@
   let actionError = $state('');
   let confirmation = $state(false);
   const current = $derived(rows.find(row => row.id === selected));
-  const shown = $derived(rows.filter(row => (filter === 'all' || row.status === filter) && `${row.name} ${row.domain}`.toLowerCase().includes(query.toLowerCase().trim())));
+  const matches = (row: BotApp, text: string) => `${row.name} ${row.domain}`.toLowerCase().includes(text.toLowerCase().trim());
+  const mine = $derived(rows.filter(botHasApp));
+  const others = $derived(rows.filter(row => !botHasApp(row)));
+  const shown = $derived(mine.filter(row => matches(row, query)));
+  const shownOthers = $derived(others.filter(row => matches(row, catalogQuery)));
   const labels = { ready: 'Available to bot', available: 'Company connection', attention: 'Needs attention', unknown: 'Access unverified' };
+  function browse() { browsing = true; void onsearch?.(catalogQuery); }
   function close() { if (!busy) { selected = null; selectedCatalog = null; actionError = ''; confirmation = false; } }
   async function act(action: () => Promise<void>, connect = false) {
     busy = true; actionError = '';
@@ -37,28 +39,32 @@
 </script>
 {#if loading}<BotTabSkeleton kind="apps" onretry={onrefresh} />{:else}
 <section class="apps" aria-label="Manage apps">
-  <div class="toolbar">
+  {#if mine.length || error}<div class="toolbar">
     <label class="search"><RailIcon name="search" /><input aria-label="Filter bot apps" bind:value={query} placeholder="Search apps…" /></label>
-    <div class="status-filter"><Dropdown label="App status" options={statusOptions} bind:value={filter} block /></div>
     <div class="view-toggle" role="group" aria-label="App view">
       <button class="icon-button" class:active={view === 'list'} aria-label="List view" title="List view" aria-pressed={view === 'list'} onclick={() => view = 'list'}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 5h10M7 10h10M7 15h10M3 5h.01M3 10h.01M3 15h.01" /></svg></button>
       <button class="icon-button" class:active={view === 'grid'} aria-label="Grid view" title="Grid view" aria-pressed={view === 'grid'} onclick={() => view = 'grid'}><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="3" width="5" height="5" rx="1" /><rect x="12" y="3" width="5" height="5" rx="1" /><rect x="3" y="12" width="5" height="5" rx="1" /><rect x="12" y="12" width="5" height="5" rx="1" /></svg></button>
     </div>
     <button class="icon-button" disabled={loading || busy || !onrefresh} onclick={() => onrefresh?.()} aria-label="Refresh apps" title="Refresh apps"><RailIcon name="refresh" /></button>
-    <button class="primary browse-button" aria-haspopup="dialog" onclick={() => { browsing = true; void onsearch?.(catalogQuery); }}><RailIcon name="plus" />Browse apps</button>
-  </div>
+    <button class="primary browse-button" aria-haspopup="dialog" onclick={browse}><RailIcon name="plus" />Browse apps</button>
+  </div>{/if}
   {#if error}<p class="notice" role="alert">{error}</p>{/if}
   {#if notice}<p class="notice" role="status">{notice}</p>{/if}
-  <div class="section-head"><span>{loading ? 'Checking…' : `${shown.length}${shown.length !== rows.length ? ` of ${rows.length}` : ''} apps`}</span></div>
-  {#if loading}<p role="status">Loading apps and access…</p>{:else if !error && rows.length === 0}<div class="empty"><RailIcon name="plug" /><h4>Bring your tools together</h4><p>Browse supported MCPs to connect the apps your bot needs.</p></div>{:else if shown.length === 0 && !error}<p>No apps match these filters.</p>{/if}
+  {#if !error && mine.length === 0}<div class="empty" data-testid="bot-apps-empty"><p class="muted">No company apps are connected to this bot.</p><button class="icon-button" disabled={loading || busy || !onrefresh} onclick={() => onrefresh?.()} aria-label="Refresh apps" title="Refresh apps"><RailIcon name="refresh" /></button><button class="primary browse-button" aria-haspopup="dialog" onclick={browse}><RailIcon name="plus" />Browse apps</button></div>
+  {:else if mine.length}<div class="section-head"><span>{`${shown.length}${shown.length !== mine.length ? ` of ${mine.length}` : ''} apps`}</span></div>{#if shown.length === 0}<p>No apps match this search.</p>{/if}{/if}
   <div class="app-results" class:grid-view={view === 'grid'} data-view={view}>{#each shown as app (app.id)}<button class="app-card" data-testid="bot-app" onclick={() => { selected = app.id; selectedCatalog = null; actionError = ''; confirmation = false; }}><span class="logo"><ConnectionCardLogo logo={botAppLogo(app)} size={32} /></span><span class="app-content"><strong>{app.name}</strong><span class="status"><i class:ready={app.status === 'ready'} class:attention={app.status === 'attention'}></i>{labels[app.status]}{app.tools !== null ? ` · ${app.tools} tools` : ''}</span></span><span class="manage" aria-hidden="true">↗</span></button>{/each}</div>
 </section>
 {/if}
-{#if browsing && !selectedCatalog}
+{#if browsing && !selectedCatalog && !current}
   <div class="overlay" use:portal><div class="dialog catalog-dialog" role="dialog" aria-modal="true" aria-label="Browse apps" tabindex="-1" use:dismissable={{ onclose: () => browsing = false, outside: true }}>
     <header><div><h3>Find your next app</h3><p class="muted">Connect your tools, then choose which bots can use them.</p></div><button class="icon-button" aria-label="Close app browser" onclick={() => browsing = false}><RailIcon name="x" /></button></header>
-    <form class="search catalog-search" onsubmit={event => { event.preventDefault(); void onsearch?.(catalogQuery); }}><RailIcon name="search" /><input use:focusOnMount aria-label="Search supported apps" bind:value={catalogQuery} placeholder="Search the app catalog…" /><button disabled={catalogLoading || !onsearch}>Search</button></form>
+    <form class="search catalog-search" onsubmit={event => { event.preventDefault(); void onsearch?.(catalogQuery); }}><RailIcon name="search" /><input use:focusOnMount aria-label="Search supported apps" bind:value={catalogQuery} placeholder="Search the app catalog…" /><button disabled={catalogLoading || !onsearch}>{catalogLoading ? 'Searching…' : 'Search'}</button></form>
     <div class="catalog-results">
+      {#if others.length}<section class="catalog-group" aria-label="Company connections"><div class="group-head"><h4>Company connections</h4><p class="muted">Already connected to the company. Choose one to add it to this bot.</p></div>
+        {#if shownOthers.length === 0}<p class="muted">No company connections match.</p>{/if}
+        <div class="catalog-grid">{#each shownOthers as app (app.id)}<button class="catalog-card" data-testid="company-app" onclick={() => { selected = app.id; selectedCatalog = null; actionError = ''; confirmation = false; }}><span class="catalog-identity"><ConnectionCardLogo logo={botAppLogo(app)} size={32} /><strong>{app.name}</strong></span><span class="catalog-description muted">{app.detail}</span><span class="method">{labels[app.status]} →</span></button>{/each}</div>
+      </section>
+      <div class="group-head new-app"><h4>Connect a new app</h4></div>{/if}
       {#if catalogLoading}<BotTabSkeleton kind="apps" />{:else if catalogError}<p role="alert">{catalogError}</p>{:else if catalog.length === 0}<p class="muted">No apps found. Try another name.</p>{/if}
       {#if !catalogLoading}<div class="catalog-grid">{#each catalog as app (app.id)}<button class="catalog-card" data-testid="catalog-app" onclick={() => { selectedCatalog = app; selected = null; actionError = ''; }}><span class="catalog-identity"><ConnectionCardLogo logo={botAppLogo(app)} size={32} /><strong>{app.name}</strong></span><span class="catalog-description muted">{app.description}</span><span class="method">{app.authClass === 'oauth' ? 'Browser sign-in' : app.authClass === 'key' ? 'API key' : 'No sign-in needed'} →</span></button>{/each}</div>{/if}
     </div>
@@ -72,9 +78,9 @@
     {:else if selectedCatalog}<p>{selectedCatalog.description}</p><p class="notice">{selectedCatalog.authClass === 'oauth' ? 'Sign in securely in your browser, then return here. HQ will verify the connection.' : selectedCatalog.authClass === 'key' ? 'Continue to enter the provider’s API key securely.' : 'This MCP does not require a sign-in.'}</p>{#if !canConnect}<p class="muted">Connecting apps requires company admin access and an available connection flow.</p>{/if}{/if}
     {#if actionError}<p class="notice" role="alert">{actionError}</p>{/if}
     {#if busy}<p role="status">{selectedCatalog?.authClass === 'oauth' ? 'Waiting for browser sign-in…' : 'Updating connection…'}</p>{/if}
-    <footer>{#if current && configurable.includes(current.id) && onconfigure}<button disabled={busy} onclick={() => { const id = current!.id; close(); onconfigure?.(id); }}>Connection settings</button>{/if}{#if busy && selectedCatalog?.authClass === "oauth" && oncancel}<button onclick={oncancel}>Cancel sign-in check</button>{/if}<button disabled={busy} onclick={close}>{selectedCatalog && browsing ? 'Back to apps' : 'Done'}</button>
+    <footer>{#if current && configurable.includes(current.id) && onconfigure}<button disabled={busy} onclick={() => { const id = current!.id; close(); onconfigure?.(id); }}>Connection settings</button>{/if}{#if busy && selectedCatalog?.authClass === "oauth" && oncancel}<button onclick={oncancel}>Cancel sign-in check</button>{/if}<button disabled={busy} onclick={close}>{browsing ? 'Back to apps' : 'Done'}</button>
       {#if current?.canToggle && ontoggle}<button disabled={busy} class:primary={!current.enabled} onclick={() => { if (current.enabled && !confirmation) confirmation = true; else void act(() => ontoggle!(current.id, !current.enabled)); }}>{busy ? 'Saving…' : current.enabled ? confirmation ? 'Confirm removal' : 'Remove bot access' : 'Add to bot'}</button>
-      {:else if selectedCatalog}<button class="primary" disabled={busy || !canConnect || !onconnect} onclick={() => act(() => onconnect!(selectedCatalog!), true)}>{selectedCatalog.authClass === 'key' ? 'Continue with API key' : 'Connect app'}</button>{/if}
+      {:else if selectedCatalog}<button class="primary" disabled={busy || !canConnect || !onconnect} onclick={() => act(() => onconnect!(selectedCatalog!), true)}>{busy ? 'Connecting…' : selectedCatalog.authClass === 'key' ? 'Continue with API key' : 'Connect app'}</button>{/if}
     </footer>
   </div></div>
 {/if}
@@ -89,9 +95,6 @@
   button:focus-visible { outline:2px solid var(--v4-text-2); outline-offset:3px; }
   .toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:6px; }
   .toolbar .search { flex:1 1 130px; min-width:100px; }
-  .status-filter { width:158px; min-width:0; }
-  .toolbar :global(.dd-button) { min-height:var(--hq-btn-h); height:var(--hq-btn-h); font-size:12px; }
-  .toolbar :global(.dd-menu) { left:auto; right:0; }
   .browse-button { font-size:12px; min-height:var(--hq-btn-h); white-space:nowrap; }
   .icon-button { width:32px; height:var(--hq-btn-h); padding:6px; flex:none; }
   .view-toggle { display:flex; gap:2px; padding:2px; border:1px solid var(--v4-control-border,var(--line)); border-radius:8px; }
@@ -113,7 +116,8 @@
   .status i { flex:none; width:5px; height:5px; border-radius:50%; background:var(--v4-text-3); }
   .status i.ready { background:var(--v4-ok); }.status i.attention { background:var(--v4-error); }
   .grid-view .manage { display:none; }
-  .notice,.empty { padding:14px; border:1px solid var(--v4-rowline,var(--line)); border-radius:10px; }.empty { display:grid; gap:8px; }
+  .notice,.empty { padding:14px; border:1px solid var(--v4-rowline,var(--line)); border-radius:10px; }
+  .empty { display:flex; align-items:center; flex-wrap:wrap; gap:6px; padding:10px 10px 10px 14px; } .empty p { flex:1 1 160px; }
   .overlay { position:fixed; inset:0; z-index:10030; display:grid; place-items:center; padding:16px; background:rgb(0 0 0/.55); }
   .dialog { box-sizing:border-box; width:min(480px,100%); max-height:calc(100dvh - 32px); overflow:auto; padding:24px; border:1px solid var(--v4-control-border,var(--line)); border-radius:20px; background:var(--v4-secondary-sidebar,var(--side-bg,#191919)); }
   header { display:flex; align-items:center; gap:12px; margin-bottom:16px; } header > div { flex:1; min-width:0; } h3 { overflow-wrap:anywhere; }
@@ -126,6 +130,8 @@
   .catalog-identity { display:flex; align-items:center; gap:10px; min-width:0; overflow-wrap:anywhere; }
   .catalog-description { display:-webkit-box; -webkit-line-clamp:2; line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
   .method { margin-top:auto; }
+  .catalog-group { display:grid; gap:10px; margin-bottom:18px; }
+  .group-head { display:grid; gap:2px; } .new-app { margin-bottom:10px; }
   @container(max-width:420px) { .toolbar .search { flex-basis:calc(100% - 170px); } .browse-button { margin-left:auto; } }
   @media(max-width:480px) { .dialog { padding:16px; } }
 </style>

@@ -3,8 +3,11 @@ import { expect, test } from '@playwright/test';
 test('browse connect and explicitly grant or remove bot access', async ({ page }, info) => {
   await page.goto('/?view=bot-management');
   await page.getByRole('tab', { name: 'Apps', exact: true }).click();
-  await expect(page.getByTestId('bot-app')).toHaveCount(4);
+  await expect(page.getByTestId('bot-app')).toHaveCount(2);
+  await expect(page.getByTestId('bot-app').filter({ hasText: 'Notion' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Browse apps', exact: true }).click();
+  await expect(page.getByTestId('company-app')).toHaveCount(2);
+  await expect(page.getByTestId('company-app').filter({ hasText: 'Figma' })).toContainText('Needs attention');
   await expect(page.getByTestId('catalog-app')).toHaveCount(3);
   await page.getByRole('textbox', { name: 'Search supported apps' }).fill('Drive');
   await page.getByRole('button', { name: 'Search', exact: true }).click();
@@ -13,24 +16,22 @@ test('browse connect and explicitly grant or remove bot access', async ({ page }
   const dialog = page.getByRole('dialog');
   await expect(dialog).toContainText('Sign in securely');
   await dialog.getByRole('button', { name: 'Connect app', exact: true }).click();
-  const drive = page.getByTestId('bot-app').filter({ hasText: 'Google Drive' });
-  await expect(drive).toContainText('Company connection');
-  await drive.click();
+  await expect(page.getByTestId('bot-app').filter({ hasText: 'Google Drive' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Browse apps', exact: true }).click();
+  const companyDrive = page.getByTestId('company-app').filter({ hasText: 'Google Drive' });
+  await expect(companyDrive).toContainText('Company connection');
+  await companyDrive.click();
   await dialog.getByRole('button', { name: 'Add to bot', exact: true }).click();
   await expect(dialog).toContainText('Available to bot');
-  await dialog.getByRole('button', { name: 'Remove bot access', exact: true }).click();
+  const drive = page.getByTestId('bot-app').filter({ hasText: 'Google Drive' });
   await expect(drive).toContainText('Available to bot');
+  await dialog.getByRole('button', { name: 'Remove bot access', exact: true }).click();
   await dialog.getByRole('button', { name: 'Confirm removal', exact: true }).click();
   await expect(dialog).toContainText('Company connection');
-  await dialog.getByRole('button', { name: 'Done', exact: true }).click();
-  await page.getByRole('button', { name: 'App status: All statuses', exact: true }).click();
-  await page.getByRole('option', { name: 'Needs attention', exact: true }).click();
-  await expect(page.getByTestId('bot-app')).toHaveCount(1);
-  await expect(page.getByTestId('bot-app')).toContainText('Figma');
-  await page.getByRole('button', { name: 'App status: Needs attention', exact: true }).click();
-  await page.getByRole('option', { name: 'All statuses', exact: true }).click();
-  await page.getByRole('button', { name: 'Browse apps', exact: true }).click();
+  await expect(drive).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Back to apps', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'Browse apps', exact: true })).toBeVisible();
+  await expect(companyDrive).toHaveCount(1);
   await page.screenshot({ animations: 'disabled', path: info.outputPath('apps-catalog.png') });
 });
 
@@ -55,7 +56,8 @@ test('locked apps remain read-only and the narrow layout fits', async ({ page },
 test('failed access change keeps the current access and can retry', async ({ page }) => {
   await page.goto('/?view=bot-management&state=app-error');
   await page.getByRole('tab', { name: 'Apps', exact: true }).click();
-  await page.getByTestId('bot-app').filter({ hasText: 'Notion' }).click();
+  await page.getByRole('button', { name: 'Browse apps', exact: true }).click();
+  await page.getByTestId('company-app').filter({ hasText: 'Notion' }).click();
   const dialog = page.getByRole('dialog');
   await dialog.getByRole('button', { name: 'Add to bot' }).click();
   await expect(dialog.getByRole('alert')).toContainText('Could not complete');
@@ -70,7 +72,7 @@ test('failed access change keeps the current access and can retry', async ({ pag
   await page.screenshot({ animations: 'disabled', path: info.outputPath('apps-grid.png') });
   await page.getByRole('button', { name: 'List view', exact: true }).click();
   await expect(page.locator('[data-view=list]')).toBeVisible();
-  await expect(page.getByTestId('bot-app')).toHaveCount(4);
+  await expect(page.getByTestId('bot-app')).toHaveCount(2);
   await page.getByRole('button', { name: 'Browse apps', exact: true }).click();
   const browser = page.getByRole('dialog', { name: 'Browse apps', exact: true });
   await expect(browser.getByRole('textbox')).toBeFocused();
