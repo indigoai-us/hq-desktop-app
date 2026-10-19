@@ -439,10 +439,12 @@ describe("WelcomeReport", () => {
     target = document.createElement("div");
     document.body.appendChild(target);
     const onlaunch = vi.fn(async () => null);
+    const onopenmeetings = vi.fn();
     component = mount(ReportWithBrief, {
       target,
       props: {
         input: welcomeRiseBriefInput(),
+        onopenmeetings,
         actions: { destinations: { assistantName: "Atlas", claudeCode: true, codex: false }, onassistant: vi.fn(async () => null) },
         report: { aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: false } } },
         onlaunch,
@@ -454,7 +456,18 @@ describe("WelcomeReport", () => {
     expect(q('[data-testid="welcome-edition-greeting"]')?.textContent).toBe("Good morning, Alex.");
     expect(q('[data-testid="welcome-edition-date"]')?.textContent).toBe("Saturday, October 17");
     expect([...document.querySelectorAll<HTMLElement>('[data-testid="welcome-edition-card"]')].map((c) => c.dataset.card)).toEqual(["decision", "day", "work"]);
-    expect(document.querySelectorAll('[data-testid="welcome-edition-section"]')).toHaveLength(1);
+    expect([...document.querySelectorAll('[data-testid="welcome-edition-section"] h3')].map((h) => h.textContent)).toEqual(["Northstar", "Fieldwork", "Studio"]);
+    // The unread calendar is one quiet line beside the head, never a headline card.
+    expect(q('[data-testid="welcome-edition-run"]')?.textContent).toBe("412 sessions read · 6 repos · Calendar could not be read.");
+    expect(edition.textContent?.match(/Calendar could not be read/g)).toHaveLength(1);
+    expect(edition.textContent).not.toContain("Your calendar can wait.");
+    expect(q('[data-card="day"] h3')?.textContent).toBe("5 things for you today.");
+    expect(q('[data-card="work"] h3')?.textContent).toBe("Finish the welcome state.");
+    expect(edition.textContent).not.toMatch(/\.svelte|apps\/desktop/);
+    const agenda = q('[data-card="day"] [data-testid="welcome-edition-action"]') as HTMLButtonElement;
+    expect(agenda.textContent).toBe("Open the agenda");
+    agenda.click();
+    expect(onopenmeetings).toHaveBeenCalledTimes(1);
     // The purple sunrise card and the ticker are gone from the welcome page.
     expect(q('[data-testid="welcome-report-ready"] .b-head')).toBeNull();
     expect(q('[data-testid="welcome-report-ready"] [data-testid="brief-action-cards"]')).toBeNull();

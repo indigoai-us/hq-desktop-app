@@ -335,8 +335,8 @@ describe("BriefRunsPage", () => {
       el.querySelector("p")?.innerHTML.replace(/<!---->/g, "").split("<br>").map((l) => l.trim()),
     ]);
     expect(sections).toEqual([
-      ["Northstar", ["2 open items for you"]],
-      ["Fieldwork", ["Pick the pricing page", "1 open item for you"]],
+      ["Northstar", ["On the cards above."]],
+      ["Fieldwork", ["Pick the pricing page"]],
     ]);
   });
 });

@@ -402,6 +402,8 @@ export interface BriefInput {
   calendarSample?: boolean;
   /** One quiet line per source that could not be read ("Calendar could not be read."). Never a priority. */
   sourceNotes?: string[];
+  /** The count line the welcome reveal ended on ("412 sessions read · 6 repos"), carried into the welcome edition. */
+  runStats?: string | null;
   /** Local calendar date of the brief, YYYY-MM-DD, from brief-data.json window.today. The only source of weekday. */
   today?: string;
   /** brief.json lead_hint. */

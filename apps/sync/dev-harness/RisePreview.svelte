@@ -107,6 +107,7 @@
           input={briefInput}
           actions={{ destinations: { assistantName: 'Atlas', claudeCode: true, codex: false }, onassistant: async () => null }}
           onlaunch={async () => null}
+          onopenmeetings={() => {}}
         />
       </WelcomeReport>
     </div>

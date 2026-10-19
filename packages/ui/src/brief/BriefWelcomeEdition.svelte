@@ -85,7 +85,10 @@
     <p class="sub">{edition.sub}</p>
   </div>
   <article class="brief">
-    <h3 class="head">{WELCOME_EDITION_HEAD}</h3>
+    <div class="head">
+      <h3>{WELCOME_EDITION_HEAD}</h3>
+      {#if edition.note}<span class="run" data-testid="welcome-edition-run">{edition.note}</span>{/if}
+    </div>
     <div class="cards">
       {#each edition.cards as card (card.id)}
         {@const note = noteFor(card.action)}
@@ -204,9 +207,21 @@
     margin: 0;
     font-weight: 400;
   }
+  /* The mockup's brief head: the title left, one quiet run line right. */
   .head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
     margin-bottom: 18px;
+  }
+  .head h3 {
     font: 400 23px var(--serif);
+  }
+  .run {
+    font-size: 12px;
+    color: var(--ink-2);
+    text-align: right;
   }
   .cards {
     display: grid;

@@ -5,13 +5,17 @@
  */
 
 import type { BriefDecision, BriefInput, BriefSession } from "./brief-types.js";
-import type { RiseSource } from "./brief-rise.js";
+import { riseFrame, riseRevealAt, type RiseSource } from "./brief-rise.js";
 
 export const WELCOME_RISE_TODAY = "2026-10-17";
 export const WELCOME_RISE_FINDING_CLAUDE = "Keep the offline installer in the first release.";
 export const WELCOME_RISE_FINDING_CODEX = "PR #248 · Restore offline install is ready for review.";
 export const WELCOME_RISE_FINDING_REPOS = "WelcomeReport.svelte still needs the new empty state.";
 export const WELCOME_RISE_CALENDAR_LINE = "Calendar could not be read.";
+/** The pick-up card's plain title for the repos finding. A filename is never a headline. */
+export const WELCOME_RISE_WORK_TITLE = "Finish the welcome state.";
+export const WELCOME_RISE_FIELDWORK_TITLE = "Monday's research plan";
+export const WELCOME_RISE_STUDIO_TITLE = "Homepage copy · revision 4";
 
 export const WELCOME_RISE_SOURCES: RiseSource[] = [
   {
@@ -48,6 +52,17 @@ export const WELCOME_RISE_SOURCES: RiseSource[] = [
 ];
 
 const COMPANY = "northstar";
+/** The run's projects, as the mockup's project row shows them. */
+export const WELCOME_RISE_COMPANIES = [COMPANY, "fieldwork", "studio"];
+
+/** The count line the reveal ends on, once every source has been read ("412 sessions read · 6 repos"). */
+export function welcomeRiseRunStats(): string {
+  return riseFrame(riseRevealAt(WELCOME_RISE_SOURCES.length - 1), WELCOME_RISE_SOURCES).countText;
+}
+
+function sourceSessions(id: "claude" | "codex"): number {
+  return WELCOME_RISE_SOURCES.find((s) => s.id === id)?.counts.sessions ?? 0;
+}
 
 /** Local 9:00 so the weekday stays Saturday, October 17 in any timezone. */
 export function welcomeRiseNow(): Date {
@@ -82,14 +97,29 @@ export function welcomeRiseBriefInput(now: Date = welcomeRiseNow()): BriefInput 
     {
       id: "rise-codex",
       title: WELCOME_RISE_FINDING_CODEX,
-      summary: "northstar/desktop",
+      summary: "Review ready · 1 decision",
       action: "go",
       origin,
     },
     {
+      id: "rise-fieldwork",
+      title: WELCOME_RISE_FIELDWORK_TITLE,
+      summary: "Maya added 3 interview notes.",
+      action: "go",
+      origin: { companyUid: "fieldwork", repo: null, product: "Research" },
+    },
+    {
+      id: "rise-studio",
+      title: WELCOME_RISE_STUDIO_TITLE,
+      summary: "Jordan's wording is ready to read.",
+      action: "go",
+      origin: { companyUid: "studio", repo: null, product: "Homepage" },
+    },
+    {
+      // The repos finding names a file; the card says what the work is.
       id: "rise-repos",
-      title: WELCOME_RISE_FINDING_REPOS,
-      summary: "apps/desktop/src/brief",
+      title: WELCOME_RISE_WORK_TITLE,
+      summary: "The zero-company view is the last open item.",
       action: "go",
       origin,
     },
@@ -98,7 +128,7 @@ export function welcomeRiseBriefInput(now: Date = welcomeRiseNow()): BriefInput 
     now: now.toISOString(),
     today: WELCOME_RISE_TODAY,
     userName: "Alex",
-    companies: [COMPANY],
+    companies: [...WELCOME_RISE_COMPANIES],
     calendarToday: [],
     meetingsYesterday: [],
     decisions,
@@ -107,8 +137,9 @@ export function welcomeRiseBriefInput(now: Date = welcomeRiseNow()): BriefInput 
     shipped: [],
     waitingOn: [],
     team: [],
-    // The brief shows the count the reveal shows, so the handoff never jumps (round 2).
-    sessions: sessionsFor("claude", 168, now),
+    // The brief counts every session the reveal ends on, so the handoff never jumps (round 3).
+    sessions: [...sessionsFor("claude", sourceSessions("claude"), now), ...sessionsFor("codex", sourceSessions("codex"), now)],
+    runStats: welcomeRiseRunStats(),
     lastBriefAt: null,
     calendarSample: false,
     // A source that could not be read is a quiet note, never a priority or a decision.

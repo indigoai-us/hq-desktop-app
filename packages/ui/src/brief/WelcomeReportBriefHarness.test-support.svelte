@@ -17,10 +17,11 @@
     /** The report turns ready when this does, as the shell's job lands. */
     ready?: boolean;
     onlaunch?: BriefLaunch;
+    onopenmeetings?: () => void;
   }
-  let { input, actions, report, ready = true, onlaunch = async () => null }: Props = $props();
+  let { input, actions, report, ready = true, onlaunch = async () => null, onopenmeetings }: Props = $props();
 </script>
 
 <WelcomeReport {ready} {...report}>
-  <DailyBrief {input} {actions} {onlaunch} />
+  <DailyBrief {input} {actions} {onlaunch} {onopenmeetings} />
 </WelcomeReport>

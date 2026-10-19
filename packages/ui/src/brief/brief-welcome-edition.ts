@@ -40,6 +40,21 @@ export interface WelcomeEdition {
   sub: string;
   cards: WelcomeEditionCard[];
   sections: WelcomeEditionSection[];
+  /** One quiet line beside the head: the run stats and any source that could not be read. Null when empty. */
+  note: string | null;
+}
+
+const FILE = /\b[\w.-]+\.(?:svelte|tsx?|jsx?|mjs|cjs|json|md|rs|py|css|scss|html|ya?ml|toml|sh|go|rb|swift|kt)\b/i;
+const BARE_PATH = /^\s*[\w.@~-]+(?:\/[\w.@-]+)+\/?\s*$/;
+const DEEP_PATH = /[\w.@~-]+\/[\w.@-]+\/[\w.@-]+/;
+
+/** True when text shows a filename or a repo path ("WelcomeReport.svelte", "northstar/desktop"). */
+export function looksLikePath(text: string, repo?: string | null): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (FILE.test(t) || BARE_PATH.test(t) || DEEP_PATH.test(t)) return true;
+  const r = repo?.trim();
+  return !!r && r.includes("/") && t.toLowerCase().includes(r.toLowerCase());
 }
 
 /** "Good morning, Alex." by the brief's local hour; no name, no comma. */
@@ -66,6 +81,21 @@ function launch(d: BriefDecision, prompts: Record<string, string>): WelcomeEditi
   return { kind: "launch", itemId: d.id, prompt };
 }
 
+/** A card or section title in plain words: never a filename or path. Falls back to the product, then the company. */
+function plainTitle(d: BriefDecision, company: string): string {
+  const repo = d.origin?.repo;
+  const text = d.title.trim();
+  if (text && !looksLikePath(text, repo)) return text;
+  const product = d.origin?.product?.trim();
+  if (product && !looksLikePath(product, repo)) return product;
+  return company;
+}
+
+/** The lines under a title, with any filename or path line, or a repeat of the title, left out. */
+function plainLines(d: BriefDecision, title: string): string[] {
+  return [d.summary].filter((l) => l?.trim() && l.trim() !== title && !looksLikePath(l, d.origin?.repo));
+}
+
 /** The next event still ahead today, else the first of the day. */
 function nextEvent(events: readonly BriefCalendarEvent[], now: Date): BriefCalendarEvent | null {
   const real = events.filter((e) => !e.busy && e.title.trim());
@@ -77,7 +107,15 @@ function timeOf(iso: string): string {
   return new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 }
 
-function dayCard(input: BriefInput, now: Date): WelcomeEditionCard {
+function calendarFailed(input: BriefInput): boolean {
+  return (input.sourceNotes ?? []).some((n) => /calendar/i.test(n));
+}
+
+/**
+ * The agenda card. A calendar that could not be read is never its headline (that is
+ * the quiet note beside the head); the card then counts what the page shows today.
+ */
+function dayCard(input: BriefInput, now: Date, shown: number, names: readonly string[]): WelcomeEditionCard {
   const event = nextEvent(input.calendarToday, now);
   if (event) {
     const who = (event.attendees ?? []).slice(0, 2);
@@ -91,15 +129,14 @@ function dayCard(input: BriefInput, now: Date): WelcomeEditionCard {
       action: { kind: "meetings" },
     };
   }
-  const failed = (input.sourceNotes ?? []).some((n) => /calendar/i.test(n));
-  if (failed) {
+  if (calendarFailed(input)) {
     return {
       id: "day",
       pill: null,
       kicker: "Today · Personal",
-      title: "Your calendar can wait.",
-      lines: ["Calendar could not be read. Your brief uses the other sources."],
-      label: "Open Meetings",
+      title: shown ? `${shown} ${shown === 1 ? "thing" : "things"} for you today.` : "Nothing is waiting on you.",
+      lines: names.length ? [`Across ${listOf(names)}.`] : [],
+      label: "Open the agenda",
       action: { kind: "meetings" },
     };
   }
@@ -112,6 +149,20 @@ function dayCard(input: BriefInput, now: Date): WelcomeEditionCard {
     label: null,
     action: null,
   };
+}
+
+/** "Northstar", "Northstar and Studio", "Northstar, Fieldwork, and Studio". */
+function listOf(names: readonly string[]): string {
+  if (names.length < 3) return names.join(" and ");
+  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+}
+
+/** The run stats the reveal ended on, then each source that could not be read. Shown once. */
+function editionNote(input: BriefInput): string | null {
+  const n = input.sessions.length;
+  const stats = input.runStats?.trim() || (n ? `${n} ${n === 1 ? "session" : "sessions"} read` : "");
+  const parts = [stats, ...(input.sourceNotes ?? []).map((l) => l.trim().replace(/\.$/, ""))].filter(Boolean);
+  return parts.length ? `${parts.join(" · ")}.` : null;
 }
 
 /**
@@ -155,6 +206,7 @@ export function welcomeEdition(
         { name: "A space for your team", lines: ["Start or join a company when you have work to share."] },
         { name: "Your brief belongs to you.", lines: ["No company is needed. Your personal work always has a place here."] },
       ],
+      note: null,
     };
   }
 
@@ -162,41 +214,48 @@ export function welcomeEdition(
   const owner = (d: BriefDecision) => companyName(d.origin?.companyUid?.trim() || companies[0]!, labels);
   const [first, ...rest] = input.decisions;
   const work = rest.length ? rest[rest.length - 1]! : null;
+  const onCards = new Set([first?.id, work?.id].filter((id): id is string => !!id));
+
+  // Each company lists its first item not on a card, in brief order, with its own line.
+  const names = [...new Set(companies.map((slug) => companyName(slug, labels)))].slice(0, 3);
+  const shown = new Set(onCards);
+  const sections = names.map((name): WelcomeEditionSection => {
+    const mine = input.decisions.filter((d) => owner(d) === name);
+    const next = mine.find((d) => !onCards.has(d.id));
+    if (next) {
+      shown.add(next.id);
+      return { name, lines: [plainTitle(next, name), ...plainLines(next, plainTitle(next, name))] };
+    }
+    if (mine.length) return { name, lines: ["On the cards above."] };
+    return { name, lines: ["Nothing new for you today."] };
+  });
+
   const cards: WelcomeEditionCard[] = [];
   if (first) {
     cards.push({
       id: "decision",
       pill: "Your decision",
       kicker: owner(first),
-      title: first.title,
-      lines: [first.summary].filter((l) => l.trim()),
+      title: plainTitle(first, owner(first)),
+      lines: plainLines(first, plainTitle(first, owner(first))),
       label: "Review the decision",
       action: launch(first, prompts),
     });
   }
-  cards.push(dayCard(input, now));
+  // The agenda card counts exactly the items on this page, by the companies they belong to.
+  const shownNames = names.filter((name) => input.decisions.some((d) => shown.has(d.id) && owner(d) === name));
+  cards.push(dayCard(input, now, shown.size, shownNames));
   if (work) {
     cards.push({
       id: "work",
       pill: null,
       kicker: `Pick up your work · ${owner(work)}`,
-      title: work.title,
-      lines: [work.summary].filter((l) => l.trim()),
+      title: plainTitle(work, owner(work)),
+      lines: plainLines(work, plainTitle(work, owner(work))),
       label: "Pick it up",
       action: launch(work, prompts),
     });
   }
-
-  // Each company lists its first item not on a card, in brief order, and its open count.
-  const onCards = new Set([first?.id, work?.id]);
-  const names = [...new Set(companies.map((slug) => companyName(slug, labels)))];
-  const sections = names.slice(0, 3).map((name): WelcomeEditionSection => {
-    const mine = input.decisions.filter((d) => owner(d) === name);
-    if (!mine.length) return { name, lines: ["Nothing new for you today."] };
-    const lines = mine.filter((d) => !onCards.has(d.id)).slice(0, 1).map((d) => d.title);
-    lines.push(`${mine.length} open item${mine.length === 1 ? "" : "s"} for you`);
-    return { name, lines };
-  });
 
   return {
     zero: false,
@@ -204,5 +263,6 @@ export function welcomeEdition(
     sub: WELCOME_EDITION_SUB,
     cards,
     sections,
+    note: editionNote(input),
   };
 }
