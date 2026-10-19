@@ -254,7 +254,7 @@ describe("WelcomeReport", () => {
       target,
       props: {
         input: { ...octoberEightBrief(NOW), today: "2026-10-08" },
-        welcome: parseWelcome(core.showcase_personal),
+        welcome: parseWelcome(core.showcase_personal), firstViewData: { welcome: core.showcase_personal, importReport: null },
         actions: { destinations: { assistantName: "Atlas", claudeCode: true, codex: false }, onassistant: vi.fn(async () => null) },
         report: {
           aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: false }, onopenaiapps },
@@ -487,7 +487,7 @@ describe("WelcomeReport", () => {
       target,
       props: {
         input: welcomeRiseBriefInput(),
-        welcome: parseWelcome(TOUR),
+        welcome: parseWelcome(TOUR), firstViewData: { welcome: TOUR, importReport: null },
         onopenmeetings,
         actions: { destinations: { assistantName: "Atlas", claudeCode: true, codex: false }, onassistant: vi.fn(async () => null) },
         report: { aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: false } } },
@@ -538,7 +538,7 @@ describe("WelcomeReport", () => {
       props: {
         input,
         report,
-        welcome: parseWelcome(core.showcase_personal),
+        welcome: parseWelcome(core.showcase_personal), firstViewData: { welcome: core.showcase_personal, importReport: null },
         get ready() {
           return props.ready;
         },
@@ -563,7 +563,7 @@ describe("WelcomeReport", () => {
     document.body.appendChild(target);
     component = mount(ReportWithBrief, {
       target,
-      props: { input: welcomeRiseBriefInput(), welcome: parseWelcome(core.showcase_personal), report: { aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: false } } } },
+      props: { input: welcomeRiseBriefInput(), welcome: parseWelcome(core.showcase_personal), firstViewData: { welcome: core.showcase_personal, importReport: null }, report: { aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: false } } } },
     });
     await settle();
     expect(q('[data-testid="first-view-grid"]')).not.toBeNull();
@@ -586,7 +586,7 @@ describe("WelcomeReport", () => {
     try {
       component = mount(ReportWithBrief, {
         target,
-        props: { input: welcomeRiseBriefInput(), welcome: parseWelcome(TOUR), report: { aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: true } } }, onlaunch },
+        props: { input: welcomeRiseBriefInput(), welcome: parseWelcome(TOUR), firstViewData: { welcome: TOUR, importReport: null }, report: { aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: true } } }, onlaunch },
       });
       await settle();
       const start = q<HTMLButtonElement>('[data-testid="first-view-one-thing"] [data-testid="brief-start"]')!;
@@ -614,7 +614,7 @@ describe("WelcomeReport", () => {
     });
     component = mount(ReportWithBrief, {
       target,
-      props: { input: welcomeRiseBriefInput(), welcome: parseWelcome(TOUR), report: { aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: false } } }, onlaunch },
+      props: { input: welcomeRiseBriefInput(), welcome: parseWelcome(TOUR), firstViewData: { welcome: TOUR, importReport: null }, report: { aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: false } } }, onlaunch },
     });
     await settle();
     q<HTMLButtonElement>('[data-testid="first-view-one-thing"] [data-testid="brief-start"]')!.click();

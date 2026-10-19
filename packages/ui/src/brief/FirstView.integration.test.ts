@@ -13,6 +13,7 @@ import { flushSync, mount, tick, unmount } from "svelte";
 import WelcomeRunsHarness from "./WelcomeReportRunsHarness.test-support.svelte";
 import type { BriefSweepSource } from "./brief-data.js";
 import core from "./fixtures/core-1432-welcome.json";
+import importFixture from "./fixtures/import-report-desktop.json";
 import { WELCOME_OPENABLE_HARNESSES } from "../chat/first-run/continue-in-tool.js";
 
 const RUN = "brief-20261018-090000";
@@ -79,6 +80,56 @@ const beforeBrief = () => {
 };
 const EMPTY_STATE = [/nothing owed/i, /no sessions/i, /nothing needs a call from you today/i, /nothing needs you right now/i, /nothing new for you today/i];
 
+/** The launch scan the suggested integrations come from: GitHub Desktop, Linear and Slack on this Mac. */
+const WORK_SCAN = {
+  platform: "macos" as const,
+  scannedAtMs: 1,
+  apps: [
+    { bundleId: "com.github.GitHubClient", name: "GitHub Desktop" },
+    { bundleId: "com.linear", name: "Linear" },
+    { bundleId: "com.tinyspeck.slackmacgap", name: "Slack" },
+    { bundleId: "com.anthropic.claudefordesktop", name: "Claude" },
+  ],
+  mcpServers: [],
+  sources: [],
+  truncated: false,
+};
+/** The "Your apps" host the Settings integrations page and the connect section share. */
+function appsHost(connections: { id: string; domain: string | null; provider: string }[] = []) {
+  return {
+    detect: vi.fn(async () => WORK_SCAN),
+    load: vi.fn(async () => ({
+      catalog: {
+        "github.com": { entryId: "e-github", name: "GitHub", authClass: "oauth" },
+        "linear.app": { entryId: "e-linear", name: "Linear", authClass: "oauth" },
+        "slack.com": { entryId: "e-slack", name: "Slack", authClass: "oauth" },
+      },
+      connections,
+      installations: {},
+      canManage: true,
+      problem: null,
+    })),
+    autoConnect: vi.fn(async () => ({ ok: false, reason: "", retry: false })),
+    connect: vi.fn(() => new Promise(() => undefined)),
+    setup: vi.fn(() => new Promise(() => undefined)),
+    undo: vi.fn(async () => ({ ok: true, connectionId: null, installationId: null })),
+  };
+}
+/** Core offers "Connect your AI apps" and nothing else: no session history for any harness. */
+const CONNECT_AI_ONLY = {
+  first_run: true,
+  actions: [
+    {
+      id: "connect-ai-apps",
+      kind: "connect_ai_apps",
+      label: "Connect your AI apps",
+      reason: "Connect Claude Code, Codex or Cursor so HQ can start learning how you work.",
+      launch_prompt: "Help me connect Claude Code, Codex and Cursor to HQ.",
+      primary: true,
+    },
+  ],
+};
+
 /** A host that can open Claude Code and Codex, like the desktop app. */
 const host = (harnesses: string[] = ["claude-code", "codex"], result: string | null = null) => ({
   harnesses,
@@ -92,7 +143,14 @@ async function renderWelcome(
     page = {},
     companies = [],
     files: extra = {},
-  }: { report?: Record<string, unknown>; page?: Record<string, unknown>; companies?: { uid: string; slug?: string; label: string }[]; files?: Record<string, string> } = {},
+    adapter = {},
+  }: {
+    report?: Record<string, unknown>;
+    page?: Record<string, unknown>;
+    companies?: { uid: string; slug?: string; label: string }[];
+    files?: Record<string, string>;
+    adapter?: Record<string, unknown>;
+  } = {},
 ): Promise<void> {
   const files: Record<string, string> = {
     "workspace/brief/index.jsonl": index,
@@ -110,6 +168,7 @@ async function renderWelcome(
       companies,
       report: { aiApps: { detect: async () => null, cli: { claudeCode: true, codex: false } }, ...report },
       page,
+      adapter,
     },
   });
   await vi.waitFor(() => expect(id("first-view-grid")).not.toBeNull(), { timeout: 5_000 });
@@ -206,7 +265,7 @@ describe("the first view inside the welcome report", () => {
     await renderWelcome(brief(core.showcase_company), {
       report: {
         aiApps: { detect: async () => null, cli: { claudeCode: true, codex: false }, onopenaiapps },
-        connect: { host: { detect: async () => null }, company: { uid: "cmp_a", name: "A" }, onopenintegrations },
+        connect: { host: { ...appsHost(), detect: async () => null }, company: { uid: "cmp_a", name: "A" }, onopenintegrations },
         openTool: { label: "Open Claude Code", detail: null, busy: false, error: null, onopen },
         openHarness,
       },
@@ -335,8 +394,11 @@ describe("the first view inside the welcome report", () => {
     await renderWelcome(brief(core.codex_company), { report: { openHarness: host(undefined, "Codex could not open.") } });
     whereOpen()!.click();
     await settle();
-    expect(id("first-view-error")?.textContent).toBe("Codex could not open.");
-    expect(id("first-view-error")?.getAttribute("role")).toBe("alert");
+    // The host's own line, word for word, then Try again.
+    const line = id("first-view-error")!;
+    expect(line.firstChild?.textContent?.trim()).toBe("Codex could not open.");
+    expect(flat(id("first-view-retry"))).toBe("Try again");
+    expect(line.getAttribute("role")).toBe("alert");
     expect(whereOpen()?.disabled).toBe(false);
   });
 
@@ -455,6 +517,115 @@ describe("the first view inside the welcome report", () => {
     expect(slots()).toEqual(["sunrise", "connect", "oneThing"]);
   });
 
+  it("counts the sessions from the import report on disk, not Core's HQ-only count", async () => {
+    // Core 16.0.30 counts only the sessions tied to HQ: one.
+    const welcome = { ...LEGACY, sessions: { total: 1, claude: 1, codex: 0, days_seen: 1 } };
+    // The report the desktop wrote at workspace/imports/<stamp>/report.json, read through the host.
+    const latest = vi.fn(async () => ({ ok: true, value: importFixture.report }));
+    await renderWelcome(brief(welcome), {
+      report: { openHarness: host(), aiApps: { detect: async () => null, cli: { claudeCode: true, codex: true } } },
+      page: { onconnectcompany: vi.fn() },
+      adapter: { importReport: { latest } },
+    });
+    expect(latest).toHaveBeenCalled();
+    expect(id("first-view-count-line")?.textContent).toBe("402 sessions over 37 days in Claude Code and Codex. Top threads: hq, hq-desktop-app, billing-api.");
+    // The import is done, so the first view never offers to bring in past work.
+    expect(flat(target)).not.toMatch(/bring in your past work/i);
+  });
+
+  // Rows follow the suggestion source's own order (the Settings integrations page's order).
+  it("lists GitHub, Linear and Slack from the suggested-integrations source, with no Core connect actions", async () => {
+    const apps = appsHost();
+    const onopenintegrations = vi.fn();
+    await renderWelcome(brief(LEGACY), {
+      report: {
+        aiApps: { detect: apps.detect, cli: { claudeCode: true, codex: false } },
+        connect: { host: apps, company: { uid: "cmp_acme", name: "Acme" }, onopenintegrations },
+        openHarness: host(),
+      },
+      page: { onconnectcompany: vi.fn() },
+    });
+    await vi.waitFor(() => expect(integrationRow("slack.com")).not.toBeNull());
+    expect(LEGACY.next_steps.some((a) => a.kind === "connect_integration")).toBe(false);
+    expect(qa('[data-testid="first-view-connect-row"][data-integration]').map((r) => r.dataset.integration)).toEqual(["linear.app", "slack.com", "github.com"]);
+    for (const [slug, name] of [["github.com", "GitHub"], ["linear.app", "Linear"], ["slack.com", "Slack"]] as const) {
+      expect(flat(integrationRow(slug)?.querySelector("b"))).toBe(name);
+      expect(rowButton(integrationRow(slug))?.getAttribute("aria-label")).toBe(`Connect ${name}`);
+    }
+    // The AI apps the scan found (Claude) are not integrations.
+    expect(integrationRow("claude.ai")).toBeNull();
+    rowButton(integrationRow("github.com"))!.click();
+    await settle();
+    expect(onopenintegrations).toHaveBeenCalledWith("cmp_acme");
+  });
+
+  it("leaves out a suggested integration the company already connected", async () => {
+    const apps = appsHost([{ id: "conn_slack", domain: null, provider: "slack" }]);
+    await renderWelcome(brief(LEGACY), {
+      report: {
+        aiApps: { detect: apps.detect, cli: { claudeCode: true, codex: false } },
+        connect: { host: apps, company: { uid: "cmp_acme", name: "Acme" }, onopenintegrations: vi.fn() },
+      },
+      page: { onconnectcompany: vi.fn() },
+    });
+    await vi.waitFor(() => expect(integrationRow("linear.app")).not.toBeNull());
+    expect(apps.load).toHaveBeenCalled();
+    expect(integrationRow("github.com")).not.toBeNull();
+    expect(integrationRow("slack.com")).toBeNull();
+  });
+
+  it("shows an AI app connected in Settings as Connected, never Connect, with no sessions", async () => {
+    await renderWelcome(brief(CONNECT_AI_ONLY), {
+      report: {
+        aiApps: { detect: async () => null, cli: { claudeCode: false, codex: false }, anywhereOnId: "codex", onopenaiapps: vi.fn() },
+        openHarness: host(),
+      },
+    });
+    const codex = connectRow("codex");
+    expect(codex?.dataset.connected).toBe("true");
+    expect(codex?.querySelector('[data-testid="first-view-connected"]')?.textContent).toBe("Connected");
+    expect(rowButton(codex)).toBeNull();
+    expect(flat(codex)).not.toMatch(/not connected/i);
+    // The others are not connected and have no history: Connect, named per row.
+    expect(rowButton(connectRow("cursor"))?.getAttribute("aria-label")).toBe("Connect Cursor");
+    expect(rowButton(connectRow("claude-code"))?.getAttribute("aria-label")).toBe("Connect Claude Code");
+  });
+
+  it("counts a harness whose CLI is installed as found, with no history: Open, never Connect", async () => {
+    const openHarness = host();
+    await renderWelcome(brief(CONNECT_AI_ONLY), {
+      report: { aiApps: { detect: async () => null, cli: { claudeCode: true, codex: false }, onopenaiapps: vi.fn() }, openHarness },
+    });
+    const claude = connectRow("claude-code");
+    expect(claude?.dataset.found).toBe("true");
+    expect(flat(rowButton(claude))).toBe("Open");
+    expect(rowButton(claude)?.getAttribute("aria-label")).toBe("Open Claude Code");
+    expect(connectRow("codex")?.dataset.found).toBe("false");
+    rowButton(claude)!.click();
+    await settle();
+    expect(openHarness.open).toHaveBeenCalledWith("claude-code", "");
+  });
+
+  it("shows a plain line with Try again when the open throws", async () => {
+    const openHarness = { harnesses: ["claude-code", "codex"], open: vi.fn(async (_harness: string, _cwd: string): Promise<null> => { throw new Error("spawn ENOENT /usr/local/bin/codex"); }) };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await renderWelcome(brief(core.codex_company), { report: { openHarness } });
+    whereOpen()!.click();
+    await settle();
+    const line = id("first-view-error");
+    expect(line?.getAttribute("role")).toBe("alert");
+    expect(flat(line)).toBe("Couldn't open Codex. Try again");
+    expect(flat(line)).not.toMatch(/ENOENT|spawn|usr/);
+    expect(whereOpen()?.disabled).toBe(false);
+    openHarness.open.mockResolvedValueOnce(null);
+    id("first-view-retry")!.click();
+    await settle();
+    expect(openHarness.open).toHaveBeenCalledTimes(2);
+    expect(openHarness.open.mock.calls[1]![0]).toBe("codex");
+    expect(id("first-view-error")).toBeNull();
+    warn.mockRestore();
+  });
+
   it("hides the slot of every absent field, with no placeholder", async () => {
     await renderWelcome(
       brief({
@@ -469,7 +640,8 @@ describe("the first view inside the welcome report", () => {
     expect(id("first-view-one-thing-quote")?.textContent).toBe("Connect your AI apps.");
     expect(oneThing()?.querySelector(".because")).toBeNull();
     expect(flat(oneThingButton())).toBe("Connect");
-    expect(qa('[data-testid="first-view-connect-row"]').map((r) => r.dataset.found)).toEqual(["false", "false", "false"]);
+    // No history anywhere; the Claude Code CLI is installed, so only it is found.
+    expect(qa('[data-testid="first-view-connect-row"]').map((r) => r.dataset.found)).toEqual(["true", "false", "false"]);
     expect(id("first-view-count-line")).toBeNull();
     expect(id("brief-next")).toBeNull();
     reset();

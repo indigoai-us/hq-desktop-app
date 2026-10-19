@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { E2E_HQ_ROOT } from './e2e/browser/hq-root';
 
 export default defineConfig({
   testDir: './e2e/browser',
@@ -18,5 +19,7 @@ export default defineConfig({
     url: 'http://127.0.0.1:1423/desktop-alt.html',
     reuseExistingServer: !process.env.CI,
     timeout: 180_000,
+    // `/__hq/` reads this folder, not ~/hq: specs write brief runs and import reports into it.
+    env: { HQ_ROOT: E2E_HQ_ROOT },
   },
 });

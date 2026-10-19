@@ -11,7 +11,6 @@ import type { YourAppsHost } from "../chat/first-run/your-apps-host.js";
 import type { WelcomeConnectSession } from "./welcome-connect-session.svelte.js";
 import type { BriefOpenToolAction } from "./brief-open-tool.js";
 import type { WelcomeHarnessId } from "./brief-welcome-contract.js";
-import type { ImportReport } from "./brief-first-view.js";
 
 /**
  * What the connect section did for one company, kept by its owner across
@@ -52,8 +51,6 @@ export interface WelcomeAiApps {
   runStats?: string | null;
   /** Opens the AI-apps settings (Claude Code, Codex): where the first view's harness Connect goes. */
   onopenaiapps?: (() => void) | null;
-  /** The newest import report, when the host read one; the first view then never offers "Bring in your past work". */
-  importReport?: ImportReport | null;
 }
 
 /**

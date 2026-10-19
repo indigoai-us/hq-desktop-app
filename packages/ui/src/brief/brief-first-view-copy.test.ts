@@ -92,6 +92,11 @@ describe("aiAppFound", () => {
     expect(aiAppFound({ harness: "codex", name: "Codex", sessions: 1 })).toBe(true);
     expect(aiAppFound({ harness: "cursor", name: "Cursor", sessions: 0 })).toBe(false);
   });
+
+  it("a harness whose CLI is installed counts as found even with no history", () => {
+    expect(aiAppFound({ harness: "codex", name: "Codex", sessions: 0 }, ["codex"])).toBe(true);
+    expect(aiAppFound({ harness: "cursor", name: "Cursor", sessions: 0 }, ["codex"])).toBe(false);
+  });
 });
 
 describe("withoutZeroCounts", () => {

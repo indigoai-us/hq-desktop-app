@@ -46,9 +46,11 @@
   import FirstViewRecent from "./FirstViewRecent.svelte";
   import FirstViewWatch from "./FirstViewWatch.svelte";
   import { getWelcomeAiApps } from "./welcome-ai-apps.js";
+  import { matchFoundApps } from "../chat/first-run/found-apps.js";
+  import { yourAppsView } from "../chat/first-run/your-apps.js";
   import { buildFirstView, type FirstViewConnectMode } from "./brief-first-view.js";
   import { FV_QUIET_LINE, firstViewStats, firstViewSub } from "./brief-first-view-copy.js";
-  import type { WelcomeAction, WelcomeHarnessId } from "./brief-welcome-contract.js";
+  import { WELCOME_HARNESS_NAME, type WelcomeAction, type WelcomeHarnessId } from "./brief-welcome-contract.js";
   import type { BriefWelcome } from "./brief-welcome.js";
   import type { FirstViewData } from "./brief-first-view-load.js";
   import { actionCardData, type BriefActions } from "./brief-action-cards.js";
@@ -110,10 +112,10 @@
     welcome?: BriefWelcome | null;
     /** Opens the start-or-join-a-company flow from the edition's company action. */
     onconnectcompany?: () => void;
-    /** Inside the welcome report: the first view's reads for `buildFirstView` (not drawn yet). */
+    /** Inside the welcome report: the run's `welcome` row and the import report on disk, the first view's one data source. */
     firstViewData?: FirstViewData | null;
   }
-  let { input, companies = [], onlaunch, header, tools, sectionOnly = false, summaryOnly = false, clearedItemIds = [], housekeeping = null, dmApi = null, onopenthread, onopenmeetings, onlog, actions = null, welcome = null, onconnectcompany }: Props = $props();
+  let { input, companies = [], onlaunch, header, tools, sectionOnly = false, summaryOnly = false, clearedItemIds = [], housekeeping = null, dmApi = null, onopenthread, onopenmeetings, onlog, actions = null, welcome = null, onconnectcompany, firstViewData = null }: Props = $props();
 
   const briefState = new BriefState(
     (engine, prompt) => (onlaunch ?? launchBriefPromptViaClipboard)(engine, prompt),
@@ -340,15 +342,62 @@
    * the card. One-line swap.
    */
   const CONNECT_MODE = "settings" as FirstViewConnectMode;
+  const fvOn = $derived(!!welcomeAiApps && !allCards && !sectionOnly && !summaryOnly);
+  // The suggested integrations' source, shared with the connect section: the
+  // launch scan, and the company's apps so connected ones stay out.
+  $effect(() => {
+    const cur = welcomeAiApps?.current;
+    const s = cur?.session;
+    if (!fvOn || !cur || !s) return;
+    const suggest = cur.suggest;
+    untrack(() => {
+      s.detectOnce(cur.detect);
+      if (suggest) s.setCompany(suggest.host, suggest.company?.uid ?? null);
+    });
+  });
+  /** The work apps the launch scan found (GitHub, Linear, Slack...), less the ones already connected. */
+  const fvSuggested = $derived.by((): { slug: string; name: string }[] => {
+    const cur = welcomeAiApps?.current;
+    const s = cur?.session;
+    if (!fvOn || !cur?.suggest || !s?.scan) return [];
+    const matched = matchFoundApps(s.scan);
+    const found = matched.apps.filter((app) => !app.excluded);
+    const load = cur.suggest.company ? s.load : null;
+    const connected = new Set(
+      load
+        ? yourAppsView({
+            found,
+            unmatched: matched.unmatched,
+            catalog: load.catalog,
+            connections: load.connections,
+            installations: load.installations,
+            canManage: load.canManage,
+            runs: s.runs,
+            evidence: () => "",
+          }).connected.map((c) => c.domain)
+        : Object.entries(s.runs).flatMap(([domain, r]) => (r.state === "connected" ? [domain] : [])),
+    );
+    return found.filter((app) => !connected.has(app.domain)).map((app) => ({ slug: app.domain, name: app.name }));
+  });
+  const FV_HARNESSES: readonly WelcomeHarnessId[] = ["claude-code", "codex", "cursor"];
+  /** The harness whose HQ connection is on in Settings: shown Connected, never Connect. */
+  const fvConnectedAi = $derived(FV_HARNESSES.filter((h) => h === welcomeAiApps?.current?.anywhereOnId));
+  /** The harnesses whose CLI is installed here, found even with no history. */
+  const fvInstalled = $derived.by((): WelcomeHarnessId[] => {
+    const cli = welcomeAiApps?.current?.cli;
+    return FV_HARNESSES.filter((h) => (h === "claude-code" && cli?.claudeCode) || (h === "codex" && cli?.codex));
+  });
   /**
    * Inside the welcome report, outside review mode: the first view. The same
    * page (head, greeting row, grid) with the first-view cards in its slots.
    */
   const firstView = $derived(
-    welcomeAiApps && !allCards && !sectionOnly && !summaryOnly
+    fvOn
       ? buildFirstView({
-          welcome: welcome?.raw ?? null,
-          importReport: welcomeAiApps.current?.importReport ?? null,
+          welcome: firstViewData?.welcome ?? null,
+          importReport: firstViewData?.importReport ?? null,
+          suggestedApps: fvSuggested,
+          connectedAiApps: fvConnectedAi,
           canRun: canRunWelcome,
           now: input.now,
           userName: input.userName ?? null,
@@ -371,12 +420,13 @@
     const fill = (names: string[], cols: number) => names.flatMap((n, i) => Array(Math.floor(cols / names.length) + (i < cols % names.length ? 1 : 0)).fill(n));
     const side = [one && "oneThing", risk && "risk"].filter(Boolean) as string[];
     const wide = [row([...Array(4).fill("sunrise"), "connect", "connect"])];
-    const narrow = [row(["sunrise", "sunrise", "sunrise", "connect"])];
+    // Narrow windows use five columns so the Connect card keeps room for its status words on one line.
+    const narrow = [row(["sunrise", "sunrise", "sunrise", "connect", "connect"])];
     if (focus && side.length) for (const n of side) wide.push(row([n, n, ...Array(4).fill("focus")]));
     else if (focus) wide.push(row(Array(6).fill("focus")));
     else if (side.length) wide.push(row(fill(side, 6)));
-    if (side.length) narrow.push(row(fill(side, 4)));
-    if (focus) narrow.push(row(Array(4).fill("focus")));
+    if (side.length) narrow.push(row(fill(side, 5)));
+    if (focus) narrow.push(row(Array(5).fill("focus")));
     return { wide: wide.join(" "), narrow: narrow.join(" ") };
   });
   /** "expand" mode: the connect section shows inside the card once Connect is pressed. */
@@ -395,6 +445,8 @@
   let fvBusy = $state<Record<string, boolean>>({});
   /** The plain line an open came back with when the harness could not open. */
   let fvError = $state<string | null>(null);
+  /** The open that failed, for Try again. */
+  let fvRetry = $state<{ harness: WelcomeHarnessId; prompt: string } | null>(null);
   const canOpenHarness = (h: WelcomeHarnessId): boolean => !!welcomeAiApps?.openHarness?.harnesses.includes(h);
   function canRunWelcome(a: WelcomeAction): boolean {
     switch (a.kind) {
@@ -416,8 +468,13 @@
     fvBusy = { ...fvBusy, [harness]: true };
     try {
       fvError = null;
+      fvRetry = null;
       fvError = await open.open(harness, prompt);
+    } catch (err) {
+      console.warn("[hq-desktop] first view open threw:", err);
+      fvError = `Couldn't open ${WELCOME_HARNESS_NAME[harness]}.`;
     } finally {
+      if (fvError) fvRetry = { harness, prompt };
       fvBusy = { ...fvBusy, [harness]: false };
     }
   }
@@ -497,7 +554,15 @@
     <div class="b-hello">
       <h1 class="b-greet" data-testid="brief-greeting">{fv.greeting}</h1>
       {#if fv.countLine}<p class="fv-line" data-testid="first-view-count-line">{fv.countLine}</p>{/if}
-      {#if fvError}<p class="fv-line fv-error" role="alert" data-testid="first-view-error">{fvError}</p>{/if}
+      {#if fvError}
+        <p class="fv-line fv-error" role="alert" data-testid="first-view-error">
+          {fvError}
+          {#if fvRetry}
+            {@const retry = fvRetry}
+            <button type="button" class="fv-retry" data-testid="first-view-retry" onclick={() => void openHarness(retry.harness, retry.prompt)}>Try again</button>
+          {/if}
+        </p>
+      {/if}
       {#if fvStats.length}
         <div class="b-stats">
           {#each fvStats as st, i (st.key)}
@@ -602,6 +667,8 @@
       {@render fvTag("waiting", "Connect your apps")}
       <FirstViewConnect
         connect={fv.connect}
+        connected={fvConnectedAi}
+        installed={fvInstalled}
         canOpen={canOpenHarness}
         onconnectintegration={() => void connectIntegration()}
         onconnectai={() => connectAi()}
@@ -841,6 +908,18 @@
   .fv-error {
     color: var(--b-t1);
   }
+  .fv-retry {
+    margin-left: 8px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 2px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--b-line, rgba(255, 255, 255, 0.2));
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+  }
   .daily-brief :global(.b-next.fv-next) {
     justify-content: flex-start;
     min-height: 0;
@@ -862,12 +941,16 @@
     flex: 1;
     min-width: 0;
   }
+  /* The Connect card takes its rows' height rather than stretching to the sunrise beside it. */
+  .fv-slot[data-widget="connect"] {
+    align-self: start;
+  }
   @media (max-width: 1180px) {
     .daily-brief :global(.b-top.fv-top) {
       grid-template-columns: minmax(0, 1fr) 280px;
     }
     .daily-brief :global(.b-grid.fv-grid) {
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(5, minmax(0, 1fr));
       grid-template-areas: var(--fv-areas-narrow);
     }
   }

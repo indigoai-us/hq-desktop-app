@@ -27,7 +27,6 @@
   import BriefOpenTool from "./BriefOpenTool.svelte";
   import BriefRise from "./BriefRise.svelte";
   import type { BriefOpenToolAction } from "./brief-open-tool.js";
-  import type { ImportReport } from "./brief-first-view.js";
   import { riseMinHeight, welcomeRiseSources, type RiseCompany, type RiseLayout } from "./brief-rise.js";
   import { setWelcomeAiApps, type WelcomeAiApps, type WelcomeOpenHarness } from "./welcome-ai-apps.js";
   import { WelcomeConnectSession } from "./welcome-connect-session.svelte.js";
@@ -63,8 +62,6 @@
       anywhereOnId?: string | null;
       /** Opens HQ's AI apps settings from the card; null leaves that link out. */
       onopenaiapps?: (() => void) | null;
-      /** What the desktop imported from past AI sessions; hides "Bring in your past work". */
-      importReport?: ImportReport | null;
     } | null;
     /**
      * The job is held back until the assistant can take it (not running, no
@@ -145,7 +142,6 @@
       cli: aiApps?.cli ?? { claudeCode: false, codex: false },
       anywhereOnId: aiApps?.anywhereOnId ?? null,
       onopenaiapps: aiApps?.onopenaiapps ?? null,
-      importReport: aiApps?.importReport ?? null,
       suggest: connect
         ? {
             host: connect.host,
@@ -205,6 +201,19 @@
   const riseFoot = $derived(rising ? footHeight : 0);
   /** Below this the page scrolls instead of the strip, the progress and the bar overlapping. */
   const riseFloor = $derived(riseMinHeight(connectHeight + (riseGeo?.readout ?? 0) + riseFoot));
+  /**
+   * The floor the page uses, a frame after the content sets it. The heights it comes from are measured
+   * inside the stage, so resizing the stage in the same frame leaves the stage's own resize undelivered
+   * (WebKit reports a ResizeObserver loop when the strip's rows arrive or a font loads).
+   */
+  let appliedFloor = $state(riseMinHeight(0));
+  $effect(() => {
+    const next = riseFloor;
+    const frame = requestAnimationFrame(() => {
+      appliedFloor = next;
+    });
+    return () => cancelAnimationFrame(frame);
+  });
 </script>
 
 <div
@@ -212,7 +221,7 @@
   class:rising
   data-testid="welcome-report"
   data-theme={theme === "light" || theme === "dark" ? theme : undefined}
-  style:min-height={rising ? `max(100%, ${riseFloor}px)` : undefined}
+  style:min-height={rising ? `max(100%, ${appliedFloor}px)` : undefined}
   style:--rise-pad={riseGeo ? `${riseGeo.pad}px` : undefined}
   style:--rise-invite-top={riseGeo ? `${riseGeo.inviteTop}px` : undefined}
 >
@@ -287,7 +296,7 @@
     flex-direction: column;
     gap: 14px;
     padding: 18px;
-    background: var(--b-bg, #1b1b1e);
+    background: var(--b-bg, #0d0d0f);
     font-family: var(--font-ui, "Geist", system-ui, sans-serif);
     color: var(--b-t1, rgba(255, 255, 255, 0.95));
   }

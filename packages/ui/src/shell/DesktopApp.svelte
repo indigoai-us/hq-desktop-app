@@ -79,7 +79,6 @@
   import { welcomeMadeBy } from "../brief/welcome-made-by.js";
   import { briefActionsFor } from "../brief/brief-action-cards.js";
   import { welcomeAppsCompanyFor } from "../brief/welcome-ai-apps.js";
-  import { parseImportReport } from "../brief/brief-first-view.js";
   import { WelcomeConnectSession } from "../brief/welcome-connect-session.svelte.js";
   import { BRIEF_CLAUDE_PERMISSION_MODE, BRIEF_FIX_LABEL, BRIEF_STARTING_STEP, briefBotLabel, briefSkillInstalled, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
   import { BriefCreateRun, type BriefCreator } from "../brief/brief-create.svelte.js";
@@ -4856,8 +4855,6 @@
           cli: { claudeCode: Boolean(aiTools?.claude_cli), codex: Boolean(aiTools?.codex_cli) },
           anywhereOnId: briefInstallView === "installed" ? briefOpenToolConnectorId(briefOpenTool) : null,
           onopenaiapps: () => openSettings("agents"),
-          // A finished first-run scan is an import, so "Bring in your past work" stays out.
-          importReport: firstRunImport ? parseImportReport({ counts: firstRunImport.summary, source: "first-run" }) : null,
         }
       : null,
   );

@@ -4,11 +4,12 @@
  * the watch list's clean-up of zero counts.
  */
 import type { FirstView, FirstViewAiApp } from "./brief-first-view.js";
-import type { WelcomeAction } from "./brief-welcome-contract.js";
+import type { WelcomeAction, WelcomeHarnessId } from "./brief-welcome-contract.js";
 
 export const FV_FOUND = "Found on this Mac";
 export const FV_NOT_CONNECTED = "Not connected yet";
 export const FV_CONNECTED = "Connected";
+export const FV_CONNECTED_IN_SETTINGS = "Connected to HQ";
 export const FV_QUIET_LINE = "Your HQ is ready. The sun's up.";
 
 /** "A", "A and B", "A, B, and C". */
@@ -43,8 +44,9 @@ export function firstViewStats(fv: FirstView): FirstViewStat[] {
   return all.filter((s): s is FirstViewStat => !!s);
 }
 
-/** A found harness (it has sessions here) is never offered Connect. */
-export const aiAppFound = (a: FirstViewAiApp): boolean => a.sessions > 0;
+/** A found harness (it has sessions here, or its CLI is installed) is never offered Connect. */
+export const aiAppFound = (a: FirstViewAiApp, installed: readonly WelcomeHarnessId[] = []): boolean =>
+  a.sessions > 0 || installed.includes(a.harness);
 
 /** Drops "0 companies"-style clauses from a sentence; empty when nothing is left. */
 export function withoutZeroCounts(text: string): string {
