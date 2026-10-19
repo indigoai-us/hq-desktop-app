@@ -1094,4 +1094,36 @@ describe('welcome flow: a Mac without Apple developer tools', () => {
     expect(installGit).toBeGreaterThanOrEqual(0);
     expect(installGit).toBeLessThan(commands().indexOf('git_init'));
   });
+
+  it('keeps the existing dependency failure path when the managed install fails', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    try {
+      let depsCalls = 0;
+      stubInvoke({
+        command_line_tools_status: () => noTools,
+        command_line_tools_start_install: () => noTools,
+        command_line_tools_show_installer: () => true,
+        start_install_queue: () => {
+          depsCalls += 1;
+          throw new Error('dependency installation failed');
+        },
+      });
+      mountAt(2);
+      for (let i = 0; i < 200 && !commands().includes('record_install_complete'); i += 1) {
+        await vi.advanceTimersByTimeAsync(1_000);
+        await flush();
+      }
+      expect(commands()).toContain('record_install_complete');
+
+      expect(depsCalls).toBeGreaterThan(0);
+      // The failure goes through the normal setup failure handling: no Apple
+      // tools prompt or card stands in for it.
+      expect(commands().filter((c) => c.startsWith('command_line_tools'))).toEqual([]);
+      expect(host.querySelector('[data-testid^="onboarding-clt"]')).toBeNull();
+      expect(host.textContent ?? '').not.toContain("Apple's developer tools");
+      expect(host.textContent ?? '').not.toContain('dependency installation failed');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
