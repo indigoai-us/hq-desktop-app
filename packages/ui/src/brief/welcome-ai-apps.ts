@@ -9,6 +9,7 @@ import { getContext, setContext } from "svelte";
 import type { FoundWorkApps } from "@hq/platform";
 import type { YourAppsHost } from "../chat/first-run/your-apps-host.js";
 import type { WelcomeConnectSession } from "./welcome-connect-session.svelte.js";
+import type { BriefOpenToolAction } from "./brief-open-tool.js";
 
 /**
  * What the connect section did for one company, kept by its owner across
@@ -72,11 +73,22 @@ export function welcomeAppsCompanyFor<T extends { uid: string }>(
 
 const KEY = Symbol("welcome-ai-apps");
 
-/** Read through `current`, so a change in the report's inputs reaches the brief. */
-export function setWelcomeAiApps(source: { readonly current: WelcomeAiApps | null }): void {
+/** What the welcome report shares with the brief inside it. Read through getters, so a change reaches the brief. */
+export interface WelcomeAiAppsSource {
+  readonly current: WelcomeAiApps | null;
+  /** The report's "Open <tool>" action, for the edition's open-in-harness component. */
+  readonly openTool?: BriefOpenToolAction | null;
+  /**
+   * The edition shows the open action itself, so the report drops its own
+   * bar. Returns the release, called when the edition no longer shows it.
+   */
+  claimOpenTool?: () => () => void;
+}
+
+export function setWelcomeAiApps(source: WelcomeAiAppsSource): void {
   setContext(KEY, source);
 }
 
-export function getWelcomeAiApps(): { readonly current: WelcomeAiApps | null } | undefined {
+export function getWelcomeAiApps(): WelcomeAiAppsSource | undefined {
   return getContext(KEY);
 }

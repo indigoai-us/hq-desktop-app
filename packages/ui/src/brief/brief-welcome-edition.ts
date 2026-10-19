@@ -6,6 +6,7 @@
  */
 
 import type { BriefCalendarEvent, BriefDecision, BriefInput } from "./brief-types.js";
+import { WELCOME_HARNESS_NAME, primaryAction, type WelcomeAction, type WelcomeBriefFields, type WelcomeHarnessId } from "./brief-welcome-contract.js";
 
 export const WELCOME_EDITION_EYEBROW = "Your welcome edition · Ready";
 export const WELCOME_EDITION_SUB = "Your decisions, your day, and the work worth picking up.";
@@ -18,17 +19,29 @@ export const WELCOME_EDITION_PRIORITIES = "Today's priorities";
 /** What a card's link does: hand the item's prompt to a session, or open the Meetings page. */
 export type WelcomeEditionAction =
   | { kind: "launch"; itemId: string; prompt: string }
-  | { kind: "meetings" };
+  | { kind: "meetings" }
+  /** A brief.json welcome action; the edition runs it through its own flow (connect, company, harness, launch). */
+  | { kind: "welcome"; action: WelcomeAction };
+
+/** One line in a list card (the watch list, the timeline). */
+export interface WelcomeEditionRow {
+  id: string;
+  title: string;
+  detail: string | null;
+  action: WelcomeEditionAction | null;
+}
 
 export interface WelcomeEditionCard {
-  id: "decision" | "day" | "work" | "task" | "context";
+  id: "decision" | "day" | "work" | "task" | "context" | "one-thing" | "watch" | "timeline";
   /** The small pill before the kicker ("Your decision"), when the card has one. */
   pill: string | null;
   kicker: string;
+  /** Empty on a list card that has only its rows. */
   title: string;
   lines: string[];
   label: string | null;
   action: WelcomeEditionAction | null;
+  rows?: WelcomeEditionRow[];
 }
 
 export interface WelcomeEditionSection {
@@ -44,7 +57,15 @@ export interface WelcomeEdition {
   sections: WelcomeEditionSection[];
   /** One quiet line under the greeting: the run stats and any source that could not be read. Null when empty. */
   note: string | null;
+  /** Drawn from brief.json `welcome` (the contract components), not from the brief's decisions. */
+  welcome?: boolean;
 }
+
+/** The pill on the welcome lead card, the same words as the brief's lead slot. */
+export const WELCOME_ONE_THING = "If you do one thing";
+export const WELCOME_RECENT_WORK = "Recent work";
+/** The welcome block's failure sentence, reused when part of the welcome could not be read. */
+export const WELCOME_NOTE_FAILED = "Some of your welcome details could not be loaded this time.";
 
 const FILE = /\b[\w.-]+\.(?:svelte|tsx?|jsx?|mjs|cjs|vue|astro|json|mdx?|txt|csv|sql|lock|rs|py|java|php|cpp|css|scss|html|ya?ml|toml|sh|go|rb|swift|kt)\b/i;
 /** Library names that read like a filename ("Node.js", "Next.js") and are not one. */
@@ -67,6 +88,18 @@ export function looksLikePath(text: string, repo?: string | null): boolean {
   if (BARE_PATH.test(t) && !PROSE.has(t.toLowerCase())) return true;
   const r = repo?.trim();
   return !!r && r.includes("/") && t.toLowerCase().includes(r.toLowerCase());
+}
+
+/** Operator text that is never shown: stack traces, error codes, CLI commands, markup, links. */
+const RAW = /traceback|exception|stack trace|\berror:|\bgh\s+(?:auth|api|pr)\b|\b[a-z]+_[a-z_]+\b|https?:\/\/|[{}<>`$\\]|^\s*[~/]/i;
+/** Case matters here: "KeyError", "ENOENT", never "terror" or "Every". */
+const RAW_CODE = /\b[A-Z]\w*Error\b|\bE(?:NOENT|ACCES|PERM|CONNREFUSED|CONNRESET|TIMEDOUT|ADDRINUSE|PIPE|NOTFOUND)\b/;
+
+/** Text from brief.json `welcome` when it reads as plain words; null for a path, a filename or raw operator text. */
+export function plainWelcomeText(text: string | null | undefined): string | null {
+  const t = text?.replace(/\s+/g, " ").trim();
+  if (!t || looksLikePath(t) || RAW.test(t) || RAW_CODE.test(t)) return null;
+  return t;
 }
 
 /** "Good morning, Alex." by the brief's local hour; no name, no comma. */
@@ -178,6 +211,148 @@ function editionNote(input: BriefInput): string | null {
   return parts.length ? `${parts.join(" · ")}.` : null;
 }
 
+/** The kicker over IF YOU DO ONE THING, by what the action does. */
+function actionKicker(a: WelcomeAction, fields: WelcomeBriefFields): string {
+  switch (a.kind) {
+    case "connect_ai_apps":
+      return "Your AI apps";
+    case "connect_integration":
+      return plainWelcomeText(a.integration?.name) ?? "Your apps";
+    case "open_harness":
+      return WELCOME_HARNESS_NAME[fields.harness?.action.harness ?? fields.harness?.primary ?? "claude-code"];
+    case "connect_company":
+      return "A space for your team";
+    case "import_history":
+      return "Your past work";
+    case "open_tree":
+      return "Your HQ";
+  }
+}
+
+const sessions = (n: number) => `${n} ${n === 1 ? "session" : "sessions"}`;
+const dayOf = (iso: string) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+const welcomeAction = (a: WelcomeAction): WelcomeEditionAction => ({ kind: "welcome", action: a });
+
+/** True when brief.json `welcome` carries anything the edition draws a component from. */
+function hasComponents(f: WelcomeBriefFields): boolean {
+  return !!(f.actions || f.harness || f.recent_work || f.top_projects || f.top_repos || f.tree || (f.sessions?.total ?? 0) > 0);
+}
+
+/** Projects, repos, the harness and the tree: one section each, when the field is present. */
+function welcomeSections(f: WelcomeBriefFields): WelcomeEditionSection[] {
+  const out: WelcomeEditionSection[] = [];
+  const projects = (f.top_projects ?? []).flatMap((p) => {
+    const name = plainWelcomeText(p.name);
+    return name ? [p.sessions ? `${name} · ${sessions(p.sessions)}` : name] : [];
+  }).slice(0, 3);
+  const total = f.tree?.projects ?? 0;
+  if (projects.length) out.push({ name: "Your projects", lines: total > projects.length ? [...projects, `${total} projects in all.`] : projects });
+  const repos = (f.top_repos ?? []).flatMap((r) => plainWelcomeText(r.name) ?? []).slice(0, 3);
+  if (repos.length) out.push({ name: "Your repos", lines: repos });
+  if (f.harness) {
+    const keys: Record<WelcomeHarnessId, keyof NonNullable<WelcomeBriefFields["harness"]>["counts"]> = { "claude-code": "claude_code", codex: "codex", cursor: "cursor" };
+    const primary = f.harness.primary;
+    const mine = f.harness.counts[keys[primary]];
+    const others = (Object.keys(keys) as WelcomeHarnessId[])
+      .filter((h) => h !== primary && f.harness!.counts[keys[h]] > 0)
+      .map((h) => `${WELCOME_HARNESS_NAME[h]} · ${sessions(f.harness!.counts[keys[h]])}`);
+    const lines = [...(mine ? [sessions(mine)] : []), ...others];
+    if (lines.length) out.push({ name: WELCOME_HARNESS_NAME[primary], lines });
+  }
+  if (f.tree) {
+    const t = f.tree;
+    const lines = [
+      ...(t.companies ? [`${t.companies} ${t.companies === 1 ? "company" : "companies"}`] : []),
+      ...(t.projects ? [`${t.projects} ${t.projects === 1 ? "project" : "projects"}`] : []),
+      ...(t.knowledge_files ? [`${t.knowledge_files} knowledge ${t.knowledge_files === 1 ? "file" : "files"}`] : []),
+    ];
+    if (lines.length) out.push({ name: "Your HQ", lines });
+  }
+  return out;
+}
+
+/**
+ * The welcome edition drawn from brief.json `welcome` (US-019). The primary
+ * action is IF YOU DO ONE THING, the other actions are the watch list, recent
+ * work is the timeline, and projects, repos, the harness and the tree are the
+ * sections. Each component shows only when its field is present, and no raw
+ * text (a path, a stack trace, a prompt) reaches the page.
+ */
+function welcomeFieldsEdition(
+  input: BriefInput,
+  f: WelcomeBriefFields,
+  error: boolean,
+  company: WelcomeEditionSection[],
+): WelcomeEdition {
+  const now = new Date(input.now);
+  const actions = [...(f.actions ?? [])];
+  if (f.harness && !actions.some((a) => a.kind === "open_harness")) actions.push(f.harness.action);
+  const lead = primaryAction(f.actions) ?? primaryAction(actions);
+  const cards: WelcomeEditionCard[] = [];
+  if (lead) {
+    cards.push({
+      id: "one-thing",
+      pill: WELCOME_ONE_THING,
+      kicker: actionKicker(lead, f),
+      title: plainWelcomeText(lead.reason) ?? lead.label,
+      lines: [],
+      label: lead.label,
+      action: welcomeAction(lead),
+    });
+  }
+  const watch = actions.filter((a) => a !== lead);
+  if (watch.length) {
+    cards.push({
+      id: "watch",
+      pill: null,
+      kicker: `Watch · ${watch.length}`,
+      title: "",
+      lines: [],
+      label: null,
+      action: null,
+      rows: watch.map((a) => ({ id: a.id, title: a.label, detail: plainWelcomeText(a.reason), action: welcomeAction(a) })),
+    });
+  }
+  const work = (f.recent_work ?? []).flatMap((w, i): WelcomeEditionRow[] => {
+    const title = plainWelcomeText(w.title);
+    if (!title) return [];
+    const detail = [plainWelcomeText(w.project), w.harness ? WELCOME_HARNESS_NAME[w.harness] : null, dayOf(w.at)].filter(Boolean).join(" · ");
+    return [{ id: `work-${i}`, title, detail: detail || null, action: null }];
+  });
+  const total = f.sessions?.total ?? 0;
+  if (work.length) {
+    cards.push({ id: "timeline", pill: null, kicker: WELCOME_RECENT_WORK, title: "", lines: [], label: null, action: null, rows: work });
+  } else if (total > 0) {
+    const days = f.sessions?.days_seen ?? 0;
+    cards.push({
+      id: "timeline",
+      pill: null,
+      kicker: WELCOME_RECENT_WORK,
+      title: days ? `${sessions(total)} over ${days} ${days === 1 ? "day" : "days"}` : sessions(total),
+      lines: [],
+      label: null,
+      action: null,
+    });
+  }
+  const note = f.note ? (plainWelcomeText(f.note) ?? WELCOME_NOTE_FAILED) : error ? WELCOME_NOTE_FAILED : editionNote(input);
+  return {
+    zero: false,
+    headline: plainWelcomeText(f.headline) ?? welcomeGreeting(now, input.userName),
+    sub: WELCOME_EDITION_SUB,
+    cards,
+    sections: [...company, ...welcomeSections(f)],
+    note,
+    welcome: true,
+  };
+}
+
+/** What the edition needs from brief.json `welcome`. */
+export interface WelcomeEditionSource {
+  fields: WelcomeBriefFields;
+  /** The welcome enrichment failed in part (brief.json `welcome.error`). */
+  error?: boolean;
+}
+
 /**
  * The edition for this brief. The first open decision leads, the calendar
  * fills the day card and the last other decision is the work to pick up.
@@ -187,9 +362,22 @@ export function welcomeEdition(
   input: BriefInput,
   prompts: Record<string, string> = {},
   labels: ReadonlyMap<string, string> = new Map(),
+  welcome?: WelcomeEditionSource | null,
 ): WelcomeEdition {
   const now = new Date(input.now);
   const companies = input.companies.filter((c) => c.trim());
+  if (welcome && hasComponents(welcome.fields)) {
+    // A company shows only when it has a decision to read; the welcome components carry the rest.
+    const owner = (d: BriefDecision) => companyName(d.origin?.companyUid?.trim() || companies[0] || "", labels);
+    const names = [...new Set(companies.map((slug) => companyName(slug, labels)))].slice(0, 3);
+    const company = names.flatMap((name): WelcomeEditionSection[] => {
+      const d = input.decisions.find((x) => owner(x) === name);
+      if (!d) return [];
+      const title = plainTitle(d, name);
+      return [{ name, lines: [title, ...plainLines(d, title)] }];
+    });
+    return welcomeFieldsEdition(input, welcome.fields, !!welcome.error, company);
+  }
   if (!companies.length) {
     return {
       zero: true,

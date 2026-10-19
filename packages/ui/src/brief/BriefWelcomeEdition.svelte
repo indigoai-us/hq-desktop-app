@@ -4,11 +4,19 @@
    * behind the greeting, "Your day, ready to read." with three cards, and one
    * short section per company. Same page offsets as BriefRise (in normal flow), so the reveal
    * hands off without a jump. The theme follows the welcome report around it.
+   *
+   * With brief.json `welcome` fields (US-019) the cards are IF YOU DO ONE
+   * THING, the watch list and the timeline, and each welcome action runs its
+   * own flow: the connect card opens here, the open action uses the report's
+   * prepared tool, the company flow and launches go to the page.
    */
+  import BriefConnectApps from "./BriefConnectApps.svelte";
   import BriefDawn from "./BriefDawn.svelte";
   import { WELCOME_HORIZON_Y, welcomeSunX } from "./brief-dawn.js";
   import { RISE_CRUMB, riseDateLine } from "./brief-rise.js";
   import { WELCOME_EDITION_EYEBROW, WELCOME_EDITION_HEAD, type WelcomeEdition, type WelcomeEditionAction } from "./brief-welcome-edition.js";
+  import type { WelcomeAction, WelcomeActionKind } from "./brief-welcome-contract.js";
+  import { getWelcomeAiApps } from "./welcome-ai-apps.js";
 
   interface Props {
     edition: WelcomeEdition;
@@ -18,8 +26,33 @@
     /** The note a launched card shows in place of its link. */
     launched?: (itemId: string) => string | null;
     onopenmeetings?: () => void;
+    /** Opens the start-or-join-a-company flow. */
+    onconnectcompany?: () => void;
   }
-  let { edition, now, onlaunch, launched = () => null, onopenmeetings }: Props = $props();
+  let { edition, now, onlaunch, launched = () => null, onopenmeetings, onconnectcompany }: Props = $props();
+
+  /** The welcome report's connect inputs and open action; absent outside the report. */
+  const welcomeApps = getWelcomeAiApps();
+  /** The connect card, opened in the edition from a connect action. */
+  let connectOpen = $state(false);
+  /** The short link on a watch-list row; the row's title already names the action. */
+  const ROW_LINK: Record<WelcomeActionKind, string> = {
+    connect_ai_apps: "Connect",
+    connect_integration: "Connect",
+    open_harness: "Open",
+    connect_company: "Get started",
+    import_history: "Import",
+    open_tree: "Open",
+  };
+  const welcomeActions = $derived(
+    edition.cards.flatMap((c) => [c.action, ...(c.rows ?? []).map((r) => r.action)]).flatMap((a) => (a?.kind === "welcome" ? [a.action] : [])),
+  );
+  // The edition shows the open action itself, so the report leaves out its own bar.
+  $effect(() => {
+    if (!welcomeApps?.openTool || !welcomeApps.claimOpenTool) return;
+    if (!welcomeActions.some((a) => a.kind === "open_harness")) return;
+    return welcomeApps.claimOpenTool();
+  });
 
   let host = $state<HTMLDivElement | null>(null);
   let width = $state(0);
@@ -39,10 +72,32 @@
   const sunX = $derived(welcomeSunX(width));
   const dateLine = $derived(riseDateLine(now));
 
+  function canRunWelcome(a: WelcomeAction): boolean {
+    switch (a.kind) {
+      case "connect_ai_apps":
+      case "connect_integration":
+        return !!welcomeApps?.current;
+      case "open_harness":
+        return !!welcomeApps?.openTool || !!a.launch_prompt;
+      case "connect_company":
+        return !!onconnectcompany;
+      default:
+        return !!a.launch_prompt;
+    }
+  }
   function canRun(action: WelcomeEditionAction | null): boolean {
     if (!action) return false;
+    if (action.kind === "welcome") return canRunWelcome(action.action);
     return action.kind === "launch" || !!onopenmeetings;
   }
+  const busyFor = (action: WelcomeEditionAction | null): boolean => {
+    if (action?.kind === "launch") return !!busy[action.itemId];
+    if (action?.kind !== "welcome") return false;
+    if (action.action.kind === "open_harness" && welcomeApps?.openTool) return welcomeApps.openTool.busy;
+    return !!busy[action.action.id];
+  };
+  const errorFor = (action: WelcomeEditionAction | null): string | null =>
+    action?.kind === "welcome" && action.action.kind === "open_harness" ? (welcomeApps?.openTool?.error ?? null) : null;
   /** Items whose launch is still in flight; their link is disabled so a double click starts one session. */
   let busy = $state<Record<string, boolean>>({});
   async function run(action: WelcomeEditionAction | null): Promise<void> {
@@ -51,22 +106,49 @@
       onopenmeetings?.();
       return;
     }
-    if (busy[action.itemId]) return;
-    busy = { ...busy, [action.itemId]: true };
+    let itemId: string;
+    let prompt: string;
+    if (action.kind === "welcome") {
+      const a = action.action;
+      if (a.kind === "connect_ai_apps" || a.kind === "connect_integration") {
+        connectOpen = !connectOpen;
+        return;
+      }
+      if (a.kind === "connect_company") {
+        onconnectcompany?.();
+        return;
+      }
+      if (a.kind === "open_harness" && welcomeApps?.openTool) {
+        welcomeApps.openTool.onopen();
+        return;
+      }
+      if (!a.launch_prompt) return;
+      itemId = a.id;
+      prompt = a.launch_prompt;
+    } else {
+      itemId = action.itemId;
+      prompt = action.prompt;
+    }
+    if (busy[itemId]) return;
+    busy = { ...busy, [itemId]: true };
     try {
-      await onlaunch(action.itemId, action.prompt);
+      await onlaunch(itemId, prompt);
     } catch {
       // The launch failed before it could say why; the link stays so the person can try again.
     } finally {
-      busy = { ...busy, [action.itemId]: false };
+      busy = { ...busy, [itemId]: false };
     }
   }
-  const noteFor = (action: WelcomeEditionAction | null) => (action?.kind === "launch" ? launched(action.itemId) : null);
+  const noteFor = (action: WelcomeEditionAction | null) =>
+    action?.kind === "launch" ? launched(action.itemId) : action?.kind === "welcome" ? launched(action.action.id) : null;
+  const actionId = (action: WelcomeEditionAction | null) =>
+    action?.kind === "welcome" ? action.action.id : action?.kind === "launch" ? action.itemId : undefined;
 </script>
 
 <div
   class="edition"
   class:zero={edition.zero}
+  class:welcome={edition.welcome}
   data-testid="welcome-edition"
   data-theme={theme}
   bind:this={host}
@@ -92,21 +174,48 @@
     <div class="cards">
       {#each edition.cards as card (card.id)}
         {@const note = noteFor(card.action)}
-        <section class="card" class:lead={card.id === "decision"} data-testid="welcome-edition-card" data-card={card.id}>
+        {@const error = errorFor(card.action)}
+        <section class="card" class:lead={card.id === "decision" || card.id === "one-thing"} class:list={!!card.rows} data-testid="welcome-edition-card" data-card={card.id}>
           <div class="kicker">
             {#if card.pill}<span class="pill">{card.pill}</span>{/if}
             <span>{card.kicker}</span>
           </div>
-          <h3>{card.title}</h3>
+          {#if card.title}<h3>{card.title}</h3>{/if}
           {#if card.lines.length}<p>{#each card.lines as line, i (i)}{#if i}<br />{/if}{line}{/each}</p>{/if}
+          {#if card.rows}
+            <ul class="rows">
+              {#each card.rows as row (row.id)}
+                {@const rowNote = noteFor(row.action)}
+                {@const rowError = errorFor(row.action)}
+                <li class="row" data-testid="welcome-edition-row">
+                  <div class="row-text">
+                    <h4>{row.title}</h4>
+                    {#if row.detail}<p>{row.detail}</p>{/if}
+                    {#if rowNote}<p class="note" data-testid="welcome-edition-note">{rowNote}</p>{/if}
+                    {#if rowError}<p class="note" data-testid="welcome-edition-error">{rowError}</p>{/if}
+                  </div>
+                  {#if !rowNote && row.action?.kind === "welcome" && canRun(row.action)}
+                    <button type="button" class="link" data-testid="welcome-edition-action" data-action={actionId(row.action)} disabled={busyFor(row.action)} onclick={() => void run(row.action)}>{ROW_LINK[row.action.action.kind]}</button>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
           {#if note}
             <p class="note" data-testid="welcome-edition-note">{note}</p>
           {:else if card.label && canRun(card.action)}
-            <button type="button" class="link" data-testid="welcome-edition-action" disabled={card.action?.kind === "launch" && !!busy[card.action.itemId]} onclick={() => void run(card.action)}>{card.label}</button>
+            <button type="button" class="link" data-testid="welcome-edition-action" data-action={actionId(card.action)} disabled={busyFor(card.action)} onclick={() => void run(card.action)}>{card.label}</button>
           {/if}
+          {#if error}<p class="note" data-testid="welcome-edition-error">{error}</p>{/if}
         </section>
       {/each}
     </div>
+    {#if connectOpen && welcomeApps?.current}
+      {@const connect = welcomeApps.current}
+      <div class="connect" data-testid="welcome-edition-connect">
+        <BriefConnectApps detect={connect.detect} cli={connect.cli} suggest={connect.suggest} session={connect.session} anywhereOnId={connect.anywhereOnId ?? null} {theme} />
+      </div>
+    {/if}
     <div class="sections">
       {#each edition.sections as section (section.name)}
         <section class="section" data-testid="welcome-edition-section">
@@ -294,6 +403,51 @@
     outline: 2px solid currentColor;
     outline-offset: 4px;
   }
+  /* The welcome components: a lead card with room for its sentence, then two list cards. */
+  .welcome .cards {
+    grid-template-columns: 1.15fr 1fr 1fr;
+  }
+  .card.list h3 {
+    font-size: 21px;
+  }
+  .rows {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 11px 0;
+    border-top: 1px solid var(--rule);
+  }
+  .row:first-child {
+    padding-top: 2px;
+    border-top: 0;
+  }
+  .row-text {
+    min-width: 0;
+  }
+  .row h4 {
+    margin: 0;
+    font: 400 17px/1.25 var(--serif);
+    letter-spacing: -0.2px;
+  }
+  .row p {
+    margin: 4px 0 0;
+  }
+  .row .link {
+    flex: none;
+    margin-top: 0;
+  }
+  .note {
+    font-style: italic;
+  }
+  .connect {
+    margin-top: 14px;
+  }
   .sections {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -321,6 +475,7 @@
   @media (max-width: 900px) {
     .cards,
     .zero .cards,
+    .welcome .cards,
     .sections {
       grid-template-columns: 1fr;
     }

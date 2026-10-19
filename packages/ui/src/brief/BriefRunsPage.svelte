@@ -356,7 +356,7 @@
 {:else if input}
   <div class="brief-content" data-testid="brief-content">
   {#if dawn}<div class="masthead-wrap">{@render dawnScene("masthead")}</div>{/if}
-  {#if welcome}<BriefWelcome {welcome} {onconnectcompany} />{/if}
+  {#if welcome && !inWelcome}<BriefWelcome {welcome} {onconnectcompany} />{/if}
   {#if exclusions.length}
     <aside class="brief-exclusions" data-testid="brief-exclusions" aria-label="Not included">
       {#each exclusions as excluded}
@@ -388,7 +388,7 @@
       {/each}
     </div>
   {:else}
-    <DailyBrief dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {housekeeping} {actions} onlog={logItem} header={entries.length || run ? runBar : undefined} />
+    <DailyBrief dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {housekeeping} {actions} {welcome} {onconnectcompany} onlog={logItem} header={entries.length || run ? runBar : undefined} />
   {/if}
   </div>
 {:else if failed}

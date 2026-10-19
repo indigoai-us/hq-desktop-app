@@ -30,7 +30,6 @@
   import { welcomeRiseSources, type RiseCompany } from "./brief-rise.js";
   import { setWelcomeAiApps, type WelcomeAiApps } from "./welcome-ai-apps.js";
   import { WelcomeConnectSession } from "./welcome-connect-session.svelte.js";
-  import { assistantNameInSentence } from "./brief-action-cards.js";
 
   interface Props {
     /** The report is ready: the brief page replaces the loading card. */
@@ -51,8 +50,8 @@
     /** No assistant to write the report yet: the card offers setting one up. */
     onsetup?: (() => void) | null;
     /**
-     * Who made the report: the assistant and a way to open its DM. Left out
-     * (no assistant, or no landed report on screen), the line is not shown.
+     * Who made the report. Still accepted from the shell and not drawn:
+     * nothing sits above the brief (US-019).
      */
     madeBy?: { name: string; onmeet: () => void };
     /** The "Connect your AI apps" card inputs; null leaves it out. */
@@ -85,7 +84,6 @@
     progress = null,
     connect = null,
     onsetup = null,
-    madeBy,
     aiApps = null,
     session: given = null,
     blocked = null,
@@ -145,9 +143,22 @@
       runStats,
     };
   });
+  /** How many welcome editions show the open action themselves; while one does, the report's bar stays out. */
+  let openToolClaims = $state(0);
   setWelcomeAiApps({
     get current() {
       return connectApps;
+    },
+    get openTool() {
+      return openTool;
+    },
+    claimOpenTool() {
+      untrack(() => (openToolClaims += 1));
+      let held = true;
+      return () => {
+        if (held) untrack(() => (openToolClaims -= 1));
+        held = false;
+      };
     },
   });
 
@@ -170,18 +181,17 @@
 </script>
 
 <div class="welcome" class:rising data-testid="welcome-report" data-theme={theme === "light" || theme === "dark" ? theme : undefined}>
-  {#if openTool}
+  <!-- Before the report is ready the open action leads. Once the brief shows, nothing sits above it (US-019):
+       the welcome edition carries the open action, and a brief without one gets the bar under it. -->
+  {#if openTool && !ready}
     <BriefOpenTool label={openTool.label} detail={openTool.detail} busy={openTool.busy} error={openTool.error} onopen={openTool.onopen} />
   {/if}
   {#if ready}
     <div class="report reveal" data-testid="welcome-report-ready">
-      {#if madeBy}
-        <p class="made-by" data-testid="welcome-report-made-by">
-          <span>{madeBy.name} made this report.</span>
-          <button type="button" data-testid="welcome-report-meet" onclick={() => madeBy.onmeet()}>Meet {assistantNameInSentence(madeBy.name)}</button>
-        </p>
-      {/if}
       {@render children()}
+      {#if openTool && !openToolClaims}
+        <BriefOpenTool label={openTool.label} detail={openTool.detail} busy={openTool.busy} error={openTool.error} onopen={openTool.onopen} />
+      {/if}
     </div>
   {/if}
   {#if rising || holdRise}
@@ -302,29 +312,6 @@
     flex: 1;
     min-height: 0;
   }
-  .made-by {
-    margin: 0 0 12px;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 10px;
-    font-size: 13px;
-    color: rgba(255, 255, 255, 0.72);
-  }
-  .made-by button {
-    font: inherit;
-    font-size: 12px;
-    padding: 4px 12px;
-    border-radius: 999px;
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    background: rgba(255, 255, 255, 0.06);
-    color: inherit;
-    cursor: pointer;
-    transition: opacity 120ms cubic-bezier(0.25, 1, 0.5, 1);
-  }
-  .made-by button:active {
-    opacity: 0.7;
-  }
   .card {
     border-radius: var(--b-r, 22px);
     background: var(--b-card, #222226);
@@ -361,7 +348,6 @@
     background: var(--b-sun, #ffb580);
   }
   @media (prefers-reduced-motion: reduce) {
-    .made-by button { transition: none; }
     .report.reveal, .rise-hold.out { animation: none; }
   }
 </style>

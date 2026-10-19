@@ -43,6 +43,7 @@
   import BriefWelcomeEdition from "./BriefWelcomeEdition.svelte";
   import { getWelcomeAiApps } from "./welcome-ai-apps.js";
   import { welcomeEdition } from "./brief-welcome-edition.js";
+  import type { BriefWelcome } from "./brief-welcome.js";
   import { actionCardData, type BriefActions } from "./brief-action-cards.js";
   import type { Snippet } from "svelte";
   import type { BriefHousekeeping as BriefHousekeepingData } from "./brief-run-files.js";
@@ -90,8 +91,12 @@
      * how to hand it to the assistant. Left out, the cards are not shown.
      */
     actions?: BriefActions | null;
+    /** brief.json `welcome`: inside the welcome report its fields are the edition's components (US-019). */
+    welcome?: BriefWelcome | null;
+    /** Opens the start-or-join-a-company flow from the edition's company action. */
+    onconnectcompany?: () => void;
   }
-  let { input, companies = [], onlaunch, header, sectionOnly = false, summaryOnly = false, clearedItemIds = [], housekeeping = null, dmApi = null, onopenthread, onopenmeetings, onlog, actions = null }: Props = $props();
+  let { input, companies = [], onlaunch, header, sectionOnly = false, summaryOnly = false, clearedItemIds = [], housekeeping = null, dmApi = null, onopenthread, onopenmeetings, onlog, actions = null, welcome = null, onconnectcompany }: Props = $props();
 
   const briefState = new BriefState(
     (engine, prompt) => (onlaunch ?? launchBriefPromptViaClipboard)(engine, prompt),
@@ -294,8 +299,19 @@
   /** Inside the welcome report, outside review mode: the round 11b welcome edition replaces the grid. */
   const edition = $derived(
     welcomeAiApps && !allCards && !sectionOnly && !summaryOnly
-      ? welcomeEdition(input.runStats ? input : { ...input, runStats: welcomeAiApps.current?.runStats ?? null }, plan.prompts, new Map(companies.flatMap((c) => [[c.uid.toLowerCase(), c.label] as [string, string], ...(c.slug ? [[c.slug.toLowerCase(), c.label] as [string, string]] : [])])))
+      ? welcomeEdition(
+          input.runStats ? input : { ...input, runStats: welcomeAiApps.current?.runStats ?? null },
+          plan.prompts,
+          new Map(companies.flatMap((c) => [[c.uid.toLowerCase(), c.label] as [string, string], ...(c.slug ? [[c.slug.toLowerCase(), c.label] as [string, string]] : [])])),
+          welcome ? { fields: welcome.fields, error: !!welcome.error } : null,
+        )
       : null,
+  );
+  /** The edition opens the connect card from its own action, so the trailing card stays out. */
+  const editionConnects = $derived(
+    !!edition?.cards.some((c) =>
+      [c.action, ...(c.rows ?? []).map((r) => r.action)].some((a) => a?.kind === "welcome" && (a.action.kind === "connect_ai_apps" || a.action.kind === "connect_integration")),
+    ),
   );
 </script>
 
@@ -303,7 +319,7 @@
 
 <div class="daily-brief" data-testid="daily-brief" data-lead={plan.lead} data-density={plan.density} data-template={plan.template} data-daytype={plan.dayType}>
   {#if edition}
-  <BriefWelcomeEdition {edition} now={nowDate} onlaunch={(id, prompt) => briefState.start(id, prompt)} launched={launchedNote} {onopenmeetings} />
+  <BriefWelcomeEdition {edition} now={nowDate} onlaunch={(id, prompt) => briefState.start(id, prompt)} launched={launchedNote} {onopenmeetings} {onconnectcompany} />
   {:else}
   {#if !sectionOnly}
   <header class="b-head">
@@ -483,7 +499,7 @@
   {/if}
   {/if}
 
-  {#if !summaryOnly && !sectionOnly && welcomeAiApps?.current}
+  {#if !summaryOnly && !sectionOnly && !editionConnects && welcomeAiApps?.current}
     {@const connect = welcomeAiApps.current}
     <BriefConnectApps detect={connect.detect} cli={connect.cli} suggest={connect.suggest} session={connect.session} anywhereOnId={connect.anywhereOnId ?? null} />
   {/if}
