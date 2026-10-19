@@ -73,7 +73,7 @@
   {/if}
   <div class="page">
     {#if mod}
-      <mod.BriefRunsPage {adapter} {companies} {onlaunch} {creator} {run} {onopenthread} {onopenmeetings} {onconnectcompany} {actions} {onshown} />
+      <mod.BriefRunsPage {adapter} {companies} {onlaunch} {creator} {run} {onopenthread} {onopenmeetings} {onconnectcompany} {actions} {onshown} {firstView} />
     {:else if failed}
       <p class="failed" data-testid="brief-failed">The Daily Brief could not load. Try again in a moment.</p>
     {:else}

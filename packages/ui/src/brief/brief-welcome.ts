@@ -9,6 +9,8 @@ export interface BriefWelcome {
   connectCompany: boolean;
   gettingStarted?: string;
   nextSteps?: string[];
+  /** The next steps that are not about connecting a company: all a returning person sees. */
+  otherSteps?: string[];
   error?: string;
 }
 const object = (value: unknown): Record<string, unknown> | null => value != null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -29,7 +31,14 @@ export function parseWelcome(value: unknown): BriefWelcome | null {
     ...(typeof row.getting_started === "string" ? {gettingStarted: row.getting_started} : {}),
     ...(typeof row.error === "string" ? {error: row.error.replace(/\s+/g, " ").trim()} : {}),
     ...(Array.isArray(row.next_steps) && row.next_steps.some(v => typeof object(v)?.reason === "string") ? { nextSteps: row.next_steps.map(v => object(v)?.reason).filter((v): v is string => typeof v === "string") } : {}),
+    ...(Array.isArray(row.next_steps) && row.next_steps.some(v => typeof object(v)?.reason === "string" && object(v)?.kind !== "connect_company") ? { otherSteps: row.next_steps.filter(v => object(v)?.kind !== "connect_company").map(v => object(v)?.reason).filter((v): v is string => typeof v === "string") } : {}),
   };
+}
+
+/** The returning-account line under "Welcome back": the companies already on this Mac. */
+export function returningWelcomeLine(names: string[]): string {
+  const list = names.length <= 2 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  return `Here is today's brief for ${list}.`;
 }
 
 export interface BriefFailedCompany { company: string; label?: string }

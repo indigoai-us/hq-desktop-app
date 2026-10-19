@@ -92,6 +92,12 @@ pub(crate) fn publish_sync_setup_gate(state: LifecycleState) -> bool {
     was_held && !hold
 }
 
+/// Release the setup hold once install has finished, before the wizard ends
+/// (US-023 returning-account pull). Returns true when this call released it.
+pub(crate) fn release_sync_setup_hold_after_install(install_completed: bool) -> bool {
+    install_completed && publish_sync_setup_gate(LifecycleState::InstalledFirstRun)
+}
+
 /// Current lifecycle verdict for the running process, if one was resolved.
 pub fn current_lifecycle_state(app: &AppHandle) -> Option<LifecycleState> {
     app.try_state::<LifecycleStateHandle>()
@@ -1194,6 +1200,21 @@ mod tests {
             LifecycleState::InstalledLegacyUpdate
         ));
         assert!(!sync_held_for_setup());
+    }
+
+    /// A returning account's pull runs before setup finishes. The hold lifts
+    /// only once install is complete, so the pull's sync start is not refused.
+    #[test]
+    fn the_hold_lifts_for_the_returning_pull_only_after_install() {
+        assert!(!publish_sync_setup_gate(LifecycleState::NeedsInstall));
+        assert!(sync_held_for_setup());
+        assert!(!release_sync_setup_hold_after_install(false));
+        assert!(sync_held_for_setup());
+        assert!(crate::commands::daemon::ensure_setup_allows_sync().is_err());
+        assert!(release_sync_setup_hold_after_install(true));
+        assert!(!sync_held_for_setup());
+        assert!(crate::commands::daemon::ensure_setup_allows_sync().is_ok());
+        assert!(!release_sync_setup_hold_after_install(true));
     }
 
     #[test]

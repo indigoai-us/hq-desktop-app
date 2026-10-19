@@ -364,7 +364,8 @@ export type AccountKind =
       primary: MembershipCompany | null;
     }
   | { kind: 'new' }
-  | { kind: 'lookup_failed' };
+  /** `signedOut`: the lookup was refused because the sign-in expired. */
+  | { kind: 'lookup_failed'; signedOut?: boolean };
 
 /**
  * New or returning, from one `/membership/me` read made with

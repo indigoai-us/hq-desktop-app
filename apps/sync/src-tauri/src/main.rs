@@ -828,6 +828,8 @@ fn main() {
             commands::first_run::mark_auto_sync_notice_shown,
             commands::first_run::set_account_kind,
             commands::first_run::get_account_kind,
+            commands::first_run::company_folder_present,
+            commands::first_run::release_sync_hold_after_install,
             commands::first_run::set_main_window_vibrancy,
             intro_window::set_intro_fullscreen,
             welcome_window::set_welcome_backdrop,

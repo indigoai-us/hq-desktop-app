@@ -512,6 +512,71 @@ pub fn forget_account_kind() {
     }
 }
 
+/// Whether `companies/<slug>` is a folder under `root`. A slug that could leave
+/// the companies folder is never present.
+fn company_folder_present_in(root: &std::path::Path, slug: &str) -> bool {
+    if slug.is_empty() || slug.contains('/') || slug.contains('\\') || slug.contains("..") {
+        return false;
+    }
+    root.join("companies").join(slug).is_dir()
+}
+
+/// Whether the returning-account pull has brought down a company (US-023): its
+/// folder exists in the HQ folder. `sync:all-complete` names no company, so
+/// setup checks this before it marks the company done.
+#[tauri::command]
+pub fn company_folder_present(slug: String) -> bool {
+    match hq_desktop_core::workspaces::resolve_hq_folder_path() {
+        Ok(root) => company_folder_present_in(&root, &slug),
+        Err(_) => false,
+    }
+}
+
+/// Release the setup hold on sync once install has finished, so a returning
+/// account can pull its companies before the wizard finishes (US-023). The
+/// lifecycle verdict is left alone; finishing setup still advances it.
+#[tauri::command]
+pub async fn release_sync_hold_after_install(app: AppHandle) -> Result<bool, String> {
+    let manifest = crate::commands::install_manifest::read_install_manifest()?;
+    let released = crate::commands::lifecycle::release_sync_setup_hold_after_install(
+        manifest.completed_at.is_some(),
+    );
+    if released {
+        log(
+            "first-run",
+            "install finished; starting sync for the returning account pull",
+        );
+        crate::commands::hq_daemon_host::start_sync_services_after_setup(app);
+    }
+    Ok(released)
+}
+
+#[cfg(test)]
+mod company_folder_present_tests {
+    use super::company_folder_present_in;
+
+    #[test]
+    fn a_company_counts_only_when_its_folder_exists() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(!company_folder_present_in(root.path(), "acme"));
+        std::fs::create_dir_all(root.path().join("companies").join("acme")).unwrap();
+        assert!(company_folder_present_in(root.path(), "acme"));
+        assert!(!company_folder_present_in(root.path(), "other"));
+        std::fs::write(root.path().join("companies").join("file-co"), "").unwrap();
+        assert!(!company_folder_present_in(root.path(), "file-co"));
+    }
+
+    #[test]
+    fn a_slug_that_leaves_the_companies_folder_is_never_present() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("companies")).unwrap();
+        std::fs::create_dir_all(root.path().join("outside")).unwrap();
+        for slug in ["", "..", "../outside", "a/b", "a\\b"] {
+            assert!(!company_folder_present_in(root.path(), slug), "{slug:?}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod first_launch_sync_start_capture_tests {
     use super::*;

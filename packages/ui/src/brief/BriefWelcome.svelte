@@ -1,11 +1,23 @@
 <script lang="ts">
   import type { BriefWelcome } from "./brief-welcome.js";
-  let { welcome, onconnectcompany }: { welcome: BriefWelcome; onconnectcompany?: () => void } = $props();
+  import { returningWelcomeLine } from "./brief-welcome.js";
+  /**
+   * `returning` is a person whose account already has companies (US-023).
+   * They get "Welcome back" with their companies named, and none of the
+   * start-a-company prompts a new person sees.
+   */
+  let { welcome, onconnectcompany, returning = false, companyNames = [] }: { welcome: BriefWelcome; onconnectcompany?: () => void; returning?: boolean; companyNames?: string[] } = $props();
+  const steps = $derived(returning ? welcome.otherSteps : welcome.nextSteps);
 </script>
 
-<section class="welcome" data-testid="brief-welcome" aria-label="Getting started">
-  <h2>Welcome to your Daily Brief</h2>
-  {#if welcome.gettingStarted}<p>{welcome.gettingStarted}</p>{/if}
+<section class="welcome" data-testid="brief-welcome" data-returning={returning ? "true" : undefined} aria-label="Getting started">
+  {#if returning}
+    <h2>Welcome back</h2>
+    {#if companyNames.length}<p data-testid="brief-welcome-companies">{returningWelcomeLine(companyNames)}</p>{/if}
+  {:else}
+    <h2>Welcome to your Daily Brief</h2>
+    {#if welcome.gettingStarted}<p>{welcome.gettingStarted}</p>{/if}
+  {/if}
   {#if welcome.error}<p data-testid="brief-welcome-error">{welcome.error}</p>{/if}
   <dl>
     <div><dt>Local sessions</dt><dd>{welcome.sessions}</dd></div>
@@ -13,8 +25,8 @@
     <div><dt>Imported skills</dt><dd>{welcome.skills}</dd></div>
   </dl>
   {#if welcome.apps.length}<p>{welcome.apps.join(" · ")}</p>{/if}
-  {#if welcome.nextSteps?.length}<ul>{#each welcome.nextSteps as reason}<li>{reason}</li>{/each}</ul>{/if}
-  {#if welcome.connectCompany && onconnectcompany}
+  {#if steps?.length}<ul>{#each steps as reason}<li>{reason}</li>{/each}</ul>{/if}
+  {#if welcome.connectCompany && onconnectcompany && !returning}
     <button type="button" onclick={onconnectcompany}>Start or join a company</button>
   {/if}
 </section>

@@ -58,8 +58,10 @@
     actions?: BriefActions | null;
     /** Told which run is on screen (null for none or the no-run brief), including after a run bar pick. */
     onshown?: (runId: string | null) => void;
+    /** The first view after setup; `returning` gives the welcome edition its returning-account wording. */
+    firstView?: { returning: boolean } | null;
   }
-  let { adapter, companies, onconnectcompany, onlaunch, creator = null, run: sharedRun = null, onopenthread, onopenmeetings, source: sourceProp, initialRunId = null, actions = null, onshown }: Props = $props();
+  let { adapter, companies, onconnectcompany, onlaunch, creator = null, run: sharedRun = null, onopenthread, onopenmeetings, source: sourceProp, initialRunId = null, actions = null, onshown, firstView = null }: Props = $props();
 
   const LAST_KEY = "hq.brief.lastOpenedAt";
   // Fixed for the page's life; the host remounts the page for a new adapter.
@@ -404,7 +406,7 @@
   <div class="daily-brief daily-brief-dawn-page">{@render dawnScene("page")}</div>
 {:else if input}
   <div class="brief-content" data-testid="brief-content">
-  {#if welcome}<BriefWelcome {welcome} {onconnectcompany} />{/if}
+  {#if welcome}<BriefWelcome {welcome} {onconnectcompany} returning={firstView?.returning === true} companyNames={companies.map(c => c.label)} />{/if}
   {#if exclusions.length}
     <aside class="brief-exclusions" data-testid="brief-exclusions" aria-label="Not included">
       {#each exclusions as excluded}

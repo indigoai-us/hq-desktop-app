@@ -13982,6 +13982,8 @@
     pendingRestoreScroll = null;
     const cache = imagePreviewCache;
     await onsignout?.();
+    // The next account to sign in here may be new (US-023 m3); only its own setup status marks it returning.
+    accountKindReturning = false;
     clearAccountCaches();
     try { await cache?.clearAccount(); }
     catch (error) { console.warn("[image-preview] Sign-out cache cleanup failed", error); }

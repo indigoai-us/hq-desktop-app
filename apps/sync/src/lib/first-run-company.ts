@@ -260,10 +260,25 @@ export async function resolveAccountKind(deps: {
       console.warn('onboarding: account kind lookup returned an unreadable payload');
     } catch (error) {
       console.warn('onboarding: account kind lookup failed', error);
+      // Asking again cannot help an expired sign-in; the person signs in again.
+      if (isSignedOutError(error)) {
+        deps.invalidateMembershipMeRead?.();
+        return { kind: 'lookup_failed', signedOut: true };
+      }
     }
   }
   deps.invalidateMembershipMeRead?.();
   return { kind: 'lookup_failed' };
+}
+
+/**
+ * A request refused for the sign-in: hq-pro answered 401, or the desktop had
+ * no usable token to send (`hq_pro_fetch` rejects with "Not signed in: …").
+ */
+export function isSignedOutError(error: unknown): boolean {
+  if (isRecord(error) && error.status === 401) return true;
+  const message = typeof error === 'string' ? error : error instanceof Error ? error.message : '';
+  return message.startsWith('Not signed in');
 }
 
 /** Back-compat wrapper: just the route. */

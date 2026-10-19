@@ -84,7 +84,7 @@ function adapter(status: Record<string, unknown>, markWelcomeTourShown: () => Pr
   } as unknown as PlatformAdapter;
 }
 
-async function mountApp(status: Record<string, unknown>) {
+async function mountApp(status: Record<string, unknown>, onsignout?: () => Promise<void>) {
   const markWelcomeTourShown = vi.fn(async () => ok(undefined));
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -97,6 +97,7 @@ async function mountApp(status: Record<string, unknown>) {
       self: { uid: "prs_test", displayName: "Ada Lovelace", email: "ada@example.com" },
       coreFixtures: false,
       companies: [ACME],
+      ...(onsignout ? { onsignout } : {}),
     },
   });
   await settle();
@@ -151,5 +152,29 @@ describe("DesktopApp for a returning account (US-023)", () => {
     await settle();
     await vi.waitFor(() => expect(q("brief-host")).toBeTruthy(), { timeout: 4000, interval: 20 });
     expect(q("brief-host")!.hasAttribute("data-first-view-returning")).toBe(false);
+  }, 20_000);
+
+  it("forgets the returning account on sign-out, so the next account gets the create-company action back", async () => {
+    const onsignout = vi.fn(async () => {});
+    await mountApp({ welcomeSetupOwed: false, welcomeTourShown: true, accountKind: "returning" }, onsignout);
+    q("rail-brief")!.click();
+    await settle();
+    await vi.waitFor(() => expect(q("brief-host")?.getAttribute("data-first-view-returning")).toBe("true"), {
+      timeout: 4000,
+      interval: 20,
+    });
+
+    q("rail-you")!.click();
+    await settle();
+    q("account-sign-out")!.click();
+    await settle();
+    document.querySelector<HTMLButtonElement>('[data-testid="confirm-dialog-ok"]')!.click();
+    await settle();
+    expect(onsignout).toHaveBeenCalledOnce();
+
+    await vi.waitFor(() => expect(q("brief-host")?.hasAttribute("data-first-view-returning")).toBe(false), {
+      timeout: 4000,
+      interval: 20,
+    });
   }, 20_000);
 });

@@ -140,6 +140,8 @@ const NO_AI_TOOLS = {
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 let hqAnywhereValue = false;
+/** Company folders that exist under the test HQ root (company_folder_present). */
+const presentCompanyFolders = new Set<string>();
 let hqAnywhereWrite: ((value: boolean) => Promise<unknown>) | null = null;
 let hqAnywhereRuntimeSetup: ((enabled: boolean) => Promise<unknown>) | null = null;
 
@@ -243,6 +245,8 @@ function mountWizard(
         return hqAnywhereWrite ? hqAnywhereWrite(args?.value === true) : args;
       case 'set_hq_anywhere_global_install':
         return undefined;
+      case 'company_folder_present':
+        return presentCompanyFolders.has(String(args?.slug));
       default:
         return undefined;
     }
@@ -511,6 +515,7 @@ beforeEach(() => {
   );
   tauri.invoke.mockReset();
   hqAnywhereValue = false;
+  presentCompanyFolders.clear();
   hqAnywhereWrite = null;
   hqAnywhereRuntimeSetup = null;
   tauri.open.mockReset();
@@ -3165,6 +3170,7 @@ describe('first-folder sync onboarding step', () => {
     expect(host.querySelector('[data-testid="onboarding-first-folder-sync"]')?.classList.contains('on')).not.toBe(true);
     expect(connectorChecks()).toBe(0);
 
+    presentCompanyFolders.add('demo');
     emitTauriEvent('sync:all-complete', { companiesAttempted: 1, filesDownloaded: 1, bytesDownloaded: 1, errors: [] });
     await flushUntil(() => connectorChecks() > 0);
     await vi.advanceTimersByTimeAsync(500);
@@ -4541,6 +4547,10 @@ describe('company onboarding step', () => {
     entityRegresses?: boolean;
     /** The wizard's onfinish; a fresh mock when unset. */
     onfinish?: Parameters<typeof mountWizard>[0];
+    /** The first N reads of GET /membership/me answer 401 (an expired sign-in). */
+    membershipUnauthorized?: number;
+    /** set_account_kind rejects (the host could not write menubar.json). */
+    setAccountKindFails?: boolean;
   } = {}): Promise<void> {
     onboardingFlags.firstFolderSyncEnabled = false;
     onboardingFlags.companyNamePrefillEnabled = options.companyNamePrefillEnabled ?? false;
@@ -4589,6 +4599,11 @@ describe('company onboarding step', () => {
           return undefined;
         case 'sign_out':
           signedOut = true;
+          return undefined;
+        case 'company_folder_present':
+          return presentCompanyFolders.has(String(args?.slug));
+        case 'set_account_kind':
+          if (options.setAccountKindFails) throw new Error('menubar.json is read-only');
           return undefined;
         case 'start_oauth_login':
           return { authorizeUrl: 'https://placeholder.test/authorize', state: 'oauth-state' };
@@ -4655,6 +4670,9 @@ describe('company onboarding step', () => {
           }
           if (args?.url === MEMBERSHIP_ME) {
             membershipReads += 1;
+            if (membershipReads <= (options.membershipUnauthorized ?? 0)) {
+              return { status: 401, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
+            }
             if (options.membershipDelayMs) {
               await new Promise((resolve) => setTimeout(resolve, options.membershipDelayMs));
             }
@@ -5021,6 +5039,8 @@ describe('company onboarding step', () => {
     /** Answer the scoped sync that is running for `slug`. */
     async function completePull(slug: string, errors: Array<{ company?: string; message: string }> = []): Promise<void> {
       await flushUntil(() => syncedSlugs().filter((candidate) => candidate === slug).length > 0 && pullRows().some((row) => row.company === slug && row.status === 'pulling'));
+      // A successful pull leaves the company folder on disk.
+      if (!errors.some((error) => error.company === slug)) presentCompanyFolders.add(slug);
       emitTauriEvent('sync:all-complete', { companiesAttempted: 1, filesDownloaded: 1, bytesDownloaded: 1, errors });
       await flush();
     }
@@ -5110,7 +5130,7 @@ describe('company onboarding step', () => {
       expect(onfinish).toHaveBeenCalledOnce();
     });
 
-    it('lets the person continue past a failed pull, saying HQ keeps trying', async () => {
+    it('lets the person continue past a failed pull, saying the company is not on this Mac', async () => {
       const onfinish = vi.fn();
       await reachCompanyScenario({ memberships: acmeAndGlobex, onfinish });
       await completePull('acme', [{ company: 'acme', message: 'network down' }]);
@@ -5120,7 +5140,7 @@ describe('company onboarding step', () => {
       click('company-pull-continue');
       await flush();
 
-      expect(pullRows()[0]!.text).toBe("Couldn't bring Acme yet. HQ keeps trying.");
+      expect(pullRows()[0]!.text).toBe("Couldn't bring Acme to this Mac.");
       expect(host.querySelector('[data-testid="company-pull-retry"]')).toBeNull();
       expect(readyHeading()).toBe('Welcome back. Globex is on this Mac.');
       await untilFinished(onfinish);
@@ -5182,6 +5202,159 @@ describe('company onboarding step', () => {
       expect(host.textContent).not.toContain('Welcome back');
       expect(onfinish).toHaveBeenCalledOnce();
     });
+
+    /**
+     * Nothing finished: no onfinish, no Finish setup note, no create push and
+     * no "HQ is ready.". A Finish setup button that shows anyway is clicked
+     * first, so the finish itself must also refuse.
+     */
+    async function expectHeld(onfinish: ReturnType<typeof vi.fn>): Promise<void> {
+      host.querySelector<HTMLButtonElement>('[data-testid="launcher-finish-error"] button')?.click();
+      await idle(20);
+      expect(onfinish).not.toHaveBeenCalled();
+      expect(host.querySelector('[data-testid="launcher-finish-error"]')).toBeNull();
+      expect(createPushed()).toBe(false);
+      expect(companyRows().some((row) => row.decision === 'create')).toBe(false);
+      expect(readyHeading()).not.toBe('HQ is ready.');
+    }
+
+    it('does not offer Finish setup or finish after the ready watchdog while the account lookup failed', async () => {
+      __setReadyTimingsForTests({ consentDwellMs: 0, watchdogMs: 40 });
+      const onfinish = vi.fn();
+      await reachCompanyScenario({ memberships: acmeAndGlobex, membershipFailures: 3, onfinish });
+      await flushUntil(() => Boolean(host.querySelector('[data-testid="account-lookup-error"]')));
+      // Well past the 40ms watchdog and the time Ready takes to finish on success.
+      await idle();
+
+      await expectHeld(onfinish);
+      expect(readyHeading()).toBe('Almost ready.');
+      expect(syncedSlugs()).toEqual([]);
+    });
+
+    it('does not offer Finish setup or finish after the ready watchdog while a pull failed without Continue', async () => {
+      __setReadyTimingsForTests({ consentDwellMs: 0, watchdogMs: 40 });
+      const onfinish = vi.fn();
+      await reachCompanyScenario({ memberships: acmeAndGlobex, onfinish });
+      await completePull('acme', [{ company: 'acme', message: 'network down' }]);
+      await completePull('globex');
+      await flushUntil(() => Boolean(host.querySelector('[data-testid="company-pull-continue"]')));
+      await idle();
+
+      await expectHeld(onfinish);
+      expect(pullRows()[0]).toMatchObject({ company: 'acme', status: 'failed' });
+
+      // Continue clears the hold, and Ready finishes.
+      click('company-pull-continue');
+      await untilFinished(onfinish);
+      expect(onfinish).toHaveBeenCalledOnce();
+    });
+
+    it('does not count a completion for another company as this pull: it waits for the folder', async () => {
+      await reachCompanyScenario({ memberships: acmeAndGlobex });
+      await flushUntil(() => pullRows().some((row) => row.company === 'acme' && row.status === 'pulling'));
+
+      // A watch pass for other companies finishes; acme's folder is not on disk yet.
+      emitTauriEvent('sync:all-complete', { companiesAttempted: 1, filesDownloaded: 1, bytesDownloaded: 1, errors: [] });
+      await idle(20);
+      expect(pullRows()[0]).toMatchObject({ company: 'acme', status: 'pulling' });
+      expect(syncedSlugs()).toEqual(['acme']);
+      expect(tauri.invoke).toHaveBeenCalledWith('company_folder_present', { slug: 'acme' });
+
+      await completePull('acme');
+      await flushUntil(() => pullRows()[0]?.status === 'done');
+      await completePull('globex');
+      await flushUntil(() => pullRows().every((row) => row.status === 'done'));
+      expect(syncedSlugs()).toEqual(['acme', 'globex']);
+    });
+
+    it("does not fail this company's pull on another company's sync error", async () => {
+      await reachCompanyScenario({ memberships: acmeAndGlobex });
+      await flushUntil(() => pullRows().some((row) => row.company === 'acme' && row.status === 'pulling'));
+
+      emitTauriEvent('sync:error', { company: 'globex', message: 'globex watch pass failed' });
+      await flush();
+      await completePull('acme');
+      await flushUntil(() => pullRows()[0]?.status !== 'pulling');
+
+      expect(pullRows()[0]).toMatchObject({ company: 'acme', status: 'done', text: 'Acme Ready' });
+      expect(pullOutcomes()).toContainEqual(
+        expect.objectContaining({ action: 'completed', companyUid: 'cmp_acme', companyPull: 'done', attemptCount: 1 }),
+      );
+    });
+
+    it('fails this pull on a sync error that names this company', async () => {
+      await reachCompanyScenario({ memberships: acmeAndGlobex });
+      await flushUntil(() => pullRows().some((row) => row.company === 'acme' && row.status === 'pulling'));
+
+      emitTauriEvent('sync:error', { company: 'acme', message: 'acme bucket unreachable' });
+      await flush();
+      await completePull('acme');
+      await flushUntil(() => pullRows()[0]?.status !== 'pulling');
+
+      expect(pullRows()[0]).toMatchObject({ company: 'acme', status: 'failed' });
+    });
+
+    it('lifts the setup sync hold before the first company pull starts', async () => {
+      await reachCompanyScenario({ memberships: acmeAndGlobex });
+      await flushUntil(() => syncedSlugs().length > 0);
+
+      const releaseIndex = tauri.invoke.mock.calls.findIndex(([command]) => command === 'release_sync_hold_after_install');
+      expect(releaseIndex).toBeGreaterThanOrEqual(0);
+      const releaseOrder = tauri.invoke.mock.invocationCallOrder[releaseIndex]!;
+      const firstPullOrder = onboardingFlags.startSync.mock.invocationCallOrder[0]!;
+      expect(releaseOrder).toBeLessThan(firstPullOrder);
+    });
+
+    it('an expired sign-in asks the person to sign in again, with no connection copy and no Try again', async () => {
+      const onfinish = vi.fn();
+      await reachCompanyScenario({ memberships: acmeAndGlobex, membershipUnauthorized: 1, onfinish });
+      await flushUntil(() => Boolean(host.querySelector('[data-testid="account-lookup-signed-out"]')));
+
+      const note = host.querySelector('[data-testid="account-lookup-signed-out"]')!;
+      expect(note.textContent).toContain('Your sign-in has expired. Sign in again to finish setting up.');
+      expect(host.textContent).not.toContain('Check your connection');
+      expect(host.querySelector('[data-testid="account-lookup-retry"]')).toBeNull();
+      expect(host.querySelector('[data-testid="account-lookup-error"]')).toBeNull();
+      expect(host.querySelector('[data-testid="account-lookup-sign-in-google"]')?.textContent).toContain('Sign in with Google');
+      // A 401 is not retried.
+      expect(
+        tauri.invoke.mock.calls.filter(
+          ([command, args]) => command === 'hq_pro_fetch' && (args as { url?: string })?.url === MEMBERSHIP_ME,
+        ),
+      ).toHaveLength(1);
+      await idle();
+      await expectHeld(onfinish);
+
+      // Signing in again reads the account and takes the returning path.
+      click('account-lookup-sign-in-google');
+      await flushUntil(() => pullRows().length === 2);
+      expect(host.querySelector('[data-testid="account-lookup-signed-out"]')).toBeNull();
+      expect(createPushed()).toBe(false);
+    });
+
+    it('keeps the returning path when the account kind cannot be written, warning once', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await reachCompanyScenario({ memberships: acmeAndGlobex, setAccountKindFails: true });
+        await flushUntil(() => pullRows().length === 2);
+
+        expect(tauri.invoke).toHaveBeenCalledWith('set_account_kind', { kind: 'returning' });
+        expect(createPushed()).toBe(false);
+        await completePull('acme');
+        await completePull('globex');
+        await flushUntil(() => readyHeading() === 'Welcome back. Acme and Globex are on this Mac.');
+        const remembered = warn.mock.calls.filter(([message]) => message === 'onboarding: account kind could not be remembered');
+        expect(remembered).toHaveLength(1);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('records the lookup_failed account kind on the setup row', async () => {
+      await reachCompanyScenario({ memberships: acmeAndGlobex, membershipFailures: 3 });
+      await flushUntil(() => Boolean(host.querySelector('[data-testid="account-lookup-error"]')));
+      expect(accountKindRows()).toContainEqual(expect.objectContaining({ step: 'setup', accountKind: 'lookup_failed' }));
+    });
   });
 
   it('skips "Name your company" for a paid company and selects it', async () => {
@@ -5201,6 +5374,7 @@ describe('company onboarding step', () => {
   async function finishCompanyPull(): Promise<void> {
     await flushUntil(() => onboardingFlags.startSync.mock.calls.length > 0);
     expect(tauri.invoke.mock.calls.some(([command]) => command === 'detect_claude_desktop_connectors')).toBe(false);
+    for (const [slug] of onboardingFlags.startSync.mock.calls) presentCompanyFolders.add(String(slug));
     emitTauriEvent('sync:all-complete', { companiesAttempted: 1, filesDownloaded: 1, bytesDownloaded: 1, errors: [] });
     await flush();
   }

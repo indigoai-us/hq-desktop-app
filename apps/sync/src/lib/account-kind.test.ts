@@ -8,6 +8,7 @@ import {
 import {
   ACCOUNT_KIND_LOOKUP_ATTEMPTS,
   MEMBERSHIP_ME_WITH_HISTORY_URL,
+  isSignedOutError,
   resolveAccountKind,
 } from './first-run-company';
 
@@ -187,5 +188,40 @@ describe('resolveAccountKind', () => {
       onRetry: never,
     });
     expect(never).toHaveBeenCalledTimes(ACCOUNT_KIND_LOOKUP_ATTEMPTS - 1);
+  });
+
+  it('an expired sign-in stops after one read and says the person is signed out', async () => {
+    const readMembershipMe = vi.fn().mockRejectedValue({ status: 401, body: { error: 'Unauthorized' } });
+    const invalidate = vi.fn();
+    const onRetry = vi.fn();
+    const sleep = vi.fn(async () => {});
+    const decision = await resolveAccountKind({
+      readMembershipMe,
+      invalidateMembershipMeRead: invalidate,
+      onRetry,
+      sleep,
+    });
+    expect(decision).toEqual({ kind: 'lookup_failed', signedOut: true });
+    expect(readMembershipMe).toHaveBeenCalledTimes(1);
+    expect(onRetry).not.toHaveBeenCalled();
+    expect(sleep).not.toHaveBeenCalled();
+    // The cached 401 is dropped, so the read after signing in again is fresh.
+    expect(invalidate).toHaveBeenCalled();
+  });
+});
+
+describe('isSignedOutError', () => {
+  it('is true for a 401 response and for the host saying the person is not signed in', () => {
+    expect(isSignedOutError({ status: 401, body: null })).toBe(true);
+    expect(isSignedOutError(new Error('Not signed in: no Cognito tokens'))).toBe(true);
+    expect(isSignedOutError('Not signed in')).toBe(true);
+  });
+
+  it('is false for network failures, server errors and other statuses', () => {
+    expect(isSignedOutError(new Error('offline'))).toBe(false);
+    expect(isSignedOutError({ status: 500, body: null })).toBe(false);
+    expect(isSignedOutError({ status: 403, body: null })).toBe(false);
+    expect(isSignedOutError(new Error('Request failed: Not signed in'))).toBe(false);
+    expect(isSignedOutError(null)).toBe(false);
   });
 });
