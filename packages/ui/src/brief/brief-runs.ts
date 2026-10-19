@@ -202,6 +202,9 @@ function statusState(v: unknown): BriefStatusState | null {
   return v === "cancelled" ? v : runState(v);
 }
 
+/** The skill's code for a run whose HQ has no daily-brief skill. */
+export const SKILL_NOT_FOUND = "skill_not_found";
+
 export interface BriefRunStatus {
   runId: string;
   state: BriefStatusState;
@@ -224,19 +227,27 @@ export interface BriefRunStatus {
   company: string | null;
 }
 
-export function parseBriefStatus(text: string): BriefRunStatus | null {
+/**
+ * One run's status.json. `expectedRunId` is the run whose folder the file was
+ * read from: a file there with no `run_id` is that run's (the sweep's status
+ * writer can create the file before the skill fills `run_id` in). A file with
+ * a run id and a state word this app does not know still means the run
+ * started, so it reads as running.
+ */
+export function parseBriefStatus(text: string, expectedRunId?: string): BriefRunStatus | null {
   let raw: unknown;
   try {
     raw = JSON.parse(text);
   } catch {
     return null;
   }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const r = rec(raw);
+  const runId = str(r.run_id) || expectedRunId || "";
+  if (!runId) return null;
   // The skill writes `state`; a failure written by hand as `status` (seen
   // 2026-10-13, skill_not_found) must still end the run instead of timing out.
-  const state = statusState(r.state) ?? (r.state === undefined ? statusState(r.status) : null);
-  const runId = str(r.run_id);
-  if (!state || !runId) return null;
+  const state = statusState(r.state) ?? (r.state === undefined ? statusState(r.status) : null) ?? "running";
   return {
     runId,
     state,
@@ -265,15 +276,30 @@ const CANCELLED_MESSAGE = "You cancelled this brief.";
  * never shown on their own.
  */
 export function failedMessage(status: Pick<BriefRunStatus, "state" | "error" | "message">): string {
+  // The bot's own words about a missing skill are operator text.
+  if (status.state === "failed" && status.error === SKILL_NOT_FOUND) return slowStartMessage();
   const said = status.message ?? (status.error && /\s/.test(status.error) ? status.error : null);
   if (status.state === "cancelled") return said ?? CANCELLED_MESSAGE;
   return said ?? DEFAULT_FAILED_MESSAGE;
 }
 
-/** "Sent to Jellybean, waiting for it to start". Shown while the bot has not written status.json. */
-export function waitingStep(bot: string | null | undefined): string {
-  const name = bot?.trim();
-  return name ? `Sent to ${name}, waiting for it to start` : "Sent to your bot, waiting for it to start";
+/** Shown from the click until the run writes status.json. Never names the bot. */
+export const BRIEF_STARTING_STEP = "Getting your brief started";
+/** The quiet line while the run has not started yet. */
+export const BRIEF_STILL_STARTING = "Still getting your brief started…";
+
+/** Shown while the job was sent and status.json does not exist yet. */
+export function waitingStep(_bot?: string | null): string {
+  return BRIEF_STARTING_STEP;
+}
+
+/**
+ * The one line shown when a run never started (start timeout or a missing
+ * skill) after the automatic retry. `label` names the brief: "brief" or
+ * "welcome brief".
+ */
+export function slowStartMessage(label = "brief"): string {
+  return `Your ${label} is taking longer than expected.`;
 }
 
 /**
@@ -310,6 +336,8 @@ export type BriefCreatePhase =
       message: string;
       /** A stall verdict, not the bot's: HQ keeps watching the run and flips to ready if it finishes. */
       stalled?: true;
+      /** The run never started (no status in time, or no daily-brief skill): HQ retries once, then shows the slow-start line. */
+      heal?: "start-timeout" | "skill-not-found";
     };
 
 /**
@@ -345,9 +373,12 @@ export type BriefPollReading = { text: string | null } | { error: string };
 export function advanceBriefRun(phase: BriefCreatePhase, reading: BriefPollReading, now: number): BriefCreatePhase {
   if (phase.kind !== "waiting" && phase.kind !== "running") return phase;
   const { runId, sentAt } = phase;
-  const status = "text" in reading && reading.text != null ? parseBriefStatus(reading.text) : null;
+  const status = "text" in reading && reading.text != null ? parseBriefStatus(reading.text, runId) : null;
   if (status && status.runId === runId) {
     if (status.state === "ready") return { kind: "ready", runId };
+    if (status.state === "failed" && status.error === SKILL_NOT_FOUND) {
+      return { kind: "failed", runId, message: slowStartMessage(), heal: "skill-not-found" };
+    }
     if (status.state === "failed" || status.state === "cancelled") {
       return { kind: "failed", runId, message: failedMessage(status) };
     }
@@ -381,9 +412,7 @@ export function advanceBriefRun(phase: BriefCreatePhase, reading: BriefPollReadi
     return phase;
   }
   if (now - sentAt > BRIEF_START_TIMEOUT_MS) {
-    const who = phase.bot?.trim() || "Your bot";
-    const minutes = Math.round(BRIEF_START_TIMEOUT_MS / 60_000);
-    return { kind: "failed", runId, message: `${who} has not started the brief after ${minutes} minutes. Check that it is running, then try again.` };
+    return { kind: "failed", runId, message: slowStartMessage(), heal: "start-timeout" };
   }
   return phase;
 }
@@ -480,7 +509,7 @@ export function stillWorkingLine(
   const since = phase.kind === "running" ? phase.lastChangeAt : phase.sentAt;
   if (now - since < BRIEF_QUIET_MS) return null;
   const running = phase.kind === "running" ? [...(phase.activity ?? [])].reverse().find((a) => a.state === "running") : undefined;
-  if (phase.kind === "waiting") return `Still waiting for ${phase.bot?.trim() || "your bot"} to start…`;
+  if (phase.kind === "waiting") return BRIEF_STILL_STARTING;
   const what = running?.label ?? phaseFromFiles(files, phase.step);
   return `Still working on ${what.charAt(0).toLowerCase()}${what.slice(1)}…`;
 }
@@ -560,13 +589,21 @@ export const BRIEF_FIX_LABEL: Record<BriefBotFix, string> = {
   "connect-model": "Connect a model",
 };
 
-/** Person-scoped job: personal work plus all permitted companies, with one run id. */
-export function briefJobMessage(runId: string, options: { welcome?: boolean } = {}): string {
+/**
+ * The daily-brief job, with one run id. A person with companies gets the
+ * person brief (`--all`: personal work plus each permitted company); a person
+ * with none gets `--personal`. The skill picks the welcome edition by itself
+ * on the first ready run, so the app never forces it.
+ */
+export function briefJobMessage(runId: string, options: { personal?: boolean } = {}): string {
+  const scope = options.personal
+    ? `Build a personal brief: this person has no company yet, so read only their own work. `
+    : `Include personal scope and every company in the person's lock, keeping each company's items in its own section. `;
   return (
-    `/daily-brief --all --run-id ${runId}${options.welcome ? " --welcome" : ""}\n\n` +
+    `/daily-brief ${options.personal ? "--personal" : "--all"} --run-id ${runId}\n\n` +
     `Run the daily-brief skill now with run_id ${runId} for this person across their HQ. ` +
-    `Include personal scope and every company in the person's lock, keeping each company's items in its own section. ` +
-    `With zero companies, write the getting-started welcome brief. ` +
-    `Write workspace/brief/${runId}/status.json at every step and append workspace/brief/index.jsonl when the run ends.`
+    scope +
+    `Write workspace/brief/${runId}/status.json at every step and append workspace/brief/index.jsonl when the run ends. ` +
+    `If the daily-brief skill is not installed, write workspace/brief/${runId}/status.json with run_id ${runId}, state "failed" and error "${SKILL_NOT_FOUND}", and stop.`
   );
 }

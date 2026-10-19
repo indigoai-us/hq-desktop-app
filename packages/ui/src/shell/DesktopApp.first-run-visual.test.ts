@@ -87,6 +87,9 @@ interface AdapterOptions {
   logToFile?: (tag: string, message: string) => Promise<unknown>;
 }
 
+/** The daily-brief skill the brief dispatch looks for before it sends the job. */
+const DAILY_BRIEF_SKILL = ".claude/skills/daily-brief/SKILL.md";
+
 function adapter({
   create,
   flag = false,
@@ -188,7 +191,14 @@ function adapter({
     },
     ...(activeCompany !== undefined
       ? {
-          files: { getFileContent: async () => ({ ok: false as const, reason: "not found" }) },
+          files: {
+            // The daily-brief skill is installed in this person's HQ (the
+            // brief dispatch checks for it first); every other read misses.
+            getFileContent: async (path: string) =>
+              path === DAILY_BRIEF_SKILL
+                ? ok("# daily-brief")
+                : { ok: false as const, reason: "not found" },
+          },
         }
       : {}),
     ...(aiApps ? { integrations: {} } : {}),
@@ -1243,15 +1253,18 @@ describe("welcome report (US-009)", () => {
   it("with no company the welcome report's job still goes out, in personal scope, and is marked sent with no company note", async () => {
     const log = logSink();
     const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: null, logToFile: log.logToFile });
-    await boot(platform);
+    await boot(platform, DesktopApp, mount, { companies: [], rosterStatus: "ready" });
     await decisionShown();
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
     await settle();
     await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
     const [to, body] = briefJobs(sendDm)[0]!;
     expect(to).toBe(SETUP_BOT_UID);
-    expect(body.split("\n")[0]).toMatch(/^\/daily-brief --all --run-id brief-\d{8}-\d{6} --welcome$/);
-    expect(body).toContain("every company in the person's lock");
+    // hq-core 16.0.30's daily-brief: no company is `--personal`, and the skill
+    // decides the welcome edition on its own, so the job never says `--welcome`.
+    expect(body.split("\n")[0]).toMatch(/^\/daily-brief --personal --run-id brief-\d{8}-\d{6}$/);
+    expect(body).not.toContain("--welcome");
+    expect(body).toContain("Build a personal brief");
     await vi.waitFor(() => expect(localStorage.getItem("hq.welcome-report.sent")).toBe(SETUP_BOT_UID));
     await vi.waitFor(() => expect(log.of("welcome-report")).toEqual(["kind=welcome-report event=dispatched"]));
     await vi.waitFor(() => expect(q('[data-testid="welcome-report-loading"]')).toBeTruthy());
@@ -1260,10 +1273,32 @@ describe("welcome report (US-009)", () => {
     expect(briefJobs(sendDm)).toHaveLength(1);
   }, 15_000);
 
+  it("with no daily-brief skill in the person's HQ the welcome report's job is never sent and the slow-start line shows at once", async () => {
+    const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: null });
+    (platform as unknown as { files: { getFileContent: (path: string) => Promise<unknown> } }).files.getFileContent = async () => ({
+      ok: false as const,
+      reason: "not found",
+    });
+    await boot(platform, DesktopApp, mount, { companies: [], rosterStatus: "ready" });
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"] [data-testid="brief-retry"]')).toBeTruthy(), {
+      timeout: 10_000,
+    });
+    expect(briefJobs(sendDm)).toHaveLength(0);
+    const report = q('[data-testid="welcome-report"]')!;
+    expect(report.querySelector('[data-testid="brief-dawn-step"]')?.textContent?.trim()).toBe(
+      "Your welcome brief is taking longer than expected.",
+    );
+    expect(report.querySelector('[data-testid="brief-retry"]')?.textContent?.trim()).toBe("Try again");
+    expect(report.textContent ?? "").not.toMatch(/bot|skill|check that|is running/i);
+  }, 15_000);
+
   it("a brief made by hand with no company goes out across personal scope without a company toast", async () => {
     localStorage.setItem("hq.welcome-report.sent", SETUP_BOT_UID);
     const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: null });
-    await boot(platform);
+    await boot(platform, DesktopApp, mount, { companies: [], rosterStatus: "ready" });
     await decisionShown();
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
     await settle();
@@ -1273,7 +1308,7 @@ describe("welcome report (US-009)", () => {
     expect(briefJobs(sendDm)).toHaveLength(0);
     q<HTMLButtonElement>('[data-testid="brief-create"]')!.click();
     await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
-    expect(briefJobs(sendDm)[0]![1].split("\n")[0]).toMatch(/^\/daily-brief --all --run-id /);
+    expect(briefJobs(sendDm)[0]![1].split("\n")[0]).toMatch(/^\/daily-brief --personal --run-id /);
     expect(q('[data-testid="brief-failed"]')?.textContent ?? "").not.toContain("Open a company first");
     expect(toastItems().some(t => t.key === "brief-add-company")).toBe(false);
     expect(q('[data-testid="new-company-sheet"]')).toBeNull();

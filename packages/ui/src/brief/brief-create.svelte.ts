@@ -18,6 +18,7 @@ import {
   BRIEF_STALL_TIMEOUT_MS,
   BRIEF_START_TIMEOUT_MS,
   failedMessage,
+  slowStartMessage,
   isBriefRunId,
   parseBriefStatus,
   runIdTime,
@@ -37,6 +38,17 @@ export interface BriefCreator {
   company?(): string | null | Promise<string | null>;
   /** Fresh bot list and model check. */
   check(): Promise<BriefBotCheck>;
+  /**
+   * Whether the person belongs to any company: false sends a `--personal`
+   * brief, true or null (not known yet) the person brief (`--all`).
+   */
+  hasCompanies?(): boolean | null | Promise<boolean | null>;
+  /**
+   * Whether this HQ has the daily-brief skill: false skips the send and goes
+   * straight to the slow-start path; null (could not tell) sends anyway and
+   * lets the bot report `skill_not_found`.
+   */
+  skillInstalled?(): Promise<boolean | null>;
   /** Send the job to the bot. Resolves to a plain error sentence, or null when sent. */
   dispatch(bot: LocalBotRow, body: string, idempotencyKey: string): Promise<string | null>;
   /** Run the fix for a blocked check. Resolves to a plain error sentence, or null. */
@@ -88,6 +100,10 @@ export class BriefCreateRun {
   private watch: { runId: string; sentAt: number; until: number; phase: Finished } | null = null;
   private watchTimer: unknown = null;
   private blockedBot: LocalBotRow | null = null;
+  /** The noun in the slow-start line, set by `start`. */
+  private label = "brief";
+  /** The automatic retry after a run that never started has been used. */
+  private retried = false;
   private timer: unknown = null;
   private stopped = false;
   private readonly now: () => Date;
@@ -114,9 +130,10 @@ export class BriefCreateRun {
    * Check the bot, send the job, start polling. No-op while a run is in
    * flight. The phase flips to `dispatching` synchronously, before any await,
    * so the click paints the sunrise at once; the bot lookup, model check and
-   * send happen after that.
+   * send happen after that. `label` names the brief in the slow-start line
+   * ("welcome brief"); it never changes the job.
    */
-  start(opts: { force?: boolean; welcome?: boolean } = {}): Promise<void> {
+  start(opts: { force?: boolean; label?: string } = {}): Promise<void> {
     if (this.busy) return Promise.resolve();
     if (this.watching && !opts.force) {
       // The last run may still finish: ask before sending a duplicate.
@@ -126,20 +143,41 @@ export class BriefCreateRun {
     }
     this.duplicatePrompt = false;
     this.endWatch();
+    this.label = opts.label?.trim() || "brief";
+    this.retried = false;
+    return this.begin();
+  }
+
+  private begin(): Promise<void> {
     this.stopped = false;
     const runId = briefRunId(this.now());
     this.phase = { kind: "dispatching", runId };
-    return this.dispatch(runId, opts.welcome === true);
+    return this.dispatch(runId);
   }
 
-  private async dispatch(runId: string, welcome: boolean): Promise<void> {
+  /**
+   * A run that never started (start timeout, missing skill): send a fresh
+   * job once by itself, then show the one slow-start line with Try again.
+   */
+  private heal(runId: string | null, why: NonNullable<Extract<BriefCreatePhase, { kind: "failed" }>["heal"]>): Promise<void> {
+    this.log(`brief did not start (${why})${this.retried ? "" : ", retrying once"}`);
+    if (!this.retried) {
+      this.retried = true;
+      this.forget();
+      return this.begin();
+    }
+    this.finish({ kind: "failed", runId, message: slowStartMessage(this.label), heal: why });
+    return Promise.resolve();
+  }
+
+  private async dispatch(runId: string): Promise<void> {
     const { creator } = this.deps;
     let check: Awaited<ReturnType<BriefCreator["check"]>>;
     try {
       check = await creator.check();
     } catch (err) {
       this.log("bot check failed", err instanceof Error ? err.message : err);
-      this.finish({ kind: "failed", runId: null, message: "Could not check your bot. Try again in a moment." });
+      this.finish({ kind: "failed", runId: null, message: "Could not start your brief. Try again in a moment." });
       return;
     }
     if (this.stopped) return;
@@ -148,12 +186,30 @@ export class BriefCreateRun {
       this.phase = { kind: "blocked", message: check.message, fix: check.fix };
       return;
     }
+    let installed: boolean | null = null;
+    try {
+      installed = (await creator.skillInstalled?.()) ?? null;
+    } catch (err) {
+      this.log("skill check failed", err instanceof Error ? err.message : err);
+    }
+    if (this.stopped) return;
+    if (installed === false) {
+      await this.heal(null, "skill-not-found");
+      return;
+    }
+    let hasCompanies: boolean | null = null;
+    try {
+      hasCompanies = (await creator.hasCompanies?.()) ?? null;
+    } catch (err) {
+      this.log("company check failed", err instanceof Error ? err.message : err);
+    }
+    if (this.stopped) return;
     let error: string | null;
     try {
-      error = await creator.dispatch(check.bot, briefJobMessage(runId, { welcome }), runId);
+      error = await creator.dispatch(check.bot, briefJobMessage(runId, { personal: hasCompanies === false }), runId);
     } catch (err) {
       this.log("dispatch failed", err instanceof Error ? err.message : err);
-      error = "Could not reach your bot. Try again in a moment.";
+      error = "Could not start your brief. Try again in a moment.";
     }
     if (error) {
       this.finish({ kind: "failed", runId: null, message: error });
@@ -188,7 +244,7 @@ export class BriefCreateRun {
       }
       if (this.busy) return true;
       const now = this.now().getTime();
-      const status = text != null ? parseBriefStatus(text) : null;
+      const status = text != null ? parseBriefStatus(text, runId) : null;
       if (status && status.runId === runId) {
         if (status.state === "ready") {
           this.finish({ kind: "ready", runId });
@@ -358,7 +414,7 @@ export class BriefCreateRun {
       this.log("status read failed", err instanceof Error ? err.message : err);
     }
     if (this.watch !== w) return;
-    const status = text != null ? parseBriefStatus(text) : null;
+    const status = text != null ? parseBriefStatus(text, w.runId) : null;
     if (status && status.runId === w.runId && status.state === "ready") {
       this.endWatch();
       this.duplicatePrompt = false;
@@ -439,6 +495,10 @@ export class BriefCreateRun {
       this.startWatch(next.runId, phase.sentAt, next, nowMs + BRIEF_STALL_GRACE_MS);
       this.deps.onfinish?.(next);
       for (const fn of this.listeners) fn(next);
+      return;
+    }
+    if (next.kind === "failed" && next.heal) {
+      await this.heal(next.runId, next.heal);
       return;
     }
     if (next.kind === "ready" || next.kind === "failed") {

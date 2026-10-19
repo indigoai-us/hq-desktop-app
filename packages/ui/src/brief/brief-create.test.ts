@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { LocalBotRow } from "@hq/platform";
 import { ACTIVE_RUN_KEY, BriefCreateRun, type BriefCreator } from "./brief-create.svelte.js";
-import { BRIEF_POLL_MS } from "./brief-runs.js";
+import { BRIEF_POLL_MS, BRIEF_START_TIMEOUT_MS } from "./brief-runs.js";
 
 const BOT = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
 const RUN = "brief-20261008-090000";
@@ -125,18 +125,102 @@ describe("BriefCreateRun", () => {
   });
 
   it("a failure written with `status:` and a `message` still ends the run, on a rehydrate too", async () => {
-    const written = JSON.stringify({ run_id: RUN, status: "failed", error: "skill_not_found", message: "No daily-brief skill is installed in this HQ." });
+    const written = JSON.stringify({ run_id: RUN, status: "failed", error: "The sweep could not read GitHub.", message: "GitHub is not signed in." });
     const h = harness();
     await h.run.start();
     h.files[`workspace/brief/${RUN}/status.json`] = written;
     await h.tick();
-    expect(h.run.phase).toEqual({ kind: "failed", runId: RUN, message: "No daily-brief skill is installed in this HQ." });
+    expect(h.run.phase).toEqual({ kind: "failed", runId: RUN, message: "GitHub is not signed in." });
 
     const again = harness({}, { [`workspace/brief/${RUN}/status.json`]: written });
     again.storage.setItem(ACTIVE_RUN_KEY, RUN);
     expect(await again.run.rehydrate()).toBe(true);
-    expect(again.run.phase).toEqual({ kind: "failed", runId: RUN, message: "No daily-brief skill is installed in this HQ." });
+    expect(again.run.phase).toEqual({ kind: "failed", runId: RUN, message: "GitHub is not signed in." });
     expect(again.creator.notify).not.toHaveBeenCalled();
+  });
+
+  it("a missing daily-brief skill skips the send and goes straight to the heal path, with no wait", async () => {
+    const skillInstalled = vi.fn(async () => false);
+    const h = harness({ skillInstalled });
+    await h.run.start({ label: "welcome brief" });
+    // Checked twice (the automatic retry looks again), sent never.
+    expect(skillInstalled).toHaveBeenCalledTimes(2);
+    expect(h.creator.dispatch).not.toHaveBeenCalled();
+    expect(h.run.phase).toEqual({
+      kind: "failed",
+      runId: null,
+      message: "Your welcome brief is taking longer than expected.",
+      heal: "skill-not-found",
+    });
+    expect(h.timers).toHaveLength(0);
+    expect(h.reads).toEqual([]);
+    expect(h.creator.notify).not.toHaveBeenCalled();
+  });
+
+  it("a skill that turns up on the automatic retry sends the job", async () => {
+    const skillInstalled = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+    const h = harness({ skillInstalled });
+    await h.run.start();
+    expect(h.creator.dispatch).toHaveBeenCalledTimes(1);
+    expect(h.run.phase).toMatchObject({ kind: "waiting", runId: RUN });
+  });
+
+  it("an unknown skill check still sends the job", async () => {
+    const h = harness({ skillInstalled: vi.fn(async () => null) });
+    await h.run.start();
+    expect(h.creator.dispatch).toHaveBeenCalledTimes(1);
+    const thrown = harness({ skillInstalled: vi.fn(async () => { throw new Error("io"); }) });
+    await thrown.run.start();
+    expect(thrown.creator.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("a run that reports skill_not_found retries once by itself, then shows the slow-start line", async () => {
+    const h = harness();
+    await h.run.start({ label: "welcome brief" });
+    const notFound = (id: string) =>
+      JSON.stringify({ run_id: id, state: "failed", error: "skill_not_found", message: "No daily-brief skill is installed in this HQ." });
+    h.files[`workspace/brief/${RUN}/status.json`] = notFound(RUN);
+    await h.tick();
+    await vi.waitFor(() => expect(h.run.phase.kind).toBe("waiting"));
+    expect(h.creator.dispatch).toHaveBeenCalledTimes(2);
+    const retryId = (h.creator.dispatch as ReturnType<typeof vi.fn>).mock.calls[1]![2] as string;
+    expect(retryId).not.toBe(RUN);
+    expect(h.run.phase).toMatchObject({ kind: "waiting", runId: retryId });
+    h.files[`workspace/brief/${retryId}/status.json`] = notFound(retryId);
+    await h.tick();
+    expect(h.creator.dispatch).toHaveBeenCalledTimes(2);
+    expect(h.run.phase).toEqual({
+      kind: "failed",
+      runId: retryId,
+      message: "Your welcome brief is taking longer than expected.",
+      heal: "skill-not-found",
+    });
+    expect(JSON.stringify(h.run.phase)).not.toContain("No daily-brief skill");
+  });
+
+  it("a start timeout retries once by itself, then shows one plain line and nothing about the bot", async () => {
+    const h = harness();
+    await h.run.start();
+    await h.tick(BRIEF_START_TIMEOUT_MS + 1);
+    await vi.waitFor(() => expect(h.run.phase.kind).toBe("waiting"));
+    expect(h.creator.dispatch).toHaveBeenCalledTimes(2);
+    await h.tick(BRIEF_START_TIMEOUT_MS + 1);
+    expect(h.creator.dispatch).toHaveBeenCalledTimes(2);
+    expect(h.run.phase).toMatchObject({ kind: "failed", message: "Your brief is taking longer than expected.", heal: "start-timeout" });
+    expect(JSON.stringify(h.run.phase)).not.toMatch(/pickles|bot|check that it is running/i);
+    // Try again is a fresh start with its own automatic retry.
+    await h.run.start();
+    expect(h.creator.dispatch).toHaveBeenCalledTimes(3);
+  });
+
+  it("a run that started never takes the heal path", async () => {
+    const h = harness();
+    await h.run.start();
+    h.files[`workspace/brief/${RUN}/status.json`] = JSON.stringify({ run_id: RUN, state: "queued" });
+    await h.tick();
+    expect(h.run.phase.kind).toBe("running");
+    await h.tick(BRIEF_START_TIMEOUT_MS + 1);
+    expect(h.creator.dispatch).toHaveBeenCalledTimes(1);
   });
 
   it("ignores a second start while a run is in flight", async () => {

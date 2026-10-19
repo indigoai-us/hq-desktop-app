@@ -237,7 +237,7 @@ describe("BriefRunsPage", () => {
       q("brief-create")!.click();
       await settle();
       // No runs yet: the progress plays in the full-page sunrise.
-      expect(q("brief-dawn-step")?.textContent).toContain("waiting for it to start");
+      expect(q("brief-dawn-step")?.textContent).toContain("Getting your brief started");
       expect(q("brief-dawn")?.getAttribute("data-progress")).toBe("0.00");
       await vi.advanceTimersByTimeAsync(2_100);
       await settle();
@@ -273,7 +273,7 @@ describe("BriefRunsPage", () => {
     q("brief-create")!.click();
     // The first frame is the sunrise, painted before the bot check resolves.
     flushSync();
-    expect(q("brief-dawn-step")?.textContent).toContain("Waking your bot");
+    expect(q("brief-dawn-step")?.textContent).toContain("Getting your brief started…");
     await settle();
     const runId = (shared.phase as { runId: string }).runId;
     unmount(app!);
@@ -292,5 +292,78 @@ describe("BriefRunsPage", () => {
     expect(q("brief-create")).toBeNull();
     expect(creator.dispatch).toHaveBeenCalledTimes(1);
     shared.stop();
+  });
+
+  // The bot's own operator text (its name, "Check that it is running", the
+  // skill's skill_not_found sentence) never renders: the person sees one
+  // plain line and one action.
+  it("a run that never starts shows one plain line and Try again, never the raw operator text", async () => {
+    const bot = { name: "pickles", agentUid: "agt_1", runtime: "claude", displayName: "Jellybean" } as LocalBotRow;
+    const f: Record<string, string> = {};
+    const creator: BriefCreator = {
+      company: () => "indigo",
+      check: async () => ({ ok: true, bot }),
+      dispatch: vi.fn(async (_b, _body: string, key: string) => {
+        f[`workspace/brief/${key}/status.json`] = JSON.stringify({
+          run_id: key,
+          status: "failed",
+          error: "skill_not_found",
+          message: "No daily-brief skill is installed in this HQ. Check that Jellybean is running.",
+        });
+        return null;
+      }),
+      fix: vi.fn(async () => null),
+      notify: vi.fn(),
+    };
+    const timers: (() => void)[] = [];
+    let clock = new Date(2026, 9, 8, 9, 0, 0).getTime();
+    const shared = new BriefCreateRun({
+      creator,
+      read: async (p) => f[p] ?? null,
+      storage: null,
+      now: () => new Date(clock),
+      setTimer: (fn) => (timers.push(fn), timers.length),
+      clearTimer: () => {},
+      log: () => {},
+    });
+    render(f, { creator, run: shared });
+    await settle();
+    q("brief-create")!.click();
+    await settle();
+    expect(document.body.textContent).not.toMatch(/Jellybean|pickles|your bot/i);
+    for (let i = 0; i < 2; i++) {
+      clock += 2_000;
+      timers.shift()!();
+      await settle();
+    }
+    expect(creator.dispatch).toHaveBeenCalledTimes(2);
+    expect(q("brief-dawn")?.getAttribute("data-phase")).toBe("failed");
+    expect(q("brief-dawn-step")?.textContent?.trim()).toBe("Your brief is taking longer than expected.");
+    expect(q("brief-retry")?.textContent?.trim()).toBe("Try again");
+    expect(q("brief-dawn")?.querySelectorAll("button")).toHaveLength(1);
+    const text = document.body.textContent ?? "";
+    expect(text).not.toMatch(/Jellybean|pickles|skill_not_found|No daily-brief skill|check that|is running|your bot/i);
+    shared.stop();
+  });
+
+  it("a missing daily-brief skill never sends the job and shows the same line at once", async () => {
+    const bot = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
+    const creator: BriefCreator = {
+      company: () => "indigo",
+      check: async () => ({ ok: true, bot }),
+      skillInstalled: async () => false,
+      dispatch: vi.fn(async () => null),
+      fix: vi.fn(async () => null),
+      notify: vi.fn(),
+    };
+    render(files(), { creator });
+    await settle();
+    q("brief-create")!.click();
+    await settle();
+    expect(creator.dispatch).not.toHaveBeenCalled();
+    expect(q("brief-dawn-step")?.textContent?.trim()).toBe("Your brief is taking longer than expected.");
+    expect(q("brief-retry")?.textContent?.trim()).toBe("Try again");
+    expect(q("brief-dawn")?.querySelectorAll("button")).toHaveLength(1);
+    expect(document.body.textContent).not.toMatch(/pickles|bot|skill/i);
   });
 });
