@@ -74,7 +74,7 @@ test('Usage details opens Settings > Usage with the same numbers', async ({ page
   await expect(page.getByTestId('settings-nav-usage')).toHaveAttribute('aria-current', 'page');
   await expect(page.getByTestId('settings-usage-pane')).toHaveAttribute('data-state', 'ready', { timeout: 10_000 });
   await expect(page.getByTestId('usage-total')).toHaveText('$8.00');
-  await expect(page.getByTestId('usage-allowance-left')).toHaveText('$2.00 left');
+  await expect(page.getByTestId('usage-allowance-left')).toHaveText('$2.00 of free usage left');
   await expect(page.getByTestId('usage-projected')).toHaveText('$6.00');
   await expect(page.getByTestId('usage-spend-limit')).toHaveText('$100.00 a month (default)');
   await expect(page.getByTestId('usage-line')).toHaveCount(7);

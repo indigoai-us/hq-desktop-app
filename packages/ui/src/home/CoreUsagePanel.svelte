@@ -21,6 +21,7 @@
     type BillingPortalOutcome,
   } from "../account/billing-portal.js";
   import {
+    TRIAL_MINIMUM_NOTE,
     USAGE_REFRESH_MS,
     billingRole,
     cachedCoreUsage,
@@ -129,7 +130,8 @@
   });
 
   const paid = $derived(view.kind === "ready" && view.paid);
-  const billingLabel = $derived(paid ? "Manage billing" : "Set up billing");
+  const notice = $derived(view.kind === "ready" ? view.notice : null);
+  const billingLabel = $derived(paid ? "Manage billing" : (notice?.actionLabel ?? "Set up billing"));
   const hint = $derived(billingPortalHint(outcome, companyName));
   const mayBill = $derived(canSetUpBilling(role));
   const canBill = $derived(
@@ -197,13 +199,22 @@
     {/if}
   </div>
 
+  {#if notice}
+    <p
+      class="core-usage-notice"
+      role="status"
+      data-testid="core-usage-notice"
+      data-kind={notice.kind}
+    >{mayBill ? notice.text : notice.memberText}</p>
+  {/if}
+
   {#if view.kind === "no-usage"}
     <p class="core-usage-note" data-testid="core-usage-none">No usage for this company. It isn't connected to HQ cloud.</p>
   {:else if view.kind === "loading"}
     <p class="core-usage-note" role="status" data-testid="core-usage-loading">Loading usage…</p>
   {:else if view.kind === "owner-only"}
     {#if roleKind === "admin"}
-      <p class="core-usage-note" data-testid="core-usage-owner-only">Only a company owner can see usage. You can still set up billing.</p>
+      <p class="core-usage-note" data-testid="core-usage-owner-only">Only a company owner can see usage. If Set up billing doesn't open for you, ask an owner.</p>
     {:else if roleKind === "member"}
       <p class="core-usage-note" data-testid="core-usage-owner-only">Ask an owner or admin of {companyName} to set up billing. Only owners can see usage.</p>
     {:else}
@@ -265,6 +276,8 @@
     {/if}
     {#if usage.partial && usage.mode === "allowance"}
       <p class="core-usage-note small" data-testid="core-usage-partial">Some usage isn't reported yet, so this total can still go up.</p>
+    {:else if usage.partial && usage.mode === "trial" && usage.usedLine.startsWith("At least")}
+      <p class="core-usage-note small" data-testid="core-usage-partial">{TRIAL_MINIMUM_NOTE}</p>
     {/if}
   {/if}
 
@@ -345,6 +358,13 @@
 
   .core-usage-plan {
     flex: none;
+  }
+
+  .core-usage-notice {
+    margin: 0;
+    color: var(--t1);
+    font-size: 13px;
+    line-height: 1.35;
   }
 
   .core-usage-note {

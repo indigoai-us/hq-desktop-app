@@ -94,7 +94,7 @@ describe("UsageSettingsPane", () => {
       ["Agent run", "$0.05 per run", "48 runs", "$2.40"],
     ]);
     expect(text("usage-total")).toBe("$6.40");
-    expect(text("usage-allowance-left")).toBe("$3.60 left");
+    expect(text("usage-allowance-left")).toBe("$3.60 of free usage left");
     expect(text("usage-projected")).toBe("$2.20");
     expect(text("usage-spend-limit")).toBe("$100.00 a month (default)");
     expect(q("usage-trial")).toBeNull();
@@ -152,5 +152,17 @@ describe("UsageSettingsPane", () => {
   it("with no company says usage is per company", async () => {
     await render(source(), []);
     expect(q("usage-none")).not.toBeNull();
+  });
+
+  it("shows the pause reason on the Usage screen too", async () => {
+    await render(
+      source({
+        getBillingSummary: vi.fn(async () =>
+          ok({ pricingPlan: "usage-only", usageTrial: { status: "ended", allowanceCents: 1000, cardRequired: true, pauseReason: "usage_card_required", syncPaused: true } }),
+        ),
+      }),
+    );
+    expect(q("usage-notice")?.dataset.kind).toBe("paused-card-required");
+    expect(text("usage-notice")).toContain("Add a card to resume");
   });
 });

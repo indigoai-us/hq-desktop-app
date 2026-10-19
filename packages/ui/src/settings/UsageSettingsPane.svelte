@@ -171,6 +171,15 @@
       {/if}
     </div>
 
+    {#if view.notice}
+      <div class="set-row">
+        <div>
+          <div class="sn">{view.notice.kind.startsWith("paused") ? "Cloud sync is paused" : "Card needed"}</div>
+          <div class="sd" role="status" data-testid="usage-notice" data-kind={view.notice.kind}>{view.notice.text}</div>
+        </div>
+      </div>
+    {/if}
+
     {#if view.trial}
       <div class="set-row" data-testid="usage-trial">
         <div>
@@ -194,7 +203,7 @@
         <div class="sn">Included usage</div>
         <div class="sd">{formatUsd(view.allowanceCents)} of usage is included each month.</div>
       </div>
-      <span class="amount" data-testid="usage-allowance-left">{formatUsd(view.allowanceLeftCents)} left</span>
+      <span class="amount" data-testid="usage-allowance-left">{formatUsd(view.allowanceLeftCents)} of free usage left</span>
     </div>
 
     <div class="set-row column">

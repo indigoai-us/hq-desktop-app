@@ -8,6 +8,7 @@ import {
   billingIsSetUp,
   billingRole,
   cachedCoreUsage,
+  usageNoticeFromSummary,
   canReadBilling,
   canSetUpBilling,
   readCoreUsageWithRetry,
@@ -234,7 +235,8 @@ describe("plan and billing state", () => {
     expect(
       planLabelFromSummary({ pricingPlan: "usage-only", usageTrial: { status: "active", endsAt: "2026-10-17T00:00:00Z" } }, now),
     ).toBe("Usage plan");
-    expect(planLabelFromSummary({ pricingPlan: "current", plan: "team" })).toBe("Workforce plan");
+    // No leftover plan-tier names: a company not on usage pricing gets no label.
+    expect(planLabelFromSummary({ pricingPlan: "current", plan: "team" })).toBeNull();
     expect(planLabelFromSummary({ pricingPlan: "current" })).toBeNull();
   });
 
@@ -290,14 +292,14 @@ describe("readCoreUsage states", () => {
       getBillingSummary: async () => ok({ pricingPlan: "current", plan: "team" }),
       getUsageStatement: statement,
     }, "cmp_x", "Acme");
-    expect(view).toMatchObject({ kind: "ready", planLabel: "Workforce plan", paid: true, usage: null, usageUnavailable: false });
+    expect(view).toMatchObject({ kind: "ready", planLabel: null, paid: true, usage: null, usageUnavailable: false, notice: null });
     expect(statement).not.toHaveBeenCalled();
   });
 
   it("caches only ready views", () => {
     rememberCoreUsage("cmp_a", { kind: "unavailable", companyName: "A" });
     expect(cachedCoreUsage("cmp_a")).toBeNull();
-    const ready = { kind: "ready" as const, companyName: "A", planLabel: null, paid: false, usage: null, usageUnavailable: false };
+    const ready = { kind: "ready" as const, companyName: "A", planLabel: null, paid: false, usage: null, usageUnavailable: false, notice: null };
     rememberCoreUsage("cmp_a", ready);
     expect(cachedCoreUsage("cmp_a")).toEqual(ready);
   });
@@ -382,5 +384,114 @@ describe("quiet retries", () => {
     const forbidden = vi.fn(async () => fail("FORBIDDEN"));
     expect((await readCoreUsageWithRetry({ getBillingSummary: forbidden }, "c", "C", { delays: [1, 1], sleep })).kind).toBe("owner-only");
     expect(forbidden).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("trial usage minimum", () => {
+  const base = { endsAt: "2026-11-03T00:00:00Z", daysLeft: 16, capCents: 50000, usedCents: 12000 };
+
+  it("reads unknownMeters from the summary and says the figure is a minimum", () => {
+    const trial = runningTrialFromSummary(
+      { usageTrial: { status: "active", endsAt: "2026-11-03T00:00:00Z", capCents: 50000, usedCents: 12000, unknownMeters: ["storage_bytes"] } },
+      new Date("2026-10-18T12:00:00Z"),
+    );
+    expect(trial?.unknownMeters).toEqual(["storage_bytes"]);
+    const view = trialMeterView(trial!);
+    expect(view.usedLine).toBe("At least $120.00 of $500.00 trial usage");
+    expect(view.partial).toBe(true);
+  });
+
+  it("an empty unknownMeters list is an exact figure", () => {
+    const view = trialMeterView({ ...base, unknownMeters: [] });
+    expect(view.usedLine).toBe("$120.00 of $500.00 trial usage");
+    expect(view.partial).toBe(false);
+  });
+});
+
+describe("pause and card notices", () => {
+  const trial = (extra: Record<string, unknown>) => ({
+    pricingPlan: "usage-only",
+    usageTrial: { status: "active", endsAt: "2026-11-03T00:00:00Z", capCents: 50000, allowanceCents: 1000, ...extra },
+  });
+
+  it("no pause and no prompt is no notice", () => {
+    expect(usageNoticeFromSummary(trial({}))).toBeNull();
+    expect(usageNoticeFromSummary({ pricingPlan: "usage-only" })).toBeNull();
+  });
+
+  it("sync paused at the trial cap says why, when it resumes, and offers Add a card to resume", () => {
+    const n = usageNoticeFromSummary(trial({ syncPaused: true, pauseReason: "usage_trial_cap", capReached: true }))!;
+    expect(n.kind).toBe("paused-trial-cap");
+    expect(n.text).toBe(
+      "Cloud sync is paused: the trial's $500.00 of usage is used up. It resumes when the trial ends on Nov 3, or as soon as a card is added. Files on your computers are not affected.",
+    );
+    expect(n.actionLabel).toBe("Add a card to resume");
+    expect(n.memberText).toContain("Ask an owner or admin to add a card.");
+  });
+
+  it("sync paused for a card after the included usage says so and offers Add a card to resume", () => {
+    const n = usageNoticeFromSummary({
+      pricingPlan: "usage-only",
+      usageTrial: { status: "ended", allowanceCents: 1000, syncPaused: true, pauseReason: "usage_card_required", cardRequired: true },
+    })!;
+    expect(n.kind).toBe("paused-card-required");
+    expect(n.text).toBe(
+      "Cloud sync is paused: the $10.00 of usage included this month is used up. Add a card to resume. Files on your computers are not affected.",
+    );
+    expect(n.actionLabel).toBe("Add a card to resume");
+  });
+
+  it("cap reached without a pause (enforcement off) prompts for a card", () => {
+    const n = usageNoticeFromSummary(trial({ capReached: true, pauseReason: "usage_trial_cap", syncPaused: false }))!;
+    expect(n.kind).toBe("cap-reached");
+    expect(n.text).toBe("The trial's $500.00 of usage is used up. Add a card to keep syncing.");
+    expect(n.actionLabel).toBe("Add a card");
+  });
+
+  it("card required in the trial prompts for a card without saying sync is paused", () => {
+    const n = usageNoticeFromSummary(trial({ cardRequired: true }))!;
+    expect(n.kind).toBe("card-required");
+    expect(n.text).toBe("Usage passed the $10.00 of usage included this month. Add a card to keep syncing.");
+    expect(n.text).not.toContain("paused");
+  });
+
+  it("a missing amount is left out instead of guessed", () => {
+    const n = usageNoticeFromSummary({ pricingPlan: "usage-only", usageTrial: { status: "active", syncPaused: true, pauseReason: "usage_trial_cap" } })!;
+    expect(n.text).toContain("the trial's usage cap is used up");
+    expect(n.text).not.toMatch(/\$/);
+  });
+
+  it("readCoreUsage carries the notice on the ready view", async () => {
+    const view = await readCoreUsage(
+      { getBillingSummary: async () => ok(trial({ syncPaused: true, pauseReason: "usage_trial_cap", usedCents: 50000 })) },
+      "cmp_n",
+      "N",
+      () => new Date("2026-10-18T12:00:00Z"),
+    );
+    expect(view.kind === "ready" && view.notice?.kind).toBe("paused-trial-cap");
+  });
+});
+
+describe("retry cancellation", () => {
+  it("stops retrying once cancelled before the next try", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const getBillingSummary = vi.fn(async () => fail("http-500"));
+    let cancelled = false;
+    const sleep = vi.fn(async () => {
+      cancelled = true;
+    });
+    const view = await readCoreUsageWithRetry({ getBillingSummary }, "c", "C", { delays: [1000, 3000], sleep, cancelled: () => cancelled });
+    expect(getBillingSummary).toHaveBeenCalledTimes(1);
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(view.kind).toBe("unavailable");
+  });
+
+  it("does not even wait when already cancelled", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const getBillingSummary = vi.fn(async () => fail("http-500"));
+    const sleep = vi.fn(async () => {});
+    await readCoreUsageWithRetry({ getBillingSummary }, "c", "C", { delays: [1000], sleep, cancelled: () => true });
+    expect(sleep).not.toHaveBeenCalled();
+    expect(getBillingSummary).toHaveBeenCalledTimes(1);
   });
 });

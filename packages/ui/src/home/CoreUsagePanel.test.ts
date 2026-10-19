@@ -280,4 +280,100 @@ describe("CoreUsagePanel", () => {
     expect(src.getBillingSummary).toHaveBeenCalledTimes(2);
     expect(q("core-usage")?.dataset.state).toBe("ready");
   });
+
+  it("a paused trial shows the reason and Add a card to resume instead of a bare red bar", async () => {
+    const endsAt = new Date(Date.now() + 5.5 * DAY).toISOString();
+    const src = source({
+      getBillingSummary: vi.fn(async () =>
+        ok({
+          pricingPlan: "usage-only",
+          usageTrial: { status: "active", endsAt, capCents: 50000, usedCents: 50000, allowanceCents: 1000, capReached: true, pauseReason: "usage_trial_cap", syncPaused: true },
+        }),
+      ),
+    });
+    await render(src);
+    expect(q("core-usage-bar")?.dataset.tone).toBe("at");
+    expect(q("core-usage-notice")?.dataset.kind).toBe("paused-trial-cap");
+    expect(q("core-usage-notice")?.textContent).toMatch(/^Cloud sync is paused: the trial's \$500\.00 of usage is used up\./);
+    expect(q("core-usage-notice")?.getAttribute("role")).toBe("status");
+    expect(q("core-usage-billing")?.textContent).toContain("Add a card to resume");
+  });
+
+  it("a pause for a card after the included usage says so", async () => {
+    await render(
+      source({
+        getBillingSummary: vi.fn(async () =>
+          ok({ pricingPlan: "usage-only", usageTrial: { status: "ended", allowanceCents: 1000, cardRequired: true, pauseReason: "usage_card_required", syncPaused: true } }),
+        ),
+        getUsageStatement: vi.fn(async () => ok({ ...STATEMENT, usageCents: 1000 })),
+      }),
+    );
+    expect(q("core-usage-notice")?.dataset.kind).toBe("paused-card-required");
+    expect(q("core-usage-notice")?.textContent).toContain("Add a card to resume");
+    expect(q("core-usage-billing")?.textContent).toContain("Add a card to resume");
+  });
+
+  it("a card prompt that does not pause offers Add a card", async () => {
+    await render(
+      source({
+        getBillingSummary: vi.fn(async () => ok({ pricingPlan: "usage-only", usageTrial: { status: "ended", allowanceCents: 1000, cardRequired: true } })),
+      }),
+    );
+    expect(q("core-usage-notice")?.dataset.kind).toBe("card-required");
+    expect(q("core-usage-notice")?.textContent).not.toContain("paused");
+    expect(q("core-usage-billing")?.textContent).toContain("Add a card");
+  });
+
+  it("cap reached without a pause shows its own reason", async () => {
+    const endsAt = new Date(Date.now() + 5.5 * DAY).toISOString();
+    await render(
+      source({
+        getBillingSummary: vi.fn(async () =>
+          ok({ pricingPlan: "usage-only", usageTrial: { status: "active", endsAt, capCents: 50000, usedCents: 50000, capReached: true, syncPaused: false } }),
+        ),
+      }),
+    );
+    expect(q("core-usage-notice")?.dataset.kind).toBe("cap-reached");
+  });
+
+  it("an unpaused company shows no notice", async () => {
+    await render(source());
+    expect(q("core-usage-notice")).toBeNull();
+  });
+
+  it("marks trial usage as a minimum when some meters are unread", async () => {
+    const endsAt = new Date(Date.now() + 5.5 * DAY).toISOString();
+    await render(
+      source({
+        getBillingSummary: vi.fn(async () =>
+          ok({ pricingPlan: "usage-only", usageTrial: { status: "active", endsAt, capCents: 50000, usedCents: 1000, unknownMeters: ["storage_bytes"] } }),
+        ),
+      }),
+    );
+    expect(q("core-usage-used")?.textContent).toBe("At least $10.00 of $500.00 trial usage");
+    expect(q("core-usage-partial")).not.toBeNull();
+  });
+
+  it("an admin's note does not promise the billing button works", async () => {
+    await render(source(), vi.fn(), { role: "admin" });
+    expect(q("core-usage-owner-only")?.textContent).toBe("Only a company owner can see usage. If Set up billing doesn't open for you, ask an owner.");
+  });
+
+  it("a slow failing read that is unmounted mid-retry never updates the panel", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const src = source({ getBillingSummary: vi.fn(async () => fail("http-500")) });
+    host = document.createElement("div");
+    document.body.append(host);
+    component = mount(CoreUsagePanel, {
+      target: host,
+      props: { source: src as never, companyUid: "cmp_northwind", companyName: "Northwind", retryDelays: [20, 20] },
+    });
+    flushSync();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await unmount(component);
+    component = null;
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    // Unmount cancels the read: no retry runs after the first try.
+    expect(src.getBillingSummary).toHaveBeenCalledTimes(1);
+  });
 });

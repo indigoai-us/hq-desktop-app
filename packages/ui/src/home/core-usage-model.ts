@@ -101,6 +101,11 @@ export interface RunningTrial {
   daysLeft: number;
   capCents: number | null;
   usedCents: number | null;
+  /**
+   * Meters hq-pro could not read for `usedCents`; when any are listed the
+   * figure is a minimum (`usageTrial.unknownMeters`).
+   */
+  unknownMeters?: readonly string[];
 }
 
 /** Caller's billing role: owners read usage; owners and admins add the card. */
@@ -122,7 +127,28 @@ export type CoreUsageView =
       usage: UsageMeterView | null;
       /** True when the company is usage-priced but the statement read failed. */
       usageUnavailable: boolean;
+      /** Why sync is paused or a card is needed, from the summary; null when neither. */
+      notice: UsageNotice | null;
     };
+
+/**
+ * A pause or card prompt hq-pro reports on the billing summary
+ * (`usageTrial.syncPaused`, `pauseReason`, `capReached`, `cardRequired`).
+ * `paused-*`: cloud sync is paused now. `cap-reached` / `card-required`:
+ * the rule is met but nothing is paused (enforcement off, or the trial's
+ * card prompt that never pauses).
+ */
+export type UsageNoticeKind = "paused-trial-cap" | "paused-card-required" | "cap-reached" | "card-required";
+
+export interface UsageNotice {
+  kind: UsageNoticeKind;
+  /** One plain sentence: what happened and what it means. */
+  text: string;
+  /** Label for the owner/admin billing button in this state. */
+  actionLabel: string;
+  /** What a member who can't add the card is told. */
+  memberText: string;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -270,7 +296,10 @@ export const TRIAL_ROWS_NOTE = "Costs by meter start when the trial ends.";
  * (`usageTrial.usedCents`, from the same daily rollup); the month statement
  * leaves trial days out, so there are no per-group rows to show yet.
  */
+export const TRIAL_MINIMUM_NOTE = "Some meters aren't counted yet, so trial usage can still go up.";
+
 export function trialMeterView(trial: RunningTrial): UsageMeterView {
+  const minimum = (trial.unknownMeters?.length ?? 0) > 0;
   const ends = new Date(trial.endsAt);
   const resetText = Number.isNaN(ends.getTime()) ? null : `Trial ends ${shortDate(ends)}`;
   if (trial.usedCents === null || trial.capCents === null) {
@@ -286,14 +315,16 @@ export function trialMeterView(trial: RunningTrial): UsageMeterView {
       rowsNote: TRIAL_ROWS_NOTE,
     };
   }
+  const line = `${formatUsd(trial.usedCents)} of ${formatUsd(trial.capCents)} trial usage`;
   return {
     mode: "trial",
     fill: fillOf(trial.usedCents, trial.capCents),
     tone: barTone(trial.usedCents, trial.capCents),
     over: trial.usedCents >= trial.capCents,
-    usedLine: `${formatUsd(trial.usedCents)} of ${formatUsd(trial.capCents)} trial usage`,
+    // With unread meters the figure is a floor, the same "At least" rule as the month view.
+    usedLine: minimum ? `At least ${line}` : line,
     resetLine: resetText,
-    partial: false,
+    partial: minimum,
     rows: [],
     rowsNote: TRIAL_ROWS_NOTE,
   };
@@ -316,12 +347,74 @@ export function runningTrialFromSummary(summary: unknown, now: Date = new Date()
   if (trial.status !== "active" || !endsAt) return null;
   const daysLeft = trialDaysLeft(endsAt, now);
   if (daysLeft <= 0) return null;
+  const unknownMeters = Array.isArray(trial.unknownMeters)
+    ? trial.unknownMeters.filter((m): m is string => typeof m === "string" && m.length > 0)
+    : [];
   return {
     endsAt,
     daysLeft,
     capCents: finite(trial.capCents),
     usedCents: finite(trial.usedCents),
+    ...(unknownMeters.length > 0 ? { unknownMeters } : {}),
   };
+}
+
+function longDate(iso: string): string | null {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime())
+    ? null
+    : date.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+}
+
+/**
+ * The pause or card prompt on a billing summary, in plain words, with the
+ * action for each state. A pause outranks a prompt; the trial cap outranks
+ * the card rule. Amounts come from the summary (`capCents`,
+ * `allowanceCents`); a missing amount drops it from the sentence rather
+ * than guessing one.
+ */
+export function usageNoticeFromSummary(summary: unknown): UsageNotice | null {
+  if (!isRecord(summary) || !isRecord(summary.usageTrial)) return null;
+  const t = summary.usageTrial;
+  const cap = finite(t.capCents);
+  const allowance = finite(t.allowanceCents);
+  const ends = str(t.endsAt) ? longDate(str(t.endsAt)!) : null;
+  const capText = cap !== null ? `the trial's ${formatUsd(cap)} of usage` : "the trial's usage cap";
+  const allowanceText = allowance !== null ? `the ${formatUsd(allowance)} of usage included this month` : "this month's included usage";
+  const memberAsk = "Ask an owner or admin to add a card.";
+  if (t.syncPaused === true && t.pauseReason === "usage_trial_cap") {
+    return {
+      kind: "paused-trial-cap",
+      text: `Cloud sync is paused: ${capText} is used up.${ends ? ` It resumes when the trial ends on ${ends}, or` : " It resumes"} as soon as a card is added. Files on your computers are not affected.`,
+      actionLabel: "Add a card to resume",
+      memberText: `Cloud sync is paused: ${capText} is used up. ${memberAsk}`,
+    };
+  }
+  if (t.syncPaused === true && t.pauseReason === "usage_card_required") {
+    return {
+      kind: "paused-card-required",
+      text: `Cloud sync is paused: ${allowanceText} is used up. Add a card to resume. Files on your computers are not affected.`,
+      actionLabel: "Add a card to resume",
+      memberText: `Cloud sync is paused: ${allowanceText} is used up. ${memberAsk}`,
+    };
+  }
+  if (t.capReached === true) {
+    return {
+      kind: "cap-reached",
+      text: `${capText.charAt(0).toUpperCase()}${capText.slice(1)} is used up. Add a card to keep syncing.`,
+      actionLabel: "Add a card",
+      memberText: `${capText.charAt(0).toUpperCase()}${capText.slice(1)} is used up. ${memberAsk}`,
+    };
+  }
+  if (t.cardRequired === true) {
+    return {
+      kind: "card-required",
+      text: `Usage passed ${allowanceText}. Add a card to keep syncing.`,
+      actionLabel: "Add a card",
+      memberText: `Usage passed ${allowanceText}. ${memberAsk}`,
+    };
+  }
+  return null;
 }
 
 /** "Trial, 1 day left" / "Trial, 12 days left". */
@@ -340,7 +433,6 @@ export function planLabelFromSummary(summary: unknown, now: Date = new Date()): 
     const trial = runningTrialFromSummary(summary, now);
     return trial ? trialPlanLabel(trial.daysLeft) : "Usage plan";
   }
-  if (summary.plan === "team") return "Workforce plan";
   return null;
 }
 
@@ -392,6 +484,7 @@ export async function readCoreUsage(
     companyName,
     planLabel: planLabelFromSummary(summary.value, at),
     paid: billingIsSetUp(summary.value),
+    notice: isUsageOnlySummary(summary.value) ? usageNoticeFromSummary(summary.value) : null,
   };
   if (!isUsageOnlySummary(summary.value)) return { ...base, usage: null, usageUnavailable: false };
   const trial = runningTrialFromSummary(summary.value, at);

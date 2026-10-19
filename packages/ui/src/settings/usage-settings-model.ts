@@ -28,7 +28,9 @@ import {
   isForbidden,
   planLabelFromSummary,
   runningTrialFromSummary,
+  usageNoticeFromSummary,
   type RunningTrial,
+  type UsageNotice,
 } from "../home/core-usage-model.js";
 
 export type UsageDetailLineStatus = "measured" | "partial" | "unavailable" | "not-billed-yet";
@@ -72,6 +74,8 @@ export interface UsageDetailsReady {
   spendLimit: SpendLimitDetail | null;
   /** "Deploys, DMs and background AI are free." from the statement; null when absent. */
   freeText: string | null;
+  /** Sync pause or card prompt from the summary, the same as the Core menu. */
+  notice: UsageNotice | null;
 }
 
 export type UsageDetailsView =
@@ -229,6 +233,7 @@ export async function readUsageDetails(
     lines: detailLines(Array.isArray(body.lines) ? body.lines : [], feed),
     spendLimit: spend?.ok ? spendLimitFromBody(spend.value) : null,
     freeText: freeTextFromStatement(body),
+    notice: usageNoticeFromSummary(summary.value),
   };
 }
 
