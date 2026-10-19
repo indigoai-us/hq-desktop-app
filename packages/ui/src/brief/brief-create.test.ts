@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { LocalBotRow } from "@hq/platform";
 import { ACTIVE_RUN_KEY, BriefCreateRun, type BriefCreator } from "./brief-create.svelte.js";
-import { BRIEF_BOT_FAILURE_POLL_MS, BRIEF_DISPATCH_TIMEOUT_MESSAGE, BRIEF_DISPATCH_TIMEOUT_MS, BRIEF_POLL_MS, BRIEF_STALL_GRACE_MS, BRIEF_START_TIMEOUT_MS, BRIEF_TRY_AGAIN_WAIT_MS, BRIEF_WATCH_POLL_MS } from "./brief-runs.js";
+import { BRIEF_BOT_FAILURE_POLL_MS, BRIEF_DISPATCH_TIMEOUT_MS, BRIEF_POLL_MS, BRIEF_STALL_GRACE_MS, BRIEF_START_TIMEOUT_MS, BRIEF_TRY_AGAIN_WAIT_MS, BRIEF_WATCH_POLL_MS } from "./brief-runs.js";
 
 const BOT = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
 const RUN = "brief-20261008-090000";
+// A dispatch deadline shows the same plain slow-start line as a run that never started.
+const DEADLINE = { kind: "failed", runId: null, message: "Your brief is taking longer than expected.", heal: "dispatch-timeout" };
 
 function harness(over: Partial<BriefCreator> = {}, files: Record<string, string> = {}) {
   let clock = new Date(2026, 9, 8, 9, 0, 0).getTime();
@@ -469,7 +471,7 @@ describe("BriefCreateRun", () => {
     expect(h.run.phase).toMatchObject({ kind: "waiting", runId: second });
   });
 
-  it("a bot check that never answers ends the starting line with a plain message after the deadline", async () => {
+  it("a bot check that never answers ends the starting line with the plain slow-start line after the deadline", async () => {
     // Owner report, 2026-10-16: the page sat on "Waking your bot…" with no way out.
     const h = harness({ check: vi.fn(() => new Promise<never>(() => {})) });
     const started = h.run.start();
@@ -478,7 +480,7 @@ describe("BriefCreateRun", () => {
     expect(h.deadlines).toHaveLength(1);
     h.deadlines[0]!();
     await started;
-    expect(h.run.phase).toEqual({ kind: "failed", runId: null, message: BRIEF_DISPATCH_TIMEOUT_MESSAGE });
+    expect(h.run.phase).toEqual(DEADLINE);
     expect(h.run.busy).toBe(false);
     expect(h.creator.dispatch).not.toHaveBeenCalled();
     expect(h.onfinish).toHaveBeenCalledTimes(1);
@@ -492,11 +494,11 @@ describe("BriefCreateRun", () => {
     await Promise.resolve();
     h.deadlines[0]!();
     await started;
-    expect(h.run.phase).toEqual({ kind: "failed", runId: null, message: BRIEF_DISPATCH_TIMEOUT_MESSAGE });
+    expect(h.run.phase).toEqual(DEADLINE);
     answer(null);
     await Promise.resolve();
     await Promise.resolve();
-    expect(h.run.phase).toEqual({ kind: "failed", runId: null, message: BRIEF_DISPATCH_TIMEOUT_MESSAGE });
+    expect(h.run.phase).toEqual(DEADLINE);
     expect(h.timers).toHaveLength(0);
   });
 
@@ -542,18 +544,68 @@ describe("BriefCreateRun", () => {
     expect(botFailure).toHaveBeenCalledTimes(asked);
   });
 
-  it("a dispatch deadline that ends the run during the skill or company check sends no job afterwards", async () => {
+  it("a dispatch deadline that ends the run during the skill check runs no later check and sends no job", async () => {
     let installed: (v: boolean) => void = () => {};
-    const h = harness({ skillInstalled: vi.fn(() => new Promise<boolean>((r) => (installed = r))) });
+    const h = harness({ skillInstalled: vi.fn(() => new Promise<boolean>((r) => (installed = r))), hasCompanies: vi.fn(async () => true) });
     const started = h.run.start();
-    await Promise.resolve();
-    await Promise.resolve();
+    await vi.waitFor(() => expect(h.creator.skillInstalled).toHaveBeenCalledTimes(1));
     h.deadlines[0]!();
-    await vi.waitFor(() => expect(h.run.phase).toEqual({ kind: "failed", runId: null, message: BRIEF_DISPATCH_TIMEOUT_MESSAGE }));
+    await vi.waitFor(() => expect(h.run.phase).toEqual(DEADLINE));
     installed(true);
     await started;
     await Promise.resolve();
+    expect(h.creator.hasCompanies).not.toHaveBeenCalled();
     expect(h.creator.dispatch).not.toHaveBeenCalled();
-    expect(h.run.phase).toEqual({ kind: "failed", runId: null, message: BRIEF_DISPATCH_TIMEOUT_MESSAGE });
+    expect(h.run.phase).toEqual(DEADLINE);
+  });
+
+  it("a missing skill reported after the dispatch deadline starts no automatic retry", async () => {
+    let installed: (v: boolean) => void = () => {};
+    const h = harness({ skillInstalled: vi.fn(() => new Promise<boolean>((r) => (installed = r))) });
+    const started = h.run.start();
+    await vi.waitFor(() => expect(h.creator.skillInstalled).toHaveBeenCalledTimes(1));
+    h.deadlines[0]!();
+    await vi.waitFor(() => expect(h.run.phase).toEqual(DEADLINE));
+    installed(false);
+    await started;
+    await Promise.resolve();
+    expect(h.creator.skillInstalled).toHaveBeenCalledTimes(1);
+    expect(h.deadlines).toHaveLength(1);
+    expect(h.run.phase).toEqual(DEADLINE);
+  });
+
+  it("a dispatch deadline that ends the run during the company check sends no job afterwards", async () => {
+    let companies: (v: boolean) => void = () => {};
+    const h = harness({ skillInstalled: vi.fn(async () => true), hasCompanies: vi.fn(() => new Promise<boolean>((r) => (companies = r))) });
+    const started = h.run.start();
+    await vi.waitFor(() => expect(h.creator.hasCompanies).toHaveBeenCalledTimes(1));
+    h.deadlines[0]!();
+    await vi.waitFor(() => expect(h.run.phase).toEqual(DEADLINE));
+    companies(true);
+    await started;
+    await Promise.resolve();
+    expect(h.creator.dispatch).not.toHaveBeenCalled();
+    expect(h.run.phase).toEqual(DEADLINE);
+  });
+
+  it("a welcome brief that hits the dispatch deadline shows the welcome slow-start line, never bot text, and Try again sends a new job", async () => {
+    let answer: (v: { ok: true; bot: LocalBotRow }) => void = () => {};
+    const check = vi.fn().mockImplementationOnce(() => new Promise((r) => (answer = r))).mockResolvedValue({ ok: true as const, bot: BOT });
+    const h = harness({ check });
+    const started = h.run.start({ label: "welcome brief" });
+    h.deadlines[0]!();
+    await started;
+    expect(h.run.phase).toEqual({ ...DEADLINE, message: "Your welcome brief is taking longer than expected." });
+    expect(JSON.stringify(h.run.phase)).not.toMatch(/bot|is running|check that/i);
+    // The detail goes to the log only.
+    expect(h.logs.some((m) => m.includes("did not answer"))).toBe(true);
+    // A late answer does not revive the run.
+    answer({ ok: true, bot: BOT });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(h.creator.dispatch).not.toHaveBeenCalled();
+    await h.run.start();
+    expect(h.creator.dispatch).toHaveBeenCalledTimes(1);
+    expect(h.run.phase).toMatchObject({ kind: "waiting" });
   });
 });

@@ -10,7 +10,6 @@ import {
   briefBotLabel,
   BRIEF_LIVENESS_FILES,
   BRIEF_BOT_FAILURE_POLL_MS,
-  BRIEF_DISPATCH_TIMEOUT_MESSAGE,
   BRIEF_DISPATCH_TIMEOUT_MS,
   BRIEF_POLL_MS,
   BRIEF_QUIET_MS,
@@ -185,7 +184,8 @@ export class BriefCreateRun {
 
   /**
    * `dispatch`, bounded: a bot check or send that never answers ends the run
-   * with a plain message instead of leaving the starting line up for good.
+   * with the slow-start line and Try again instead of leaving the starting
+   * line up for good.
    */
   private async dispatchWithin(runId: string): Promise<void> {
     let timer: unknown = null;
@@ -196,7 +196,7 @@ export class BriefCreateRun {
     if (timer != null) (this.deps.clearDeadline ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>)))(timer);
     if (outcome === "timeout" && !this.stopped && this.phase.kind === "dispatching" && this.phase.runId === runId) {
       this.log("bot check or send did not answer", `${BRIEF_DISPATCH_TIMEOUT_MS} ms`);
-      this.finish({ kind: "failed", runId: null, message: BRIEF_DISPATCH_TIMEOUT_MESSAGE });
+      await this.heal(null, "dispatch-timeout");
     }
   }
 

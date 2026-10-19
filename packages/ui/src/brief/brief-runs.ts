@@ -385,8 +385,10 @@ export type BriefCreatePhase =
        * start-timeout: no status in time; HQ keeps watching the same run and sends no second job.
        * skill-not-found: no daily-brief skill; HQ sends one fresh job by itself first.
        * hq-folder: the HQ folder could not be read, so nothing was sent.
+       * dispatch-timeout: the bot check or send did not answer within
+       * BRIEF_DISPATCH_TIMEOUT_MS; nothing more is sent until Try again.
        */
-      heal?: "start-timeout" | "skill-not-found" | "hq-folder";
+      heal?: "start-timeout" | "skill-not-found" | "hq-folder" | "dispatch-timeout";
     };
 
 /**
@@ -417,11 +419,11 @@ const STALL_MESSAGE = "Your brief has not reported progress in a while. HQ is st
 export const BRIEF_POLL_MS = 2_000;
 /**
  * Checking the bot and sending the job must finish within this. A bot list
- * or send that never answers otherwise leaves "Waking your bot…" on screen
- * for good (owner report, 2026-10-16).
+ * or send that never answers otherwise leaves the starting line on screen
+ * for good (owner report, 2026-10-16). The person sees the slow-start line;
+ * the detail goes to the log only.
  */
 export const BRIEF_DISPATCH_TIMEOUT_MS = 60_000;
-export const BRIEF_DISPATCH_TIMEOUT_MESSAGE = "Your bot did not answer. Check that it is running, then try again.";
 /** How often a sent run asks the bot's conversation whether its turn failed. */
 export const BRIEF_BOT_FAILURE_POLL_MS = 10_000;
 

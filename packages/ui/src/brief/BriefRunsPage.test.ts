@@ -438,6 +438,44 @@ describe("BriefRunsPage", () => {
     shared.stop();
   });
 
+  it("a bot check that never answers shows the plain slow-start line and Try again after the deadline, never bot text", async () => {
+    const creator: BriefCreator = {
+      company: () => "indigo",
+      check: () => new Promise<never>(() => {}),
+      dispatch: vi.fn(async () => null),
+      fix: vi.fn(async () => null),
+      notify: vi.fn(),
+    };
+    const deadlines: (() => void)[] = [];
+    const logs: string[] = [];
+    const shared = new BriefCreateRun({
+      creator,
+      read: async () => null,
+      storage: null,
+      now: () => new Date(2026, 9, 8, 9, 0, 0),
+      setTimer: () => 0,
+      clearTimer: () => {},
+      setDeadline: (fn) => (deadlines.push(fn), deadlines.length),
+      clearDeadline: () => {},
+      log: (m) => void logs.push(m),
+    });
+    render({}, { creator, run: shared });
+    await settle();
+    q("brief-create")!.click();
+    await settle();
+    expect(deadlines).toHaveLength(1);
+    deadlines[0]!();
+    await settle();
+    expect(creator.dispatch).not.toHaveBeenCalled();
+    expect(q("brief-dawn")?.getAttribute("data-phase")).toBe("failed");
+    expect(q("brief-dawn-step")?.textContent?.trim()).toBe("Your brief is taking longer than expected.");
+    expect(q("brief-retry")?.textContent?.trim()).toBe("Try again");
+    expect(q("brief-dawn")?.querySelectorAll("button")).toHaveLength(1);
+    expect(document.body.textContent ?? "").not.toMatch(/bot|is running|check that/i);
+    expect(logs.some((m) => m.includes("did not answer"))).toBe(true);
+    shared.stop();
+  });
+
   it("a missing daily-brief skill never sends the job and shows the same line at once", async () => {
     const bot = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
     const creator: BriefCreator = {
