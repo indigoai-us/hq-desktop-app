@@ -321,19 +321,50 @@ pub async fn fetch_and_open(app: AppHandle, placeholder: PathBuf) -> Result<Path
 /// or for every vault.
 pub const CLOUD_OFF_CODE: &str = "cloud-off";
 
-/// Whether the vault holding `placeholder` may download. A placeholder outside
-/// `hq_root` belongs to no known vault, so only the all-off switch applies.
+/// Whether the vault holding `placeholder` may download.
+///
+/// The placeholder is matched against `hq_root` as given, then with both
+/// paths canonicalized (symlinks, `..`, and on Windows the `\\?\` and
+/// drive-letter case differences). A placeholder that still cannot be placed
+/// under the HQ folder belongs to no known vault: it may download only while
+/// every vault is on (fail closed).
 fn placeholder_vault_may_sync(hq_root: &Path, placeholder: &Path) -> bool {
-    use hq_desktop_core::vault_sync::{vault_for_hq_relative_path, VaultSyncSwitches};
-    let switches = VaultSyncSwitches::read();
+    use hq_desktop_core::vault_sync::VaultSyncSwitches;
+    placeholder_vault_may_sync_with(&VaultSyncSwitches::read(), hq_root, placeholder)
+}
+
+fn placeholder_vault_may_sync_with(
+    switches: &hq_desktop_core::vault_sync::VaultSyncSwitches,
+    hq_root: &Path,
+    placeholder: &Path,
+) -> bool {
+    use hq_desktop_core::vault_sync::vault_for_hq_relative_path;
     if switches.all_off {
         return false;
     }
-    placeholder
-        .strip_prefix(hq_root)
+    match placeholder_relative_path(hq_root, placeholder) {
+        Some(rel) => switches.allows(&vault_for_hq_relative_path(&rel)),
+        None => !switches.any_off(),
+    }
+}
+
+/// `placeholder` relative to `hq_root`, or None when it is not under it.
+fn placeholder_relative_path(hq_root: &Path, placeholder: &Path) -> Option<String> {
+    if let Ok(rel) = placeholder.strip_prefix(hq_root) {
+        return Some(rel.to_string_lossy().into_owned());
+    }
+    let root = std::fs::canonicalize(hq_root).ok()?;
+    // The placeholder may be gone after a fetch; canonicalize its folder.
+    let canonical = match std::fs::canonicalize(placeholder) {
+        Ok(path) => path,
+        Err(_) => std::fs::canonicalize(placeholder.parent()?)
+            .ok()?
+            .join(placeholder.file_name()?),
+    };
+    canonical
+        .strip_prefix(&root)
         .ok()
-        .map(|rel| vault_for_hq_relative_path(&rel.to_string_lossy()))
-        .map_or(true, |vault| switches.allows(&vault))
+        .map(|rel| rel.to_string_lossy().into_owned())
 }
 
 pub fn spawn_fetch_and_open(app: &AppHandle, placeholder: PathBuf) {
@@ -364,6 +395,57 @@ pub fn cloud_file_ui_ready() -> Vec<CloudFileEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn switches_with_acme_off() -> hq_desktop_core::vault_sync::VaultSyncSwitches {
+        hq_desktop_core::vault_sync::VaultSyncSwitches {
+            all_off: false,
+            personal_enabled: true,
+            companies: [("acme".to_string(), false)].into_iter().collect(),
+        }
+    }
+
+    /// Review: a root spelled differently from the placeholder path (a
+    /// symlinked HQ folder here; `\\?\` or drive-letter case on Windows) must
+    /// still map the placeholder to its vault.
+    #[cfg(unix)]
+    #[test]
+    fn placeholder_under_a_differently_spelled_root_still_maps_to_its_vault() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real = tmp.path().join("real-hq");
+        std::fs::create_dir_all(real.join("companies/acme")).unwrap();
+        std::fs::create_dir_all(real.join("companies/zeta")).unwrap();
+        let link = tmp.path().join("linked-hq");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let off = switches_with_acme_off();
+        let acme = real.join("companies/acme/big.mov.hqcloud");
+        let zeta = real.join("companies/zeta/big.mov.hqcloud");
+        std::fs::write(&acme, "").unwrap();
+        std::fs::write(&zeta, "").unwrap();
+        assert!(!placeholder_vault_may_sync_with(&off, &link, &acme));
+        assert!(placeholder_vault_may_sync_with(&off, &link, &zeta));
+        // A placeholder already removed by a fetch still maps by its folder.
+        let gone = real.join("companies/acme/gone.hqcloud");
+        assert!(!placeholder_vault_may_sync_with(&off, &link, &gone));
+    }
+
+    #[test]
+    fn a_placeholder_outside_the_hq_folder_fails_closed_while_any_vault_is_off() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let hq = tmp.path().join("HQ");
+        std::fs::create_dir_all(&hq).unwrap();
+        let outside = tmp.path().join("elsewhere/big.mov.hqcloud");
+        assert!(!placeholder_vault_may_sync_with(
+            &switches_with_acme_off(),
+            &hq,
+            &outside
+        ));
+        let all_on = hq_desktop_core::vault_sync::VaultSyncSwitches {
+            all_off: false,
+            personal_enabled: true,
+            companies: Default::default(),
+        };
+        assert!(placeholder_vault_may_sync_with(&all_on, &hq, &outside));
+    }
 
     #[cfg(unix)]
     const PH: &str = "/Users/me/HQ/companies/acme/media/promo.mp4.hqcloud";

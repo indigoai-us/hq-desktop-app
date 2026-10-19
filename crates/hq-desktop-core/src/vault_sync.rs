@@ -50,6 +50,11 @@ impl VaultSyncSwitches {
         }
     }
 
+    /// True when at least one vault (or every vault) is switched off.
+    pub fn any_off(&self) -> bool {
+        self.all_off || !self.personal_enabled || self.companies.values().any(|on| !*on)
+    }
+
     /// Whether `vault` may upload or download right now.
     pub fn allows(&self, vault: &SyncVault) -> bool {
         if self.all_off {
@@ -133,9 +138,181 @@ pub fn vault_for_hq_relative_path(relative: &str) -> SyncVault {
     }
 }
 
+/// Why "Move to cloud" refuses while any vault is off. `hq storage offload`
+/// has no per-vault scope, and a file moved out of an off vault could not be
+/// opened again (the placeholder fetch refuses for an off vault).
+pub const OFFLOAD_VAULT_OFF_MESSAGE: &str = "Move to cloud is not available while sync is off for one or more vaults on this computer, because files moved from an off vault could not be opened again until it syncs. Turn those vaults back on in Settings › Sync first.";
+
+/// `Err` when "Move to cloud" must not run: all sync off, or any vault off.
+pub fn ensure_offload_allowed() -> Result<(), String> {
+    offload_refusal(&VaultSyncSwitches::read()).map_or(Ok(()), Err)
+}
+
+/// The "Move to cloud" refusal for `switches`, or None when it may run.
+pub fn offload_refusal(switches: &VaultSyncSwitches) -> Option<String> {
+    if switches.all_off {
+        Some(crate::daemon::CLOUD_PAUSED_MESSAGE.to_string())
+    } else if switches.any_off() {
+        Some(OFFLOAD_VAULT_OFF_MESSAGE.to_string())
+    } else {
+        None
+    }
+}
+
+// ── HQ CLI support for the switches ───────────────────────────────────────
+//
+// The app runs a managed HQ CLI. CLIs before hq-cli#1862 ignore the per-vault
+// switches: their `hq sync` (used by /handoff, /startwork, /delegate) and
+// their `hq daemon` background sync keep syncing a vault that Settings shows
+// as off. There is no version number to compare against until #1862 ships, so
+// the app checks for the module that release adds.
+
+/// File present in every hq-cli release that honours the switches.
+pub const CLI_VAULT_SWITCH_MODULE: &str = "dist/lib/vault-sync-switches.js";
+
+const CLI_PACKAGE: &str = "@indigoai-us/hq-cli";
+
+fn is_cli_package_dir(dir: &std::path::Path) -> bool {
+    std::fs::read_to_string(dir.join("package.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|pkg| {
+            pkg.get("name")
+                .and_then(|n| n.as_str())
+                .map(|n| n == CLI_PACKAGE)
+        })
+        .unwrap_or(false)
+}
+
+/// The hq-cli package directory behind an `hq` executable: the package the
+/// symlinked bin points into, or the npm-global layout next to a Windows
+/// `.cmd` shim. None when it cannot be found.
+pub fn cli_package_dir_for_bin(bin: &std::path::Path) -> Option<std::path::PathBuf> {
+    let real = std::fs::canonicalize(bin).unwrap_or_else(|_| bin.to_path_buf());
+    for dir in real.ancestors().skip(1).take(6) {
+        if is_cli_package_dir(dir) {
+            return Some(dir.to_path_buf());
+        }
+    }
+    let bin_dir = bin.parent()?;
+    for candidate in [
+        bin_dir.join("node_modules").join(CLI_PACKAGE),
+        bin_dir
+            .join("..")
+            .join("lib")
+            .join("node_modules")
+            .join(CLI_PACKAGE),
+    ] {
+        if is_cli_package_dir(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Whether the hq-cli package at `package_dir` honours the switches.
+pub fn cli_package_honours_vault_switches(package_dir: &std::path::Path) -> bool {
+    package_dir.join(CLI_VAULT_SWITCH_MODULE).is_file()
+}
+
+/// Whether the HQ CLI this app runs honours the per-vault switches. None when
+/// it cannot tell (no local CLI, or the npx fallback). May probe the CLI the
+/// first time; call it off the main thread.
+pub fn cli_honours_vault_switches() -> Option<bool> {
+    match crate::hq_resolver::resolve_hq() {
+        crate::hq_resolver::HqInvocation::Local(path) => {
+            cli_package_dir_for_bin(std::path::Path::new(&path))
+                .map(|dir| cli_package_honours_vault_switches(&dir))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fake_cli(root: &std::path::Path, with_module: bool) -> std::path::PathBuf {
+        let pkg = root.join("lib/node_modules/@indigoai-us/hq-cli");
+        std::fs::create_dir_all(pkg.join("dist/lib")).unwrap();
+        std::fs::write(
+            pkg.join("package.json"),
+            r#"{"name":"@indigoai-us/hq-cli"}"#,
+        )
+        .unwrap();
+        std::fs::write(pkg.join("dist/index.js"), "").unwrap();
+        if with_module {
+            std::fs::write(pkg.join(CLI_VAULT_SWITCH_MODULE), "").unwrap();
+        }
+        pkg
+    }
+
+    #[test]
+    fn finds_the_cli_package_behind_a_symlinked_bin_and_checks_the_module() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pkg = fake_cli(tmp.path(), true);
+        std::fs::create_dir_all(tmp.path().join("bin")).unwrap();
+        let bin = tmp.path().join("bin/hq");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(pkg.join("dist/index.js"), &bin).unwrap();
+        #[cfg(not(unix))]
+        std::fs::write(&bin, "").unwrap();
+        let dir = cli_package_dir_for_bin(&bin).expect("package dir");
+        assert!(cli_package_honours_vault_switches(&dir));
+    }
+
+    #[test]
+    fn an_older_cli_without_the_module_does_not_honour_the_switches() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pkg = fake_cli(tmp.path(), false);
+        assert!(!cli_package_honours_vault_switches(&pkg));
+        // npm-global layout next to a shim: <prefix>/bin/hq -> ../lib/node_modules/...
+        std::fs::create_dir_all(tmp.path().join("bin")).unwrap();
+        let shim = tmp.path().join("bin/hq.cmd");
+        std::fs::write(&shim, "").unwrap();
+        let dir = cli_package_dir_for_bin(&shim).expect("package dir via npm layout");
+        assert!(!cli_package_honours_vault_switches(&dir));
+    }
+
+    #[test]
+    fn move_to_cloud_refuses_while_any_vault_is_off() {
+        let mut s = VaultSyncSwitches {
+            all_off: false,
+            personal_enabled: true,
+            companies: BTreeMap::new(),
+        };
+        assert_eq!(offload_refusal(&s), None);
+        s.companies.insert("acme".into(), false);
+        assert_eq!(
+            offload_refusal(&s).as_deref(),
+            Some(OFFLOAD_VAULT_OFF_MESSAGE)
+        );
+        s.companies.insert("acme".into(), true);
+        s.personal_enabled = false;
+        assert_eq!(
+            offload_refusal(&s).as_deref(),
+            Some(OFFLOAD_VAULT_OFF_MESSAGE)
+        );
+        s.all_off = true;
+        assert_eq!(
+            offload_refusal(&s).as_deref(),
+            Some(crate::daemon::CLOUD_PAUSED_MESSAGE)
+        );
+    }
+
+    #[test]
+    fn any_off_reports_whether_a_switch_is_off() {
+        let mut s = VaultSyncSwitches {
+            all_off: false,
+            personal_enabled: true,
+            companies: BTreeMap::new(),
+        };
+        assert!(!s.any_off());
+        s.companies.insert("acme".into(), true);
+        assert!(!s.any_off());
+        s.companies.insert("zeta".into(), false);
+        assert!(s.any_off());
+    }
 
     fn switches(all_off: bool, personal: bool, companies: &[(&str, bool)]) -> VaultSyncSwitches {
         VaultSyncSwitches {

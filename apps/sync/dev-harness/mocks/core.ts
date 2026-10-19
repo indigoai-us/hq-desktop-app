@@ -1663,6 +1663,7 @@ This final paragraph verifies spacing after a thematic break.
     allOff: settings.cloudPaused,
     personalEnabled: settings.personalSyncEnabled,
     companies: { ...harnessVaultSwitches },
+    cliHonoursSwitches: true,
   }),
   set_vault_sync_enabled: (args) => {
     const vault = String(args?.vault ?? '');

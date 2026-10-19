@@ -289,6 +289,12 @@ export interface VaultSyncSwitches {
   allOff: boolean;
   personalEnabled: boolean;
   companies: Record<string, boolean>;
+  /**
+   * `false` when the HQ command line tool this computer runs predates the
+   * switches, so its `hq sync` and background sync can still move an off
+   * vault. `null`/absent when unknown or when nothing is off.
+   */
+  cliHonoursSwitches?: boolean | null;
 }
 
 /** Result of turning one vault's sync on or off. */

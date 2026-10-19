@@ -41,6 +41,7 @@ function cloudAdapter(options: {
   withSwitch?: boolean;
   withVaultSwitches?: boolean;
   vaultSwitches?: { personalEnabled: boolean; companies: Record<string, boolean> };
+  cliHonoursSwitches?: boolean | null;
   setVaultSyncEnabled?: (vault: string, enabled: boolean) => ReturnType<
     NonNullable<PlatformAdapter["sync"]["setVaultSyncEnabled"]>
   >;
@@ -86,7 +87,12 @@ function cloudAdapter(options: {
   if (options.withVaultSwitches !== false) {
     sync.setVaultSyncEnabled = setVaultSyncEnabled;
     sync.getVaultSyncSwitches = async () =>
-      ok({ allOff: saved.cloudPaused === true, ...vaults, companies: { ...vaults.companies } });
+      ok({
+        allOff: saved.cloudPaused === true,
+        ...vaults,
+        companies: { ...vaults.companies },
+        cliHonoursSwitches: options.cliHonoursSwitches ?? null,
+      });
   }
   const adapter = {
     kind: "desktop",
@@ -423,6 +429,38 @@ describe("Settings vault switches (US-016)", () => {
     q("settings-vault-toggle-acme")!.click();
     await flush();
     expect(q("settings-vault-notice")?.textContent).toContain("did not restart yet");
+  });
+
+  // Review: with an HQ CLI older than the switches, an off vault can still
+  // sync through that tool, so Settings says so.
+  it("warns that an out-of-date HQ command line tool can still sync an off vault", async () => {
+    const { adapter } = cloudAdapter({
+      settings: { cloudPaused: false },
+      cliHonoursSwitches: false,
+    });
+    mountSync(adapter, COMPANIES);
+    await flush();
+    // Nothing off yet: no warning.
+    expect(q("settings-vault-cli-outdated")).toBeNull();
+
+    q("settings-vault-toggle-acme")!.click();
+    await flush();
+    const notice = q("settings-vault-cli-outdated")?.textContent ?? "";
+    expect(notice).toContain("The HQ command line tool on this computer is out of date");
+    expect(notice).toContain("can still sync vaults that are off here");
+    expect(notice).toContain("Settings › Updates");
+  });
+
+  it("shows no CLI warning when the HQ command line tool honours the switches", async () => {
+    const { adapter } = cloudAdapter({
+      settings: { cloudPaused: false },
+      vaultSwitches: { personalEnabled: true, companies: { acme: false } },
+      cliHonoursSwitches: true,
+    });
+    mountSync(adapter, COMPANIES);
+    await flush();
+    expect(q("settings-vault-off-acme")).not.toBeNull();
+    expect(q("settings-vault-cli-outdated")).toBeNull();
   });
 
   it("falls back to the personal settings write on a host without vault commands", async () => {

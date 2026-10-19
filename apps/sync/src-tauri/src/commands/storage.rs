@@ -836,8 +836,10 @@ pub async fn preview_storage_offload() -> Result<OffloadResult, String> {
 #[tauri::command]
 pub async fn run_storage_offload() -> Result<OffloadResult, String> {
     log("storage", "offload requested");
-    // Cloud switch off (usage-only-pricing US-016): "Move to cloud" uploads.
-    hq_desktop_core::daemon::ensure_cloud_sync_allowed()?;
+    // Sync switches (usage-only-pricing US-016): "Move to cloud" uploads, and
+    // `hq storage offload` has no per-vault scope, so it waits while any vault
+    // is off (an offloaded file in an off vault could not be fetched back).
+    hq_desktop_core::vault_sync::ensure_offload_allowed()?;
     let res = run_hq(offload_args(false)).await;
     note_write();
     parse_offload(&res?)

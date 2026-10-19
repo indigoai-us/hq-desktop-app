@@ -33,6 +33,9 @@ export const VAULT_SYNC_COPY = {
   vaultOffHint: "To sync it again, turn its switch back on.",
   heldByAllOff: "Off while all cloud sync is off.",
   noCompanies: "You are not in any company with a cloud vault yet.",
+  cliOutdatedTitle: "The HQ command line tool on this computer is out of date",
+  cliOutdatedBody:
+    "Until it updates, hq sync commands, /handoff and background sync run by that tool can still sync vaults that are off here. HQ updates it automatically. To update it now, open Settings › Updates.",
 } as const;
 
 /** "Sync is off for <vault>" — the plain off state for one vault. */

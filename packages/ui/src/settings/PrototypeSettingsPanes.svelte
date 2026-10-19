@@ -780,6 +780,7 @@
     cloudEnabled = result.value.cloudEnabled;
     cloudNotice = result.value.notice ?? null;
     announceCloudSwitch(cloudEnabled);
+    void refreshVaultSwitches();
     if (section === "sync") void refreshLiveSync();
   }
 
@@ -822,6 +823,8 @@
     vaultOverrides = { ...vaultOverrides, [row.id]: result.value.enabled };
     if (row.personal) native = { ...native, personalSyncEnabled: result.value.enabled };
     vaultNotice = result.value.notice ?? null;
+    // Re-read so a stale-CLI notice can appear once something is off.
+    void refreshVaultSwitches();
     window.dispatchEvent(
       new CustomEvent("hq:workspace-sync-enabled-changed", {
         detail: { slug: row.id, enabled: result.value.enabled },
@@ -1651,6 +1654,12 @@
           </div>
         {/if}
       {/each}
+      {#if vaultSwitches?.cliHonoursSwitches === false && (!cloudEnabled || vaultRows.some((row) => !row.enabled))}
+        <div class="cloud-off" role="status" data-testid="settings-vault-cli-outdated">
+          <div class="cloud-off-title">{VAULT_SYNC_COPY.cliOutdatedTitle}</div>
+          <div class="cloud-off-body">{VAULT_SYNC_COPY.cliOutdatedBody}</div>
+        </div>
+      {/if}
       {#if vaultRows.length === 1 && companies !== null}
         <p class="cloud-notice" data-testid="settings-vault-no-companies">{VAULT_SYNC_COPY.noCompanies}</p>
       {/if}

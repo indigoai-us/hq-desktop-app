@@ -344,6 +344,11 @@ pub(crate) fn parse_vault_id(vault: &str) -> Result<SyncVault, String> {
 /// Apply one vault switch. Persisting is the only step whose failure fails
 /// the command. While "Turn off all cloud sync" is on nothing is running, so
 /// only the saved value changes.
+///
+/// Cost: the runner takes its skip lists at spawn, so one vault's switch
+/// restarts background sync for every vault, and turning a vault off also
+/// cancels a one-shot sync in progress. The other vaults pick up again on the
+/// restarted runner; a cancelled Sync now has to be run again.
 pub(crate) fn apply_vault_switch(
     vault: &SyncVault,
     enabled: bool,
@@ -432,10 +437,39 @@ impl<R: Runtime> VaultSwitchEffects for LiveEffects<R> {
     }
 }
 
+/// Every vault switch for Settings › Sync, plus whether the HQ CLI this app
+/// runs honours them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultSyncSwitchesView {
+    #[serde(flatten)]
+    pub switches: VaultSyncSwitches,
+    /// `Some(false)`: the managed HQ CLI predates the switches, so its
+    /// `hq sync` and `hq daemon` sync can still move an off vault. Settings
+    /// says so while a switch is off. `None` when it cannot tell.
+    pub cli_honours_switches: Option<bool>,
+}
+
 /// Read every vault switch for Settings › Sync.
 #[tauri::command]
-pub fn get_vault_sync_switches() -> VaultSyncSwitches {
-    VaultSyncSwitches::read()
+pub async fn get_vault_sync_switches() -> VaultSyncSwitchesView {
+    let switches = VaultSyncSwitches::read();
+    // The CLI check may probe the CLI the first time; keep it off the
+    // main thread, and skip it when nothing is off.
+    let cli_honours_switches = if switches.any_off() {
+        tauri::async_runtime::spawn_blocking(
+            hq_desktop_core::vault_sync::cli_honours_vault_switches,
+        )
+        .await
+        .ok()
+        .flatten()
+    } else {
+        None
+    };
+    VaultSyncSwitchesView {
+        switches,
+        cli_honours_switches,
+    }
 }
 
 /// Turn sync on or off for one vault on this computer. `vault` is
@@ -623,7 +657,7 @@ mod tests {
         assert_eq!(raw["machineId"], serde_json::json!("m-1"));
 
         // A fresh read (the restart seam) sees every saved choice.
-        let switches = get_vault_sync_switches();
+        let switches = VaultSyncSwitches::read();
         assert!(!switches.all_off);
         assert!(!switches.personal_enabled);
         assert!(!switches.allows(&SyncVault::Company("acme".into())));
@@ -680,6 +714,95 @@ mod tests {
             .err()
             .unwrap_or_default()
             .starts_with("Sync is off for"));
+    }
+
+    /// Review: "Move to cloud" has no per-vault scope, so it waits while any
+    /// vault is off, and runs again once the vault is back on.
+    #[test]
+    fn move_to_cloud_refuses_while_one_vault_is_off_and_not_after_re_enable() {
+        use crate::util::test_support::{scoped_home, ENV_MUTEX};
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        let path = tmp.path().join(".hq/menubar.json");
+        std::fs::write(&path, r#"{"workspaceSyncEnabled":{"acme":false}}"#).unwrap();
+        let _home = scoped_home(tmp.path());
+
+        let offload =
+            tauri::async_runtime::block_on(crate::commands::storage::run_storage_offload());
+        assert_eq!(
+            offload.err().as_deref(),
+            Some(hq_desktop_core::vault_sync::OFFLOAD_VAULT_OFF_MESSAGE)
+        );
+
+        persist_vault_enabled_at(&path, &SyncVault::Company("acme".into()), true).unwrap();
+        assert_eq!(
+            hq_desktop_core::vault_sync::ensure_offload_allowed(),
+            Ok(())
+        );
+    }
+
+    /// Review: turning a vault back on lets its side doors run again.
+    #[test]
+    fn re_enabling_a_vault_lifts_its_conflict_resolve_refusal() {
+        use crate::util::test_support::{scoped_home, ENV_MUTEX};
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        let path = tmp.path().join(".hq/menubar.json");
+        std::fs::write(&path, r#"{"workspaceSyncEnabled":{"acme":false}}"#).unwrap();
+        let _home = scoped_home(tmp.path());
+        let off =
+            hq_desktop_core::vault_sync::vault_off_message(&SyncVault::Company("acme".into()));
+        let resolve = || {
+            tauri::async_runtime::block_on(crate::commands::conflicts::resolve_conflict(
+                "companies/acme/notes.md".to_string(),
+                "keep-local".to_string(),
+            ))
+        };
+        assert_eq!(resolve().err(), Some(off.clone()));
+
+        persist_vault_enabled_at(&path, &SyncVault::Company("acme".into()), true).unwrap();
+        // No longer refused by the switch (it fails later in this sandbox).
+        assert_ne!(resolve().err(), Some(off));
+    }
+
+    /// Review: a symlink from the personal vault into an off company vault
+    /// must not resolve the conflict.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_into_an_off_company_vault_does_not_resolve() {
+        use crate::util::test_support::{scoped_home, ENV_MUTEX};
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let hq = tmp.path().join("HQ");
+        std::fs::create_dir_all(hq.join("companies/acme")).unwrap();
+        std::fs::create_dir_all(hq.join("knowledge")).unwrap();
+        std::fs::write(hq.join("companies/acme/real.md"), "x").unwrap();
+        std::os::unix::fs::symlink(
+            hq.join("companies/acme/real.md"),
+            hq.join("knowledge/link.md"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        std::fs::write(
+            tmp.path().join(".hq/menubar.json"),
+            serde_json::json!({
+                "hqPath": hq.to_string_lossy(),
+                "workspaceSyncEnabled": { "acme": false }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let _home = scoped_home(tmp.path());
+        let resolve = tauri::async_runtime::block_on(crate::commands::conflicts::resolve_conflict(
+            "knowledge/link.md".to_string(),
+            "keep-local".to_string(),
+        ));
+        assert!(
+            resolve.is_err(),
+            "a link into an off vault must not resolve"
+        );
     }
 
     /// Opening a cloud placeholder refuses for an off vault only.

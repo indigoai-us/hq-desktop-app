@@ -190,6 +190,15 @@ async fn revalidate_authorized_conflict_target(
 /// - `strategy` must be `"keep-local"` or `"keep-remote"`.
 /// - Runs `hq sync resolve --strategy {strategy} --path {path} --hq-path {hq_folder}`.
 /// - Times out after 10 seconds; the child process is killed if it exceeds this.
+/// The vault a resolved conflict target belongs to, from its canonical
+/// company slug (None means outside `companies/`, the personal vault).
+fn canonical_conflict_vault(company_slug: Option<&str>) -> hq_desktop_core::vault_sync::SyncVault {
+    match company_slug {
+        Some(slug) => hq_desktop_core::vault_sync::SyncVault::Company(slug.to_string()),
+        None => hq_desktop_core::vault_sync::SyncVault::Personal,
+    }
+}
+
 #[tauri::command]
 pub async fn resolve_conflict(path: String, strategy: String) -> Result<(), String> {
     validate_strategy(&strategy)?;
@@ -203,6 +212,11 @@ pub async fn resolve_conflict(path: String, strategy: String) -> Result<(), Stri
 
     let target = resolve_authorized_conflict_target(&path).await?;
     let target = revalidate_authorized_conflict_target(&target).await?;
+    // Check again on the canonical target (symlinks resolved), so a link
+    // cannot point the resolve at an off vault.
+    hq_desktop_core::vault_sync::ensure_vault_sync_allowed(&canonical_conflict_vault(
+        target.company_slug.as_deref(),
+    ))?;
     #[cfg(debug_assertions)]
     eprintln!(
         "[conflicts] resolving {} with strategy {}",
