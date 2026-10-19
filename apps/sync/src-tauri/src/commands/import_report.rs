@@ -100,11 +100,21 @@ fn safe_project_name(name: &str) -> Option<String> {
         return None;
     }
     let lower = t.to_ascii_lowercase();
-    const CREDENTIAL_PREFIXES: [&str; 9] =
-        ["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "sk-ant-", "sk-proj-", "xox"];
+    const CREDENTIAL_PREFIXES: [&str; 9] = [
+        "ghp_",
+        "gho_",
+        "ghu_",
+        "ghs_",
+        "ghr_",
+        "github_pat_",
+        "sk-ant-",
+        "sk-proj-",
+        "xox",
+    ];
     if CREDENTIAL_PREFIXES.iter().any(|p| lower.contains(p))
         || lower.contains("akia")
-            && t.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| w.len() == 20 && w.starts_with("AKIA"))
+            && t.split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|w| w.len() == 20 && w.starts_with("AKIA"))
     {
         return None;
     }
@@ -129,7 +139,11 @@ pub fn report_value(input: &ImportReportInput, folder: &str, now: DateTime<Utc>)
         counts.insert(key.to_string(), json!(count_of(input.counts.get(key))));
     }
     let wanted: BTreeSet<&str> = input.tools.iter().map(String::as_str).collect();
-    let tools: Vec<&str> = TOOLS.iter().copied().filter(|t| wanted.contains(t)).collect();
+    let tools: Vec<&str> = TOOLS
+        .iter()
+        .copied()
+        .filter(|t| wanted.contains(t))
+        .collect();
     let mut seen = BTreeSet::new();
     let projects: Vec<String> = input
         .projects
@@ -165,7 +179,11 @@ pub fn report_value(input: &ImportReportInput, folder: &str, now: DateTime<Utc>)
 fn new_import_folder(imports: &Path, now: DateTime<Utc>) -> Result<(String, PathBuf), String> {
     let stamp = now.format("%Y-%m-%dT%H-%M-%S").to_string();
     for n in 1..=100u32 {
-        let name = if n == 1 { stamp.clone() } else { format!("{stamp}-{n}") };
+        let name = if n == 1 {
+            stamp.clone()
+        } else {
+            format!("{stamp}-{n}")
+        };
         let dir = imports.join(&name);
         match fs::create_dir(&dir) {
             Ok(()) => return Ok((name, dir)),
@@ -177,11 +195,17 @@ fn new_import_folder(imports: &Path, now: DateTime<Utc>) -> Result<(String, Path
 }
 
 /// Write the report under `hq_root` and return its path relative to the root.
-pub fn write_import_report_in(hq_root: &Path, input: &ImportReportInput, now: DateTime<Utc>) -> Result<String, String> {
+pub fn write_import_report_in(
+    hq_root: &Path,
+    input: &ImportReportInput,
+    now: DateTime<Utc>,
+) -> Result<String, String> {
     let imports = hq_root.join(IMPORTS_DIR);
-    fs::create_dir_all(&imports).map_err(|e| format!("could not create workspace/imports: {}", e.kind()))?;
+    fs::create_dir_all(&imports)
+        .map_err(|e| format!("could not create workspace/imports: {}", e.kind()))?;
     let (folder, dir) = new_import_folder(&imports, now)?;
-    let body = serde_json::to_string_pretty(&report_value(input, &folder, now)).map_err(|e| e.to_string())?;
+    let body = serde_json::to_string_pretty(&report_value(input, &folder, now))
+        .map_err(|e| e.to_string())?;
     let tmp = dir.join(format!(".{REPORT_FILE}.{}.tmp", std::process::id()));
     let target = dir.join(REPORT_FILE);
     let written = (|| {
@@ -199,48 +223,87 @@ pub fn write_import_report_in(hq_root: &Path, input: &ImportReportInput, now: Da
     Ok(format!("{IMPORTS_DIR}/{folder}/{REPORT_FILE}"))
 }
 
-/// True for an import folder name: `YYYY-MM-DDTHH-MM-SS`, maybe with a `-N` suffix.
-fn is_import_folder(name: &str) -> bool {
-    let b = name.as_bytes();
-    if b.len() < 19 {
-        return false;
-    }
-    let shape = b"dddd-dd-ddTdd-dd-dd";
-    let stamp_ok = shape.iter().zip(&b[..19]).all(|(s, c)| match s {
-        b'd' => c.is_ascii_digit(),
-        other => other == c,
-    });
-    stamp_ok && (b.len() == 19 || (b[19] == b'-' && b.len() > 20 && b[20..].iter().all(u8::is_ascii_digit)))
+/// True when `name` has `shape`'s length, with a digit wherever `shape` has `d`.
+fn has_shape(name: &[u8], shape: &[u8]) -> bool {
+    name.len() == shape.len()
+        && shape.iter().zip(name).all(|(s, c)| match s {
+            b'd' => c.is_ascii_digit(),
+            other => other == c,
+        })
 }
 
-/// The sort key for an import folder: the stamp, then the suffix as a number.
-fn folder_order(name: &str) -> (String, u32) {
-    let suffix = name.get(20..).and_then(|s| s.parse().ok()).unwrap_or(1);
-    (name[..19].to_string(), suffix)
+/// The sort key for an import folder: its stamp as `YYYY-MM-DDTHH-MM-SS`, then
+/// the `-N` suffix as a number. Takes the desktop's `YYYY-MM-DDTHH-MM-SS[-N]`
+/// and /import-context's `YYYYMMDDTHHMMSSZ`, so both order by time. None for
+/// any other name.
+fn import_folder_key(name: &str) -> Option<(String, u32)> {
+    let b = name.as_bytes();
+    if has_shape(b, b"ddddddddTddddddZ") {
+        let (d, t) = (&name[..8], &name[9..15]);
+        return Some((
+            format!(
+                "{}-{}-{}T{}-{}-{}",
+                &d[..4],
+                &d[4..6],
+                &d[6..],
+                &t[..2],
+                &t[2..4],
+                &t[4..]
+            ),
+            1,
+        ));
+    }
+    if b.len() < 19 || !has_shape(&b[..19], b"dddd-dd-ddTdd-dd-dd") {
+        return None;
+    }
+    let suffix = match &name[19..] {
+        "" => 1,
+        rest => rest
+            .strip_prefix('-')
+            .filter(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))?
+            .parse()
+            .ok()?,
+    };
+    Some((name[..19].to_string(), suffix))
 }
 
 /// The newest import report under `hq_root` (by folder name), with only the
 /// contract's fields, or None when there is none or it cannot be read.
 pub fn latest_import_report_in(hq_root: &Path) -> Option<Value> {
     let imports = hq_root.join(IMPORTS_DIR);
-    let mut folders: Vec<String> = fs::read_dir(&imports)
+    let mut folders: Vec<((String, u32), String)> = fs::read_dir(&imports)
         .ok()?
         .filter_map(Result::ok)
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
         .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|n| is_import_folder(n))
+        .filter_map(|n| import_folder_key(&n).map(|key| (key, n)))
         .collect();
-    folders.sort_by_key(|n| std::cmp::Reverse(folder_order(n)));
-    for name in folders {
+    folders.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, name) in folders {
         let path = imports.join(&name).join(REPORT_FILE);
-        let Ok(meta) = fs::metadata(&path) else { continue };
+        let Ok(meta) = fs::metadata(&path) else {
+            continue;
+        };
         if !meta.is_file() || meta.len() > READ_MAX_BYTES {
             continue;
         }
-        let Ok(text) = fs::read_to_string(&path) else { continue };
-        let Ok(Value::Object(report)) = serde_json::from_str::<Value>(&text) else { continue };
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(Value::Object(report)) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
         let mut kept = Map::new();
-        for key in ["scan_id", "counts", "discovery", "sessions", "tools", "projects", "source", "written_at"] {
+        for key in [
+            "scan_id",
+            "counts",
+            "discovery",
+            "sessions",
+            "tools",
+            "projects",
+            "source",
+            "written_at",
+        ] {
             if let Some(v) = report.get(key) {
                 kept.insert(key.to_string(), v.clone());
             }
@@ -257,9 +320,11 @@ pub async fn import_report_write(input: ImportReportInput) -> Result<String, Str
     let Some(hq_root) = existing_hq_path() else {
         return Err("no_hq".into());
     };
-    let result = tokio::task::spawn_blocking(move || write_import_report_in(Path::new(&hq_root), &input, Utc::now()))
-        .await
-        .map_err(|e| e.to_string())?;
+    let result = tokio::task::spawn_blocking(move || {
+        write_import_report_in(Path::new(&hq_root), &input, Utc::now())
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     let outcome = if result.is_ok() { "written" } else { "failed" };
     crate::util::logfile::log("import-report", &format!("write {outcome}"));
     result
@@ -269,7 +334,10 @@ pub async fn import_report_write(input: ImportReportInput) -> Result<String, Str
 #[tauri::command]
 pub async fn import_report_latest() -> Option<Value> {
     let hq_root = existing_hq_path()?;
-    tokio::task::spawn_blocking(move || latest_import_report_in(Path::new(&hq_root))).await.ok().flatten()
+    tokio::task::spawn_blocking(move || latest_import_report_in(Path::new(&hq_root)))
+        .await
+        .ok()
+        .flatten()
 }
 
 #[cfg(test)]
@@ -347,7 +415,17 @@ mod tests {
         let keys: Vec<&String> = report.as_object().unwrap().keys().collect();
         assert_eq!(
             keys,
-            ["scan_id", "counts", "categories", "discovery", "sessions", "tools", "projects", "source", "written_at"]
+            [
+                "scan_id",
+                "counts",
+                "categories",
+                "discovery",
+                "sessions",
+                "tools",
+                "projects",
+                "source",
+                "written_at"
+            ]
         );
         // No path, home folder or credential reached the file.
         for bad in ["/Users", "~/", "C:\\", "\\\\", "repos\\", "ghp_", "secret"] {
@@ -362,18 +440,30 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 10, 19, 8, 12, 30).unwrap();
         let first = write_import_report_in(root.path(), &native_input(), now).unwrap();
         // A second import in the same second gets its own folder; nothing is overwritten.
-        let second = write_import_report_in(root.path(), &ImportReportInput::default(), now).unwrap();
-        assert_eq!(second, "workspace/imports/2026-10-19T08-12-30-2/report.json");
+        let second =
+            write_import_report_in(root.path(), &ImportReportInput::default(), now).unwrap();
+        assert_eq!(
+            second,
+            "workspace/imports/2026-10-19T08-12-30-2/report.json"
+        );
         assert_ne!(first, second);
 
         for rel in [&first, &second] {
             let dir = root.path().join(rel).parent().unwrap().to_path_buf();
-            let names: Vec<String> =
-                fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
-            assert_eq!(names, vec!["report.json".to_string()], "only the report remains in {}", dir.display());
+            let names: Vec<String> = fs::read_dir(&dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().into_string().unwrap())
+                .collect();
+            assert_eq!(
+                names,
+                vec!["report.json".to_string()],
+                "only the report remains in {}",
+                dir.display()
+            );
         }
         // The first report is intact after the second write.
-        let report: Value = serde_json::from_str(&fs::read_to_string(root.path().join(&first)).unwrap()).unwrap();
+        let report: Value =
+            serde_json::from_str(&fs::read_to_string(root.path().join(&first)).unwrap()).unwrap();
         assert_eq!(report["sessions"]["total"], 402);
     }
 
@@ -381,7 +471,11 @@ mod tests {
     fn import_report_with_unknown_days_keeps_the_same_shape() {
         // The hq-cli fallback knows totals and per-tool counts but not days or times.
         let input = ImportReportInput {
-            sessions: ImportReportSessionsInput { total: 12, claude: 12, ..Default::default() },
+            sessions: ImportReportSessionsInput {
+                total: 12,
+                claude: 12,
+                ..Default::default()
+            },
             tools: vec!["claude-code".into()],
             ..Default::default()
         };
@@ -428,18 +522,80 @@ mod tests {
         )
         .unwrap();
         let latest = latest_import_report_in(root.path()).unwrap();
-        assert_eq!(latest, json!({ "scan_id": "s1", "counts": { "conversations": 12 }, "discovery": { "ok": true, "errors": [] } }));
+        assert_eq!(
+            latest,
+            json!({ "scan_id": "s1", "counts": { "conversations": 12 }, "discovery": { "ok": true, "errors": [] } })
+        );
     }
 
     #[test]
     fn import_folder_names_and_order() {
-        assert!(is_import_folder("2026-10-19T08-12-30"));
-        assert!(is_import_folder("2026-10-19T08-12-30-12"));
-        assert!(!is_import_folder("2026-10-19T08-12-30-"));
-        assert!(!is_import_folder("2026-10-19 08-12-30"));
-        assert!(!is_import_folder("latest"));
-        let mut names = vec!["2026-10-19T08-12-30-10", "2026-10-19T08-12-30", "2026-10-19T08-12-30-2"];
-        names.sort_by_key(|n| std::cmp::Reverse(folder_order(n)));
-        assert_eq!(names, ["2026-10-19T08-12-30-10", "2026-10-19T08-12-30-2", "2026-10-19T08-12-30"]);
+        let key = |n: &str| import_folder_key(n);
+        assert_eq!(
+            key("2026-10-19T08-12-30"),
+            Some(("2026-10-19T08-12-30".into(), 1))
+        );
+        assert_eq!(
+            key("2026-10-19T08-12-30-12"),
+            Some(("2026-10-19T08-12-30".into(), 12))
+        );
+        // /import-context's compact stamp orders by the same time.
+        assert_eq!(
+            key("20261019T081230Z"),
+            Some(("2026-10-19T08-12-30".into(), 1))
+        );
+        for bad in [
+            "2026-10-19T08-12-30-",
+            "2026-10-19T08-12-30x",
+            "2026-10-19 08-12-30",
+            "20261019T081230",
+            "latest",
+        ] {
+            assert_eq!(key(bad), None, "{bad}");
+        }
+        let mut names = vec![
+            "2026-10-19T08-12-30-10",
+            "2026-10-19T08-12-30",
+            "2026-10-19T08-12-30-2",
+        ];
+        names.sort_by_key(|n| std::cmp::Reverse(key(n)));
+        assert_eq!(
+            names,
+            [
+                "2026-10-19T08-12-30-10",
+                "2026-10-19T08-12-30-2",
+                "2026-10-19T08-12-30"
+            ]
+        );
+    }
+
+    #[test]
+    fn import_report_latest_orders_compact_and_desktop_folders_by_time() {
+        let root = tempfile::tempdir().unwrap();
+        write_import_report_in(root.path(), &native_input(), at("2026-10-19T08:00:00Z")).unwrap();
+        // An older /import-context run: its compact name sorts above the desktop's as text, but it is older.
+        let older = root.path().join("workspace/imports/20261018T090000Z");
+        fs::create_dir_all(&older).unwrap();
+        fs::write(
+            older.join("report.json"),
+            r#"{"scan_id":"older","counts":{}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            latest_import_report_in(root.path()).unwrap()["sessions"]["total"],
+            402
+        );
+
+        let newer = root.path().join("workspace/imports/20261019T090000Z");
+        fs::create_dir_all(&newer).unwrap();
+        fs::write(
+            newer.join("report.json"),
+            r#"{"scan_id":"newer","counts":{}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            latest_import_report_in(root.path()).unwrap()["scan_id"],
+            "newer"
+        );
     }
 }

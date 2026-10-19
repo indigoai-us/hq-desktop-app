@@ -13,7 +13,7 @@ import type { ImportReportInput, LocalScanView } from "@hq/platform";
 
 import { welcomeName } from "../../../brief/brief-welcome-names.js";
 import type { ImportScanEnd, ImportScanHost } from "./import-runner.js";
-import { parseScanLine, type ScanEvent } from "./scan-stream.js";
+import { isScanNotRun, parseScanLine, type ScanEvent } from "./scan-stream.js";
 
 /** The tools a report names, in its order. */
 export const IMPORT_REPORT_TOOLS = ["claude-code", "codex", "cursor"] as const;
@@ -143,7 +143,7 @@ export function importReportInputFromEvents(events: readonly ScanEvent[]): Impor
 /**
  * A host that hands every finished scan's events to `ondone`, so the hq-cli
  * fallback can write its report. Only a scan that ended "done" with a done
- * line counts; a failed, cancelled or cut-short scan writes nothing.
+ * line counts; a failed, cancelled, cut-short or never-run scan writes nothing.
  */
 export function tapImportHost(host: ImportScanHost | null, ondone: (events: ScanEvent[]) => void): ImportScanHost | null {
   if (!host) return null;
@@ -155,7 +155,9 @@ export function tapImportHost(host: ImportScanHost | null, ondone: (events: Scan
         if (event) events.push(event);
         onevent(raw);
       });
-      if (end?.status === "done" && events.some((e) => e.type === "done")) {
+      const done = events.find((e) => e.type === "done");
+      // A scan that never ran ends with an empty done line; it found nothing, so it reports nothing.
+      if (end?.status === "done" && done?.type === "done" && !isScanNotRun(done)) {
         try {
           ondone(events);
         } catch (err) {

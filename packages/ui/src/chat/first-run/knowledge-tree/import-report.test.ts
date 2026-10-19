@@ -125,6 +125,16 @@ describe("tapImportHost", () => {
     expect(ondone).not.toHaveBeenCalled();
   });
 
+  it("a scan that never ran (empty done line) writes nothing", async () => {
+    const ondone = vi.fn();
+    const notRun = [
+      { v: 1, type: "start", sources: [] },
+      { v: 1, type: "done", report: null, summary: { companies: 0, projects: 0, sessions: 0 } },
+    ];
+    await tapImportHost(host("done", notRun), ondone)!.run("s3", () => {});
+    expect(ondone).not.toHaveBeenCalled();
+  });
+
   it("cancel goes to the wrapped host, and no host stays no host", () => {
     const inner = host("done", []);
     tapImportHost(inner, () => {})!.cancel("s9");

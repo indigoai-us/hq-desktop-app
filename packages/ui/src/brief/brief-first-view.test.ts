@@ -145,6 +145,13 @@ describe("buildFirstView", () => {
     expect(pastWork(v)).toEqual([]);
   });
 
+  it("the projects pill counts every report project, not only the five shown", () => {
+    const names = ["a1", "b2", "c3", "d4", "e5", "f6", "g7"];
+    const v = view(legacy.welcome, { importReport: { ...report, projects: names } });
+    expect(v.topProjects).toHaveLength(5);
+    expect(v.pills.projects).toBe(7);
+  });
+
   it("cursor-primary: Cursor leads where-you-work, and a host that cannot open Cursor gets the next runnable action", () => {
     const v = view(core.cursor_person);
     expect(v.whereYouWork.tools.map((t) => t.harness)).toEqual(["cursor", "claude-code"]);

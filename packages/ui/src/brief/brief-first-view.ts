@@ -302,7 +302,7 @@ export function buildFirstView(input: FirstViewInput): FirstView {
     return name ? [{ name, sessions: p.sessions || null }] : [];
   });
   const topProjects = (fromWelcome.length ? fromWelcome : (report?.projects ?? []).map((name) => ({ name, sessions: null }))).slice(0, LIMIT);
-  const projectCount = f.tree?.projects || topProjects.length || 0;
+  const projectCount = f.tree?.projects || fromWelcome.length || report?.projects?.length || 0;
 
   const counts = f.harness?.counts ?? {
     claude_code: report?.sessions?.claude ?? f.sessions?.claude ?? 0,
