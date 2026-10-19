@@ -2,7 +2,7 @@
   import BotBrainPanel, { type BrainSwitchProgress } from '../../../packages/ui/src/shell/profile-panes/BotBrainPanel.svelte';
   import { brainRow, BRAIN_PROVIDERS, type BrainProvider, type BrainRow } from '../../../packages/ui/src/shell/profile-panes/bot-brain';
   let { fail = false } = $props<{ fail?: boolean }>();
-  let rows = $state<BrainRow[]>(BRAIN_PROVIDERS.map(p => ({ ...brainRow(p.id), models: brainRow(p.id).models.filter(choice => choice.value !== ''), state: p.id === 'grok' ? 'disconnected' : 'connected', active: p.id === 'claude', canConnect: true, canSave: p.id === 'claude', detail: p.id === 'claude' ? 'Choose the model and thinking level this bot uses for future messages.' : 'Connected and ready. Use this brain to move the bot onto it; the current brain stays signed in.', model: p.id === 'claude' ? 'claude-opus-5-5' : '', effort: p.id === 'claude' ? 'medium' : '' })));
+  let rows = $state<BrainRow[]>(BRAIN_PROVIDERS.map(p => ({ ...brainRow(p.id), models: brainRow(p.id).models.filter(choice => choice.value !== ''), state: p.id === 'codex' ? 'disconnected' : 'connected', active: p.id === 'claude', canConnect: true, canSave: p.id === 'claude', detail: p.id === 'claude' ? 'Choose the model and thinking level this bot uses for future messages.' : 'Connected and ready. Use this brain to move the bot onto it; the current brain stays signed in.', model: p.id === 'claude' ? 'claude-opus-5-5' : '', effort: p.id === 'claude' ? 'medium' : '' })));
   let notice = $state('');
   let switching = $state<BrainSwitchProgress | null>(null);
   async function connect(id: BrainProvider) {
