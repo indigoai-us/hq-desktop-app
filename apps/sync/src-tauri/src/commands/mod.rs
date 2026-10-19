@@ -62,7 +62,6 @@ pub mod install_directory;
 pub mod install_queue;
 pub mod install_manifest;
 pub mod install_stages;
-pub mod command_line_tools;
 pub mod launch;
 pub mod library_local;
 pub mod lifecycle;

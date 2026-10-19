@@ -81,6 +81,7 @@ The release moves it under the version it ships in.
 - Company settings: Billing for a usage-priced company shows this month's usage, the credit left of the $10 included, the vault fee and the cloud bot box prices instead of seats, and has no Workforce upgrade. Other companies see seats as before.
 - Cloud bot, Slack bot, external bot, meeting recording and invite messages no longer say you need Starter, Workforce or a seat upgrade. They say the company's plan does not include the feature yet.
 - Badges: a new honor, Ecom Rat, for HQ's honorary rat of ecommerce.
+- Setup on a Mac: first-run setup no longer asks macOS to install Apple's developer tools. On a Mac without them, setup used to open Apple's install prompt, which could ask for a 19 GB download and stop setup until it finished. HQ now uses only the git and Node it installs itself, and never runs the macOS stand-ins for git, python3, make or clang that open that prompt. HQ installs its own git before it sets up the HQ folder's history. The "Installing Apple's developer tools" screen is gone. If HQ cannot install its own tools, setup handles the failure the same way it did before.
 
 ## [0.11.12] — 2026-10-16
 
