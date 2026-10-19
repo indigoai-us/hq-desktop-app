@@ -211,11 +211,6 @@
     </section>
   {/if}
   {#if !ready}
-    {#if openTool}
-      <div class="after-rise" data-testid="welcome-report-open-tool">
-        <BriefOpenTool label={openTool.label} detail={openTool.detail} busy={openTool.busy} error={openTool.error} onopen={openTool.onopen} />
-      </div>
-    {/if}
     {#if onsetup}
       <section class="card loading" data-testid="welcome-report-setup">
         <h2>{WELCOME_REPORT_NEEDS_ASSISTANT}</h2>
@@ -228,6 +223,12 @@
         <button type="button" class="cta" onclick={runFix} disabled={fixing} data-testid="welcome-report-blocked-fix">{blocked.label}</button>
         {#if fixError}<p class="reason" data-testid="welcome-report-blocked-error">{fixError}</p>{/if}
       </section>
+    {/if}
+    <!-- After the rise or the setup card: nothing sits above the brief's own status. -->
+    {#if openTool}
+      <div class="after-rise" data-testid="welcome-report-open-tool">
+        <BriefOpenTool label={openTool.label} detail={openTool.detail} busy={openTool.busy} error={openTool.error} onopen={openTool.onopen} />
+      </div>
     {/if}
     <!-- Under the status, outside its branches, so a status change (loading to held) keeps a Connect in progress. -->
     {#if connectApps}
