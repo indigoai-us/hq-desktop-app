@@ -2,12 +2,12 @@
   /**
    * All of someone's badges, opened by "See all" on a profile: every badge in
    * the catalog grouped by tier. Earned ones show their mark and tier, and a
-   * click opens the badge's card on the dark stage, grown out of its tile.
+   * click opens the badge's details: its levels, then "View card" for the
+   * holographic card (owner review 2026-10-16).
    * The rest are dim outlines with what earns them and plain progress.
    */
   import RailIcon from "../common/button/RailIcon.svelte";
   import BadgeMark from "./BadgeMark.svelte";
-  import BadgeCardModal from "./BadgeCardModal.svelte";
   import { BADGES, TIER_NAME, isAwarded, resolveEarned, type EarnedBadge, type ResolvedBadge } from "./badge-catalog.js";
   import { badgeCollection } from "./badge-collection.js";
   import type { BadgeProgress } from "./badge-source.js";
@@ -18,22 +18,16 @@
     progress?: readonly BadgeProgress[];
     /** Whose badges these are. */
     owner?: string;
+    /** Opens an earned badge's details. */
+    onselect?: (badge: ResolvedBadge) => void;
     onback?: () => void;
     onclose?: () => void;
   }
 
-  let { badges, progress = [], owner = "", onback, onclose }: Props = $props();
+  let { badges, progress = [], owner = "", onselect, onback, onclose }: Props = $props();
 
   const groups = $derived(badgeCollection(badges, progress));
   const earned = $derived(resolveEarned(badges));
-
-  let cardOpen = $state<ResolvedBadge | null>(null);
-  let cardOpener = $state<HTMLElement | null>(null);
-
-  function openCard(badge: ResolvedBadge, event: MouseEvent): void {
-    cardOpener = event.currentTarget as HTMLElement;
-    cardOpen = badge;
-  }
 
 </script>
 
@@ -61,8 +55,8 @@
                   data-badge-id={tile.def.id}
                   data-state="earned"
                   aria-describedby="badge-hc-{tile.def.id}"
-                  aria-label="Open the {tile.def.name} card, {TIER_NAME[tile.tier]}"
-                  onclick={(event) => openCard(badge, event)}
+                  aria-label="Open {tile.def.name}, {TIER_NAME[tile.tier]}"
+                  onclick={() => onselect?.(badge)}
                 >
                   <BadgeMark badge={tile.def} tier={tile.tier} label="{tile.def.name}, {TIER_NAME[tile.tier]}" />
                   <span class="nm">{tile.def.name}</span>
@@ -92,9 +86,6 @@
     {/each}
   </div>
 </aside>
-{#if cardOpen}
-  <BadgeCardModal open badge={cardOpen} owner={owner || null} returnFocus={cardOpener} origin={cardOpener} onclose={() => (cardOpen = null)} />
-{/if}
 
 <style>
   .pane {

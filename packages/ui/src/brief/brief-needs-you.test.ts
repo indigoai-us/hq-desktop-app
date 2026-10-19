@@ -181,9 +181,11 @@ describe("Needs you rows", () => {
     expect(q("brief-needs")!.textContent).toContain("3 of 3 cleared");
   });
 
-  it("without effort tags the footer keeps its hover hint", () => {
+  it("without effort tags the footer shows no time and no hover hint, just the count and its bar", () => {
     render(day([decision(1), decision(2), decision(3)]));
-    expect(q("brief-need-time")!.textContent).toBe("Hover a row to start it");
+    expect(q("brief-need-time")).toBeNull();
+    expect(q("brief-needs")!.textContent).not.toContain("Hover a row");
+    expect(q("brief-need-progress")!.getAttribute("aria-valuemax")).toBe("3");
   });
 
   it("a decide row with choices gets the split pill; one without keeps the start button", () => {
@@ -199,13 +201,23 @@ describe("Needs you rows", () => {
 
   it("still caps at five rows with a '+N more' row whose peek lists the rest with their ages", async () => {
     render(day(Array.from({ length: 7 }, (_, i) => decision(i + 1, { ageHours: 10 * (i + 1) }))));
-    expect(qa("brief-need")).toHaveLength(5);
-    // Rows arrive ranked: the three derived priorities first, then the oldest calls.
-    expect(qa("brief-need").map((el) => el.getAttribute("aria-label"))).toEqual(["Decision number 1", "Decision number 2", "Decision number 3", "Decision number 7", "Decision number 6"]);
+    const rows = [...target.querySelectorAll<HTMLElement>("[data-brief-row]")];
+    expect(rows).toHaveLength(5);
+    // Rows arrive ranked: the derived priorities first (three calls, then the day's live incident), then the oldest calls.
+    expect(rows.map((el) => el.getAttribute("data-priority"))).toEqual(["1", "2", "3", "4", null]);
+    expect(rows[3]!.getAttribute("data-testid")).toBe("brief-need-priority");
+    expect(qa("brief-need").map((el) => el.getAttribute("aria-label"))).toEqual(["Decision number 1", "Decision number 2", "Decision number 3", "Decision number 7"]);
     const more = q("brief-need-more")!;
-    expect(more.textContent!.trim()).toBe("+2 more");
+    expect(more.textContent!.trim()).toBe("+3 more");
     await hover(more);
     const lines = [...q("brief-peek")!.querySelectorAll('[data-testid="brief-peek-line"]')].map((l) => l.textContent!.replace(/\s+/g, " ").trim());
-    expect(lines).toEqual(["Decision number 52d", "Decision number 440h"]);
+    expect(lines).toEqual(["Decision number 63d", "Decision number 52d", "Decision number 440h"]);
+  });
+
+  it("never shows '+1 more': when one row is left over, that row takes its place", () => {
+    render(day(Array.from({ length: 5 }, (_, i) => decision(i + 1, { ageHours: 10 * (i + 1) }))));
+    const rows = [...target.querySelectorAll<HTMLElement>("[data-brief-row]")];
+    expect(rows).toHaveLength(6);
+    expect(q("brief-need-more")).toBeNull();
   });
 });

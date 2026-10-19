@@ -1243,6 +1243,28 @@ export interface CompanyApi {
    * click and never cache it.
    */
   createBillingPortalSession(companyUid: string): AdapterPromise<{ url: string }>;
+  /**
+   * Mint a Stripe-hosted card-capture Checkout session for a company
+   * (`POST /v1/billing/checkout/org`, body `{ companyUid }`), the same route
+   * the console's usage plan "Add a card" uses. Owner-gated; a non-owner gets
+   * 403. The `url` is short-lived: mint one per click and never cache it.
+   */
+  createBillingCheckoutSession?(companyUid: string): AdapterPromise<{ url: string }>;
+  /**
+   * Owner-gated billing summary (`GET /v1/billing/summary?companyUid=`).
+   * `pricingPlan: "usage-only"` marks a usage-priced company; `usageTrial`
+   * carries the trial and allowance. A non-owner gets 403. Optional: hosts
+   * without hq-pro leave it out and the billing pane keeps the seats view.
+   */
+  getBillingSummary?(companyUid: string): AdapterPromise<Json>;
+  /**
+   * Owner-gated usage statement for this calendar month
+   * (`GET /v1/billing/usage?companyUid=&window=month`): usage so far,
+   * allowance left, bill so far and one line per meter.
+   */
+  getUsageStatement?(companyUid: string): AdapterPromise<Json>;
+  /** Public price list (`GET /v1/pricing`), including the `usage` block. */
+  getPricing?(): AdapterPromise<Json>;
   /** Membership-scoped, aggregate eligibility for the first-week return nudge. */
   getFirstWeekReturnNudge(companyUid: string): AdapterPromise<Json>;
 }
@@ -1487,6 +1509,11 @@ export const OUTPOST_PATHS = {
  * `cron.pause|resume|trigger|delete|create|update` actions; `params.jobId`
  * names the routine and `body` carries the create/update fields.
  */
+export type ManagedBotChannel = "telegram" | "teams";
+export type TelegramConnectInput =
+  | { managed: true; suggestedUsername: string; suggestedName?: string; allowedCallerGroupId?: string }
+  | { token: string; allowedCallerGroupId?: string };
+
 export interface AgentRuntimeActionInput {
   actionId: string;
   idempotencyKey: string;
@@ -1503,6 +1530,11 @@ export interface AgentRuntimeActionInput {
 export const SLACK_ATTACH_BODY = { returnTo: "desktop" } as const;
 
 export const AGENT_PATHS = {
+  channelStatus: (uid: string, channel: ManagedBotChannel) => `/v1/agents/${encodeURIComponent(uid)}/${channel}/status`,
+  channelContacts: (uid: string, channel: ManagedBotChannel, personUid?: string) => `/v1/agents/${encodeURIComponent(uid)}/${channel}/contacts${personUid ? `/${encodeURIComponent(personUid)}` : ''}`,
+  telegramChannel: (uid: string) => `/v1/agents/${encodeURIComponent(uid)}/channels/telegram`,
+  emailChannel: (uid: string) => `/v1/agents/${encodeURIComponent(uid)}/channels/email`,
+  emailAddress: (uid: string) => `/v1/agents/${encodeURIComponent(uid)}/email`,
   provisionOptions: (companyUid: string) =>
     `/v1/agents/provision-options?companyUid=${encodeURIComponent(companyUid)}`,
   status: (agentUid: string, brain?: "grok" | "codex" | "claude") => {
@@ -1661,6 +1693,16 @@ export interface AgentsApi {
    * none) and `upstreamCode` when the server sent one.
    */
   attachSlack(agentUid: string): AdapterPromise<Json>;
+  channelStatus?(agentUid: string, channel: ManagedBotChannel): AdapterPromise<Json>;
+  channelContacts?(agentUid: string, channel: ManagedBotChannel): AdapterPromise<Json>;
+  addChannelContact?(agentUid: string, channel: ManagedBotChannel, personUid: string): AdapterPromise<Json>;
+  removeChannelContact?(agentUid: string, channel: ManagedBotChannel, personUid: string): AdapterPromise<Json>;
+  connectTelegram?(agentUid: string, input: TelegramConnectInput): AdapterPromise<Json>;
+  disconnectTelegram?(agentUid: string): AdapterPromise<Json>;
+  disconnectSlack?(agentUid: string): AdapterPromise<Json>;
+  connectEmail?(agentUid: string): AdapterPromise<Json>;
+  disconnectEmail?(agentUid: string): AdapterPromise<Json>;
+  updateEmailAddress?(agentUid: string, localPart: string): AdapterPromise<Json>;
   /**
    * POST /v1/agents/{uid}/channels/slack/app-token with `{ appToken }`: hand
    * the server the app-level token a person made on Slack's site.
@@ -1827,7 +1869,9 @@ export function integrationAppRefBody(input: IntegrationAppRef): {
  * API base) so the provider's redirect lands on a page that finishes the
  * sign-in without a session. Absent, the server's default redirect applies.
  */
-export type IntegrationOAuthStartInput = IntegrationAppRef & { redirectUri?: string };
+export type IntegrationOAuthStartInput = IntegrationAppRef & {
+  redirectUri?: string; mcpUrl?: string; provider?: string; displayName?: string; pullAllHistory?: boolean;
+};
 
 /** The OAuth start body: {@link integrationAppRefBody} plus `redirectUri` when one is given. */
 export function integrationOAuthStartBody(input: IntegrationOAuthStartInput): {
@@ -1835,11 +1879,19 @@ export function integrationOAuthStartBody(input: IntegrationOAuthStartInput): {
   domain?: string;
   catalogEntryId?: string;
   redirectUri?: string;
+  mcpUrl?: string;
+  provider?: string;
+  displayName?: string;
+  pullAllHistory?: boolean;
 } {
   const redirectUri = typeof input.redirectUri === "string" ? input.redirectUri.trim() : "";
   return {
     ...integrationAppRefBody(input),
     ...(redirectUri ? { redirectUri } : {}),
+    ...(input.mcpUrl ? { mcpUrl: input.mcpUrl } : {}),
+    ...(input.provider ? { provider: input.provider } : {}),
+    ...(input.displayName ? { displayName: input.displayName } : {}),
+    ...(typeof input.pullAllHistory === 'boolean' ? { pullAllHistory: input.pullAllHistory } : {}),
   };
 }
 
@@ -1870,6 +1922,8 @@ export interface IntegrationOAuthStart {
  */
 export interface IntegrationInstallInput {
   companyUid: string;
+  /** Preserve the existing history preference when replacing credentials. */
+  pullAllHistory?: boolean;
   domain?: string;
   catalogEntryId?: string;
   mcpUrl?: string;
@@ -3161,6 +3215,52 @@ export interface CallsApi {
 }
 
 // ---------------------------------------------------------------------------
+// Personal apps: MCP servers configured in one cloud bot's own runtime
+// ---------------------------------------------------------------------------
+
+export interface BotPersonalApp {
+  name: string;
+  url: string | null;
+  auth: "oauth" | "header" | "none" | string;
+  enabled: boolean;
+  /** For sign-in apps, whether the bot holds a saved login. */
+  connected: boolean;
+  tools: number | null;
+}
+
+export interface BotPersonalAppSignIn {
+  flowId: string;
+  authorizationUrl: string;
+}
+
+export interface BotPersonalAppSignInStatus {
+  status: "authorization_required" | "approved" | "error" | "expired" | string;
+  error: string | null;
+  tools: number;
+}
+
+/** An entry in the bot runtime's own MCP catalog. */
+export interface BotPersonalCatalogEntry {
+  name: string;
+  description: string;
+  url: string | null;
+  transport: string;
+  auth: "oauth" | "none" | "api_key" | string;
+  installed: boolean;
+  /** Whether this desktop flow can add it (remote, browser sign-in or no sign-in). */
+  supported: boolean;
+}
+
+export interface BotPersonalAppsApi {
+  list(agentUid: string): AdapterPromise<{ apps: BotPersonalApp[] }>;
+  catalog(agentUid: string): AdapterPromise<{ entries: BotPersonalCatalogEntry[] }>;
+  add(agentUid: string, input: { name: string; url: string; auth?: "oauth" | "none" }): AdapterPromise<Json>;
+  remove(agentUid: string, name: string): AdapterPromise<Json>;
+  startSignIn(agentUid: string, name: string): AdapterPromise<BotPersonalAppSignIn>;
+  signInStatus(agentUid: string, flowId: string): AdapterPromise<BotPersonalAppSignInStatus>;
+}
+
+// ---------------------------------------------------------------------------
 // The adapter
 // ---------------------------------------------------------------------------
 
@@ -3201,6 +3301,8 @@ export interface PlatformAdapter {
   readonly localScan?: LocalScanApi;
   /** Optional: only the desktop host can read and prune local HQ backups. */
   readonly storage?: StorageApi;
+  /** Optional: a cloud bot's own runtime MCPs. */
+  readonly personalApps?: BotPersonalAppsApi;
   readonly settings: SettingsApi;
   readonly workMesh: WorkMeshApi;
   /** Native calling (US-014). Unsupported hosts implement it as refusals. */

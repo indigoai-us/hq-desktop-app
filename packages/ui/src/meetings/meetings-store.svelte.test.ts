@@ -95,7 +95,7 @@ const planRequiredFailure = failure(
 );
 const planRequiredToast = {
   kind: "warn" as const,
-  text: "Meetings need HQ Workforce ($500/mo) to record. Upgrade in HQ Console.",
+  text: "Recording meetings is not on this company's plan yet. Upgrade in HQ Console.",
   upgradeUrl: "https://hq.computer/companies/acme/billing?upgrade=team",
 };
 const event: MeetingEvent = {

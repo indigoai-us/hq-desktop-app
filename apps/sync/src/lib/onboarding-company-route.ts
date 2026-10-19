@@ -98,31 +98,33 @@ function provisioningField(row: Record<string, unknown>): MembershipCompany['pro
   return value === 'pending' || value === 'ready' || value === 'failed' ? value : null;
 }
 
-/** The company plan a person picked before the desktop asked. */
-export type PriorPlanChoice = 'starter' | 'workforce';
+/**
+ * The company plan a person picked before the desktop asked. New companies
+ * have one plan (usage pricing, "Sign up free"), so the only choice left is
+ * `free`.
+ */
+export type PriorPlanChoice = 'free';
 
-const STARTER_PLAN_NAMES = new Set(['starter', 'free']);
-const WORKFORCE_PLAN_NAMES = new Set(['workforce', 'team']);
+/** Names the website has used for the free start: Starter before 2026-10-16, `free`/`usage` after. */
+const FREE_PLAN_NAMES = new Set(['starter', 'free', 'usage', 'usage-only']);
 
 function planChoiceFrom(value: unknown): PriorPlanChoice | null {
   if (typeof value !== 'string') return null;
   const key = value.trim().toLowerCase();
-  if (STARTER_PLAN_NAMES.has(key)) return 'starter';
-  if (WORKFORCE_PLAN_NAMES.has(key)) return 'workforce';
-  // Individual plans (`individual`, `individual-free`) are not company plans.
+  if (FREE_PLAN_NAMES.has(key)) return 'free';
+  // `workforce` / `team` closed to new signups: no checkout here, so the step
+  // shows the usage card instead. Individual plans are not company plans.
   return null;
 }
 
 /**
  * The company plan the person already picked on the website, when the server
- * says so. hq-pro does not send this yet: today the website keeps a Starter
- * pick in the browser only and a Workforce pick becomes a paid company (which
- * `decideCompanyRoute` already skips). Read, in order:
+ * says so. Read, in order:
  * - top-level `planIntent` / `signupPlan` on `GET /membership/me`;
  * - `plan` / `planIntent` inside the visitor block of the
  *   `GET /membership/me?anonId=…` answer (`webIdentity` / `visitorIdentity` /
  *   `anonIdentity`), the same block `otherIdentityFromLookup` reads.
- * Missing or unknown values are null: the desktop asks.
+ * Missing or unknown values are null: the desktop shows the card.
  */
 export function priorPlanFromPayload(payload: unknown): PriorPlanChoice | null {
   if (!isRecord(payload)) return null;

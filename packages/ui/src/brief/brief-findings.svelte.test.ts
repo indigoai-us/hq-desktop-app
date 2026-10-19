@@ -1,7 +1,9 @@
 // @vitest-environment happy-dom
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
-import { findingRows, parseFindings, parseSamples, sampleTone } from "./brief-findings.js";
+import { findingField, findingRows, findingState, parseFindings, parseSamples, pendingFindingRows, sampleCompany, sampleKindLabel, sampleTone } from "./brief-findings.js";
 import { parseBriefStatus } from "./brief-runs.js";
 import BriefFindings from "./BriefFindings.svelte";
 
@@ -155,5 +157,119 @@ describe("BriefFindings counters", () => {
     const mid = Number(values().sessions);
     expect(mid).toBeGreaterThan(10);
     expect(mid).toBeLessThan(42);
+  });
+});
+
+describe("tiles fill in as the brief assembles", () => {
+  const FIXED = ["decision", "action_item", "risk", "commitment", "key_point", "meetings", "sessions", "dms", "prs", "prs_open", "ci_red", "agents"];
+
+  it("before any report, every fixed tile is there with no value", () => {
+    const rows = pendingFindingRows();
+    expect(rows.map((r) => r.key)).toEqual(FIXED);
+    expect(rows.every((r) => r.value === null && findingState(r) === "pending")).toBe(true);
+  });
+
+  it("a tile is pending, zero, or found; only a found count wears a colour field, by meaning", () => {
+    const rows = findingRows(parseFindings({ ...raw, signals: { ...raw.signals, commitment: 0 } })!);
+    const by = (k: string) => rows.find((r) => r.key === k)!;
+    expect(findingState(by("commitment"))).toBe("zero");
+    expect(findingField(by("commitment"))).toBe("mono");
+    expect(findingField(by("decision"))).toBe("violet");
+    expect(findingField(by("action_item"))).toBe("teal");
+    expect(findingField(by("prs"))).toBe("teal");
+    expect(findingField(by("risk"))).toBe("pink");
+    expect(findingField(by("ci_red"))).toBe("pink");
+    expect(findingField(by("dms"))).toBe("sky");
+    // Background counts stay monochrome even with something in them.
+    expect(findingState(by("sessions"))).toBe("found");
+    expect(findingField(by("sessions"))).toBe("mono");
+    expect(findingField({ key: "decision", tone: "decision", value: null })).toBe("mono");
+  });
+
+  it("a sample names its company with the page's label and icon, matched by slug, uid or label", () => {
+    const companies = [{ uid: "cmp_indigo", slug: "indigo", label: "Indigo", iconUrl: "https://x/i.png" }];
+    expect(sampleCompany("indigo", companies)).toEqual({ name: "Indigo", uid: "cmp_indigo", iconUrl: "https://x/i.png" });
+    expect(sampleCompany("CMP_INDIGO", companies).name).toBe("Indigo");
+    expect(sampleCompany("live_recover", []).name).toBe("Live recover");
+    expect(sampleKindLabel("action_item")).toBe("action item");
+  });
+});
+
+describe("BriefFindings bento", () => {
+  let app: ReturnType<typeof mount> | null = null;
+  let target: HTMLElement;
+  afterEach(() => {
+    if (app) unmount(app);
+    app = null;
+    target?.remove();
+  });
+  const tiles = () => [...target.querySelectorAll<HTMLElement>('[data-testid="brief-finding"]')];
+
+  it("with no findings yet, shows all twelve tiles waiting with a dash", async () => {
+    target = document.createElement("div");
+    document.body.appendChild(target);
+    app = mount(BriefFindings, { target, props: { findings: null, reducedMotion: true } });
+    flushSync();
+    await tick();
+    expect(tiles()).toHaveLength(12);
+    expect(tiles().every((t) => t.dataset.state === "pending" && t.querySelector('[data-testid="brief-finding-value"]')!.textContent === "—")).toBe(true);
+    expect(target.querySelectorAll('[data-testid="brief-sample"]')).toHaveLength(0);
+  });
+
+  it("a found count fills with its colour field; an empty one stays monochrome; tiles keep their order", async () => {
+    target = document.createElement("div");
+    document.body.appendChild(target);
+    const props = $state({ findings: parseFindings({ signals: { decision: 7 } }) as ReturnType<typeof parseFindings>, reducedMotion: true });
+    app = mount(BriefFindings, { target, props });
+    flushSync();
+    const before = tiles().map((t) => t.dataset.key);
+    const decision = () => target.querySelector<HTMLElement>('[data-key="decision"]')!;
+    expect(decision().dataset.state).toBe("found");
+    expect(decision().dataset.field).toBe("violet");
+    expect(decision().querySelector('.fill[data-field="violet"]')).not.toBeNull();
+    expect(target.querySelector<HTMLElement>('[data-key="risk"]')!.dataset.state).toBe("pending");
+    props.findings = parseFindings({ signals: { decision: 7, risk: 0 } });
+    flushSync();
+    const risk = target.querySelector<HTMLElement>('[data-key="risk"]')!;
+    expect(risk.dataset.state).toBe("zero");
+    expect(risk.dataset.field).toBe("mono");
+    expect(tiles().map((t) => t.dataset.key)).toEqual(before);
+  });
+
+  it("sample chips name their company through CompanyLabel, with the page's label", async () => {
+    target = document.createElement("div");
+    document.body.appendChild(target);
+    const samples = parseSamples([{ kind: "action_item", title: "Send Jacob the memo folder", company: "indigo", at: "1" }], "indigo");
+    app = mount(BriefFindings, {
+      target,
+      props: { findings: parseFindings(raw)!, samples, companies: [{ uid: "cmp_indigo", slug: "indigo", label: "Indigo" }], reducedMotion: true },
+    });
+    flushSync();
+    await tick();
+    const card = target.querySelector<HTMLElement>('[data-testid="brief-sample"]')!;
+    expect(card.querySelector('[data-testid="company-label"]')?.textContent).toContain("Indigo");
+    expect(card.textContent).toContain("action item");
+    expect(card.textContent).toContain("Send Jacob the memo folder");
+  });
+
+  it("connected apps keep their counter, in the samples card header", async () => {
+    target = document.createElement("div");
+    document.body.appendChild(target);
+    app = mount(BriefFindings, { target, props: { findings: parseFindings(raw)!, reducedMotion: true } });
+    flushSync();
+    const gmail = target.querySelector<HTMLElement>('[data-key="int:gmail"]')!;
+    expect(gmail.querySelector('[data-testid="brief-finding-value"]')!.textContent).toBe("5");
+    expect(tiles()).toHaveLength(13);
+  });
+
+  it("is drawn in the page style: no backdrop-filter, no inset shadows, no dashed borders, motion off for reduced motion", () => {
+    const css = readFileSync(resolve(process.cwd(), "src/brief/BriefFindings.svelte"), "utf8");
+    const style = css.slice(css.indexOf("<style"));
+    expect(style).not.toMatch(/backdrop-filter/);
+    expect(style).not.toMatch(/inset 0 0 0/);
+    expect(style).not.toMatch(/dashed/);
+    expect(style).toMatch(/prefers-reduced-motion: reduce/);
+    // Labels are the brief's mono caps.
+    expect(/\.name \{([^}]*)\}/.exec(style)![1]).toMatch(/text-transform: uppercase/);
   });
 });

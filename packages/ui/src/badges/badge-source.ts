@@ -61,6 +61,31 @@ export interface BadgeProgress {
   unit: string;
 }
 
+/**
+ * Whether badges are on for someone: `true` when the source answered that
+ * they are, `false` when it answered that they are off (hq-pro's
+ * `enabled: false`), `null` while nobody knows yet. The launch announcement
+ * (badge-launch.ts) shows only on `true`, so a person the server flag leaves
+ * out never sees it, even with no badges to show.
+ */
+export type BadgesEnabledSource = (subject: BadgeSubject) => boolean | null;
+
+const unknownEnabled: BadgesEnabledSource = () => null;
+let enabledSource: BadgesEnabledSource = unknownEnabled;
+
+export function setBadgesEnabledSource(next: BadgesEnabledSource | null): void {
+  enabledSource = next ?? unknownEnabled;
+}
+
+export function badgesEnabledFor(subject: BadgeSubject): boolean | null {
+  if (!named(subject)) return null;
+  try {
+    return enabledSource(subject);
+  } catch {
+    return null;
+  }
+}
+
 export type BadgeProgressSource = (subject: BadgeSubject) => readonly BadgeProgress[];
 
 const noProgress: BadgeProgressSource = () => [];

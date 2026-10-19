@@ -37,6 +37,7 @@ pub mod dm_notify;
 pub mod dock;
 pub mod drift_detail;
 pub mod feedback;
+pub mod personal_apps_signin;
 pub mod storage;
 pub mod cloud_file;
 pub mod first_push;

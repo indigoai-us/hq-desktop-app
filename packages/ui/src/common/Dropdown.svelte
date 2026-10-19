@@ -19,6 +19,7 @@
    */
   import { tick } from "svelte";
   import { markDropdownOpen } from "./dropdown-open.js";
+  import { menuPortal } from "../chat/portal.js";
 
   interface Props {
     value: V;
@@ -31,9 +32,18 @@
     testid?: string;
     /** Stretch to the container width (form fields). */
     block?: boolean;
+    /** Fit the menu inside its dialog, opening upward when space is limited. */
+    constrainToDialog?: boolean;
     /** Pill shape for header filters; `active` paints the selected style. */
     pill?: boolean;
     active?: boolean;
+    /**
+     * Open the list on the app shell, fixed to the button, instead of inside
+     * the button's container. Use it when an ancestor clips overflow (the live
+     * meeting card), so every option shows. Flips above the button when there
+     * is no room below.
+     */
+    floating?: boolean;
     onchange?: (value: V) => void;
   }
 
@@ -45,8 +55,10 @@
     disabled = false,
     testid,
     block = false,
+    constrainToDialog = false,
     pill = false,
     active: selectedStyle = false,
+    floating = false,
     onchange,
   }: Props = $props();
 
@@ -67,7 +79,7 @@
     const i = options.findIndex((o) => o.value === value);
     active = i >= 0 ? i : 0;
     await tick();
-    list?.focus();
+    list?.focus({ preventScroll: true });
     scrollActive();
   }
 
@@ -87,7 +99,38 @@
   }
 
   function scrollActive(): void {
-    list?.querySelector<HTMLElement>(`[data-index="${active}"]`)?.scrollIntoView?.({ block: "nearest" });
+    const option = list?.querySelector<HTMLElement>(`[data-index="${active}"]`);
+    if (!list || !option) return;
+    // Scroll only the options, never the modal/page containing the dropdown.
+    const top = option.offsetTop, bottom = top + option.offsetHeight;
+    if (top < list.scrollTop) list.scrollTop = top;
+    else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
+  }
+
+  function fitMenu(node: HTMLDivElement) {
+    if (!constrainToDialog) return {};
+    const dialog = root?.closest<HTMLElement>('[role="dialog"]');
+    function place() {
+      if (!button) return;
+      const anchor = button.getBoundingClientRect();
+      const bounds = dialog?.getBoundingClientRect();
+      const top = Math.max(8, (bounds?.top ?? 0) + 8);
+      const bottom = Math.min(window.innerHeight - 8, (bounds?.bottom ?? window.innerHeight) - 8);
+      const below = Math.max(0, bottom - anchor.bottom - 4);
+      const above = Math.max(0, anchor.top - top - 4);
+      const upward = below < Math.min(node.scrollHeight, 280) && above > below;
+      node.style.top = upward ? 'auto' : 'calc(100% + 4px)';
+      node.style.bottom = upward ? 'calc(100% + 4px)' : 'auto';
+      node.style.maxHeight = `${Math.min(280, upward ? above : below)}px`;
+      node.style.boxSizing = 'border-box';
+      node.style.width = '100%';
+      node.style.minWidth = '0';
+      node.style.maxWidth = '100%';
+    }
+    place();
+    window.addEventListener('resize', place);
+    dialog?.addEventListener('scroll', place);
+    return { destroy() { window.removeEventListener('resize', place); dialog?.removeEventListener('scroll', place); } };
   }
 
   function move(next: number): void {
@@ -110,7 +153,9 @@
     else if (e.key === "End") { e.preventDefault(); move(options.length - 1); }
     else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); choose(active); }
     else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); hide(); }
-    else if (e.key === "Tab") { hide(false); }
+    // A floating list lives at the end of the shell, so Tab would leave from
+    // there. Hand focus back to the button first so Tab moves on from it.
+    else if (e.key === "Tab") { hide(floating); }
     else if (e.key.length === 1 && /\S/.test(e.key)) {
       const now = Date.now();
       typed = now - typedAt > 700 ? e.key.toLowerCase() : typed + e.key.toLowerCase();
@@ -123,11 +168,20 @@
     }
   }
 
+  /** Portal the list to the shell and pin it to the button (see `floating`). */
+  function floatMenu(node: HTMLElement, anchor: HTMLElement | null) {
+    if (!floating) return {};
+    node.style.minWidth = `${Math.max(180, anchor?.offsetWidth ?? 0)}px`;
+    const portaled = menuPortal(node, { anchor, placement: "bottom-start", maxWidth: 360 });
+    return { destroy: () => portaled.destroy?.() };
+  }
+
   $effect(() => {
     if (!open) return;
     markDropdownOpen(true);
     const onDown = (e: PointerEvent) => {
-      if (root && !root.contains(e.target as Node)) hide(false);
+      const target = e.target as Node;
+      if (root && !root.contains(target) && !list?.contains(target)) hide(false);
     };
     document.addEventListener("pointerdown", onDown, true);
     return () => {
@@ -164,8 +218,11 @@
   {#if open}
     <div
       bind:this={list}
+      use:fitMenu
       id={`${uid}-list`}
       class="dd-menu"
+      class:floating
+      use:floatMenu={button}
       role="listbox"
       tabindex="-1"
       aria-label={label}
@@ -241,6 +298,8 @@
     color: var(--v4-text-1);
     outline: none;
   }
+  /* Portaled to the shell: above sheets and dialogs, still under toasts. */
+  .dd-menu.floating { z-index: 40001; }
   .dd-option {
     display: flex;
     align-items: baseline;

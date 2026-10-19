@@ -364,6 +364,244 @@ describe('welcome flow: the install runs in the background', () => {
     expect(byId<HTMLElement>('onboarding-launchers')!.querySelectorAll('button')).toHaveLength(0);
   };
 
+  // US-017: a required (blocking) step that has ended in failure is not
+  // "HQ is ready." The heading names what did not finish and offers Try again.
+  it('names the required step that did not finish and offers Try again', async () => {
+    stubInvoke({
+      fetch_and_extract_template: () => {
+        throw new Error('permission denied');
+      },
+    });
+    __setReadyTimingsForTests({ consentDwellMs: 20 });
+    const onfinish = mountAt(2);
+    await flushUntil(() => commands().includes('fetch_and_extract_template'), 'the install');
+    byId('welcome-skip')!.click();
+    await flushUntil(() => scene() === 'ready', 'the ready screen');
+    await flushUntil(() => readyTitle() !== 'Almost ready.', 'the settled heading');
+
+    expect(readyTitle()).toBe('Setting up your workspace did not finish.');
+    expect(readyTitle()).not.toContain('!');
+    expect(byId('ready-required-retry')?.textContent?.trim()).toBe('Try again');
+    expect(host.querySelector('[data-scene="ready"]')!.textContent).not.toContain('permission denied');
+    // The menu-bar sentence says HQ is set up, so it is hidden while the
+    // failure heading shows.
+    expect(host.querySelector('[data-scene="ready"]')!.textContent).not.toContain('keeps everything in sync');
+    // Past the consent dwell the screen still does not finish by itself.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await flush();
+    expect(onfinish).not.toHaveBeenCalled();
+    expect(byId('ready-required-retry')).not.toBeNull();
+  });
+
+  // A background step is not required. Its failure keeps the calm heading.
+  // The quiet named line for that failure stays the desktop's own note, not
+  // a second heading on this screen.
+  it('keeps HQ is ready after a background setup step fails', async () => {
+    stubInvoke({
+      start_install_queue: () => {
+        throw new Error('permission denied');
+      },
+    });
+    mountAt(2);
+    await flushUntil(() => commands().includes('fetch_and_extract_template'), 'the install');
+    byId('welcome-skip')!.click();
+    await flushUntil(() => scene() === 'ready', 'the ready screen');
+    await flushUntil(() => readyTitle() === 'HQ is ready.', 'the ready heading');
+    await flushUntil(() => commands().includes('start_install_queue'), 'the background step');
+    await flush();
+
+    expect(readyTitle()).toBe('HQ is ready.');
+    expect(byId('ready-required-retry')).toBeNull();
+    expect(host.querySelector('#onboarding-title-ready')!.textContent).not.toContain('did not finish');
+    expect(host.querySelector('[data-scene="ready"]')!.textContent).not.toContain('permission denied');
+  });
+
+  it('returns to HQ is ready after Try again finishes the required step', async () => {
+    let attempts = 0;
+    stubInvoke({
+      fetch_and_extract_template: () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('permission denied');
+      },
+    });
+    __setReadyTimingsForTests({ consentDwellMs: 20 });
+    const onfinish = mountAt(2);
+    await flushUntil(() => commands().includes('fetch_and_extract_template'), 'the install');
+    byId('welcome-skip')!.click();
+    await flushUntil(() => byId('ready-required-retry') !== null, 'Try again');
+    expect(readyTitle()).toBe('Setting up your workspace did not finish.');
+    expect(onfinish).not.toHaveBeenCalled();
+
+    byId('ready-required-retry')!.click();
+    await flushUntil(() => readyTitle() === 'HQ is ready.', 'the recovered heading');
+    expect(byId('ready-required-retry')).toBeNull();
+    expect(attempts).toBe(2);
+    expect(host.querySelector('[data-scene="ready"]')!.textContent).not.toContain('permission denied');
+    expect(host.querySelector('[data-scene="ready"]')!.textContent).toContain('keeps everything in sync');
+    // The recovered screen waits out the consent dwell, then finishes once.
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await flush();
+    expect(onfinish).toHaveBeenCalledTimes(1);
+  });
+
+  // Review of PR 1690: Try again on a required step can run while the
+  // background phase (tools, upload, index) is still going.
+  it('finishes the install when the background phase ends while Try again still runs', async () => {
+    const deps = deferred();
+    const retry = deferred();
+    let attempts = 0;
+    stubInvoke({
+      git_init: () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('permission denied');
+        return retry.promise;
+      },
+      start_install_queue: () => deps.promise,
+    });
+    const onfinish = mountAt(2);
+    await flushUntil(() => commands().includes('start_install_queue'), 'the background phase');
+    byId('welcome-skip')!.click();
+    await flushUntil(() => byId('ready-required-retry') !== null, 'Try again');
+    expect(readyTitle()).toBe('Setting up file history did not finish.');
+
+    byId('ready-required-retry')!.click();
+    await flushUntil(() => attempts === 2, 'the retried step');
+    // The background phase ends while the retried step is still running.
+    deps.resolve();
+    await flushUntil(
+      () =>
+        calls.some(
+          (call) => call.command === 'set_first_run_background_setup' && call.args?.running === false,
+        ),
+      'the end of the background phase',
+    );
+    await flush();
+    expect(commands()).not.toContain('record_install_complete');
+    expect(readyTitle()).toBe('Almost ready.');
+
+    retry.resolve();
+    await flushUntil(() => commands().includes('record_install_complete'), 'the finished install');
+    expect(readyTitle()).toBe('HQ is ready.');
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
+  });
+
+  it('waits for the background phase before it sets the workspace up again', async () => {
+    const deps = deferred();
+    let attempts = 0;
+    stubInvoke({
+      fetch_and_extract_template: () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('permission denied');
+      },
+      start_install_queue: () => deps.promise,
+    });
+    mountAt(2);
+    await flushUntil(() => commands().includes('start_install_queue'), 'the background phase');
+    byId('welcome-skip')!.click();
+    await flushUntil(() => byId('ready-required-retry') !== null, 'Try again');
+
+    byId('ready-required-retry')!.click();
+    await flush();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await flush();
+    // The workspace is not rewritten while the upload may be reading it.
+    expect(attempts).toBe(1);
+    expect(readyTitle()).toBe('Almost ready.');
+    expect(readyLine()).toBe('Setting up your workspace');
+    expect(byId('ready-required-retry')).toBeNull();
+
+    deps.resolve();
+    await flushUntil(() => attempts === 2, 'the retried step');
+    await flushUntil(() => readyTitle() === 'HQ is ready.', 'the recovered heading');
+    await flushUntil(() => commands().includes('record_install_complete'), 'the finished install');
+  });
+
+  it('names the step Try again is running, not a background step', async () => {
+    const deps = deferred();
+    const retry = deferred();
+    let attempts = 0;
+    stubInvoke({
+      personalize_hq: () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('permission denied');
+        return retry.promise;
+      },
+      start_install_queue: () => deps.promise,
+    });
+    mountAt(2);
+    await flushUntil(() => commands().includes('start_install_queue'), 'the background phase');
+    byId('welcome-skip')!.click();
+    await flushUntil(() => byId('ready-required-retry') !== null, 'Try again');
+    expect(readyTitle()).toBe('Personalizing your workspace did not finish.');
+
+    byId('ready-required-retry')!.click();
+    await flushUntil(() => attempts === 2, 'the retried step');
+    expect(readyTitle()).toBe('Almost ready.');
+    expect(readyLine()).toBe('Personalizing your workspace');
+
+    retry.resolve();
+    deps.resolve();
+    await flushUntil(() => readyTitle() === 'HQ is ready.', 'the recovered heading');
+  });
+
+  // The watchdog's Finish setup note is the way out when Try again keeps
+  // failing. It shows next to Try again and finishes only when clicked.
+  it('offers Finish setup next to Try again once the watchdog fires', async () => {
+    __setReadyTimingsForTests({ consentDwellMs: 0, watchdogMs: 40 });
+    stubInvoke({
+      fetch_and_extract_template: () => {
+        throw new Error('permission denied');
+      },
+    });
+    const onfinish = mountAt(2);
+    await flushUntil(() => commands().includes('fetch_and_extract_template'), 'the install');
+    byId('welcome-skip')!.click();
+    await flushUntil(() => byId('ready-required-retry') !== null, 'Try again');
+    await flushUntil(() => byId('launcher-finish-error') !== null, 'the watchdog note');
+    expect(readyTitle()).toBe('Setting up your workspace did not finish.');
+    expect(byId('ready-required-retry')).not.toBeNull();
+    expect(onfinish).not.toHaveBeenCalled();
+
+    byId<HTMLElement>('launcher-finish-error')!.querySelector('button')!.click();
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
+  });
+
+  // Review of PR 1690 (gate 2, M1): Finish setup closes the wizard, and a
+  // wizard closed while Try again runs never records the finished install.
+  // So the note hides while Try again runs and comes back if it fails again.
+  it('hides Finish setup while Try again runs and shows it again if Try again fails', async () => {
+    __setReadyTimingsForTests({ consentDwellMs: 0, watchdogMs: 40 });
+    const retry = deferred();
+    let attempts = 0;
+    stubInvoke({
+      git_init: () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('permission denied');
+        return retry.promise;
+      },
+    });
+    const onfinish = mountAt(2);
+    await flushUntil(() => commands().includes('git_init'), 'the install');
+    byId('welcome-skip')!.click();
+    await flushUntil(() => byId('ready-required-retry') !== null, 'Try again');
+    await flushUntil(() => byId('launcher-finish-error') !== null, 'the watchdog note');
+
+    byId('ready-required-retry')!.click();
+    await flushUntil(() => attempts === 2, 'the retried step');
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await flush();
+    expect(readyTitle()).toBe('Almost ready.');
+    expect(byId('launcher-finish-error')).toBeNull();
+    expect(onfinish).not.toHaveBeenCalled();
+
+    retry.reject(new Error('permission denied'));
+    await flushUntil(() => byId('ready-required-retry') !== null, 'Try again after the second failure');
+    await flushUntil(() => byId('launcher-finish-error') !== null, 'the watchdog note again');
+    expect(readyTitle()).toBe('Setting up file history did not finish.');
+    expect(onfinish).not.toHaveBeenCalled();
+  });
+
   it('says Almost ready. while the install runs, then HQ is ready. and finishes once it is done', async () => {
     const template = deferred();
     stubInvoke({ fetch_and_extract_template: () => template.promise });

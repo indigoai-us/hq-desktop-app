@@ -487,7 +487,7 @@ export function slackConnectView(input: SlackConnectInput): SlackConnectView {
     indicator,
     // A fresher link in the status wins; the attach answer's link is the fallback.
     installUrl: stage === "approve" ? (row?.installUrl ?? fromAttach?.installUrl ?? null) : null,
-    appPageUrl: stage === "token" ? (row?.appPageUrl ?? null) : null,
+    appPageUrl: stage === "token" || stage === "connected" ? (row?.appPageUrl ?? null) : null,
     accessPending: stage === "token" && Boolean(row?.accessPending),
     botUrl: stage === "connected" ? slackBotUrlFromStatus(input.status) : null,
     slow,

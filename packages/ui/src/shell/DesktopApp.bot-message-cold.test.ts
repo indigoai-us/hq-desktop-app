@@ -122,7 +122,7 @@ describe("Bots → Message with cold caches (QA-090)", () => {
     for (let i = 0; i < 150 && !message; i += 1) {
       await new Promise((resolve) => setTimeout(resolve, 100));
       await settle();
-      message = host.querySelector<HTMLButtonElement>('[data-testid="bot-profile-message"]');
+      message = host.querySelector<HTMLButtonElement>('[data-testid="bots-message"]');
     }
     expect(message).not.toBeNull();
     message!.click();
