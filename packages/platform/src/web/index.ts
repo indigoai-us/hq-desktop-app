@@ -322,17 +322,6 @@ function defaultOnUnauthorized(): void {
   window.location.assign("/auth/signin");
 }
 
-/**
- * Flags that must not consult the registry on web.
- *
- * `meetings` maps to `desktop.meetings` (defaultValue: true) for the
- * sync/desktop path. That value is wrong for web: the web legacy answer is a
- * deliberate `ok(false)` because GET /v1/identity/features/{flag} does not
- * exist on hq-pro, and Settings treats `!ok` as false. One registry key
- * cannot serve both adapters, so web bypasses the gate for this flag only.
- */
-const WEB_REGISTRY_EXCLUDED_FLAGS: ReadonlySet<string> = new Set(["meetings"]);
-
 const DESKTOP_ONLY: AdapterFailure = unavailable(
   "desktop-only",
   "This capability is only available in the desktop app.",
@@ -543,7 +532,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
 
   /**
    * Legacy `hasFeature` for this adapter. The identity/features route 404s
-   * on hq-pro. `meetings` is excluded from the registry on web and therefore
+   * on hq-pro. `meetings` does not consult the registry (no mapped key) and
    * returns a deliberate `ok(false)` — same user-visible answer the Settings
    * UI already derived from `!ok`, without an unhandled rejection. Unmapped
    * flags keep the previous GET so their AdapterResult shape stays
@@ -707,21 +696,17 @@ export class WebPlatformAdapter implements PlatformAdapter {
     whoami: () => this.get(WEB_PATHS.whoami),
     isAdmin: () => this.get(WEB_PATHS.isAdmin),
     hasFeature: (flag, scope) =>
-      WEB_REGISTRY_EXCLUDED_FLAGS.has(flag)
-        ? this.legacyHasFeature(flag)
-        : this.flagsFor(scope?.companyUid).resolve(flag, () =>
-            this.legacyHasFeature(flag),
-          ),
+      this.flagsFor(scope?.companyUid).resolve(flag, () =>
+        this.legacyHasFeature(flag),
+      ),
     // The browser build has no company flag source: every company flag is off.
     hasCompanyFeature: () => Promise.resolve(false),
     subscribeFeature: (flag, onChange) =>
-      WEB_REGISTRY_EXCLUDED_FLAGS.has(flag)
-        ? () => {}
-        : this.flagsFor(null).subscribe(
-            flag,
-            () => this.legacyHasFeature(flag),
-            onChange,
-          ),
+      this.flagsFor(null).subscribe(
+        flag,
+        () => this.legacyHasFeature(flag),
+        onChange,
+      ),
     listWorkspaces: async () => {
       const result = await this.get<Json>(WEB_PATHS.workspaces);
       if (!result.ok) return result;

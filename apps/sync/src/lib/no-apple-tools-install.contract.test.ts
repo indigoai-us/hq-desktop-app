@@ -19,8 +19,12 @@ const SKIP_DIRS = new Set(['node_modules', 'target', 'dist', '.svelte-kit']);
 const THIS_FILE = 'apps/sync/src/lib/no-apple-tools-install.contract.test.ts';
 
 // hq_cli_update.rs only reads "xcode-select" out of a failed npm install log
-// and names the command in advice text. It never spawns it.
-const XCODE_SELECT_ALLOWED_FILES = new Set(['crates/hq-desktop-core/src/hq_cli_update.rs']);
+// and names the command in advice text. It never spawns it. Its unit tests
+// (hq_cli_update_tests.rs) feed that classifier sample logs.
+const XCODE_SELECT_ALLOWED_FILES = new Set([
+  'crates/hq-desktop-core/src/hq_cli_update.rs',
+  'crates/hq-desktop-core/src/hq_cli_update_tests.rs',
+]);
 
 // The wizard behaviour test answers the old tools commands as "missing" and
 // asserts the wizard never calls them, so it has to name them.
