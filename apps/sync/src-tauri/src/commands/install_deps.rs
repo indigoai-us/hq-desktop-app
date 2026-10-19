@@ -5516,7 +5516,7 @@ pub fn append_user_path(new_dir: &Path) -> Result<(), String> {
 /// errors go to the log; the caller gets plain copy.
 #[cfg(windows)]
 fn append_user_path_unrecorded(new_dir: &Path) -> Result<(), String> {
-    let result = (|| {
+    let result = (|| -> Result<(), String> {
         let dir_str = new_dir.to_string_lossy().to_string();
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
