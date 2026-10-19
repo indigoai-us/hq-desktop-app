@@ -34,7 +34,27 @@ async function coveredOverlays(page: Page): Promise<string[]> {
 const visibleToasts = (page: Page) =>
   page.locator('[data-testid="toast-stack"] > [data-testid]:not([data-testid="toast-overflow"])').filter({ visible: true });
 
+async function stackGaps(page: Page) {
+  return page.getByTestId('toast-stack').evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    const toasts = [...el.querySelectorAll('[data-toast-id]')].map((t) => t.getBoundingClientRect());
+    const composers = [...document.querySelectorAll('[data-testid="conversation-composer"], [data-testid="composer-send"]')]
+      .map((c) => c.getBoundingClientRect())
+      .filter((c) => c.width > 0 && c.height > 0);
+    const covers = composers.some((c) => toasts.some((t) => Math.min(c.right, t.right) > Math.max(c.left, t.left) && Math.min(c.bottom, t.bottom) > Math.max(c.top, t.top)));
+    return {
+      right: Math.round(window.innerWidth - r.right),
+      bottom: Math.round(window.innerHeight - r.bottom),
+      lifted: el.hasAttribute('data-composer-lift'),
+      covers,
+    };
+  });
+}
+
 // Owner, 2026-10-16: the update card "shoul dbe equidistant from bottom as from right".
+// Home opens the assistant's conversation, and the shell fills the window, so
+// its composer sits at the bottom right at both sizes and the stack sits just
+// above it. A page without a composer (Telemetry) shows the equal gaps.
 for (const [width, height] of [[1440, 900], [1000, 700]] as const) {
   test(`the toast stack sits as far from the bottom as from the right at ${width}x${height}`, async ({ page }) => {
     await page.setViewportSize({ width, height });
@@ -42,27 +62,16 @@ for (const [width, height] of [[1440, 900], [1000, 700]] as const) {
     await expect(page.getByTestId('app-rail')).toBeVisible({ timeout: 30_000 });
     await expect(visibleToasts(page).first()).toBeVisible({ timeout: 10_000 });
     await page.waitForTimeout(500);
-    const gaps = await page.getByTestId('toast-stack').evaluate((el) => {
-      const r = el.getBoundingClientRect();
-      const toasts = [...el.querySelectorAll('[data-toast-id]')].map((t) => t.getBoundingClientRect());
-      const composers = [...document.querySelectorAll('[data-testid="conversation-composer"], [data-testid="composer-send"]')]
-        .map((c) => c.getBoundingClientRect())
-        .filter((c) => c.width > 0 && c.height > 0);
-      const covers = composers.some((c) => toasts.some((t) => Math.min(c.right, t.right) > Math.max(c.left, t.left) && Math.min(c.bottom, t.bottom) > Math.max(c.top, t.top)));
-      return {
-        right: Math.round(window.innerWidth - r.right),
-        bottom: Math.round(window.innerHeight - r.bottom),
-        lifted: el.hasAttribute('data-composer-lift'),
-        covers,
-      };
-    });
-    expect(gaps.right).toBe(16);
-    expect(gaps.covers).toBe(false);
-    // Equal gaps unless the conversation's composer is in the way (at 1000x700
-    // it is, and the stack sits just above it instead).
-    if (!gaps.lifted) expect(gaps.bottom).toBe(gaps.right);
-    else expect(gaps.bottom).toBeGreaterThan(16);
-    expect(gaps.lifted).toBe(width < 1440);
+    const home = await stackGaps(page);
+    expect(home.right).toBe(16);
+    expect(home.covers).toBe(false);
+    expect(home.lifted).toBe(true);
+    expect(home.bottom).toBeGreaterThan(16);
+
+    await page.getByTestId('rail-telemetry').click();
+    await expect(page.locator('[data-testid="conversation-composer"]').filter({ visible: true })).toHaveCount(0);
+    await expect(visibleToasts(page).first()).toBeVisible();
+    await expect.poll(() => stackGaps(page)).toEqual({ right: 16, bottom: 16, lifted: false, covers: false });
   });
 }
 
@@ -107,6 +116,9 @@ test('the toast stack lifts clear of a message composer it would cover, and drop
   await page.goto('/dev-harness/index.html?view=shell&persona=indigo&theme=dark&toast=update');
   await expect(page.getByTestId('app-rail')).toBeVisible({ timeout: 30_000 });
   await expect(visibleToasts(page).first()).toBeVisible({ timeout: 10_000 });
+  // Start from a page with no composer: Home's conversation already has one.
+  await page.getByTestId('rail-telemetry').click();
+  await expect(page.locator('[data-testid="conversation-composer"]').filter({ visible: true })).toHaveCount(0);
   const stackBottomGap = () =>
     page.getByTestId('toast-stack').evaluate((el) => Math.round(window.innerHeight - el.getBoundingClientRect().bottom));
   await expect.poll(stackBottomGap).toBe(16);

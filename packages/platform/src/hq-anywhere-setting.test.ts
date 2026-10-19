@@ -181,7 +181,8 @@ describe("HQ Anywhere setting support", () => {
   ])("runs launch sync with the saved setting when the flag lookup is %s", async (_case, lookup) => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const syncHqAnywhereGlobal = vi.fn(async () => ok(undefined));
-    const getHqAnywherePersonSetting = vi.fn(async () => ok(false));
+    // A saved opt-out at launch leaves the runtime alone (main #1686), so the saved choice here is on.
+    const getHqAnywherePersonSetting = vi.fn(async () => ok(true));
     const settings = {
       getHqAnywherePersonSetting,
       syncHqAnywhereGlobal,
@@ -194,7 +195,7 @@ describe("HQ Anywhere setting support", () => {
       .resolves.toEqual(ok(undefined));
     expect(getHqAnywherePersonSetting).toHaveBeenCalledTimes(1);
     expect(syncHqAnywhereGlobal).toHaveBeenCalledTimes(1);
-    expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(false);
+    expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(true);
     warn.mockRestore();
   });
 

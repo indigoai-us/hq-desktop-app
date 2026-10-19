@@ -111,7 +111,7 @@ describe("BriefRunsPage", () => {
     render(files(), { onshown });
     await settle();
     expect(onshown).toHaveBeenLastCalledWith(NEW);
-    q("brief-older")!.click();
+    target.querySelector<HTMLElement>(`[data-testid="brief-run-cell"][data-run="${OLD}"]`)!.click();
     await settle();
     expect(onshown).toHaveBeenLastCalledWith(OLD);
     q("brief-latest")!.click();
