@@ -46,6 +46,23 @@ const slot = (page: Page, widget: string): Locator => page.locator(`[data-testid
 
 /** Scrolls the page's own frame until the element's bottom edge is in the window, then reports whether it is. */
 async function bottomReachable(page: Page, el: Locator): Promise<boolean> {
+  // The rise applies its height floor a frame after its content is measured, so wait until the
+  // element's height holds for a few frames before scrolling to its bottom.
+  await el.evaluate(
+    (node) =>
+      new Promise<void>((resolve) => {
+        let last = -1;
+        let steady = 0;
+        const tick = () => {
+          const h = node.getBoundingClientRect().height;
+          steady = h === last ? steady + 1 : 0;
+          last = h;
+          if (steady >= 3) resolve();
+          else requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      }),
+  );
   await el.evaluate((node) => node.scrollIntoView({ block: 'end' }));
   const box = await el.boundingBox();
   const vh = page.viewportSize()!.height;
