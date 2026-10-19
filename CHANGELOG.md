@@ -81,6 +81,7 @@ The release moves it under the version it ships in.
 - Company settings: Billing for a usage-priced company shows this month's usage, the credit left of the $10 included, the vault fee and the cloud bot box prices instead of seats, and has no Workforce upgrade. Other companies see seats as before.
 - Cloud bot, Slack bot, external bot, meeting recording and invite messages no longer say you need Starter, Workforce or a seat upgrade. They say the company's plan does not include the feature yet.
 - Badges: a new honor, Ecom Rat, for HQ's honorary rat of ecommerce.
+- Setup on a Mac: first-run setup no longer asks macOS to install Apple's developer tools. On a Mac without them, setup used to open Apple's install prompt, which could ask for a 19 GB download and stop setup until it finished. HQ now uses only the git and Node it installs itself, and never runs the macOS stand-ins for git, python3, make or clang that open that prompt. HQ installs its own git before it sets up the HQ folder's history. The "Installing Apple's developer tools" screen is gone. If HQ cannot install its own tools, setup handles the failure the same way it did before.
 
 ## [0.11.12] — 2026-10-16
 
@@ -113,7 +114,6 @@ The release moves it under the version it ships in.
 - Linux: the `.deb` package now includes the app's screens. Before, the installed app opened to a blank window because every page came back "not found"; the screens were only present in the macOS and Windows installers. The app now finds them under the package's own library folder.
 - Linux: HQ's managed toolchain (Node, Git, the HQ command line tool) now installs under `~/.local/share/IndigoHQ/toolchain`, or under `$XDG_DATA_HOME/IndigoHQ/toolchain` when that variable is set to a full path, which is where the HQ installer puts it on Linux. Before, it used the macOS "Library/Application Support" folder on Linux too. macOS is unchanged.
 - Linux: every release now ships a `.deb` package and an AppImage for x86_64 computers, both signed for the updater. Both auto-update: the `.deb` asks for your system password (through the usual polkit prompt) to install the new package, and the AppImage replaces itself in place. A copy of the app that is not installed from one of these (a bare binary) still does not check for updates. Until the first Linux release is published, the app says there is no update available instead of logging an error. macOS and Windows are unchanged.
-- Setup on a Mac: first-run setup no longer asks macOS to install Apple's developer tools. On a Mac without them, setup used to open Apple's install prompt, which could ask for a 19 GB download and stop setup until it finished. HQ now uses only the git and Node it installs itself, and never runs the macOS stand-ins for git, python3, make or clang that open that prompt. HQ installs its own git before it sets up the HQ folder's history. The "Installing Apple's developer tools" screen is gone. If HQ cannot install its own tools, setup handles the failure the same way it did before.
 
 ## [0.11.9] — 2026-10-14
 
