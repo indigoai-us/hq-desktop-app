@@ -82,6 +82,16 @@ export const FIXTURE_BOXES: CompanyOutpostDetail[] = [
   }),
 ];
 
+/** Blocked because the company cannot use Outposts yet. Kept out of FIXTURE_BOXES. */
+export const UNAVAILABLE_BOX: CompanyOutpostDetail = fixtureOutpost({
+  id: "demo-6",
+  name: "still-lake",
+  state: "blocked",
+  unavailable: true,
+  lastSeenAt: null,
+  jobsCount: 0,
+});
+
 export interface PreviewSetup {
   role: CompanyOutpostRole;
   client: CompanyOutpostStub;
@@ -105,6 +115,8 @@ const screens: Record<string, () => PreviewSetup> = {
   "detail-running": () => setup("admin", FIXTURE_BOXES, "detail", { initialOutpostId: "demo-1" }),
   "detail-blocked-admin": () => setup("admin", FIXTURE_BOXES, "detail", { initialOutpostId: "demo-4" }),
   "detail-blocked-member": () => setup("member", FIXTURE_BOXES, "detail", { initialOutpostId: "demo-4" }),
+  "detail-unavailable-admin": () => setup("admin", [UNAVAILABLE_BOX], "detail", { initialOutpostId: "demo-6" }),
+  "detail-unavailable-member": () => setup("member", [UNAVAILABLE_BOX], "detail", { initialOutpostId: "demo-6" }),
   "detail-needs-attention": () => setup("admin", FIXTURE_BOXES, "detail", { initialOutpostId: "demo-3" }),
   "detail-preparing": () => setup("member", FIXTURE_BOXES, "detail", { initialOutpostId: "demo-2" }),
   remove: () => setup("admin", FIXTURE_BOXES, "remove", { initialOutpostId: "demo-1" }),

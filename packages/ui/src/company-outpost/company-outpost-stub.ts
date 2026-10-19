@@ -40,6 +40,7 @@ function toItem(detail: CompanyOutpostDetail): CompanyOutpostListItem {
     lastSeenAt: detail.lastSeenAt,
     jobsCount: detail.jobsCount,
     jobHealth: { ...detail.jobHealth },
+    ...(detail.unavailable ? { unavailable: true } : {}),
   };
 }
 

@@ -627,6 +627,7 @@
     type NavigationMode,
     type NavigationResolveOutcome,
   } from "./navigation-controller.js";
+  import { openWhenResolvable } from "./open-when-resolvable.js";
   import { consumeNavigationShortcut } from "./navigation-shortcuts.js";
   import {
     onDestroy,
@@ -11660,20 +11661,17 @@
     return navigation.navigate(destination, mode);
   }
 
-  // Company Outpost job links. The page keeps its own stub when this app has
-  // no outpost-jobs page yet, so an unknown route never shows a nav error.
+  // Company Outpost job links. The shell resolver is the single check: once a
+  // page registers outpost-jobs there, the link navigates. Until then the page
+  // keeps its own stub, so an unknown route never shows a nav error.
   async function openOutpostJobs(
     destination: NavigationDestination,
   ): Promise<boolean> {
     if (destination.kind !== "extra") return false;
-    const known =
-      railPlaceholderForPage(destination.page) ||
-      accountPlaceholderForPage(destination.page) ||
-      companyPagePlaceholderForPage(destination.page) ||
-      extraPages?.[destination.page];
-    if (!known) return false;
-    const result = await navigate(destination);
-    return result.committed;
+    return openWhenResolvable(destination, {
+      resolve: (next) => resolveDestination(next),
+      navigate: (next) => navigate(next),
+    });
   }
 
   function resolveDestination(

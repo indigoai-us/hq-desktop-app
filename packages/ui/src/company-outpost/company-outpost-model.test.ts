@@ -13,6 +13,11 @@ import {
   renameError,
   stateLabel,
   emptyHealth,
+  nextPollDelay,
+  POLL_BACKOFF_MAX_MS,
+  PREP_BUILD_MS,
+  PREP_STEPS,
+  prepStepAt,
   type CompanyOutpostListItem,
   type ProvisionResult,
 } from "./company-outpost-model.js";
@@ -100,5 +105,26 @@ describe("company outpost model", () => {
     });
     expect(machine).toEqual({ region: "US East", instanceId: "i-1", createdAt: "October 17, 2026" });
     expect(JSON.stringify(machine)).not.toContain("sk-secret");
+  });
+
+  it("moves the step text with the time the build has run, over about 7 minutes", () => {
+    expect(PREP_BUILD_MS).toBe(7 * 60_000);
+    const start = Date.parse("2026-10-18T16:00:00.000Z");
+    const slot = PREP_BUILD_MS / PREP_STEPS.length;
+    expect(prepStepAt(start, start)).toBe(0);
+    expect(prepStepAt(start, start + 30_000)).toBe(0);
+    expect(prepStepAt(start, start + slot)).toBe(1);
+    expect(prepStepAt(start, start + 2 * slot + 1)).toBe(2);
+    expect(prepStepAt(start, start + 3 * slot)).toBe(3);
+    expect(prepStepAt(start, start + 60 * 60_000)).toBe(PREP_STEPS.length - 1);
+    expect(prepStepAt(0, start)).toBe(0);
+    expect(prepStepAt(Number.NaN, start)).toBe(0);
+  });
+
+  it("doubles the wait between checks after an unexpected answer, up to a ceiling", () => {
+    expect(nextPollDelay(10_000, 0)).toBe(20_000);
+    expect(nextPollDelay(10_000, 20_000)).toBe(40_000);
+    expect(nextPollDelay(10_000, 100_000)).toBe(POLL_BACKOFF_MAX_MS);
+    expect(nextPollDelay(10_000, POLL_BACKOFF_MAX_MS)).toBe(POLL_BACKOFF_MAX_MS);
   });
 });

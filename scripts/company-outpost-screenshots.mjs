@@ -27,6 +27,8 @@ const screens = [
   "detail-running",
   "detail-blocked-admin",
   "detail-blocked-member",
+  "detail-unavailable-admin",
+  "detail-unavailable-member",
   "detail-needs-attention",
   "detail-preparing",
   "remove",

@@ -1517,7 +1517,6 @@ export const COMPANY_OUTPOST_PATHS = {
   destroy: "/outpost/destroy",
   jobs: "/outpost/company/jobs",
   jobsStatus: "/outpost/company/jobs/status",
-  signIn: "/outpost/company/signin",
 } as const;
 
 export function companyOutpostListPath(companyUid: string): string {
@@ -1825,8 +1824,6 @@ export interface AgentsApi {
   renameCompanyOutpost?(companyUid: string, outpostId: string, name: string): AdapterPromise<Json>;
   /** POST /outpost/destroy action delete. */
   removeCompanyOutpost?(companyUid: string, outpostId: string): AdapterPromise<Json>;
-  /** POST /outpost/company/signin action regenerate. Does not open a browser. */
-  signInCompanyOutpostAgain?(companyUid: string, outpostId: string): AdapterPromise<Json>;
   /** Re-reads company Outpost detail. attemptId is the outpost id from provision. */
   pollCompanyOutpostProvision?(companyUid: string, attemptId: string): AdapterPromise<Json>;
   /** GET /v1/google/accounts — the caller's connected Google accounts. */

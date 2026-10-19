@@ -11,6 +11,7 @@
   import ReadLoader from "../common/ReadLoader.svelte";
   import {
     OUTPOST_JOBS_ROUTE,
+    POLL_ERROR_LIMIT_MS,
     PREP_STEPS,
     blockedNote,
     canManageRole,
@@ -21,6 +22,8 @@
     outpostJobsDestination,
     UNAVAILABLE_COPY,
     needsAttentionNote,
+    nextPollDelay,
+    prepStepAt,
     renameError,
     stateLabel,
     whenLabel,
@@ -90,6 +93,15 @@
   let busy = $state(false);
   let attemptId = $state("");
   let prepStep = $state(0);
+  // When this screen started waiting for the add. The step text follows the
+  // build time, not the number of checks.
+  // svelte-ignore state_referenced_locally
+  let prepStartedAt = initialScreen === "preparing" ? Date.now() : 0;
+  // Back-off after an unexpected status answer. Automatic checks stop after
+  // POLL_ERROR_LIMIT_MS of these answers; Check now still works.
+  let backoffMs = 0;
+  let errorSince = 0;
+  let autoCheck = $state(true);
   // Outpost ids listed before the add. An add with no attempt id must not
   // adopt one of these as the new Outpost.
   let knownIds = $state<string[]>([]);
@@ -121,21 +133,52 @@
     selectedId = id;
     screen = "detail";
     renaming = false;
+    await loadDetail(id);
+  }
+
+  // Reads the detail again without changing the screen, so a check never
+  // closes the rename form or leaves the Remove screen.
+  async function loadDetail(id: string) {
     const result = await client.detail(id);
-    if (result.ok) detail = result.outpost;
+    if (result.ok && selectedId === id) detail = result.outpost;
+    syncPrepStep();
+  }
+
+  function syncPrepStep() {
+    const created = Date.parse(detail?.machine.createdAt ?? "");
+    const start = screen !== "preparing" && Number.isFinite(created) ? created : prepStartedAt;
+    prepStep = prepStepAt(start, Date.now());
+  }
+
+  function noteBackoff() {
+    backoffMs = nextPollDelay(pollMs ?? 0, backoffMs);
+    if (!errorSince) errorSince = Date.now();
+    if (Date.now() - errorSince >= POLL_ERROR_LIMIT_MS) autoCheck = false;
+  }
+
+  function clearBackoff() {
+    backoffMs = 0;
+    errorSince = 0;
+    autoCheck = true;
   }
 
   function applyProvision(result: ProvisionResult) {
     if (result.status === "checking") {
       signInNeeded = result.signIn;
+      if (result.backoff) noteBackoff();
+      else clearBackoff();
       return;
     }
     signInNeeded = false;
+    clearBackoff();
     if (result.status === "success" && screen === "preparing" && !attemptId && knownIds.includes(result.outpost.id)) return;
     items = listAfterProvision(items, result);
     if (result.status === "pending") {
       attemptId = result.attemptId;
-      if (screen !== "preparing") prepStep = 0;
+      if (screen !== "preparing") {
+        prepStartedAt = Date.now();
+        prepStep = 0;
+      }
       screen = "preparing";
       notice = "";
       return;
@@ -199,7 +242,7 @@
     polling = true;
     try {
       if (screen === "preparing") {
-        if (prepStep < PREP_STEPS.length - 1) prepStep += 1;
+        syncPrepStep();
         if (!attemptId) {
           await refresh();
           const added = items.find((item) => !knownIds.includes(item.id));
@@ -210,7 +253,7 @@
       }
       if (selectedId) {
         await refresh();
-        await openDetail(selectedId);
+        await loadDetail(selectedId);
       }
     } finally {
       polling = false;
@@ -272,6 +315,7 @@
         const result = await client.detail(initialOutpostId);
         if (live && result.ok) {
           detail = result.outpost;
+          syncPrepStep();
           selectedJob = result.outpost.jobs.find((job) => job.id === initialJobId) ?? result.outpost.jobs[0] ?? null;
         }
       }
@@ -286,13 +330,24 @@
   });
 
   $effect(() => {
-    if (pollMs == null) return;
+    if (pollMs == null || !autoCheck) return;
     const preparingDetail = screen === "detail" && (detail?.state ?? selected?.state) === "preparing";
     if (!(screen === "preparing" && manage) && !preparingDetail) return;
-    const timer = setInterval(() => {
-      void checkNow();
-    }, pollMs);
-    return () => clearInterval(timer);
+    const base = pollMs;
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      timer = setTimeout(() => {
+        void checkNow().then(() => {
+          if (live) schedule();
+        });
+      }, Math.max(base, backoffMs));
+    };
+    schedule();
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
   });
 </script>
 
@@ -490,6 +545,13 @@
         {#if manage}
           <RailButton icon="refresh" data-testid="check-now" onclick={() => void checkNow()}>Check now</RailButton>
         {/if}
+      </div>
+    {:else if state === "blocked" && (box?.unavailable ?? selected?.unavailable)}
+      <div class="co-card" data-testid="blocked-unavailable">
+        <p>{UNAVAILABLE_COPY}</p>
+        <div class="co-row">
+          <RailButton icon="refresh" data-testid="blocked-unavailable-retry" onclick={() => void checkNow()}>Try again</RailButton>
+        </div>
       </div>
     {:else if state === "blocked"}
       <div class="co-note" data-testid="blocked-note">{blockedNote(role)}</div>

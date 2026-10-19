@@ -178,4 +178,38 @@ describe("company outpost client", () => {
     const client = createCompanyOutpostClient({ companyUid: "cmp_1", canManage: true, api: {} });
     expect("signInAgain" in client).toBe(false);
   });
+
+  it("marks a blocked Outpost with a not-available reason the same way as the jobs page", () => {
+    const parsed = parseCompanyOutpostList({
+      outposts: [
+        { outpostId: "opc_1", name: "main", lifecycle: "blocked", blockedReason: "billing_required" },
+        { outpostId: "opc_2", name: "side", lifecycle: "blocked", blockedReason: "payment_method_required" },
+        { outpostId: "opc_3", name: "odd", lifecycle: "blocked", blockedReason: "outcome_unknown" },
+        { outpostId: "opc_4", name: "busy", lifecycle: "provisioning", blockedReason: "billing_required" },
+      ],
+    });
+    expect(parsed?.items.map((item) => [item.id, item.state, item.unavailable === true])).toEqual([
+      ["opc_1", "blocked", true],
+      ["opc_2", "blocked", true],
+      ["opc_3", "blocked", false],
+      ["opc_4", "preparing", false],
+    ]);
+    const detail = parseCompanyOutpostDetail({ outpost: { outpostId: "opc_1", lifecycle: "blocked", blockedReason: "payment_not_set_up" } });
+    expect(detail).toMatchObject({ state: "blocked", unavailable: true });
+  });
+
+  it("reads a provision or status answer whose Outpost is blocked as not available", () => {
+    const blocked = ok({ status: "success", outpost: { outpostId: "opc_1", lifecycle: "blocked", blockedReason: "billing_required" } });
+    expect(parseProvision(blocked)).toEqual({ status: "unavailable" });
+    expect(parseProvisionStatus(blocked)).toEqual({ status: "unavailable" });
+    expect(parseProvision(ok({ status: "payment_required" }))).toEqual({ status: "unavailable" });
+  });
+
+  it("asks the page to back off on an unexpected 400, 409, or 429 status read", () => {
+    const backoff = { status: "checking", signIn: false, backoff: true };
+    expect(parseProvisionStatus({ ok: false, reason: "error", code: "invalid_target", message: "x", status: 400 })).toEqual(backoff);
+    expect(parseProvisionStatus({ ok: false, reason: "error", code: "conflict", message: "x", status: 409 })).toEqual(backoff);
+    expect(parseProvisionStatus({ ok: false, reason: "error", code: "http-429", message: "slow down" })).toEqual(backoff);
+    expect(parseProvisionStatus({ ok: false, reason: "error", code: "network", message: "offline" })).toEqual({ status: "checking", signIn: false });
+  });
 });

@@ -15,6 +15,7 @@ import {
   countsFromJobs,
   emptyHealth,
   failureCopy,
+  isNotAvailableCode,
   mapLifecycleState,
   nextOutpostName,
   publicMachine,
@@ -127,18 +128,23 @@ export function parseListItem(value: unknown): CompanyOutpostListItem | null {
   const jobsCount = typeof body.jobsCount === "number" ? body.jobsCount : jobs.length;
   const signIn = rec(body.signIn);
   const lifecycle = asString(body.lifecycle) || asString(body.state);
+  const state = mapLifecycleState({
+    state: lifecycle,
+    stopped: body.stopped === true,
+    blocked: body.blocked === true || asString(body.blockedReason) === "outcome_unknown",
+    signedIn: signIn ? signIn.signedIn === true : undefined,
+  });
+  // Same rule as the jobs page: a blocked Outpost whose reason is a
+  // not-available code shows the neutral not-available state.
+  const unavailable = state === "blocked" && isNotAvailableCode(asString(body.blockedReason));
   return {
     id,
     name,
-    state: mapLifecycleState({
-      state: lifecycle,
-      stopped: body.stopped === true,
-      blocked: body.blocked === true || asString(body.blockedReason) === "outcome_unknown",
-      signedIn: signIn ? signIn.signedIn === true : undefined,
-    }),
+    state,
     lastSeenAt: asString(body.lastSeenAt) || asString(body.last_seen_at) || asString(body.updatedAt) || null,
     jobsCount,
     jobHealth: healthCounts(body.jobHealth, jobs),
+    ...(unavailable ? { unavailable: true } : {}),
   };
 }
 
@@ -198,8 +204,6 @@ function codeOf(result: AdapterResult<Json>): string {
   return `${result.code ?? ""} ${result.message ?? ""}`.toLowerCase();
 }
 
-const NOT_AVAILABLE_YET = new Set(["payment_not_set_up", "billing_required"]);
-
 const BUSY_LIFECYCLE = new Set(["provisioning", "confirming", "starting", "stopping", "destroying", "pending"]);
 
 export function parseProvision(result: AdapterResult<Json>): ProvisionResult {
@@ -231,7 +235,7 @@ export function parseProvision(result: AdapterResult<Json>): ProvisionResult {
   if (status === "already_exists" || code === "already_exists") {
     return { status: "already_exists", outpostId: asString(body.outpostId) || undefined };
   }
-  if (NOT_AVAILABLE_YET.has(status) || NOT_AVAILABLE_YET.has(code)) return { status: "unavailable" };
+  if (isNotAvailableCode(status) || isNotAvailableCode(code)) return { status: "unavailable" };
   if (status === "failure" || status === "error" || body.error === true) {
     return { status: "failure", message: failureCopy() };
   }
@@ -243,6 +247,7 @@ export function parseProvision(result: AdapterResult<Json>): ProvisionResult {
   if (BUSY_LIFECYCLE.has(lifecycle) && status !== "success" && status !== "failure") return { status: "pending", attemptId };
   if (lifecycle === "ready" && asString(outpostRec?.runtimeConfirmation) === "pending") return { status: "pending", attemptId };
   const outpost = parseListItem(body.outpost ?? body);
+  if (outpost?.unavailable) return { status: "unavailable" };
   if (outpost && (status === "success" || status === "ready" || status === "running" || status === "preparing" || lifecycle === "ready" || lifecycle === "running" || status === "")) {
     return { status: "success", outpost };
   }
@@ -254,6 +259,7 @@ export function parseProvision(result: AdapterResult<Json>): ProvisionResult {
  * Reads a provision status poll. Only a clear answer ends the wait: a failure
  * body, a 404, or 403. A read that fails for any other reason (network, 5xx,
  * an expired sign-in) keeps checking, because the add may still be running.
+ * An unexpected 400, 409, or 429 keeps checking with back-off.
  */
 export function parseProvisionStatus(result: AdapterResult<Json>): ProvisionResult {
   if (!result.ok) {
@@ -262,6 +268,9 @@ export function parseProvisionStatus(result: AdapterResult<Json>): ProvisionResu
     if (result.status === 401 || code.includes("401") || code.includes("unauthorized")) return { status: "checking", signIn: true };
     if (result.status === 403 || code.includes("403") || code.includes("forbidden") || code.includes("admin_required")) {
       return { status: "forbidden" };
+    }
+    if ([400, 409, 429].includes(result.status ?? 0) || /\b(400|409|429)\b/.test(code)) {
+      return { status: "checking", signIn: false, backoff: true };
     }
     return { status: "checking", signIn: false };
   }

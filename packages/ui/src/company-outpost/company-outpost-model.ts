@@ -34,6 +34,38 @@ export const PREP_STEPS = [
   "Confirming the Outpost is ready for Claude sign-in.",
 ] as const;
 
+/** A new Outpost takes about seven minutes to build. */
+export const PREP_BUILD_MS = 7 * 60_000;
+
+/** Step shown after the build has run for now - startedAt, spread over the build time. */
+export function prepStepAt(startedAt: number, now: number): number {
+  if (!Number.isFinite(startedAt) || startedAt <= 0 || now <= startedAt) return 0;
+  const slot = PREP_BUILD_MS / PREP_STEPS.length;
+  return Math.min(PREP_STEPS.length - 1, Math.floor((now - startedAt) / slot));
+}
+
+/** Longest wait between automatic checks after an unexpected answer. */
+export const POLL_BACKOFF_MAX_MS = 2 * 60_000;
+
+/** Automatic checks stop after this long of unexpected answers. Check now still works. */
+export const POLL_ERROR_LIMIT_MS = 10 * 60_000;
+
+export function nextPollDelay(pollMs: number, previous: number): number {
+  return Math.min(POLL_BACKOFF_MAX_MS, Math.max(pollMs, previous) * 2);
+}
+
+/** Blocked reasons that mean the company cannot use Outposts yet. Same list as the jobs page. */
+export const NOT_AVAILABLE_CODES: readonly string[] = [
+  "billing_required",
+  "payment_not_set_up",
+  "payment_required",
+  "payment_method_required",
+];
+
+export function isNotAvailableCode(code: string): boolean {
+  return NOT_AVAILABLE_CODES.includes(code.trim().toLowerCase());
+}
+
 export type CompanyOutpostRole = "owner" | "admin" | "member" | "guest";
 
 export type CompanyOutpostState = "running" | "preparing" | "needs_attention" | "blocked";
@@ -55,6 +87,8 @@ export interface CompanyOutpostListItem {
   lastSeenAt: string | null;
   jobsCount: number;
   jobHealth: JobHealthCounts;
+  /** Blocked because the company cannot use Outposts yet. */
+  unavailable?: boolean;
 }
 
 export interface CompanyOutpostMachine {
@@ -95,8 +129,9 @@ export type ProvisionResult =
   | { status: "failure"; message: string }
   | { status: "forbidden" }
   // A status read failed. The add may still be in progress, so the screen
-  // keeps checking. signIn is set when the HQ sign-in expired.
-  | { status: "checking"; signIn: boolean };
+  // keeps checking. signIn is set when the HQ sign-in expired. backoff is set
+  // on an unexpected 400, 409, or 429 so the screen waits longer each time.
+  | { status: "checking"; signIn: boolean; backoff?: true };
 
 export function canManageRole(role: CompanyOutpostRole): boolean {
   return role === "owner" || role === "admin";

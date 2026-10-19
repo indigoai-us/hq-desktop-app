@@ -1381,8 +1381,6 @@ export function createSyncPlatformAdapter(
         hqProJson('POST', COMPANY_OUTPOST_PATHS.status, { companyUid, ownerKind: 'company', action: 'rename', outpostId, name }),
       removeCompanyOutpost: (companyUid, outpostId) =>
         hqProJson('POST', COMPANY_OUTPOST_PATHS.destroy, { companyUid, ownerKind: 'company', action: 'delete', outpostId }),
-      signInCompanyOutpostAgain: (companyUid, outpostId) =>
-        hqProJson('POST', COMPANY_OUTPOST_PATHS.signIn, { companyUid, action: 'regenerate', outpostId }),
       pollCompanyOutpostProvision: (companyUid, attemptId) =>
         hqProRequestWithStatus('GET', companyOutpostDetailPath(companyUid, attemptId)),
       listMyGoogleAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.googleAccounts),

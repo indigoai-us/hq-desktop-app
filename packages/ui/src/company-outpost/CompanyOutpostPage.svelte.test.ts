@@ -2,9 +2,9 @@
 import { createRawSnippet, flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import CompanyOutpostPage from "./CompanyOutpostPage.svelte";
-import { COMPANY_OUTPOST_SCREENS, companyOutpostPreview, FIXTURE_BOXES, FIXTURE_NOW, successOutpost } from "./company-outpost.fixture.js";
+import { COMPANY_OUTPOST_SCREENS, companyOutpostPreview, FIXTURE_BOXES, FIXTURE_NOW, successOutpost, UNAVAILABLE_BOX } from "./company-outpost.fixture.js";
 import { createCompanyOutpostStub } from "./company-outpost-stub.js";
-import { blockedNote, failureCopy, outpostJobsDestination, UNAVAILABLE_COPY } from "./company-outpost-model.js";
+import { blockedNote, failureCopy, outpostJobsDestination, POLL_ERROR_LIMIT_MS, PREP_STEPS, UNAVAILABLE_COPY } from "./company-outpost-model.js";
 import type { CompanyOutpostRole } from "./company-outpost-model.js";
 
 const BILLING_TEXT = /billing|billed|\bbill\b|charge|payment|payer|\bpays?\b|price|pricing|invoice|subscription|USD|\$\s?\d|a month|per month/i;
@@ -385,6 +385,122 @@ describe("Company Outpost page", () => {
     await Promise.resolve();
     flushSync();
     expect(client.readItems().map((item) => item.id)).not.toContain("demo-1");
+  });
+
+  it("shows a blocked Outpost that is not available with the neutral state, for admin and member, light and dark", async () => {
+    for (const theme of ["light", "dark"]) {
+      document.documentElement.setAttribute("data-force-theme", theme);
+      for (const role of ["admin", "member"] as const) {
+        const label = `${theme} ${role}`;
+        const { target, client } = await show(role, { items: [...FIXTURE_BOXES, UNAVAILABLE_BOX] });
+        click(target, `open-${UNAVAILABLE_BOX.id}`);
+        await settle();
+        const card = target.querySelector<HTMLElement>("[data-testid='blocked-unavailable']");
+        expect(card, label).not.toBeNull();
+        expect(card!.querySelectorAll("p"), label).toHaveLength(1);
+        expect(card!.querySelector("p")?.textContent, label).toBe(UNAVAILABLE_COPY);
+        const buttons = card!.querySelectorAll("button");
+        expect(buttons, label).toHaveLength(1);
+        expect(buttons[0]?.textContent?.trim(), label).toBe("Try again");
+        expect(target.querySelector("[data-testid='blocked-note']"), label).toBeNull();
+        expect(target.textContent, label).not.toContain("HQ has been notified");
+        expect(target.textContent, label).not.toContain("follow up by email");
+        expect(target.textContent ?? "", label).not.toMatch(BILLING_TEXT);
+        const lists = client.listCount();
+        click(target, "blocked-unavailable-retry");
+        await settle();
+        expect(client.listCount(), label).toBeGreaterThan(lists);
+        expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-screen"), label).toBe("detail");
+        await unmount(component!);
+        component = null;
+      }
+    }
+    document.documentElement.removeAttribute("data-force-theme");
+  });
+
+  it("keeps the generic blocked note for a blocked Outpost with any other reason", async () => {
+    const { target } = await show("admin");
+    click(target, "open-demo-4");
+    await settle();
+    expect(target.querySelector("[data-testid='blocked-note']")?.textContent).toBe(blockedNote("admin"));
+    expect(target.querySelector("[data-testid='blocked-unavailable']")).toBeNull();
+  });
+
+  it("keeps an open rename form and the Remove screen while the check runs", async () => {
+    vi.useFakeTimers();
+    const { target, client } = await show("admin", {}, { pollMs: 1000, initialScreen: "detail", initialOutpostId: "demo-2" });
+    await settle();
+    click(target, "rename");
+    const input = target.querySelector<HTMLInputElement>("[data-testid='rename-name']")!;
+    input.value = "new-name";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    const lists = client.listCount();
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(client.listCount()).toBeGreaterThan(lists);
+    expect(target.querySelector("[data-testid='rename-form']")).not.toBeNull();
+    expect(target.querySelector<HTMLInputElement>("[data-testid='rename-name']")?.value).toBe("new-name");
+    click(target, "rename-cancel");
+
+    const list = client.list.bind(client);
+    let release: (() => void) | null = null;
+    client.list = () => new Promise((resolve) => {
+      release = () => void list().then(resolve);
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(release).not.toBeNull();
+    click(target, "remove");
+    expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-screen")).toBe("remove");
+    release!();
+    await settle();
+    expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-screen")).toBe("remove");
+    expect(target.querySelector("[data-testid='remove-name']")).not.toBeNull();
+  });
+
+  it("backs off after an unexpected status answer and stops on its own at the time limit, leaving Check now", async () => {
+    vi.useFakeTimers();
+    const odd = { status: "checking" as const, signIn: false, backoff: true as const };
+    const { target, client } = await show("admin", {
+      items: [],
+      plan: [{ status: "pending", attemptId: "op_1" }, ...Array.from({ length: 60 }, () => odd)],
+    }, { pollMs: 1000 });
+    await addOutpost(target);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(client.pollArgs()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(client.pollArgs()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(client.pollArgs()).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(POLL_ERROR_LIMIT_MS + 5 * 60_000);
+    const stopped = client.pollArgs().length;
+    expect(stopped).toBeLessThan(20);
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    expect(client.pollArgs()).toHaveLength(stopped);
+    await settle();
+    expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-screen")).toBe("preparing");
+    expect(target.textContent).not.toContain(failureCopy());
+    click(target, "check-now");
+    await settle();
+    expect(client.pollArgs()).toHaveLength(stopped + 1);
+  });
+
+  it("moves the step text with the build time, not with each check", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXTURE_NOW);
+    const { target } = await show("admin", {
+      items: [],
+      plan: Array.from({ length: 400 }, () => ({ status: "pending" as const, attemptId: "op_1" })),
+    }, { pollMs: 1000 });
+    await addOutpost(target);
+    const step = () => target.querySelector("[data-testid='prep-step']")?.textContent;
+    expect(step()).toBe(PREP_STEPS[0]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await settle();
+    expect(step()).toBe(PREP_STEPS[0]);
+    await vi.advanceTimersByTimeAsync(210_000);
+    await settle();
+    expect(step()).toBe(PREP_STEPS[2]);
   });
 
   it("tells a guest they do not have access", async () => {
