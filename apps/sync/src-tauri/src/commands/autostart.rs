@@ -180,6 +180,10 @@ fn restart_preferring_launch_agent_with_update_version(
                 "updater",
                 "restart handed to launchd; exiting without GUI relaunch",
             );
+            crate::first_run_log::shell(
+                crate::first_run_log::ShellEvent::Relaunch,
+                if update_version.is_some() { "update-launchd" } else { "restart-launchd" },
+            );
             app.exit(0);
             std::process::exit(0);
         }
@@ -198,6 +202,10 @@ fn restart_preferring_launch_agent_with_update_version(
             );
         }
     }
+    crate::first_run_log::shell(
+        crate::first_run_log::ShellEvent::Relaunch,
+        if update_version.is_some() { "update-gui" } else { "restart-gui" },
+    );
     app.restart()
 }
 

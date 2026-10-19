@@ -19,6 +19,7 @@ import {
   type AdapterResult,
   type IdentityApi,
   type SettingsApi,
+  type ShellApi,
 } from "@hq/platform";
 import { createLaunchActions, type LaunchShell } from "../../settings/launch-actions";
 import type { FirstRunRuntime } from "./visual-first-run";
@@ -222,4 +223,48 @@ export async function openPreparedCodingTool(input: {
     return { kind: "open-failed", message: error };
   }
   return { kind: "opened" };
+}
+
+/** What the welcome edition says when there is no HQ folder to open. */
+export const WELCOME_HARNESS_NO_FOLDER = "Could not find your HQ folder. Try again in a moment.";
+
+/** The harnesses the desktop app can open from the welcome edition. Cursor opens the HQ folder, without a prompt. */
+export const WELCOME_OPENABLE_HARNESSES = ["claude-code", "codex", "cursor"] as const;
+
+/**
+ * Opens HQ in the harness a welcome action names, with the action's prompt
+ * (US-019). It never reads the tool picked at Continue or the brief's saved
+ * engine. Resolves with a plain line when it could not open, else null.
+ */
+export async function openWelcomeHarness(input: {
+  harness: "claude-code" | "codex" | "cursor";
+  prompt: string;
+  settings: ContinueInToolInput["settings"];
+  shell: LaunchShell & Pick<ShellApi, "launchCursorWorkspace">;
+}): Promise<string | null> {
+  const folder = await hqFolder(input.settings);
+  if (!folder) {
+    console.warn("[brief] no HQ folder to open the welcome harness in");
+    return WELCOME_HARNESS_NO_FOLDER;
+  }
+  if (input.harness === "cursor") {
+    // Cursor takes no first message, so it opens on the HQ folder alone.
+    const result = await input.shell.launchCursorWorkspace(folder);
+    if (result.ok) return null;
+    console.warn("[brief] could not open Cursor:", result.message);
+    return "Cursor could not open. Open your HQ folder in Cursor to keep going.";
+  }
+  const actions = createLaunchActions({
+    shell: input.shell,
+    hqFolderPath: folder,
+    prompt: input.prompt,
+    // The terminal CLIs get the prompt too, as their first message.
+    terminalPrompt: input.prompt,
+  });
+  const error = input.harness === "claude-code" ? await actions.launchClaude() : await actions.launchCodex();
+  if (!error) return null;
+  // The launcher's own copy can quote the prompt; the edition never shows a prompt.
+  console.warn("[brief] could not open the welcome harness:", error);
+  const name = input.harness === "claude-code" ? "Claude Code" : "Codex";
+  return name + " could not open. Open your HQ folder in " + name + " to keep going.";
 }

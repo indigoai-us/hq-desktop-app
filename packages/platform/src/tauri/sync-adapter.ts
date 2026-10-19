@@ -1673,6 +1673,11 @@ export function createSyncPlatformAdapter(
         if (result.ok) dispatchPostReadyAction('open_cli');
         return result;
       },
+      launchCursorWorkspace: async (path) => {
+        const result = await call<void>('launch_cursor_workspace', { path });
+        if (result.ok) dispatchPostReadyAction('open_cli');
+        return result;
+      },
       launchCliInTerminal: async (args) => {
         const rec = asRecord(args) ?? {};
         const path = String(rec.path ?? '');
@@ -1873,6 +1878,12 @@ export function createSyncPlatformAdapter(
 
     localScan: {
       scan: () => call('scan_local_sessions'),
+    },
+
+    // (src-tauri/src/commands/import_report.rs)
+    importReport: {
+      write: (input) => call('import_report_write', { input }),
+      latest: () => call('import_report_latest'),
     },
 
     settings: {

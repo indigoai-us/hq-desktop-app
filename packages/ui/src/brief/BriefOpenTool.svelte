@@ -45,7 +45,7 @@
     font-size: 12px;
     font-weight: 400;
     line-height: 16px;
-    color: rgba(255, 255, 255, 0.62);
+    color: var(--open-tool-detail, rgba(255, 255, 255, 0.62));
   }
   .cta {
     font: inherit;

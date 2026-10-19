@@ -2202,6 +2202,8 @@ export interface ShellApi {
    *  Backed by the `launch_codex_workspace` command (ChatGPT-bundled CLI's
    *  `codex app <path>` + delayed `codex://threads/new?prompt=` follow-up). */
   launchCodexWorkspace(path: string, prompt?: string): AdapterPromise<void>;
+  /** Open the folder in Cursor (`launch_cursor_workspace`). Cursor takes no first prompt. */
+  launchCursorWorkspace(path: string): AdapterPromise<void>;
   /** Open `{ path, tool }` (tool: claude | codex | grok) in a terminal. An
    *  optional `prompt` string is handed to the tool as its first prompt. */
   launchCliInTerminal(args: Json): AdapterPromise<void>;
@@ -2625,6 +2627,10 @@ export interface LocalToolSessionsView {
   last_active_at: number | null;
   /** This tool's share of all sessions in the last 30 days, 0..1. */
   share_last_30d: number;
+  /** Distinct UTC days with a session file (older hosts omit it). */
+  days_seen?: number;
+  /** Unix ms of the oldest session file, or null when there is none. */
+  first_active_at?: number | null;
 }
 
 /** A project the coding tools worked in, named from its folder. */
@@ -2662,11 +2668,48 @@ export interface LocalScanView {
   sources: LocalScanSourceView[];
   truncated: boolean;
   elapsed_ms: number;
+  /** Distinct UTC days with a session file across all tools (older hosts omit it). */
+  days_seen?: number;
+  /** Unix ms of the oldest session file across all tools, or null. */
+  first_active_at?: number | null;
 }
 
 /** Desktop-only: the native launch scan (no hq-cli). */
 export interface LocalScanApi {
   scan(): AdapterPromise<LocalScanView>;
+}
+
+/**
+ * What the tree step's scan found, handed to the host to write as
+ * `workspace/imports/<stamp>/report.json`. Counts, times, harness ids and
+ * project names only; the host drops any name that looks like a path.
+ */
+export interface ImportReportInput {
+  sessions: {
+    total: number;
+    claude: number;
+    codex: number;
+    /** 0 when no Cursor workspace was scanned. */
+    cursor: number;
+    /** null when the scan that ran could not tell. */
+    days_seen: number | null;
+    /** Unix ms, or null. */
+    first_at: number | null;
+    last_at: number | null;
+  };
+  /** "claude-code" | "codex" | "cursor" */
+  tools: string[];
+  projects: string[];
+  /** Any of the report's 12 count keys; missing ones are written as 0. */
+  counts: Partial<Record<string, number>>;
+}
+
+/** Desktop-only: write and read the first-run import report. */
+export interface ImportReportApi {
+  /** Writes a new report and answers its path relative to the HQ folder. */
+  write(input: ImportReportInput): AdapterPromise<string>;
+  /** The newest report's contract fields, or null when there is none. */
+  latest(): AdapterPromise<Record<string, unknown> | null>;
 }
 
 /**
@@ -3299,6 +3342,8 @@ export interface PlatformAdapter {
   readonly contextImport?: ContextImportApi;
   /** Optional: only the desktop host can scan this computer natively at launch. */
   readonly localScan?: LocalScanApi;
+  /** Optional: only the desktop host writes the first-run import report. */
+  readonly importReport?: ImportReportApi;
   /** Optional: only the desktop host can read and prune local HQ backups. */
   readonly storage?: StorageApi;
   /** Optional: a cloud bot's own runtime MCPs. */
