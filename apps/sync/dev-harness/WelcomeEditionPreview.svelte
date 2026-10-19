@@ -1,0 +1,45 @@
+<script lang="ts">
+  /**
+   * Preview of the welcome edition (?view=welcome-edition) drawn from the
+   * seeded brief.json `welcome` fixture: 38 projects, mostly Claude Code
+   * (US-019). The brief run is served from memory through the real runs
+   * page, so the edition renders exactly as the first brief does. No network,
+   * no credentials.
+   */
+  import WelcomeReport from '../../../packages/ui/src/brief/WelcomeReport.svelte';
+  import BriefRunsPage from '../../../packages/ui/src/brief/BriefRunsPage.svelte';
+  import type { BriefSweepSource } from '../../../packages/ui/src/brief/brief-data';
+  import seeded from '../../../packages/ui/src/brief/fixtures/welcome-38-projects.json';
+  import { configureBriefSeed } from '../../../packages/ui/src/brief/brief-seed';
+
+  // The harness seeds every brief with the October 8 fixture. The welcome
+  // edition reads only the served brief.json, so turn the seed off here.
+  configureBriefSeed(null);
+
+  const RUN = 'brief-20261008-090000';
+  const files: Record<string, string> = {
+    'workspace/brief/index.jsonl': JSON.stringify({
+      run_id: RUN,
+      created_at: '2026-10-08T16:00:00Z',
+      state: 'ready',
+      catch_up: false,
+      lead: 'decisions',
+      counts: { decisions: 0, shipped: 0, incidents: 0 },
+      headline: 'Your first brief',
+    }),
+    [`workspace/brief/${RUN}/brief-data.json`]: '{}',
+    [`workspace/brief/${RUN}/brief.json`]: JSON.stringify(seeded),
+  };
+  const source: BriefSweepSource = { readHqFile: async (p) => files[p] ?? null };
+  const never = <T,>() => new Promise<T>(() => undefined);
+</script>
+
+<div style="height:100vh;overflow:auto">
+  <WelcomeReport
+    ready
+    aiApps={{ detect: async () => null, cli: { claudeCode: true, codex: true } }}
+    openTool={{ label: 'Open Claude Code', detail: 'Claude Code is set up with HQ. Open it to keep working there.', busy: false, error: null, onopen: () => undefined }}
+  >
+    <BriefRunsPage adapter={{} as never} companies={[]} {source} onconnectcompany={() => undefined} onlaunch={async () => never()} />
+  </WelcomeReport>
+</div>

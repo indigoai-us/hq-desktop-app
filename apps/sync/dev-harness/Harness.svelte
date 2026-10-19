@@ -20,6 +20,7 @@
   import HeadsUpWindow from '../src/components/onboarding/HeadsUpWindow.svelte';
   import YourAppsPreview from './YourAppsPreview.svelte';
   import WelcomeReportPreview from './WelcomeReportPreview.svelte';
+  import WelcomeEditionPreview from './WelcomeEditionPreview.svelte';
   import RisePreview from './RisePreview.svelte';
   import TeamCardPreview from './TeamCardPreview.svelte';
   import MarketplaceDetailPreview from './MarketplaceDetailPreview.svelte';
@@ -362,6 +363,10 @@
        integrations from a fake scan: ?state=ready|held&company=acme|none.
        Size the viewport to ~1280x900. In-page answers only. -->
   <WelcomeReportPreview />
+{:else if view === 'welcome-edition'}
+  <!-- The welcome edition from the seeded brief.json welcome (38 projects,
+       Claude Code). ?theme=dark|light. Size the viewport to ~1280x900. -->
+  <WelcomeEditionPreview />
 {:else if view === 'team-card'}
   <!-- The first-run team card on its own (no switch makes the setup bot send
        its team block): ?state=invite|existing|none|error|settled. -->

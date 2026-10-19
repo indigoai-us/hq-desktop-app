@@ -6,6 +6,7 @@
  */
 
 import type { BriefCalendarEvent, BriefDecision, BriefInput } from "./brief-types.js";
+import { plainLine } from "./brief-runs.js";
 import { WELCOME_HARNESS_NAME, primaryAction, type WelcomeAction, type WelcomeBriefFields, type WelcomeHarnessId } from "./brief-welcome-contract.js";
 
 export const WELCOME_EDITION_EYEBROW = "Your welcome edition · Ready";
@@ -95,9 +96,12 @@ const RAW = /traceback|exception|stack trace|\berror:|\bgh\s+(?:auth|api|pr)\b|\
 /** Case matters here: "KeyError", "ENOENT", never "terror" or "Every". */
 const RAW_CODE = /\b[A-Z]\w*Error\b|\bE(?:NOENT|ACCES|PERM|CONNREFUSED|CONNRESET|TIMEDOUT|ADDRINUSE|PIPE|NOTFOUND)\b/;
 
-/** Text from brief.json `welcome` when it reads as plain words; null for a path, a filename or raw operator text. */
-export function plainWelcomeText(text: string | null | undefined): string | null {
-  const t = text?.replace(/\s+/g, " ").trim();
+/**
+ * Text from brief.json `welcome` when it reads as plain words; null for a path, a filename or raw operator text.
+ * The brief's own plainLine check runs first, so the edition never shows a line the activity rows would hide.
+ */
+export function plainWelcomeText(text: string | null | undefined, max = 140): string | null {
+  const t = plainLine(text?.replace(/\s+/g, " "), max);
   if (!t || looksLikePath(t) || RAW.test(t) || RAW_CODE.test(t)) return null;
   return t;
 }

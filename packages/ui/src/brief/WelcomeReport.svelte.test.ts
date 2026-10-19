@@ -385,23 +385,21 @@ describe("WelcomeReport", () => {
     expect(q('[data-testid="brief-open-tool-button"]')).toBeNull();
   });
 
-  it("says the assistant made the report and Meet <Name> opens its DM", async () => {
-    const onmeet = vi.fn();
-    mountReport({ ready: true, madeBy: { name: "Atlas", onmeet }, children: briefPage });
-    await settle();
-    const line = q('[data-testid="welcome-report-made-by"]');
-    expect(line?.textContent).toContain("Atlas made this report.");
-    const meet = q('[data-testid="welcome-report-meet"]');
-    expect(meet?.textContent).toBe("Meet Atlas");
-    meet!.click();
-    expect(onmeet).toHaveBeenCalledTimes(1);
-  });
-
-  it("names an unnamed assistant in lower case inside the Meet button", async () => {
-    mountReport({ ready: true, madeBy: { name: "Your assistant", onmeet: vi.fn() }, children: briefPage });
-    await settle();
-    expect(q('[data-testid="welcome-report-made-by"]')?.textContent).toContain("Your assistant made this report.");
-    expect(q('[data-testid="welcome-report-meet"]')?.textContent).toBe("Meet your assistant");
+  it("draws no made-by line or Meet button above the brief, even with a named assistant (US-019)", async () => {
+    for (const name of ["Atlas", "Your assistant"]) {
+      const onmeet = vi.fn();
+      mountReport({ ready: true, madeBy: { name, onmeet }, children: briefPage });
+      await settle();
+      expect(q('[data-testid="welcome-report-ready"]')).not.toBeNull();
+      expect(q('[data-testid="welcome-report-made-by"]')).toBeNull();
+      expect(q('[data-testid="welcome-report-meet"]')).toBeNull();
+      expect(document.body.textContent).not.toContain("made this report");
+      expect(document.body.textContent).not.toMatch(/Meet (?:Atlas|your assistant)/);
+      expect(onmeet).not.toHaveBeenCalled();
+      if (component) await unmount(component);
+      component = null;
+      target?.remove();
+    }
   });
 
   it("with no assistant, shows no made-by line and no Meet button", async () => {
