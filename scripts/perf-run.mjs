@@ -379,63 +379,83 @@ async function timeToNextPaint(page, act) {
 }
 
 /**
- * Palette budget: the frame that paints the input, not the frame after it.
- * The entrance animation starts at opacity 0, so opacity is not the signal.
- * `[hidden]` on the backdrop is: the shell premounts the palette invisible.
- * The predicate lives inside the page callback; Node has no document.
+ * Palette budget: Cmd-K keydown to the end of the frame that paints the
+ * palette with its result rows.
+ *
+ * - Start: the keydown's own `event.timeStamp`, so time the event waited in
+ *   the page's queue counts.
+ * - Ready: the palette input is visible (has a box, not under `[hidden]`)
+ *   and at least one result row (`[role="option"]`) has a box.
+ * - End: from the first animation frame in which the palette is ready, a
+ *   message posted on a MessageChannel. Its task runs after that frame's
+ *   style, layout and paint, so the sample includes the paint and the wait
+ *   for the frame. It does not include compositor and display latency after
+ *   the paint, which the page cannot observe.
+ *
+ * An earlier definition stopped on the microtask after the keydown handler.
+ * That only timed the handler's state change and read 0.0 ms; it did not
+ * include rendering or the frame. The predicate lives inside the page
+ * callback; Node has no document.
  */
-async function timeToPaletteFirstPaint(page) {
-  // t0 is the Cmd-K keydown in the page. The shortcut handler runs in the
-  // capture phase and queues the Svelte flush; this listener is bubble, so
-  // its microtask runs after that flush and sees the input in the frame
-  // that will paint it. Waiting for rAF measures the following frame.
+const PALETTE_ROW_SELECTOR = '[data-testid="command-palette"] [role="option"]';
+
+async function timeToPalettePainted(page) {
   const pending = page.evaluate(
-    () =>
+    (rowSelector) =>
       new Promise((res) => {
         const armed = performance.now();
         let t0 = 0;
         let settled = false;
-        const ready = () => {
-          const input = document.querySelector(
-            '[data-testid="command-palette"] input',
-          );
-          if (!input || input.closest("[hidden]")) return false;
-          const style = getComputedStyle(input);
+        const visible = (el) => {
+          if (!el || el.closest("[hidden]")) return false;
+          const style = getComputedStyle(el);
           if (style.display === "none" || style.visibility === "hidden") {
             return false;
           }
-          const box = input.getBoundingClientRect();
+          const box = el.getBoundingClientRect();
           return box.width > 0 && box.height > 0;
         };
-        const finish = (now) => {
+        const ready = () =>
+          visible(
+            document.querySelector('[data-testid="command-palette"] input'),
+          ) && visible(document.querySelector(rowSelector));
+        const finish = (value) => {
           if (settled) return;
           settled = true;
-          window.removeEventListener("keydown", onKey, false);
-          res(now - (t0 || armed));
+          window.removeEventListener("keydown", onKey, true);
+          res(value);
         };
-        const check = () => {
+        const afterPaint = () => {
+          const channel = new MessageChannel();
+          channel.port1.onmessage = () => finish(performance.now() - t0);
+          channel.port2.postMessage(0);
+        };
+        const frame = () => {
           if (settled) return;
-          const now = performance.now();
-          if (t0 && (ready() || now - t0 >= 1000)) {
-            finish(now);
+          if (ready()) {
+            afterPaint();
             return;
           }
-          if (!t0 && now - armed >= 2000) {
-            finish(now);
+          if (performance.now() - t0 >= 1000) {
+            finish(null);
             return;
           }
-          requestAnimationFrame(check);
+          requestAnimationFrame(frame);
         };
         const onKey = (event) => {
           if (t0) return;
           if (event.key.toLowerCase() !== "k") return;
           if (!event.metaKey && !event.ctrlKey) return;
-          t0 = performance.now();
-          queueMicrotask(check);
+          t0 = event.timeStamp;
+          requestAnimationFrame(frame);
         };
-        window.addEventListener("keydown", onKey, false);
-        requestAnimationFrame(check);
+        // Capture on window runs before the shell's own handler.
+        window.addEventListener("keydown", onKey, true);
+        setTimeout(() => {
+          if (!t0) finish(null);
+        }, 2000 + (performance.now() - armed));
       }),
+    PALETTE_ROW_SELECTOR,
   );
   await page.keyboard.press("Meta+k");
   return pending;
@@ -455,10 +475,9 @@ async function measureInteractions(page) {
     out["interaction.switchConversation"] = null;
   }
 
-  // Command palette: keydown → the input is in the frame that will paint
-  // it. The next animation frame is the frame after that paint. App work
-  // on this path is about 3 ms.
-  out["interaction.commandPalette"] = await timeToPaletteFirstPaint(page);
+  // Command palette: keydown to the end of the frame that paints the
+  // palette with its result rows (see timeToPalettePainted).
+  out["interaction.commandPalette"] = await timeToPalettePainted(page);
   await page.keyboard.press("Escape").catch(() => {});
 
   // Composer keystroke: per-character handler + render cost. This is the one

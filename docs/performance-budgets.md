@@ -108,7 +108,14 @@ inline without them). `apps/sync/vite.config.ts` keeps `build.target` at
 `safari16` or newer — the shipping WKWebView is Safari 16.4+, and down-levelling
 re-adds polyfills the app then has to download, parse and run — and keeps the
 `manualChunks` `hq-shared` chunk, without which each HTML entry bundles its own
-copy of Svelte and the `@hq/*` UI.
+copy of Svelte and the `@hq/*` UI. The chunk rule lives in
+`apps/sync/vite.chunks.mjs`: only the boot path (the static import graph of
+the HTML entries and of modules the app `import()`s at boot) goes into
+`hq-shared`. Workspace modules reached only through a workspace `import()`
+(lazy doors, Atlas, telemetry) keep their own chunks. Stylesheets stay in
+`hq-shared`. Before this rule every workspace module was forced into
+`hq-shared`, so lazy doors split nothing in the shipped app. The perf harness
+build uses the same function.
 
 ### 8. Bundle size
 
@@ -138,7 +145,7 @@ start, because the rail is on every window.
 | First contentful paint | reference median + 10% (about 170 ms) | Same reason: paint before the shell is usable. |
 | Company switch to cached Atlas paint | p95 ≤ 100 ms | Switching company is a navigation, and the destination is already cached. |
 | Switch conversation | product target p95 ≤ 50 ms (2026-09-08 p95 was 49 ms). The gate is the worse of that target and the US-001 recording, because four samples make p95 equal the worst sample. | The message list is the home surface. |
-| Command palette | product target p95 ≤ 20 ms, same gate rule as conversation switch. The clock starts at the Cmd-K `keydown` in the page and stops on the microtask where the palette input is visible (it has a box and is not under `[hidden]`). That is the frame that will paint the input. It is not the next animation frame, and it is not the second frame after the key. The test driver's round trip is outside the sample. A trace of the open is about 3 ms of main-thread work (dispatch, style, layout, paint). | It is summoned constantly and has to feel instant. |
+| Command palette | product target p95 ≤ 20 ms, same gate rule as conversation switch. The clock starts at the Cmd-K keydown's own `event.timeStamp` and stops after the first frame in which the palette input and at least one result row (`[role="option"]`) are visible: the probe posts a MessageChannel message from that frame's `requestAnimationFrame` callback, and that task runs after the frame's style, layout and paint. Display latency after the paint is not visible to the page and is not counted. A 30 ms busy handler on the keydown raises the sample by about 30 ms, so main-thread work on the open path is counted. An earlier definition stopped on the microtask after the keydown handler and read 0.0 ms; `scripts/perf-budget-contract.test.ts` keeps it from coming back. | It is summoned constantly and has to feel instant. |
 | Scroll dropped frames | ≤ 1% in Messages and every sidepane; worst frame ≤ 33 ms | A dropped frame is the original choppy-scroll complaint. |
 | Idle main-thread busy | 0 ms | No new pollers. Presence keeps using the stores that already exist. |
 | Initial JS | reference + 150 KB (2026-10-03 reference 2,636,981 bytes, measured on the main merge base 4b8f6137b; limit 2,790,581 bytes, about 6%) | The rail is added to every screen, so the boot bundle can grow a little and no more. The reference tracks main because code that ships on main is not the rail's; the rail's share stays 150 KB. |

@@ -30,6 +30,7 @@ import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createHqSharedChunks } from "../../apps/sync/vite.chunks.mjs";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const syncRoot = resolve(rootDir, "apps/sync");
@@ -96,6 +97,10 @@ export async function buildHarness() {
       manifest: true,
       rollupOptions: {
         input: resolve(syncRoot, "dev-harness/index.html"),
+        // The app's own chunk rule (apps/sync/vite.chunks.mjs), so the
+        // harness measures the chunk layout that ships: boot-path workspace
+        // code in "hq-shared", lazy doors in their own chunks.
+        output: { manualChunks: createHqSharedChunks() },
       },
     },
   });

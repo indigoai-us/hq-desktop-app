@@ -107,6 +107,7 @@ let syncCommand = "";
 let glass = "";
 let tauriCargo = "";
 let syncViteConfig = "";
+let syncViteChunks = "";
 let projectRow = "";
 let chatSidebar = "";
 let filesSidebar = "";
@@ -126,6 +127,7 @@ beforeAll(async () => {
     glass,
     tauriCargo,
     syncViteConfig,
+    syncViteChunks,
     projectRow,
     chatSidebar,
     filesSidebar,
@@ -138,6 +140,7 @@ beforeAll(async () => {
       "apps/sync/src-tauri/src/glass.rs",
       "apps/sync/src-tauri/Cargo.toml",
       "apps/sync/vite.config.ts",
+      "apps/sync/vite.chunks.mjs",
       "packages/ui/src/projects/ProjectRow.svelte",
       "packages/ui/src/chat/ChatSidebar.svelte",
       "packages/ui/src/files/FilesModeSidebar.svelte",
@@ -647,8 +650,100 @@ describe("release build profile", () => {
     // Two HTML entries (main + desktop-alt) share the Svelte runtime and the
     // @hq/* workspace UI. Without an explicit shared chunk each entry bundles
     // its own copy and the second window pays full parse/compile again.
-    expect(syncViteConfig).toMatch(/manualChunks/);
-    expect(syncViteConfig).toMatch(/"hq-shared"/);
+    expect(syncViteConfig).toMatch(/manualChunks:\s*createHqSharedChunks\(\)/);
+    expect(syncViteChunks).toMatch(/"hq-shared"/);
+  });
+});
+
+describe("hq-shared holds the boot path only", () => {
+  // A fake Rollup module graph. The desktop entry imports the shell
+  // statically; the shell opens a door with import(); the app itself
+  // import()s HqWorkWorkShell at boot.
+  const P = "/repo/packages/ui/src";
+  const graph: Record<
+    string,
+    { isEntry?: boolean; importedIds?: string[]; dynamicImporters?: string[] }
+  > = {
+    "/repo/apps/sync/src/desktop-alt/main.ts": {
+      isEntry: true,
+      importedIds: ["/repo/node_modules/.pnpm/svelte@5.0.0/node_modules/svelte/src/index.js"],
+    },
+    "/repo/apps/sync/src/desktop-alt/HqWorkWorkShell.svelte": {
+      importedIds: [`${P}/shell/DesktopApp.svelte`],
+      dynamicImporters: ["/repo/apps/sync/src/desktop-alt/main.ts"],
+    },
+    [`${P}/shell/DesktopApp.svelte`]: {
+      importedIds: [`${P}/shell/lazy-doors.ts`, `${P}/shell/DesktopApp.svelte?svelte&type=style&lang.css`],
+    },
+    [`${P}/shell/DesktopApp.svelte?svelte&type=style&lang.css`]: {},
+    [`${P}/shell/lazy-doors.ts`]: {},
+    [`${P}/company/TeamPage.svelte`]: {
+      importedIds: [`${P}/common/detail/detail-panel.css`, `${P}/company/team-model.ts`],
+      dynamicImporters: [`${P}/shell/lazy-doors.ts`],
+    },
+    [`${P}/company/team-model.ts`]: {},
+    [`${P}/common/detail/detail-panel.css`]: {},
+    [`${P}/atlas/index.ts`]: { dynamicImporters: ["/repo/apps/sync/src/desktop-alt/main.ts"] },
+    "/repo/node_modules/.pnpm/svelte@5.0.0/node_modules/svelte/src/index.js": {},
+    "/repo/node_modules/.pnpm/mqtt@5.0.0/node_modules/mqtt/dist/mqtt.esm.js": {
+      dynamicImporters: ["/repo/packages/core/src/mesh/client.ts"],
+    },
+  };
+  const meta = {
+    getModuleIds: () => Object.keys(graph)[Symbol.iterator](),
+    getModuleInfo: (id: string) =>
+      graph[id]
+        ? {
+            isEntry: graph[id].isEntry ?? false,
+            importedIds: graph[id].importedIds ?? [],
+            dynamicImporters: graph[id].dynamicImporters ?? [],
+          }
+        : null,
+  };
+
+  it("puts the boot graph in hq-shared and leaves door bodies in their own chunks", async () => {
+    const { createHqSharedChunks } = await import("../apps/sync/vite.chunks.mjs");
+    const chunk = createHqSharedChunks();
+    // Boot path: the shell, its static imports, the Svelte runtime.
+    expect(chunk(`${P}/shell/DesktopApp.svelte`, meta)).toBe("hq-shared");
+    expect(chunk(`${P}/shell/lazy-doors.ts`, meta)).toBe("hq-shared");
+    expect(
+      chunk("/repo/node_modules/.pnpm/svelte@5.0.0/node_modules/svelte/src/index.js", meta),
+    ).toBe("hq-shared");
+    // A door body and what only it imports load with the door.
+    expect(chunk(`${P}/company/TeamPage.svelte`, meta)).toBeUndefined();
+    expect(chunk(`${P}/company/team-model.ts`, meta)).toBeUndefined();
+    // Stylesheets stay in the shared stylesheet, so global rules apply as before.
+    expect(chunk(`${P}/common/detail/detail-panel.css`, meta)).toBe("hq-shared");
+    expect(chunk(`${P}/shell/DesktopApp.svelte?svelte&type=style&lang.css`, meta)).toBe("hq-shared");
+    // Atlas never joins, even when app code import()s it.
+    expect(chunk(`${P}/atlas/index.ts`, meta)).toBeUndefined();
+    // Third-party code outside the shared layer is left to Rollup.
+    expect(
+      chunk("/repo/node_modules/.pnpm/mqtt@5.0.0/node_modules/mqtt/dist/mqtt.esm.js", meta),
+    ).toBeUndefined();
+  });
+});
+
+describe("initial JS counts shared chunks", () => {
+  it("walks manifest keys, so a `_name-hash.js` shared chunk is counted", async () => {
+    const { initialFiles } = await import("./perf/lazy-chunks.mjs");
+    const manifest = {
+      "index.html": {
+        file: "assets/index-a.js",
+        isEntry: true,
+        imports: ["_hq-shared-b.js"],
+        dynamicImports: ["src/Team.svelte"],
+      },
+      "_hq-shared-b.js": { file: "assets/hq-shared-b.js", imports: ["_vendor-c.js"] },
+      "_vendor-c.js": { file: "assets/vendor-c.js" },
+      "src/Team.svelte": { file: "assets/Team-d.js", isDynamicEntry: true },
+    };
+    expect([...initialFiles(manifest)].sort()).toEqual([
+      "assets/hq-shared-b.js",
+      "assets/index-a.js",
+      "assets/vendor-c.js",
+    ]);
   });
 });
 
@@ -930,6 +1025,9 @@ describe("first-frame-of-Home budget: lazy doors stay lazy", () => {
     "packages/ui/src/chat/first-run/knowledge-tree/FirstRunImportStep.svelte",
     "packages/ui/src/chat/first-run/knowledge-tree/scene-renderer.ts",
     "packages/ui/src/chat/first-run/knowledge-tree/tree-model.ts",
+    // Badge art (about 130 KB): only the holographic card and the share
+    // image draw it, and both load it with import().
+    "packages/ui/src/badges/full-ascii-data.ts",
   ];
 
   it("keeps every lazy body out of the shell's static import graph", () => {
@@ -992,5 +1090,27 @@ describe("work SSR build resolves mqtt builtins", () => {
     expect(vite).toContain("externalize-node-builtins");
     expect(vite).toContain('id: `node:${id}`');
     expect(vite).toContain("options?.ssr");
+  });
+});
+
+describe("command palette metric times the painted palette", () => {
+  // The 20 ms budget once passed at 0.0 ms because the probe stopped on the
+  // microtask after the keydown handler, before any rendering. The metric is
+  // keydown to the end of the frame that paints the palette with result rows.
+  it("starts at the keydown, waits for result rows, and ends after the frame", async () => {
+    const run = await readFile(resolve(rootDir, "scripts/perf-run.mjs"), "utf8");
+    const fn = /async function timeToPalettePainted\(page\) \{[\s\S]*?\n\}\n/.exec(run)?.[0];
+    expect(fn, "timeToPalettePainted is missing").toBeDefined();
+    expect(run).toMatch(/interaction\.commandPalette"\] = await timeToPalettePainted\(page\)/);
+    // Start: the event's own timestamp.
+    expect(fn).toMatch(/t0 = event\.timeStamp/);
+    // Ready needs the input AND a result row.
+    expect(run).toMatch(/PALETTE_ROW_SELECTOR = '\[data-testid="command-palette"\] \[role="option"\]'/);
+    expect(fn).toMatch(/visible\(document\.querySelector\(rowSelector\)\)/);
+    // End: a task posted from the ready frame's rAF runs after its paint.
+    expect(fn).toMatch(/requestAnimationFrame\(frame\)/);
+    expect(fn).toMatch(/new MessageChannel\(\)/);
+    // Not the old microtask stop.
+    expect(fn).not.toMatch(/queueMicrotask/);
   });
 });

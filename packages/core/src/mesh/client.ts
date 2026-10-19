@@ -22,7 +22,7 @@
  *   re-subscribed on every connect).
  */
 
-import mqtt, { type IClientOptions } from "mqtt";
+import type { IClientOptions } from "mqtt";
 
 import {
   channelWakeFromPayload,
@@ -133,6 +133,30 @@ export type MqttConnectFn = (
   url: string,
   opts: IClientOptions,
 ) => MeshMqttClientLike;
+
+let mqttConnectLoad: Promise<MqttConnectFn> | null = null;
+
+/**
+ * mqtt.js (about 360 KB minified) is loaded the first time a client connects,
+ * not with the app shell. The first connect already waits on credentials and
+ * a presign, so this adds no new wait to a screen. A failed load is retried
+ * on the next connect.
+ */
+export function loadMqttConnect(): Promise<MqttConnectFn> {
+  mqttConnectLoad ??= import("mqtt").then(
+    (mod) => {
+      const lib = (mod.default ?? mod) as {
+        connect: (url: string, opts: IClientOptions) => unknown;
+      };
+      return (url, opts) => lib.connect(url, opts) as MeshMqttClientLike;
+    },
+    (err: unknown) => {
+      mqttConnectLoad = null;
+      throw err;
+    },
+  );
+  return mqttConnectLoad;
+}
 
 export interface MeshClientOptions {
   credentialProvider: CredentialProvider;
@@ -391,7 +415,7 @@ export class MeshClient {
   private readonly liveReadStore: LiveReadStore;
   private readonly liveCoalescer: LiveReadCoalescer;
   private readonly liveFetcher: LiveReadFetcher;
-  private readonly mqttConnect: MqttConnectFn;
+  private readonly mqttConnect: MqttConnectFn | null;
   private readonly timers: TimerHost;
   private readonly sigv4Crypto: SigV4Crypto | undefined;
   private readonly random: () => number;
@@ -414,9 +438,7 @@ export class MeshClient {
   };
 
   constructor(private readonly options: MeshClientOptions) {
-    this.mqttConnect =
-      options.mqttConnect ??
-      ((url, opts) => mqtt.connect(url, opts) as unknown as MeshMqttClientLike);
+    this.mqttConnect = options.mqttConnect ?? null;
     this.timers = options.timers ?? realTimerHost;
     this.sigv4Crypto = options.sigv4Crypto;
     this.random = options.random ?? Math.random;
@@ -586,6 +608,11 @@ export class MeshClient {
       this.setState("paused-hidden");
       return;
     }
+    // Start loading mqtt.js alongside the credential fetch and presign.
+    const mqttLoad = this.mqttConnect ? null : loadMqttConnect();
+    // Awaited below; this stops an early return or a credential failure from
+    // leaving the load's rejection unhandled.
+    mqttLoad?.catch(() => undefined);
     try {
       if (!this.bundle) {
         this.bundle = await this.options.credentialProvider.fetchCredentials();
@@ -601,11 +628,16 @@ export class MeshClient {
         ...(this.sigv4Crypto ? [this.sigv4Crypto] : []),
       );
       if (this.stopped || generation !== this.generation) return;
+      let connect = this.mqttConnect;
+      if (!connect) {
+        connect = await (mqttLoad as Promise<MqttConnectFn>);
+        if (this.stopped || generation !== this.generation) return;
+      }
 
       // Safari can throw synchronously from connect(); try/catch is mandatory.
       let client: MeshMqttClientLike;
       try {
-        client = this.mqttConnect(url, {
+        client = connect(url, {
           // worker-timers breaks in webviews/background tabs — pin native.
           timerVariant: "native",
           clean: true,

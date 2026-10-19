@@ -319,3 +319,95 @@ were 0.0, 0.1, and 0.0). Verdict: pass. The budget was not changed.
 | Initial JS | ≤ 2,736,155 bytes | 2,731,645 bytes | pass |
 | Atlas chunk | absent from initial JS, ≤ 120 KB | absent, 34,831 bytes | pass |
 | Telemetry chunk | absent from initial JS, ≤ 80 KB | absent, 37,373 bytes | pass |
+
+## Initial JS headroom and an honest palette clock (2026-10-19)
+
+Branch `perf/bundle-headroom-palette`, based on `a176d88a3` (main). Apple M5
+Max, 18 cores, on AC power. Gate run: `pnpm perf:rail -- --reps 5`, load
+average 4 to 5 during the run (other work on the machine before it).
+
+### Where the Initial JS budget is enforced
+
+Only in `pnpm perf:rail` (`scripts/perf/rail-budget.mjs`; limit = the
+`bundle.jsBytes` reference in `scripts/fixtures/perf-baseline.console-rail.json`
+plus 150 KB = 2,790,581 bytes). No CI job runs it. The 2,736,155 limit in the
+section above was the limit before the 2026-10-03 re-baseline.
+
+On main at `a176d88a3` the harness initial JS is **4,558,599 bytes**, already
+1.77 MB over the limit. The 2,731,645 figure above is out of date by two weeks
+of main growth.
+
+### Measurement fixes
+
+- `scripts/perf/lazy-chunks.mjs` walked the Vite manifest's `imports` as if
+  they were output file names. They are manifest keys, and a shared chunk's
+  key (`_hq-shared-<hash>.js`) is not its file name, so a shared chunk
+  imported by the entry was never counted. The walk now follows keys.
+- The harness build now uses the app's own chunk rule
+  (`apps/sync/vite.chunks.mjs`), so it measures the chunk layout that ships.
+
+### What changed in the shipped app
+
+1. **Lazy doors now split in the shipped build.** `apps/sync/vite.config.ts`
+   forced every workspace module into the `hq-shared` chunk except Atlas and
+   telemetry. Every `import()` door in `packages/ui` (profile panes, Team,
+   Brain, Files connect, Meetings, Daily Brief, Settings panes and others)
+   therefore loaded and ran at startup. The harness build had no such rule,
+   so it showed those doors as lazy while the app did not. The new rule puts
+   only the boot path in `hq-shared`. Stylesheets stay there, so the shipped
+   CSS is byte-identical (same `hq-shared-*.css` hash). The doors already
+   preload on idle after the first frame (`preloadDoorsWhenIdle`).
+2. **mqtt.js loads on the first Work Mesh connect**
+   (`packages/core/src/mesh/client.ts`), in parallel with the credential fetch
+   and presign that already come before the socket. About 366 KB.
+3. **Badge art loads only with the badge card or share image.**
+   `full-badge.ts` imported one constant from the 133 KB `full-ascii-data.ts`,
+   which pulled the art into the shell despite the `import()` elsewhere. The
+   constant moved to `full-ascii-palette.ts`.
+
+| measurement | main `a176d88a3` | this branch | change |
+|---|---|---|---|
+| Shipped desktop window boot JS (`desktop-alt.html` + `HqWorkWorkShell` static graph, real `apps/sync` build) | 4,644,459 B | 2,857,119 B | **−1,787,340 B (−38%)** |
+| Shipped `main` window entry JS | 5,069,946 B | 3,282,606 B | −1,787,340 B |
+| Harness initial JS (the gated number) | 4,558,599 B | 4,053,542 B | **−505,057 B** |
+| Shipped `hq-shared` CSS | 1,027.95 kB | 1,027.95 kB | identical |
+| Dynamic chunks in the shipped build | 4 | 42 | |
+
+The harness number falls by less than the shipped number because the harness
+already split the lazy doors; its gain is mqtt.js and the badge art. The
+harness entry also carries dev-harness preview views (onboarding wizard,
+meetings window, desktop-alt shell, fixtures) that the app does not ship.
+
+**Gate verdict for Initial JS: still FAIL (4,053,542 vs 2,790,581).** The
+limit and the reference were not changed. Re-measuring the reference at main
+gives a higher number, and the reference may only move down, so it stays.
+
+### Command palette
+
+The 0.0 ms result came from a probe that stopped on the microtask after the
+keydown handler, before style, layout or paint. The probe now starts at the
+keydown's `event.timeStamp` and stops after the first frame that shows the
+palette input and at least one result row (a MessageChannel task posted from
+that frame's `requestAnimationFrame` callback runs after the frame's paint).
+Injecting a 30 ms busy handler on the keydown raised the samples from 5–15 ms
+to 35–39 ms, so open-path work is counted.
+
+| run | palette median | palette p95 | limit |
+|---|---|---|---|
+| gate run above (load 4 to 5) | 7.7 ms | 7.8 ms | 20 ms |
+| exploratory run, load average 28 | 11.6 ms | 15.2 ms | 20 ms |
+
+Both are under 20 ms, so no palette code changed. The premount on idle
+(US-040) means Cmd-K flips visibility on a list that is already built.
+
+### Other lines in the gate run
+
+| Budget line | Result |
+|---|---|
+| Cold start, shell ready | 210.2 ms median, limit 242.7, pass |
+| First contentful paint | 176.0 ms median, limit 239.8, pass |
+| Company switch / sidepane switch | 46.6 / 50.7 ms p95, pass |
+| Switch conversation | 71.9 ms p95, gate 124.3, pass (over the 50 ms product target) |
+| Idle main-thread busy | 0 ms, pass |
+| Atlas / telemetry chunks | absent from initial JS, 99,117 / 49,579 B, pass |
+| Messages scroll | skipped: the fixture thread does not overflow |
