@@ -535,15 +535,27 @@ export async function readCoreUsageWithRetry(
 }
 
 /** Last good view per company, so a reopened menu paints at once. */
-const lastGood = new Map<string, CoreUsageView>();
+const lastGood = new Map<string, { view: CoreUsageView; at: number }>();
 
 export function cachedCoreUsage(companyUid: string): CoreUsageView | null {
-  return lastGood.get(companyUid) ?? null;
+  return lastGood.get(companyUid)?.view ?? null;
+}
+
+/** When the cached view for this company was read (epoch ms), or null. */
+export function cachedCoreUsageAt(companyUid: string): number | null {
+  return lastGood.get(companyUid)?.at ?? null;
 }
 
 /** Ready views and the owner-only answer are cached; failures never are. */
-export function rememberCoreUsage(companyUid: string, view: CoreUsageView): void {
-  if (view.kind === "ready" || view.kind === "owner-only") lastGood.set(companyUid, view);
+export function rememberCoreUsage(companyUid: string, view: CoreUsageView, at: number = Date.now()): void {
+  if (view.kind === "ready" || view.kind === "owner-only") lastGood.set(companyUid, { view, at });
+}
+
+/** "Couldn't refresh. Showing usage from 3:12 PM." for numbers kept after a failed refresh. */
+export function staleUsageLine(at: number | null): string {
+  if (at === null) return "Couldn't refresh. These numbers may be out of date.";
+  const time = new Date(at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  return `Couldn't refresh. Showing usage from ${time}.`;
 }
 
 /** The company the Core menu's usage panel is about. A null uid means local only. */
@@ -564,8 +576,10 @@ export interface UsageCompanyRow {
 /**
  * Pick the panel's company. The company on screen wins, then the branded
  * company. When that company has no cloud account, the panel says it has no
- * usage: it never falls back to another company's spend. Only when no company
- * is on screen or branded does the first cloud company stand in.
+ * usage: it never falls back to another company's spend. When neither slug
+ * names a known company row (nothing on screen, or a slug with no company
+ * row such as the personal space), the first cloud company stands in,
+ * labelled with its own name.
  */
 export function resolveUsageCompany(
   companies: readonly UsageCompanyRow[] | null | undefined,

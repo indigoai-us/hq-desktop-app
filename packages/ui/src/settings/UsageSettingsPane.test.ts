@@ -165,4 +165,31 @@ describe("UsageSettingsPane", () => {
     expect(q("usage-notice")?.dataset.kind).toBe("paused-card-required");
     expect(text("usage-notice")).toContain("Add a card to resume");
   });
+
+  it("shows No limit for a removed spend limit instead of a failed read", async () => {
+    await render(source({ getSpendLimit: vi.fn(async () => ok({ limitCents: null, noLimit: true, custom: true, paused: false })) }));
+    expect(text("usage-spend-limit")).toBe("No limit");
+    expect(text("usage-spend-limit-note")).toBe("There is no monthly spend limit, so metered work does not pause for spending.");
+    expect(host.textContent).not.toContain("can't be shown");
+  });
+
+  it("an unreadable spend limit body still says it can't be shown", async () => {
+    await render(source({ getSpendLimit: vi.fn(async () => ok({ error: "x" })) }));
+    expect(q("usage-spend-limit")).toBeNull();
+    expect(text("usage-spend-limit-note")).toBe("The spend limit can't be shown right now.");
+  });
+
+  it("during the trial the included-usage row says it applies after the trial, and a bad end date leaves no stray dot", async () => {
+    vi.spyOn(Date.prototype, "toLocaleDateString").mockReturnValue("Invalid Date");
+    const endsAt = new Date(Date.now() + 4.5 * 86_400_000).toISOString();
+    await render(
+      source({
+        getBillingSummary: vi.fn(async () =>
+          ok({ pricingPlan: "usage-only", usageTrial: { status: "active", endsAt, capCents: 50000, usedCents: 100 } }),
+        ),
+      }),
+    );
+    expect(text("usage-allowance-note")).toContain("the included usage applies once the trial ends");
+    expect(text("usage-trial-days")).not.toContain(". .");
+  });
 });

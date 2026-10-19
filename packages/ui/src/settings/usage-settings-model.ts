@@ -49,12 +49,25 @@ export interface UsageDetailLine {
   waived: boolean;
 }
 
-export interface SpendLimitDetail {
-  limitCents: number;
-  /** False when the default limit applies. */
-  custom: boolean;
-  paused: boolean;
-}
+export type SpendLimitDetail =
+  | {
+      noLimit: false;
+      limitCents: number;
+      /** False when the default limit applies. */
+      custom: boolean;
+      paused: boolean;
+    }
+  | {
+      /**
+       * No monthly limit: an owner or admin removed it, or an existing paying
+       * account switched to usage pricing without one (hq-pro #5069:
+       * `limitCents: null`, `noLimit: true`). Nothing pauses for spend.
+       */
+      noLimit: true;
+      limitCents: null;
+      custom: boolean;
+      paused: boolean;
+    };
 
 export interface UsageDetailsReady {
   kind: "ready";
@@ -152,11 +165,21 @@ export function detailLines(statementLines: readonly unknown[], pricing: UsagePr
   return out;
 }
 
+/**
+ * The spend limit from `GET /v1/billing/spend-limit`. A body that says there
+ * is no limit (`noLimit: true`, or `limitCents: null`) is a real state, not a
+ * failed read. Null only for a body that is neither.
+ */
 export function spendLimitFromBody(body: unknown): SpendLimitDetail | null {
   if (!isRecord(body)) return null;
+  const custom = body.custom === true;
+  const paused = body.paused === true;
+  if (body.noLimit === true || body.limitCents === null) {
+    return { noLimit: true, limitCents: null, custom, paused };
+  }
   const limitCents = finite(body.limitCents);
   if (limitCents === null) return null;
-  return { limitCents, custom: body.custom === true, paused: body.paused === true };
+  return { noLimit: false, limitCents, custom, paused };
 }
 
 function freeTextFromStatement(body: Record<string, unknown>): string | null {
@@ -244,22 +267,22 @@ export function periodLabel(periodStart: string, periodEnd: string | null): stri
   return periodEnd ? `${fmt(periodStart)} to ${fmt(periodEnd)}` : `Since ${fmt(periodStart)}`;
 }
 
-/** "Ends Nov 3": the trial end date. */
+/** "Ends Nov 3": the trial end date; "" when the date can't be read. */
 export function trialEndLabel(endsAt: string): string {
   const date = new Date(endsAt);
   if (Number.isNaN(date.getTime())) return "";
   return `Ends ${date.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}`;
 }
 
-/** "$100.00 a month (default)". */
+/** "$100.00 a month (default)", or "No limit". */
 export function spendLimitLine(limit: SpendLimitDetail): string {
+  if (limit.noLimit) return "No limit";
   return `${formatUsd(limit.limitCents)} a month${limit.custom ? "" : " (default)"}`;
 }
 
 /** Cost cell text: "$1.20", "Waived during the trial", "Not reported". */
 export function lineCostText(line: UsageDetailLine): string {
   if (line.waived) return "Waived during the trial";
-  if (line.status === "not-billed-yet") return "Not billed yet";
   if (line.costCents === null) return "Not reported";
   return formatUsd(line.costCents);
 }

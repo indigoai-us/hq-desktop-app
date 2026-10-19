@@ -8,6 +8,8 @@ import {
   billingIsSetUp,
   billingRole,
   cachedCoreUsage,
+  cachedCoreUsageAt,
+  staleUsageLine,
   usageNoticeFromSummary,
   canReadBilling,
   canSetUpBilling,
@@ -493,5 +495,25 @@ describe("retry cancellation", () => {
     await readCoreUsageWithRetry({ getBillingSummary }, "c", "C", { delays: [1000], sleep, cancelled: () => true });
     expect(sleep).not.toHaveBeenCalled();
     expect(getBillingSummary).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("stale numbers", () => {
+  it("remembers when each company's view was read", () => {
+    rememberCoreUsage("cmp_a", { kind: "owner-only", companyName: "A" }, 1_700_000_000_000);
+    expect(cachedCoreUsageAt("cmp_a")).toBe(1_700_000_000_000);
+    expect(cachedCoreUsageAt("cmp_b")).toBeNull();
+  });
+
+  it("says when kept numbers were read, or that they may be out of date", () => {
+    expect(staleUsageLine(null)).toBe("Couldn't refresh. These numbers may be out of date.");
+    expect(staleUsageLine(Date.UTC(2026, 9, 18, 15, 12))).toMatch(/^Couldn't refresh\. Showing usage from \d{1,2}:\d{2} [AP]M\.$/);
+  });
+});
+
+describe("resolveUsageCompany fallback (documented)", () => {
+  it("an on-screen slug with no company row falls back to the first cloud company, labelled as itself", () => {
+    const rows = [{ slug: "acme", displayName: "Acme", kind: "company", cloudUid: "cmp_acme", role: "owner" }];
+    expect(resolveUsageCompany(rows, "personal", null)).toEqual({ uid: "cmp_acme", name: "Acme", role: "owner" });
   });
 });

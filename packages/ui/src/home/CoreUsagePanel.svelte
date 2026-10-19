@@ -25,6 +25,8 @@
     USAGE_REFRESH_MS,
     billingRole,
     cachedCoreUsage,
+    cachedCoreUsageAt,
+    staleUsageLine,
     canReadBilling,
     canSetUpBilling,
     formatUsd,
@@ -78,6 +80,10 @@
   let outcome = $state<BillingPortalOutcome | null>(null);
   /** Bumped to re-read: after Stripe, on Try again, and on the refresh timer. */
   let refreshNonce = $state(0);
+  /** The company uid the shown view was read for; carry-over compares uids, never names. */
+  let shownUid = $state<string | null>(null);
+  /** Set when a refresh failed and the last good numbers stay on screen. */
+  let staleAt = $state<number | null | undefined>(undefined);
 
   const roleKind = $derived(billingRole(role));
 
@@ -101,7 +107,11 @@
       return;
     }
     const shown = untrack(() => view);
-    view = cachedCoreUsage(uid) ?? (shown.kind === "ready" && shown.companyName === name ? shown : { kind: "loading", companyName: name });
+    const sameCompany = untrack(() => shownUid) === uid;
+    const cached = cachedCoreUsage(uid);
+    if (!sameCompany) staleAt = undefined;
+    view = cached ?? (shown.kind === "ready" && sameCompany ? shown : { kind: "loading", companyName: name });
+    shownUid = uid;
     let cancelled = false;
     void readCoreUsageWithRetry(api as never, uid, name, {
       ...(delays ? { delays } : {}),
@@ -109,9 +119,14 @@
     }).then((next) => {
       if (cancelled) return;
       retrying = false;
-      // Keep the last good numbers on screen when a refresh fails.
-      if (next.kind === "unavailable" && view.kind === "ready") return;
+      // Keep the last good numbers on screen when a refresh fails, and say
+      // when they were read.
+      if (next.kind === "unavailable" && view.kind === "ready") {
+        staleAt = cachedCoreUsageAt(uid);
+        return;
+      }
       view = next;
+      staleAt = undefined;
       rememberCoreUsage(uid, next);
     });
     return () => {
@@ -131,7 +146,16 @@
 
   const paid = $derived(view.kind === "ready" && view.paid);
   const notice = $derived(view.kind === "ready" ? view.notice : null);
-  const billingLabel = $derived(paid ? "Manage billing" : (notice?.actionLabel ?? "Set up billing"));
+  // An admin can't read whether a card is on file (the summary is
+  // owner-only), so the admin button names both cases instead of implying
+  // there is no card yet.
+  const billingLabel = $derived(
+    view.kind === "owner-only"
+      ? "Add or update card"
+      : paid
+        ? "Manage billing"
+        : (notice?.actionLabel ?? "Set up billing"),
+  );
   const hint = $derived(billingPortalHint(outcome, companyName));
   const mayBill = $derived(canSetUpBilling(role));
   const canBill = $derived(
@@ -214,7 +238,7 @@
     <p class="core-usage-note" role="status" data-testid="core-usage-loading">Loading usage…</p>
   {:else if view.kind === "owner-only"}
     {#if roleKind === "admin"}
-      <p class="core-usage-note" data-testid="core-usage-owner-only">Only a company owner can see usage. If Set up billing doesn't open for you, ask an owner.</p>
+      <p class="core-usage-note" data-testid="core-usage-owner-only">Only a company owner can see usage. If Add or update card doesn't open for you, ask an owner.</p>
     {:else if roleKind === "member"}
       <p class="core-usage-note" data-testid="core-usage-owner-only">Ask an owner or admin of {companyName} to set up billing. Only owners can see usage.</p>
     {:else}
@@ -279,6 +303,10 @@
     {:else if usage.partial && usage.mode === "trial" && usage.usedLine.startsWith("At least")}
       <p class="core-usage-note small" data-testid="core-usage-partial">{TRIAL_MINIMUM_NOTE}</p>
     {/if}
+  {/if}
+
+  {#if view.kind === "ready" && staleAt !== undefined}
+    <p class="core-usage-note small" role="status" data-testid="core-usage-stale">{staleUsageLine(staleAt)}</p>
   {/if}
 
   {#if showBilling || view.kind === "ready"}

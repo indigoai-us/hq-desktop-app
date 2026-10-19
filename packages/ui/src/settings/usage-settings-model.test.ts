@@ -84,7 +84,7 @@ describe("readUsageDetails", () => {
     expect(view.allowanceLeftCents).toBe(0);
     expect(view.usageCents).toBe(1350);
     expect(view.projectedBillCents).toBe(1600);
-    expect(view.spendLimit).toEqual({ limitCents: 10000, custom: false, paused: false });
+    expect(view.spendLimit).toEqual({ noLimit: false, limitCents: 10000, custom: false, paused: false });
     expect(view.freeText).toBe("Deploys, DMs and background AI are free.");
     const sync = view.lines.find((l) => l.key === "member-sync")!;
     expect(sync.label).toBe("Sync (feed)");
@@ -181,15 +181,28 @@ describe("line text", () => {
       null,
     );
     expect(lineCostText(vault!)).toBe("Waived during the trial");
+    expect(detailLines([{ key: "old", billed: false, costCents: 900 }], null)).toEqual([]);
     expect(lineCostText(agent!)).toBe("Not reported");
     expect(agent!.usage).toBeNull();
   });
 
   it("parses the spend limit and labels the default", () => {
-    expect(spendLimitFromBody({ limitCents: 10000, custom: false })).toEqual({ limitCents: 10000, custom: false, paused: false });
+    expect(spendLimitFromBody({ limitCents: 10000, custom: false })).toEqual({ noLimit: false, limitCents: 10000, custom: false, paused: false });
     expect(spendLimitFromBody({ error: "nope" })).toBeNull();
-    expect(spendLimitLine({ limitCents: 10000, custom: false, paused: false })).toBe("$100.00 a month (default)");
-    expect(spendLimitLine({ limitCents: 25000, custom: true, paused: false })).toBe("$250.00 a month");
+    expect(spendLimitFromBody({ limitCents: "100" })).toBeNull();
+    expect(spendLimitLine({ noLimit: false, limitCents: 10000, custom: false, paused: false })).toBe("$100.00 a month (default)");
+    expect(spendLimitLine({ noLimit: false, limitCents: 25000, custom: true, paused: false })).toBe("$250.00 a month");
+  });
+
+  it("a removed or never-set limit (hq-pro #5069 noLimit body) is No limit, not a failed read", () => {
+    // Body shape from hq-pro #5069 buildSpendLimitView: limitCents null, noLimit true.
+    const removed = spendLimitFromBody({ limitCents: null, noLimit: true, custom: true, paused: false, defaultLimitCents: 10000 });
+    expect(removed).toEqual({ noLimit: true, limitCents: null, custom: true, paused: false });
+    expect(spendLimitLine(removed!)).toBe("No limit");
+    // A switched paying account that never set one.
+    expect(spendLimitFromBody({ limitCents: null, noLimit: true, custom: false })?.noLimit).toBe(true);
+    // limitCents null alone (older field order) also means no limit.
+    expect(spendLimitFromBody({ limitCents: null })?.noLimit).toBe(true);
   });
 
   it("labels the period", () => {

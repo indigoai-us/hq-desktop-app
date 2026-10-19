@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
 import CoreUsagePanel from "./CoreUsagePanel.svelte";
+import CoreUsagePanelSwitchProbe from "./CoreUsagePanelSwitchProbe.test.svelte";
 import { __resetCoreUsageCacheForTests } from "./core-usage-model";
 
 const ok = (value: unknown) => ({ ok: true as const, value });
@@ -186,7 +187,8 @@ describe("CoreUsagePanel", () => {
     expect(q("core-usage")?.dataset.state).toBe("owner-only");
     expect(src.getBillingSummary).not.toHaveBeenCalled();
     expect(q("core-usage-used")).toBeNull();
-    expect(q("core-usage-billing")?.textContent).toContain("Set up billing");
+    // An admin can't read whether a card is on file, so the label covers both.
+    expect(q("core-usage-billing")?.textContent).toContain("Add or update card");
     q("core-usage-billing")!.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(src.createBillingCheckoutSession).toHaveBeenCalledWith("cmp_northwind");
@@ -356,7 +358,7 @@ describe("CoreUsagePanel", () => {
 
   it("an admin's note does not promise the billing button works", async () => {
     await render(source(), vi.fn(), { role: "admin" });
-    expect(q("core-usage-owner-only")?.textContent).toBe("Only a company owner can see usage. If Set up billing doesn't open for you, ask an owner.");
+    expect(q("core-usage-owner-only")?.textContent).toBe("Only a company owner can see usage. If Add or update card doesn't open for you, ask an owner.");
   });
 
   it("a slow failing read that is unmounted mid-retry never updates the panel", async () => {
@@ -376,4 +378,52 @@ describe("CoreUsagePanel", () => {
     // Unmount cancels the read: no retry runs after the first try.
     expect(src.getBillingSummary).toHaveBeenCalledTimes(1);
   });
+
+  it("a failed refresh keeps the last numbers and says when they were read", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const src = source();
+    await render(src, vi.fn(), { refreshMs: 0 });
+    expect(q("core-usage-stale")).toBeNull();
+    src.getBillingSummary.mockResolvedValue(fail("http-500") as never);
+    // A focus after Stripe re-reads; make it fail.
+    q("core-usage-billing")!.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    window.dispatchEvent(new Event("focus"));
+    flushSync();
+    for (let i = 0; i < 5; i += 1) await tick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    expect(q("core-usage")?.dataset.state).toBe("ready");
+    expect(q("core-usage-used")?.textContent).toBe("$8.00 of $10.00 free");
+    expect(q("core-usage-stale")?.textContent).toMatch(/^Couldn't refresh\. Showing usage from \d{1,2}:\d{2} [AP]M\.$/);
+  });
+
+  it("switching to another company with the same name never keeps the first company's numbers", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const src = source();
+    host = document.createElement("div");
+    document.body.append(host);
+    component = mount(CoreUsagePanelSwitchProbe, {
+      target: host,
+      props: { source: src as never, first: "cmp_northwind", second: "cmp_other", name: "Northwind" },
+    });
+    flushSync();
+    for (let i = 0; i < 5; i += 1) await tick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    expect(q("core-usage-used")?.textContent).toBe("$8.00 of $10.00 free");
+    // The second company's read fails; the first company's numbers must not stay up.
+    src.getBillingSummary.mockResolvedValue(fail("http-500") as never);
+    q("probe-switch")!.click();
+    flushSync();
+    expect(q("core-usage")?.dataset.state).toBe("loading");
+    for (let i = 0; i < 5; i += 1) await tick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    expect(src.getBillingSummary).toHaveBeenLastCalledWith("cmp_other");
+    expect(q("core-usage")?.dataset.state).toBe("unavailable");
+    expect(host.textContent).not.toContain("$8.00");
+    expect(q("core-usage-stale")).toBeNull();
+  });
+
 });

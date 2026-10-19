@@ -185,7 +185,7 @@
         <div>
           <div class="sn">Free trial</div>
           <div class="sd" data-testid="usage-trial-days">
-            {view.trial.daysLeft} {view.trial.daysLeft === 1 ? "day" : "days"} left. {trialEndLabel(view.trial.endsAt)}.
+            {view.trial.daysLeft} {view.trial.daysLeft === 1 ? "day" : "days"} left.{trialEndLabel(view.trial.endsAt) ? ` ${trialEndLabel(view.trial.endsAt)}.` : ""}
           </div>
         </div>
         <span class="amount" data-testid="usage-trial-usage">
@@ -201,7 +201,9 @@
     <div class="set-row">
       <div>
         <div class="sn">Included usage</div>
-        <div class="sd">{formatUsd(view.allowanceCents)} of usage is included each month.</div>
+        <div class="sd" data-testid="usage-allowance-note">
+          {formatUsd(view.allowanceCents)} of usage is included each month.{view.trial ? " Trial usage counts against the trial cap above instead; the included usage applies once the trial ends." : ""}
+        </div>
       </div>
       <span class="amount" data-testid="usage-allowance-left">{formatUsd(view.allowanceLeftCents)} of free usage left</span>
     </div>
@@ -253,6 +255,8 @@
         <div class="sd" data-testid="usage-spend-limit-note">
           {#if view.spendLimit === null}
             The spend limit can't be shown right now.
+          {:else if view.spendLimit.noLimit}
+            There is no monthly spend limit, so metered work does not pause for spending.
           {:else if view.spendLimit.paused}
             Metered work is paused at the limit. An owner can raise it in HQ Console.
           {:else}
