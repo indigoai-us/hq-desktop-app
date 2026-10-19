@@ -9,12 +9,17 @@
   import {
     ALERT_AUDIENCE,
     ALERT_AUDIENCE_LABEL,
+    CONTACT_FAILED_COPY,
+    CONTACT_SENT_COPY,
+    CONTACT_US_LABEL,
+    NOT_AVAILABLE_COPY,
     OUTPOST_JOBS_ROUTE,
     SCHEDULE_PRESETS,
     blankJobDraft,
     blockedBoxNote,
     canManageCompanyJobs,
     draftCron,
+    isNotAvailableCode,
     isRunnableJob,
     jobFailureCopy,
     jobsFromHealthOnly,
@@ -34,6 +39,7 @@
     companyJobsClientFromApi,
     type CompanyJobsApi,
     type CompanyJobsClient,
+    type CompanyJobsContact,
     type JobsListResult,
     type JobsStatusResult,
   } from "./company-jobs-client.js";
@@ -47,6 +53,8 @@
     /** Test and preview seam. Wins over `api`. */
     client?: CompanyJobsClient | null;
     api?: CompanyJobsApi | null;
+    /** Contact us on the not-available-yet state. Hidden when absent. */
+    contact?: CompanyJobsContact | null;
     /** Fixed clock for tests. Live pages tick on their own. */
     now?: number;
   }
@@ -58,6 +66,7 @@
     boxes = undefined,
     client = null,
     api = null,
+    contact = null,
     now: nowProp,
   }: Props = $props();
 
@@ -87,6 +96,11 @@
   let burstUntil = $state(0);
   let burstJobId = $state("");
   let burstAfter = $state("");
+  /** A read or write came back with a not-available-yet code. */
+  let refusedNotAvailable = $state(false);
+  /** A write was refused this way. Kept so a later successful read does not hide the state. */
+  let writeRefusedNotAvailable = $state(false);
+  let contactState = $state<"idle" | "sending" | "sent" | "error">("idle");
 
   const nowMs = $derived(nowProp ?? clock);
   const knownBoxes = $derived(boxes ?? loadedBoxes ?? []);
@@ -115,8 +129,14 @@
     { value: "", label: "Choose an Outpost" },
     ...boxChoices.map((box) => ({ value: box.id, label: box.name })),
   ]);
+  const notAvailable = $derived.by(() => {
+    if (!companyUid) return false;
+    if (refusedNotAvailable || writeRefusedNotAvailable) return true;
+    if (filter !== "all") return knownBoxes.find((item) => item.id === filter)?.unavailable === true;
+    return knownBoxes.length > 0 && knownBoxes.every((box) => box.unavailable);
+  });
   const blockedNote = $derived.by(() => {
-    if (!companyUid) return null;
+    if (!companyUid || notAvailable) return null;
     if (filter !== "all") {
       const box = knownBoxes.find((item) => item.id === filter) ?? null;
       return box ? blockedBoxNote(box, manage) : null;
@@ -202,6 +222,14 @@
   });
 
   function applyRead(listRes: JobsListResult, statusRes: JobsStatusResult): void {
+    refusedNotAvailable =
+      (!listRes.ok && isNotAvailableCode(listRes.code)) || (!statusRes.ok && isNotAvailableCode(statusRes.code));
+    if (refusedNotAvailable) {
+      jobs = [];
+      loadError = "";
+      readDenied = false;
+      return;
+    }
     if (!listRes.ok && !statusRes.ok) {
       jobs = [];
       if (canManageCompanyJobs(role)) {
@@ -301,6 +329,11 @@
     });
     saving = false;
     if (!result.ok) {
+      if (isNotAvailableCode(result.code)) {
+        closeForm();
+        writeRefusedNotAvailable = true;
+        return;
+      }
       saveError = jobFailureCopy(result.code);
       return;
     }
@@ -319,6 +352,10 @@
       revision: job.revision,
     });
     if (!result.ok) {
+      if (isNotAvailableCode(result.code)) {
+        writeRefusedNotAvailable = true;
+        return;
+      }
       saveError = jobFailureCopy(result.code);
       return;
     }
@@ -329,6 +366,13 @@
     }
     confirmRemoveId = null;
     reloadToken += 1;
+  }
+
+  async function contactUs(): Promise<void> {
+    if (!contact || !companyUid || contactState === "sending") return;
+    contactState = "sending";
+    const result = await contact(companyUid);
+    contactState = result.ok ? "sent" : "error";
   }
 
   function lastRunCopy(iso: string | null): string {
@@ -367,7 +411,7 @@
         testid="company-jobs-box-filter"
         onchange={(value) => (filter = value)}
       />
-      {#if manage}
+      {#if manage && !notAvailable}
         <button type="button" data-testid="company-jobs-watchdog" onclick={openWatchdog}>Watchdog template</button>
         <button type="button" class="primary" data-testid="company-jobs-add" onclick={openAdd}>Add a job</button>
       {/if}
@@ -376,6 +420,18 @@
 
   {#if !companyUid}
     <p class="empty" data-testid="company-jobs-empty">Choose a company to see its jobs.</p>
+  {:else if notAvailable}
+    <div class="note unavailable" data-testid="company-jobs-not-available">
+      <span data-testid="company-jobs-not-available-copy">{NOT_AVAILABLE_COPY}</span>
+      {#if contactState === "sent"}
+        <span class="sub" data-testid="company-jobs-contact-sent">{CONTACT_SENT_COPY}</span>
+      {:else if contact}
+        <button type="button" data-testid="company-jobs-contact-us" disabled={contactState === "sending"} onclick={() => void contactUs()}>{CONTACT_US_LABEL}</button>
+      {/if}
+    </div>
+    {#if contactState === "error"}
+      <p class="note error" role="alert" data-testid="company-jobs-contact-error">{CONTACT_FAILED_COPY}</p>
+    {/if}
   {:else}
     {#if readDenied}
       <p class="note" data-testid="company-jobs-read-denied">You do not have access to this company's Outposts.</p>
@@ -571,6 +627,7 @@
   .grow { flex: 1; margin: 0; }
   .sub { color: var(--t3, var(--v4-text-3)); }
   .note { margin: 0 0 12px; }
+  .unavailable { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-top: 12px; }
   .error { color: var(--red, var(--v4-error)); }
   .empty { padding: 24px 0; }
   .form { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; max-width: 460px; }

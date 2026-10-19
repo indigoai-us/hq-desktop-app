@@ -6,7 +6,7 @@
   import { onMount } from "svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import { loadCompanyJobs } from "./company-jobs-lazy.js";
-  import type { CompanyJobsApi } from "../outpost/company-jobs-client.js";
+  import type { CompanyJobsApi, CompanyJobsContact } from "../outpost/company-jobs-client.js";
   import type { CompanyJobRole } from "../outpost/company-jobs-model.js";
 
   interface Props {
@@ -14,9 +14,10 @@
     outpostId?: string | null;
     role?: CompanyJobRole;
     api?: CompanyJobsApi | null;
+    contact?: CompanyJobsContact | null;
   }
 
-  let { companyUid = null, outpostId = null, role = "unknown", api = null }: Props = $props();
+  let { companyUid = null, outpostId = null, role = "unknown", api = null, contact = null }: Props = $props();
 
   let Body = $state<typeof import("../outpost/CompanyJobsPage.svelte").default | null>(null);
 
@@ -29,7 +30,7 @@
 
 <div class="host" data-testid="company-jobs-rail-host">
   {#if Body}
-    <Body {companyUid} {outpostId} {role} {api} />
+    <Body {companyUid} {outpostId} {role} {api} {contact} />
   {:else}
     <div class="loading" aria-busy="true">
       <ReadLoader testid="company-jobs-host-loader" />

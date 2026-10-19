@@ -52,6 +52,8 @@ export interface CompanyBoxOption {
   name: string;
   blocked?: boolean;
   stopped?: boolean;
+  /** Blocked because the company cannot run Outposts yet. Set only when true. */
+  unavailable?: boolean;
 }
 
 export interface JobDraft {
@@ -461,17 +463,42 @@ export function parseCompanyBoxes(body: unknown): CompanyBoxOption[] {
     const lifecycle = typeof item.lifecycle === "string" ? item.lifecycle : "";
     if (lifecycle === "destroyed") continue;
     const name = typeof item.name === "string" && item.name.trim() ? item.name.trim() : "main";
-    boxes.push({
+    const box: CompanyBoxOption = {
       id: item.outpostId,
       name,
       blocked: lifecycle === "blocked",
       stopped: lifecycle === "stopped",
-    });
+    };
+    if (lifecycle === "blocked" && typeof item.blockedReason === "string" && isNotAvailableCode(item.blockedReason)) {
+      box.unavailable = true;
+    }
+    boxes.push(box);
   }
   return boxes;
 }
 
+/**
+ * Codes that mean the company cannot run Outposts yet. The screen shows one
+ * neutral line and a Contact us action, and says nothing about why.
+ */
+const NOT_AVAILABLE_CODES = new Set([
+  "billing_required",
+  "payment_not_set_up",
+  "payment_required",
+  "payment_method_required",
+]);
+
+export const NOT_AVAILABLE_COPY = "Outposts are not available for this company yet.";
+export const CONTACT_US_LABEL = "Contact us";
+export const CONTACT_SENT_COPY = "HQ has been notified and will follow up by email.";
+export const CONTACT_FAILED_COPY = "Something went wrong. Try again.";
+
+export function isNotAvailableCode(code: string | null | undefined): boolean {
+  return typeof code === "string" && NOT_AVAILABLE_CODES.has(code);
+}
+
 export function blockedBoxNote(box: CompanyBoxOption, manage: boolean): string | null {
+  if (box.unavailable) return null;
   if (box.stopped) return "This Outpost is stopped. Scheduled jobs are paused until it is started.";
   if (box.blocked) {
     return manage
@@ -483,6 +510,7 @@ export function blockedBoxNote(box: CompanyBoxOption, manage: boolean): string |
 
 /** Server refusal copy from desktop-api-contract.md (shared keys and section 5). */
 export function jobFailureCopy(code: string): string {
+  if (isNotAvailableCode(code)) return NOT_AVAILABLE_COPY;
   if (code === "admin_required" || code === "forbidden") return "Only company owners and admins can do this.";
   if (code === "box_not_signed_in" || code === "not_signed_in" || code === "provider_not_signed_in") {
     return "Sign this Outpost in to Claude before adding or running jobs.";

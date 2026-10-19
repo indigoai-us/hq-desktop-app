@@ -13357,6 +13357,13 @@
     if (role === undefined) return "unknown" as const;
     return "member" as const;
   });
+  /** Contact us on the jobs not-available-yet state. Reaches HQ through the in-app report path. */
+  function contactAboutJobs(companyUid: string) {
+    return adapter.feedback.submitBugReport(
+      "Outposts not available for a company",
+      `A ${jobsRole} asked about Outposts from the Jobs screen.\n\nCompany: ${companyUid}`,
+    );
+  }
   $effect(() => {
     const uid = jobsCompanyUid;
     if (!uid) return;
@@ -15127,6 +15134,7 @@
             outpostId={parseOutpostJobsParam(extraPageParam).outpostId}
             role={jobsRole}
             api={adapter.agents ?? null}
+            contact={contactAboutJobs}
           />
         {:else if view === "extra" && extraPageId && extraPages?.[extraPageId]}
           {@const Page = extraPages[extraPageId].component}

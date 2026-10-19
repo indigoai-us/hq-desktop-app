@@ -133,6 +133,9 @@ export interface CompanyJobsApi {
   listCompanyOutposts?: (companyUid: string) => Promise<AdapterResult<Json>>;
 }
 
+/** Heal path for the not-available-yet state: tells HQ this company asked. */
+export type CompanyJobsContact = (companyUid: string) => Promise<AdapterResult<unknown>>;
+
 export function companyJobsClientFromApi(
   api: CompanyJobsApi | null,
   options: { writesAllowed: boolean },

@@ -256,4 +256,45 @@ describe("DesktopApp extraPages", () => {
     expect(host.textContent).toContain("Choose a company to see its jobs.");
     expect(host.querySelector("[data-testid='company-jobs-add']")).toBeNull();
   });
+
+  it("sends Contact us on the jobs not-available-yet state through the in-app report path", async () => {
+    const refused = { ok: false as const, reason: "error" as const, code: "billing_required" };
+    const submitBugReport = vi.fn(async () => ok({}));
+    const adapter = {
+      ...webAdapter(),
+      agents: {
+        postCompanyJobs: async () => refused,
+        getCompanyJobsStatus: async () => refused,
+      },
+      feedback: { submitBugReport },
+    } as unknown as PlatformAdapter;
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(DesktopApp, {
+      target: host,
+      props: {
+        adapter,
+        sidebarApi: createFixtureChatSidebarApi(),
+        notificationsApi: createEmptyNotificationsApi(),
+        self: { uid: "prs_test", displayName: "Stefan Johnson", email: "stefan@example.com" },
+        coreFixtures: false,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
+    await navigateEmbedded({ kind: "extra", page: "outpost-jobs", param: "company=cmp_jobs" });
+    await vi.waitFor(() => {
+      expect(host.querySelector("[data-testid='company-jobs-not-available-copy']")?.textContent).toBe(
+        "Outposts are not available for this company yet.",
+      );
+    });
+    (host.querySelector("[data-testid='company-jobs-contact-us']") as HTMLButtonElement).click();
+    await vi.waitFor(() => {
+      expect(host.querySelector("[data-testid='company-jobs-contact-sent']")).toBeTruthy();
+    });
+    expect(submitBugReport).toHaveBeenCalledTimes(1);
+    const [title, body] = submitBugReport.mock.calls[0] as unknown as [string, string];
+    expect(title).toBe("Outposts not available for a company");
+    expect(body).toContain("cmp_jobs");
+  });
 });

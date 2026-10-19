@@ -25,6 +25,8 @@ const shots = [
   "member",
   "load-error",
   "blocked",
+  "not-available",
+  "not-available-member",
 ];
 const themes = ["light", "dark"];
 

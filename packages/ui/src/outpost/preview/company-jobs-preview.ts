@@ -27,7 +27,13 @@ function definition(name: string, prompt: string): Record<string, unknown> {
   return { prompt, context: { name }, schedule: { kind: "recurring", cron: CRON, timezone: "America/New_York" } };
 }
 
+const notAvailable = shot === "not-available" || shot === "not-available-member";
+
 async function seed(): Promise<void> {
+  if (notAvailable) {
+    store.failCode = "billing_required";
+    return;
+  }
   if (shot === "empty-admin" || shot === "empty-member" || shot === "add" || shot === "watchdog" || shot === "invalid" || shot === "load-error") {
     return;
   }
@@ -67,7 +73,7 @@ async function seed(): Promise<void> {
 }
 
 function roleFor(name: string): CompanyJobRole {
-  if (name === "empty-member" || name === "member") return "member";
+  if (name === "empty-member" || name === "member" || name === "not-available-member") return "member";
   return "admin";
 }
 
@@ -91,6 +97,7 @@ mount(CompanyJobsPage, {
     boxes: shot === "blocked" ? [{ id: "opc_1", name: "main", blocked: true }] : boxes,
     outpostId: shot === "blocked" ? "opc_1" : null,
     client,
+    contact: async () => ({ ok: true as const, value: {} }),
   },
 });
 

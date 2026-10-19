@@ -14,6 +14,8 @@ import {
   displayLabel,
   displayStatus,
   healthFromUnknown,
+  NOT_AVAILABLE_COPY,
+  isNotAvailableCode,
   isRunnableJob,
   jobFailureCopy,
   mergeJobHealth,
@@ -211,5 +213,33 @@ describe("US-006 job health words", () => {
       "This Outpost is stopped. Scheduled jobs are paused until it is started.",
     );
     expect(ALERT_AUDIENCE).toBe("admins");
+  });
+});
+
+describe("not available yet state", () => {
+  it("maps billing_required and payment-not-set-up codes to one neutral line", () => {
+    expect(NOT_AVAILABLE_COPY).toBe("Outposts are not available for this company yet.");
+    for (const code of ["billing_required", "payment_not_set_up", "payment_required", "payment_method_required"]) {
+      expect(isNotAvailableCode(code)).toBe(true);
+      expect(jobFailureCopy(code)).toBe(NOT_AVAILABLE_COPY);
+    }
+    expect(isNotAvailableCode("company_jobs_unavailable")).toBe(false);
+    expect(isNotAvailableCode("")).toBe(false);
+  });
+
+  it("marks a box blocked for billing as unavailable and gives it no blocked note", () => {
+    const boxes = parseCompanyBoxes({
+      outposts: [
+        { outpostId: "opc_1", name: "ridge", lifecycle: "blocked", blockedReason: "billing_required" },
+        { outpostId: "opc_2", name: "other", lifecycle: "blocked", blockedReason: "outcome_unknown" },
+      ],
+    });
+    expect(boxes).toEqual([
+      { id: "opc_1", name: "ridge", blocked: true, stopped: false, unavailable: true },
+      { id: "opc_2", name: "other", blocked: true, stopped: false },
+    ]);
+    expect(blockedBoxNote(boxes[0], true)).toBeNull();
+    expect(blockedBoxNote(boxes[0], false)).toBeNull();
+    expect(blockedBoxNote(boxes[1], true)).toContain("This Outpost needs attention.");
   });
 });

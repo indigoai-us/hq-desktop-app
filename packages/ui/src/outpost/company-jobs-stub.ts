@@ -58,6 +58,8 @@ export interface CompanyJobStore {
   requests: { method: string; path: string; body: Record<string, unknown> | null; actor: string }[];
   failStatus: boolean;
   failList: boolean;
+  /** When set, every read and write refuses with this code (503). */
+  failCode: string | null;
   signedIn: boolean;
   client(actor: CompanyJobActor, options?: { writesAllowed?: boolean; memberRead?: boolean }): CompanyJobsClient;
   vaultEdit(jobId: string, prompt: string): void;
@@ -86,6 +88,7 @@ export function createCompanyJobStore(options?: {
     requests,
     failStatus: false,
     failList: false,
+    failCode: null,
     signedIn: true,
     client(actor, clientOptions) {
       const memberRead = clientOptions?.memberRead !== false;
@@ -136,6 +139,7 @@ function handle(
   },
 ): JobsHttpResult {
   const readDenied = !canManageRole(actor.role) && !ctx.memberRead;
+  if (ctx.store.failCode) return fail(503, ctx.store.failCode);
   if (method === "GET" && path.startsWith(JOBS_STATUS_PATH)) {
     if (readDenied) return fail(403, "admin_required");
     if (ctx.store.failStatus) return fail(500, "company_job_freshness_unavailable");
