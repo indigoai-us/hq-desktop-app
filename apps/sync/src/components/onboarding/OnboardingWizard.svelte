@@ -37,6 +37,7 @@
     SCENE_HOLD_MS,
     forwardLabel,
     installCardModel,
+    createBlockingRetryGate,
     installCardActivityLines,
     isStoryScene,
     previousScene,
@@ -596,9 +597,10 @@
   let blockingRetryRunning = $state(false);
   /** The required step Try again is running now, named by the Ready line. */
   let retryingStageId = $state<StageId | null>(null);
-  // Bumped by each Try again and by every new or cancelled run, so a retry
-  // that ends after it was superseded does not clear a newer retry's state.
-  let blockingRetryToken = 0;
+  // Each Try again takes a token, and every new or cancelled run clears the
+  // gate, so a retry that ends after it was superseded does not clear a newer
+  // retry's state.
+  const blockingRetryGate = createBlockingRetryGate();
   let retryFailedBlocking: (() => Promise<void>) | null = null;
   // True while the background phase of backgroundRunId is still running, so
   // unmounting the wizard does not cancel it.
@@ -2230,7 +2232,7 @@
 
   /** Ends any Try again state; a retry still in flight can no longer clear it. */
   function clearBlockingRetry(): void {
-    blockingRetryToken += 1;
+    blockingRetryGate.clear();
     blockingRetryRunning = false;
     retryingStageId = null;
   }
@@ -3123,8 +3125,7 @@
         )
         .map((stage) => stage.id);
       if (ids.length === 0) return;
-      blockingRetryToken += 1;
-      const token = blockingRetryToken;
+      const token = blockingRetryGate.begin();
       blockingRetryRunning = true;
       retryingStageId = ids[0];
       readyDwellElapsed = false;
@@ -3144,7 +3145,7 @@
           if (!(await runStageList([id]))) break;
         }
       } finally {
-        if (token === blockingRetryToken) {
+        if (blockingRetryGate.end(token)) {
           blockingRetryRunning = false;
           retryingStageId = null;
         }
@@ -5169,7 +5170,7 @@
           </div>
         {/if}
         <div class="ready-notes">
-          {#if finishError || readyWatchdogFired}
+          {#if (finishError || readyWatchdogFired) && !blockingRetryRunning}
             <div class="note finish-action" role="status" data-testid="launcher-finish-error">
               <p>Finish HQ setup here when you’re ready.</p>
               <div class="note-actions">

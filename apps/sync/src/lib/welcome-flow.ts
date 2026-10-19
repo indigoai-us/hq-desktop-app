@@ -12,7 +12,8 @@
  *               then the heading names that step, Try
  *               again re-runs it, and it never finishes by
  *               itself. Once the watchdog fires, the
- *               Finish setup note shows beside Try again.
+ *               Finish setup note shows beside Try again,
+ *               and hides while Try again runs.
  *
  * The usage-data question is not a screen of its own in the first-run flow:
  * it is one checkbox line on the ready screen, recorded when the flow
@@ -425,4 +426,42 @@ export function readyRequiredFailureHeading(failedIds: readonly string[]): strin
 /** Possible activity lines keep the corner card's width steady. */
 export function installCardActivityLines(): string[] {
   return [...new Set(Object.keys(SETUP_ACTIVITY_PHRASES).map(id => setupActivityLabel(id)!))];
+}
+
+/**
+ * Bookkeeping for one Try again run on the ready screen. `begin` returns a
+ * token. `end(token)` stops the run only while that token is current, so the
+ * `finally` of a retry that was superseded cannot stop a newer one. `clear`
+ * stops any run and makes every earlier token stale; a new or cancelled setup
+ * run calls it, so the retry flag cannot stay set across runs.
+ */
+export interface BlockingRetryGate {
+  readonly running: boolean;
+  begin(): number;
+  end(token: number): boolean;
+  clear(): void;
+}
+
+export function createBlockingRetryGate(): BlockingRetryGate {
+  let current = 0;
+  let running = false;
+  return {
+    get running() {
+      return running;
+    },
+    begin() {
+      current += 1;
+      running = true;
+      return current;
+    },
+    end(token) {
+      if (token !== current) return false;
+      running = false;
+      return true;
+    },
+    clear() {
+      current += 1;
+      running = false;
+    },
+  };
 }

@@ -567,6 +567,41 @@ describe('welcome flow: the install runs in the background', () => {
     await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
   });
 
+  // Review of PR 1690 (gate 2, M1): Finish setup closes the wizard, and a
+  // wizard closed while Try again runs never records the finished install.
+  // So the note hides while Try again runs and comes back if it fails again.
+  it('hides Finish setup while Try again runs and shows it again if Try again fails', async () => {
+    __setReadyTimingsForTests({ consentDwellMs: 0, watchdogMs: 40 });
+    const retry = deferred();
+    let attempts = 0;
+    stubInvoke({
+      git_init: () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('permission denied');
+        return retry.promise;
+      },
+    });
+    const onfinish = mountAt(2);
+    await flushUntil(() => commands().includes('git_init'), 'the install');
+    byId('welcome-skip')!.click();
+    await flushUntil(() => byId('ready-required-retry') !== null, 'Try again');
+    await flushUntil(() => byId('launcher-finish-error') !== null, 'the watchdog note');
+
+    byId('ready-required-retry')!.click();
+    await flushUntil(() => attempts === 2, 'the retried step');
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await flush();
+    expect(readyTitle()).toBe('Almost ready.');
+    expect(byId('launcher-finish-error')).toBeNull();
+    expect(onfinish).not.toHaveBeenCalled();
+
+    retry.reject(new Error('permission denied'));
+    await flushUntil(() => byId('ready-required-retry') !== null, 'Try again after the second failure');
+    await flushUntil(() => byId('launcher-finish-error') !== null, 'the watchdog note again');
+    expect(readyTitle()).toBe('Setting up file history did not finish.');
+    expect(onfinish).not.toHaveBeenCalled();
+  });
+
   it('says Almost ready. while the install runs, then HQ is ready. and finishes once it is done', async () => {
     const template = deferred();
     stubInvoke({ fetch_and_extract_template: () => template.promise });
