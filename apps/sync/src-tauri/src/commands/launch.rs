@@ -125,80 +125,21 @@ pub(crate) fn unix_terminal_shell_command(
     }
 }
 
-/// The shell family Terminal runs the launch line in. fish has its own
-/// syntax for the PATH prepend; every other login shell takes POSIX sh.
 #[cfg_attr(windows, allow(dead_code))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TerminalShell {
-    Posix,
-    Fish,
-}
-
-#[cfg_attr(windows, allow(dead_code))]
-impl TerminalShell {
-    pub(crate) fn from_shell_path(shell: Option<&std::ffi::OsStr>) -> Self {
-        let is_fish = shell
-            .map(std::path::Path::new)
-            .and_then(std::path::Path::file_name)
-            .is_some_and(|name| name == "fish");
-        if is_fish {
-            TerminalShell::Fish
-        } else {
-            TerminalShell::Posix
-        }
-    }
-
-    /// The shell Terminal opens for this user: the account's login shell,
-    /// falling back to `$SHELL`.
-    #[cfg(not(windows))]
-    fn current() -> Self {
-        Self::from_shell_path(
-            login_shell()
-                .or_else(|| std::env::var_os("SHELL"))
-                .as_deref(),
-        )
-    }
-}
-
-/// The login shell in the user's account record, which is what Terminal runs.
-#[cfg(not(windows))]
-fn login_shell() -> Option<std::ffi::OsString> {
-    use std::ffi::CStr;
-    use std::os::unix::ffi::OsStrExt as _;
-    // SAFETY: getpwuid returns NULL or a pointer to static storage that stays
-    // valid until the next getpw* call; the shell is copied out at once.
-    unsafe {
-        let pw = libc::getpwuid(libc::getuid());
-        if pw.is_null() || (*pw).pw_shell.is_null() {
-            return None;
-        }
-        let shell = CStr::from_ptr((*pw).pw_shell).to_bytes();
-        (!shell.is_empty()).then(|| std::ffi::OsStr::from_bytes(shell).to_os_string())
-    }
-}
-
-#[cfg_attr(windows, allow(dead_code))]
-/// fish single-quoting: inside `'…'` only `\\` and `\'` are escapes.
-fn fish_single_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
-}
-
-#[cfg_attr(windows, allow(dead_code))]
-/// Shell text that puts each managed CLI dir (the npm bin holding hq, qmd
-/// and claude, then the managed node bin) at the front of the session's
-/// PATH unless it is already there. It runs after the user's rc files, so
-/// their PATH is kept; it writes no file. Dirs are prepended last to first so
-/// they end up in `managed` order. A dir that is empty, holds a `:` or a
-/// control character cannot go on PATH or into the Terminal line and is
-/// skipped. No usable dir gives an empty prefix.
-pub(crate) fn unix_terminal_path_prefix(shell: TerminalShell, managed: &[PathBuf]) -> String {
+/// POSIX sh text that puts each managed CLI dir (the npm bin holding hq, qmd
+/// and claude, then the managed node bin) at the front of PATH unless it is
+/// already there. Dirs are prepended last to first so they end up in
+/// `managed` order. A dir that is empty or holds a `:` or a control
+/// character cannot go on PATH or into the Terminal line, and one with a `\`
+/// or `!` would be changed by fish or csh quoting before sh sees it; those
+/// are skipped. No usable dir gives an empty prefix.
+pub(crate) fn unix_terminal_path_prefix(managed: &[PathBuf]) -> String {
     let mut dirs: Vec<String> = Vec::new();
     for dir in managed {
         let dir = dir.to_string_lossy();
-        if dir.is_empty() || dir.contains(':') || dir.chars().any(char::is_control) {
-            continue;
-        }
-        if !dirs.iter().any(|seen| seen.as_str() == dir) {
+        let unusable =
+            dir.is_empty() || dir.contains([':', '\\', '!']) || dir.chars().any(char::is_control);
+        if !unusable && !dirs.iter().any(|seen| seen.as_str() == dir) {
             dirs.push(dir.into_owned());
         }
     }
@@ -207,25 +148,41 @@ pub(crate) fn unix_terminal_path_prefix(shell: TerminalShell, managed: &[PathBuf
     }
     let mut prefix = String::new();
     for dir in dirs.iter().rev() {
-        match shell {
-            TerminalShell::Posix => prefix.push_str(&format!(
-                "case \":$PATH:\" in *{}*|*{}*) ;; *) PATH={}\"${{PATH:+:$PATH}}\" ;; esac; ",
-                posix_single_quote(&format!(":{dir}:")),
-                posix_single_quote(&format!(":{dir}/:")),
-                posix_single_quote(dir),
-            )),
-            TerminalShell::Fish => {
-                let quoted = fish_single_quote(dir);
-                prefix.push_str(&format!(
-                    "contains -- {quoted} $PATH; or set -gx PATH {quoted} $PATH; "
-                ));
-            }
-        }
+        prefix.push_str(&format!(
+            "case \":$PATH:\" in *{}*|*{}*) ;; *) PATH={}\"${{PATH:+:$PATH}}\" ;; esac; ",
+            posix_single_quote(&format!(":{dir}:")),
+            posix_single_quote(&format!(":{dir}/:")),
+            posix_single_quote(dir),
+        ));
     }
-    if shell == TerminalShell::Posix {
-        prefix.push_str("export PATH; ");
-    }
+    prefix.push_str("export PATH; ");
     prefix
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+/// The line Terminal runs for a session: [`unix_terminal_shell_command`]
+/// with the managed CLI dirs put on PATH first (see
+/// [`unix_terminal_path_prefix`]). Terminal hands the line to the user's
+/// login shell, which may be zsh, bash, fish, tcsh or another shell, so the
+/// PATH change and the launch run in `/bin/sh -c '…'`. That one
+/// single-quoted word parses the same way in all of those shells. The PATH
+/// change runs after the user's rc files, so their PATH is kept, and it
+/// writes no file. With no usable managed dir the line is unchanged.
+pub(crate) fn unix_terminal_session_command(
+    path: &str,
+    binary: &str,
+    prompt: Option<&str>,
+    managed: &[PathBuf],
+) -> String {
+    let line = unix_terminal_shell_command(path, binary, prompt);
+    let prefix = unix_terminal_path_prefix(managed);
+    if prefix.is_empty() {
+        return line;
+    }
+    format!(
+        "/bin/sh -c {}",
+        posix_single_quote(&format!("{prefix}{line}"))
+    )
 }
 
 /// `base` PATH for a child the app spawns, with the managed CLI dirs that
@@ -756,13 +713,11 @@ fn spawn_cli_terminal_unix_with_prompt(
     binary: &str,
     prompt: Option<&str>,
 ) -> Result<(), String> {
-    let path_prefix = unix_terminal_path_prefix(
-        TerminalShell::current(),
+    let script = terminal_applescript(&unix_terminal_session_command(
+        path,
+        binary,
+        prompt,
         &hq_desktop_core::paths::managed_cli_session_dirs(),
-    );
-    let script = terminal_applescript(&format!(
-        "{path_prefix}{}",
-        unix_terminal_shell_command(path, binary, prompt)
     ));
 
     let output = Command::new("osascript")
@@ -1426,19 +1381,17 @@ end tell"#
         );
     }
 
-    /// Runs `prefix` then prints PATH in a clean `/bin/sh`, the way Terminal
-    /// runs the launch line after the user's rc files. `path` of `None` means
-    /// PATH is unset.
+    /// Runs `prefix` then prints PATH in a clean `/bin/sh` with PATH set to
+    /// `path`.
     #[cfg(unix)]
-    fn sh_path_after(prefix: &str, path: Option<&str>) -> String {
-        let mut cmd = Command::new("/bin/sh");
-        cmd.env_clear()
+    fn sh_path_after(prefix: &str, path: &str) -> String {
+        let out = Command::new("/bin/sh")
+            .env_clear()
+            .env("PATH", path)
             .arg("-c")
-            .arg(format!("{prefix}printf %s \"$PATH\""));
-        if let Some(path) = path {
-            cmd.env("PATH", path);
-        }
-        let out = cmd.output().unwrap();
+            .arg(format!("{prefix}printf %s \"$PATH\""))
+            .output()
+            .unwrap();
         assert!(
             out.status.success(),
             "{}",
@@ -1455,13 +1408,57 @@ end tell"#
         (dir, npm, node)
     }
 
+    /// Login shells Terminal may hand the session line to, with the flags
+    /// that keep each one from reading the user's rc files. Only the ones
+    /// installed here are returned; `/bin/sh` is always among them.
+    #[cfg(unix)]
+    fn login_shells() -> Vec<(&'static str, &'static [&'static str])> {
+        let shells: [(&'static str, &'static [&'static str]); 6] = [
+            ("/bin/sh", &[]),
+            ("/bin/zsh", &["-f"]),
+            ("/bin/bash", &["--norc", "--noprofile"]),
+            ("/bin/tcsh", &["-f"]),
+            ("/bin/csh", &["-f"]),
+            ("/bin/dash", &[]),
+        ];
+        let found: Vec<_> = shells
+            .into_iter()
+            .filter(|(shell, _)| std::path::Path::new(shell).exists())
+            .collect();
+        assert!(found.iter().any(|(shell, _)| *shell == "/bin/sh"));
+        found
+    }
+
+    /// Runs a Terminal session line in `shell` the way Terminal would, after
+    /// the rc files have set PATH to `path`, and returns its stdout.
+    #[cfg(unix)]
+    fn run_session_line(shell: &str, flags: &[&str], line: &str, path: &str) -> String {
+        let out = Command::new(shell)
+            .env_clear()
+            .env("PATH", path)
+            .args(flags)
+            .arg("-c")
+            .arg(line)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{shell}: {}\n{line}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .trim_end_matches('\n')
+            .to_string()
+    }
+
     #[cfg(unix)]
     #[test]
     fn session_path_includes_the_managed_cli_dirs_first() {
         let (_dir, npm, node) = managed_fixture();
-        let prefix = unix_terminal_path_prefix(TerminalShell::Posix, &[npm.clone(), node.clone()]);
+        let prefix = unix_terminal_path_prefix(&[npm.clone(), node.clone()]);
         assert_eq!(
-            sh_path_after(&prefix, Some("/usr/bin:/bin")),
+            sh_path_after(&prefix, "/usr/bin:/bin"),
             format!("{}:{}:/usr/bin:/bin", npm.display(), node.display())
         );
     }
@@ -1470,10 +1467,10 @@ end tell"#
     #[test]
     fn session_path_keeps_the_existing_path_in_order() {
         let (_dir, npm, _node) = managed_fixture();
-        let prefix = unix_terminal_path_prefix(TerminalShell::Posix, &[npm.clone()]);
+        let prefix = unix_terminal_path_prefix(std::slice::from_ref(&npm));
         let existing = "/opt/homebrew/bin:/Users/me/.cargo/bin:/usr/bin:/bin";
         assert_eq!(
-            sh_path_after(&prefix, Some(existing)),
+            sh_path_after(&prefix, existing),
             format!("{}:{existing}", npm.display())
         );
     }
@@ -1482,14 +1479,14 @@ end tell"#
     #[test]
     fn session_path_does_not_add_a_dir_that_is_already_there() {
         let (_dir, npm, node) = managed_fixture();
-        let prefix = unix_terminal_path_prefix(TerminalShell::Posix, &[npm.clone(), node.clone()]);
+        let prefix = unix_terminal_path_prefix(&[npm.clone(), node.clone()]);
         let existing = format!("/usr/bin:{}:/bin:{}/", npm.display(), node.display());
-        assert_eq!(sh_path_after(&prefix, Some(&existing)), existing);
+        assert_eq!(sh_path_after(&prefix, &existing), existing);
 
         // Running the prefix twice (a nested shell) adds nothing the second time.
-        let once = sh_path_after(&prefix, Some("/usr/bin"));
+        let once = sh_path_after(&prefix, "/usr/bin");
         assert_eq!(
-            sh_path_after(&format!("{prefix}{prefix}"), Some("/usr/bin")),
+            sh_path_after(&format!("{prefix}{prefix}"), "/usr/bin"),
             once
         );
     }
@@ -1498,10 +1495,10 @@ end tell"#
     #[test]
     fn session_path_without_a_path_has_no_empty_entry() {
         let (_dir, npm, node) = managed_fixture();
-        let prefix = unix_terminal_path_prefix(TerminalShell::Posix, &[npm.clone(), node.clone()]);
+        let prefix = unix_terminal_path_prefix(&[npm.clone(), node.clone()]);
         // An empty PATH, not an unset one: sh fills in its own default when PATH is unset.
         assert_eq!(
-            sh_path_after(&prefix, Some("")),
+            sh_path_after(&prefix, ""),
             format!("{}:{}", npm.display(), node.display())
         );
     }
@@ -1512,70 +1509,80 @@ end tell"#
             PathBuf::from(""),
             PathBuf::from("/a:b/bin"),
             PathBuf::from("/a\nb/bin"),
+            PathBuf::from("/a\\b/bin"),
+            PathBuf::from("/a!b/bin"),
             PathBuf::from("/ok/bin"),
             PathBuf::from("/ok/bin"),
         ];
-        let prefix = unix_terminal_path_prefix(TerminalShell::Posix, &managed);
+        let prefix = unix_terminal_path_prefix(&managed);
         assert_eq!(prefix.matches("/ok/bin").count(), 3, "{prefix}");
-        assert!(
-            !prefix.contains("a:b") && !prefix.contains('\n'),
-            "{prefix}"
-        );
+        assert!(!prefix.contains("/a"), "{prefix}");
     }
 
     #[test]
-    fn session_path_prefix_is_empty_without_managed_dirs() {
-        assert_eq!(unix_terminal_path_prefix(TerminalShell::Posix, &[]), "");
-        assert_eq!(unix_terminal_path_prefix(TerminalShell::Fish, &[]), "");
-    }
-
-    #[test]
-    fn fish_session_path_prefix_uses_fish_syntax() {
-        let managed = [
-            PathBuf::from("/m/npm-global/bin"),
-            PathBuf::from("/m/it's\\node/bin"),
-        ];
+    fn session_line_is_unchanged_without_managed_dirs() {
+        assert_eq!(unix_terminal_path_prefix(&[]), "");
         assert_eq!(
-            unix_terminal_path_prefix(TerminalShell::Fish, &managed),
-            r"contains -- '/m/it\'s\\node/bin' $PATH; or set -gx PATH '/m/it\'s\\node/bin' $PATH; contains -- '/m/npm-global/bin' $PATH; or set -gx PATH '/m/npm-global/bin' $PATH; "
+            unix_terminal_session_command("/Users/me/HQ", "codex", Some("hi"), &[]),
+            unix_terminal_shell_command("/Users/me/HQ", "codex", Some("hi"))
+        );
+        assert_eq!(
+            unix_terminal_session_command("/Users/me/HQ", "codex", None, &[PathBuf::from("/a:b")]),
+            unix_terminal_shell_command("/Users/me/HQ", "codex", None)
         );
     }
 
+    /// The session line puts the managed dirs on PATH, keeps the existing
+    /// PATH, changes to the folder and passes the prompt through in every
+    /// login shell installed here, csh-family shells included.
+    #[cfg(unix)]
     #[test]
-    fn terminal_shell_is_fish_only_for_a_fish_login_shell() {
-        use std::ffi::OsStr;
-        assert_eq!(
-            TerminalShell::from_shell_path(Some(OsStr::new("/opt/homebrew/bin/fish"))),
-            TerminalShell::Fish
-        );
-        assert_eq!(
-            TerminalShell::from_shell_path(Some(OsStr::new("fish"))),
-            TerminalShell::Fish
-        );
-        for shell in ["/bin/zsh", "/bin/bash", "/bin/sh", "/usr/bin/fishy", ""] {
+    fn session_line_puts_the_managed_dirs_on_path_in_every_login_shell() {
+        let (dir, npm, node) = managed_fixture();
+        let folder = dir.path().join("it's my \"HQ\" $HOME");
+        std::fs::create_dir_all(&folder).unwrap();
+        let folder = folder.canonicalize().unwrap();
+        let folder_str = folder.to_str().unwrap();
+        let managed = [npm.clone(), node.clone()];
+        let path_line =
+            unix_terminal_session_command(folder_str, "/usr/bin/printenv", Some("PATH"), &managed);
+        let pwd_line = unix_terminal_session_command(folder_str, "/bin/pwd", None, &managed);
+        for (shell, flags) in login_shells() {
             assert_eq!(
-                TerminalShell::from_shell_path(Some(OsStr::new(shell))),
-                TerminalShell::Posix,
+                run_session_line(shell, flags, &path_line, "/usr/bin:/bin"),
+                format!("{}:{}:/usr/bin:/bin", npm.display(), node.display()),
+                "{shell}"
+            );
+            let already = format!("/usr/bin:{}:{}:/bin", npm.display(), node.display());
+            assert_eq!(
+                run_session_line(shell, flags, &path_line, &already),
+                already,
+                "{shell}"
+            );
+            assert_eq!(
+                run_session_line(shell, flags, &pwd_line, "/usr/bin:/bin"),
+                folder_str,
                 "{shell}"
             );
         }
-        assert_eq!(TerminalShell::from_shell_path(None), TerminalShell::Posix);
     }
 
-    /// The full prefixed launch line survives AppleScript escaping.
+    /// The full session line survives AppleScript escaping.
     #[cfg(target_os = "macos")]
     #[test]
-    fn applescript_literal_round_trips_the_prefixed_line() {
+    fn applescript_literal_round_trips_the_session_line() {
         let managed = [PathBuf::from(
             "/Users/me/Library/Application Support/Indigo HQ/toolchain/npm-global/bin",
         )];
-        let shell_cmd = format!(
-            "{}{}",
-            unix_terminal_path_prefix(TerminalShell::Posix, &managed),
-            unix_terminal_shell_command("/Users/me/HQ", "codex", None)
+        let shell_cmd = unix_terminal_session_command(
+            "/Users/o'neil/HQ",
+            "codex",
+            Some("say \"hi\""),
+            &managed,
         );
         assert!(
-            shell_cmd.contains("Indigo HQ/toolchain/npm-global/bin"),
+            shell_cmd.starts_with("/bin/sh -c '")
+                && shell_cmd.contains("Indigo HQ/toolchain/npm-global/bin"),
             "{shell_cmd}"
         );
         let script = terminal_applescript(&shell_cmd);

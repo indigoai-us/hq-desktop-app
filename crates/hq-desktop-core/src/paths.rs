@@ -389,21 +389,32 @@ fn managed_node_bin_dir_in(root: &Path) -> PathBuf {
 /// terminal) needs on PATH to run the managed `hq` CLI, and `qmd` and
 /// `claude`, which the installer puts in the same npm prefix. npm's global
 /// bin comes first so its shims win; the managed Node bin follows so a
-/// node-shebanged shim finds its runtime. One pair per root, in root order.
-/// Pure: [`managed_cli_session_dirs`] filters to directories that exist.
-pub fn managed_cli_session_dirs_for_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+/// node-shebanged shim finds its runtime.
+///
+/// Only the first root, in `roots` order, whose npm bin exists is used, and
+/// only its dirs that exist. On Windows the current root comes before the
+/// legacy `Indigo HQ` one, so a leftover legacy install is used only when
+/// the current one is missing and never shadows it. No root with an npm bin
+/// gives no dirs. Pure: `is_dir` decides what exists.
+pub fn managed_cli_session_dirs_for_roots(
+    roots: &[PathBuf],
+    is_dir: impl Fn(&Path) -> bool,
+) -> Vec<PathBuf> {
     roots
         .iter()
-        .flat_map(|root| [managed_npm_bin_in(root), managed_node_bin_dir_in(root)])
-        .collect()
+        .find(|root| is_dir(&managed_npm_bin_in(root)))
+        .map(|root| {
+            [managed_npm_bin_in(root), managed_node_bin_dir_in(root)]
+                .into_iter()
+                .filter(|dir| is_dir(dir))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
-/// [`managed_cli_session_dirs_for_roots`] for this machine's toolchain roots,
-/// keeping only directories that exist.
+/// [`managed_cli_session_dirs_for_roots`] for this machine's toolchain roots.
 pub fn managed_cli_session_dirs() -> Vec<PathBuf> {
-    let mut dirs = managed_cli_session_dirs_for_roots(&managed_toolchain_roots());
-    dirs.retain(|dir| dir.is_dir());
-    dirs
+    managed_cli_session_dirs_for_roots(&managed_toolchain_roots(), Path::is_dir)
 }
 
 /// `existing` PATH with each `managed` directory it does not already contain
@@ -3119,7 +3130,7 @@ mod managed_cli_session_path_tests {
     fn session_dirs_put_the_managed_npm_bin_first_then_the_node_bin() {
         let root = PathBuf::from("/fixture/toolchain");
         assert_eq!(
-            managed_cli_session_dirs_for_roots(std::slice::from_ref(&root)),
+            managed_cli_session_dirs_for_roots(std::slice::from_ref(&root), |_| true),
             vec![managed_npm_bin_in(&root), managed_node_bin_dir_in(&root)]
         );
     }
@@ -3130,18 +3141,38 @@ mod managed_cli_session_path_tests {
     #[test]
     fn session_dirs_include_the_npm_bin_that_holds_hq_and_qmd() {
         let root = PathBuf::from("/fixture/toolchain");
-        let dirs = managed_cli_session_dirs_for_roots(std::slice::from_ref(&root));
+        let dirs = managed_cli_session_dirs_for_roots(std::slice::from_ref(&root), |_| true);
         assert_eq!(dirs[0], root.join("npm-global").join("bin"));
         assert_eq!(dirs[1], root.join("node").join("bin"));
     }
 
     #[test]
-    fn session_dirs_cover_every_root_in_order() {
+    fn session_dirs_use_only_the_first_root_with_an_npm_bin() {
         let roots = vec![PathBuf::from("/a/toolchain"), PathBuf::from("/b/toolchain")];
-        let dirs = managed_cli_session_dirs_for_roots(&roots);
-        assert_eq!(dirs.len(), 4);
-        assert_eq!(dirs[0], managed_npm_bin_in(&roots[0]));
-        assert_eq!(dirs[2], managed_npm_bin_in(&roots[1]));
+        assert_eq!(
+            managed_cli_session_dirs_for_roots(&roots, |_| true),
+            vec![
+                managed_npm_bin_in(&roots[0]),
+                managed_node_bin_dir_in(&roots[0])
+            ]
+        );
+    }
+
+    #[test]
+    fn session_dirs_fall_back_to_a_later_root_only_when_the_first_has_no_npm_bin() {
+        let roots = vec![PathBuf::from("/a/toolchain"), PathBuf::from("/b/toolchain")];
+        let later_npm = managed_npm_bin_in(&roots[1]);
+        assert_eq!(
+            managed_cli_session_dirs_for_roots(&roots, |dir| dir == later_npm),
+            vec![later_npm.clone()]
+        );
+    }
+
+    #[test]
+    fn session_dirs_are_empty_without_an_npm_bin() {
+        let roots = vec![PathBuf::from("/a/toolchain")];
+        let node = managed_node_bin_dir_in(&roots[0]);
+        assert!(managed_cli_session_dirs_for_roots(&roots, |dir| dir == node).is_empty());
     }
 
     #[test]
