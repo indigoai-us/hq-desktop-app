@@ -250,6 +250,8 @@
   .brief {
     position: absolute;
     inset: 0;
+    /* Over the rise and its invite, as the app's rise-hold fades out under the report. */
+    z-index: 5;
     overflow: auto;
     background: var(--b-bg, #1b1b1e);
   }
