@@ -57,7 +57,7 @@ it('shows cloud model configuration read-only', async () => {
 });
 it('normalizes provider identities but leaves unknown logins unknown', () => {
   expect(providerId('openai')).toBe('codex'); expect(providerId('xai')).toBe('grok');
-  expect(loginState('authorized')).toBe('connected'); expect(loginState('expired')).toBe('disconnected'); expect(loginState('something-new')).toBe('unknown');
+  expect(loginState('authorized')).toBe('connected'); expect(loginState('expired')).toBe('disconnected'); expect(loginState('not-connected')).toBe('disconnected'); expect(loginState('something-new')).toBe('unknown');
 });
 
 it.each(['codex', 'claude', 'grok'] as const)('saves cloud %s settings through the scoped runtime endpoint', async provider => {
@@ -149,4 +149,14 @@ it('stops an endless wait and recovers when a later check returns the link', asy
     expect(target.querySelector('[role=alert]')).toBeNull();
     expect(target.textContent).toContain('Open provider sign-in');
   } finally { now.mockRestore(); }
+});
+
+it('shows providers the server reports as not connected as Not connected', async () => {
+  const { adapter } = await setup('cloud');
+  adapter.agents.getProfile.mockResolvedValue({ ok: true, value: { agent: { uid: 'agt_a' }, box: {}, brain: { provider: 'claude', model: 'claude-opus-5', logins: [{ provider: 'codex', status: 'not-connected' }, { provider: 'claude', status: 'authorized' }, { provider: 'grok', status: 'not-connected' }] } } });
+  target.querySelector<HTMLButtonElement>('[aria-label="Refresh brain"]')!.click(); await settle();
+  const status = (provider: string) => target.querySelector('[data-testid="brain-' + provider + '"] .status')?.textContent?.trim();
+  expect(status('codex')).toBe('Not connected');
+  expect(status('grok')).toBe('Not connected');
+  expect(status('claude')).toBe('Connected');
 });
