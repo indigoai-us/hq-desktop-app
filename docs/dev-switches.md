@@ -19,6 +19,22 @@ Code: `apps/sync/src-tauri/src/scratch_build.rs`.
 | `HQ_SCRATCH_IMPORT_HQ_BIN=/abs/path/to/hq` | The "Bring in your context" scan runs this `hq` instead of the installed one. Ignored unless `HQ_SCRATCH_BUILD` is set. |
 | `HQ_SCRATCH_IMPORT_SCANNER=/abs/path/to/scan.sh` | The scan uses this scanner (passed to hq as `HQ_IMPORT_SCANNER_OVERRIDE`). Ignored unless `HQ_SCRATCH_BUILD` is set. |
 
+### HQ Core beta for walk and demo builds
+
+`HQ_CORE_PRERELEASE=1` lets a walk or demo build install and offer the HQ Core
+beta. Code: `apps/sync/src-tauri/src/demo_build.rs`. It is compiled in with
+`option_env!` like the switches above, and it works with or without
+`HQ_SCRATCH_BUILD`.
+
+| Switch | What it does |
+| --- | --- |
+| `HQ_CORE_PRERELEASE=1` | First-run setup and the HQ Core update check read the full hq-core release list instead of the latest stable release, take prereleases, and pick the highest version. They refuse anything below `16.0.31-beta.6` (`MIN_CORE_VERSION`), and never take a draft. If no release qualifies, setup fails with "no release at or above 16.0.31-beta.6" rather than installing an older stable. When the GitHub API is rate limited, the redirect fallback still only sees the latest stable, so a demo build uses it only when that stable is at or above the minimum. |
+
+Without the switch, every caller keeps the stable-only rule it had before:
+`/releases/latest`, the first non-draft stable, and no minimum. The release
+workflows never set it, and `scripts/demo-core-prerelease-contract.test.ts`
+fails if a workflow, build script, package script or Tauri config starts to.
+
 `HQ_UPDATER_DISABLED=1` (from PR 1504) still works on its own as a run-time
 variable for the updater paths. `HQ_SCRATCH_BUILD` covers more, and it is
 baked into the build.
