@@ -11,16 +11,6 @@ const config: AuthConfig = {
 };
 
 describe("buildAuthorizeUrl", () => {
-  it("rejects omitted or blank providers instead of building a hosted chooser URL", () => {
-    for (const identityProvider of [undefined, "", " "]) {
-      expect(() => buildAuthorizeUrl(config, {
-        redirectUri: "hqmobile://auth", state: "s", codeChallenge: "c",
-        // Exercise callers without TypeScript's required-field protection.
-        identityProvider: identityProvider as string,
-      })).toThrow("provider is required");
-    }
-  });
-
   it("builds the Cognito authorize URL with the expected params", () => {
     const url = new URL(
       buildAuthorizeUrl(config, {
@@ -46,17 +36,16 @@ describe("buildAuthorizeUrl", () => {
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
   });
 
-  it("preserves the chosen provider and allows a custom scope", () => {
+  it("omits identity_provider when not given and allows a custom scope", () => {
     const url = new URL(
       buildAuthorizeUrl(config, {
         redirectUri: "hq-work://app/connect/cognito-callback",
         state: "s",
         codeChallenge: "c",
         scope: "openid",
-        identityProvider: "MicrosoftPersonal",
       }),
     );
-    expect(url.searchParams.get("identity_provider")).toBe("MicrosoftPersonal");
+    expect(url.searchParams.has("identity_provider")).toBe(false);
     expect(url.searchParams.get("scope")).toBe("openid");
     expect(url.searchParams.get("redirect_uri")).toBe(
       "hq-work://app/connect/cognito-callback",

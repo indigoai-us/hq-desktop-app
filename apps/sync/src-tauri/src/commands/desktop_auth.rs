@@ -705,9 +705,13 @@ pub async fn desktop_continuation_await_identity(
         return Err(custody_error_code(error).to_string());
     }
 
+    // From here the attempt is past the browser wait and bounded only by its
+    // lifetime, so a failed exchange or check ends it now rather than leaving
+    // it in flight for the rest of that lifetime.
     let exchanged = match super::oauth::exchange_code_for_tokens(&callback.code).await {
         Ok(exchanged) => exchanged,
         Err(error) => {
+            with_custody(|custody| custody.cancel(&attempt_id, AttemptEnd::Failed));
             return Err(error);
         }
     };
@@ -721,6 +725,7 @@ pub async fn desktop_continuation_await_identity(
     let identity = match verify_with_backend(&tokens).await {
         Ok(identity) => identity,
         Err(error) => {
+            with_custody(|custody| custody.cancel(&attempt_id, AttemptEnd::Failed));
             if let Some(nonce) = cleanup_nonce {
                 discard_unbound_desktop_referral_nonce(nonce);
             }

@@ -5,13 +5,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 /**
  * The root route on a phone, mounted.
  *
- * The gate and the flow are tested on their own. This checks the wiring
- * between them: a Microsoft tap with an email reaches hq-pro's resolve route
- * and opens Cognito at the provider it returns.
+ * A phone reaches Microsoft through the Cognito hosted chooser. The sign-in
+ * button must open that chooser (no named provider) and must not call hq-pro
+ * first: hq-pro does not allow the mobile webview origins.
  */
 
 const phone = vi.hoisted(() => ({
-  beginSignIn: vi.fn(async () => {}),
+  beginSignIn: vi.fn(async (_options?: { identityProvider?: string }) => {}),
 }));
 
 vi.mock("svelte", async () => {
@@ -35,11 +35,9 @@ vi.mock("$lib/mobile-auth-host", () => ({
   mobileTokenProvider: () => async () => null,
 }));
 
-import { flushSync, mount, tick, unmount } from "svelte";
+import { mount, unmount } from "svelte";
 
 import Page from "./+page.svelte";
-
-const WORK_PROVIDER = "MsOrg87489d4600af47338b7bafe9bd";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -50,15 +48,10 @@ function byTestId<T extends HTMLElement = HTMLElement>(id: string): T | null {
 }
 
 beforeEach(() => {
-  vi.stubEnv("PUBLIC_HQ_PRO_API_URL", "https://hq-pro.test");
   host = document.createElement("div");
   document.body.appendChild(host);
   phone.beginSignIn.mockClear();
-  fetchMock = vi.fn(async () =>
-    new Response(JSON.stringify({ status: "enabled", providerName: WORK_PROVIDER }), {
-      status: 200,
-    }),
-  );
+  fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
 });
 
@@ -67,43 +60,17 @@ afterEach(async () => {
   component = null;
   host.remove();
   vi.unstubAllGlobals();
-  vi.unstubAllEnvs();
 });
 
 describe("the phone sign-in route", () => {
-  it("sends a Microsoft work email to its MsOrg provider", async () => {
+  it("opens the Cognito chooser, where Microsoft is offered, without calling hq-pro", async () => {
     component = mount(Page, { target: host, props: { data: { user: null } } as never });
-    await vi.waitFor(() => expect(byTestId("mobile-signin-Microsoft")).not.toBeNull());
+    await vi.waitFor(() => expect(byTestId("mobile-signin-start")).not.toBeNull());
 
-    byTestId<HTMLButtonElement>("mobile-signin-Microsoft")!.click();
-    flushSync();
-    const input = byTestId<HTMLInputElement>("mobile-microsoft-email")!;
-    input.value = "person@contoso.example";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    flushSync();
-    byTestId<HTMLFormElement>("mobile-microsoft-email-form")!.requestSubmit();
-    await tick();
+    byTestId<HTMLButtonElement>("mobile-signin-start")!.click();
 
-    await vi.waitFor(() =>
-      expect(phone.beginSignIn).toHaveBeenCalledExactlyOnceWith({
-        identityProvider: WORK_PROVIDER,
-      }),
-    );
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0]?.[0]).toBe(
-      "https://hq-pro.test/v1/signin/microsoft-org/resolve",
-    );
-  });
-
-  it("opens Google without asking hq-pro anything", async () => {
-    component = mount(Page, { target: host, props: { data: { user: null } } as never });
-    await vi.waitFor(() => expect(byTestId("mobile-signin-Google")).not.toBeNull());
-
-    byTestId<HTMLButtonElement>("mobile-signin-Google")!.click();
-
-    await vi.waitFor(() =>
-      expect(phone.beginSignIn).toHaveBeenCalledExactlyOnceWith({ identityProvider: "Google" }),
-    );
+    await vi.waitFor(() => expect(phone.beginSignIn).toHaveBeenCalledTimes(1));
+    expect(phone.beginSignIn.mock.calls[0]?.[0]?.identityProvider).toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

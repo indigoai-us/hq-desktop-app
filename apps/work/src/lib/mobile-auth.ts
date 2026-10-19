@@ -59,7 +59,7 @@ export interface MobileAuthDeps {
 
 export interface MobileAuthSession {
   /** Open the hosted UI. Resolves once the browser has been handed the URL. */
-  beginSignIn(options: { identityProvider: string }): Promise<void>;
+  beginSignIn(options?: { identityProvider?: string }): Promise<void>;
   /** Consume the `hqmobile://auth?...` deep link the browser redirects to. */
   completeSignIn(callbackUrl: string): Promise<void>;
   /** Restore a session from the stored refresh token. */
@@ -143,7 +143,7 @@ export function createMobileAuthSession(
   }
 
   return {
-    async beginSignIn(options) {
+    async beginSignIn(options = {}) {
       const verifier = randomToken();
       const state = randomToken(16);
       const url = buildAuthorizeUrl(deps.config, {

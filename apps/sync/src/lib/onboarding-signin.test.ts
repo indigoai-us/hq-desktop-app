@@ -51,6 +51,17 @@ describe('mapSignInError', () => {
     );
   });
 
+  it('never shows the raw timeout or missing-provider text', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(mapSignInError('Timed out waiting for sign-in (90 seconds).', 'Google')).toBe(
+      'Sign-in took too long. Choose a provider to try again.',
+    );
+    expect(mapSignInError('A sign-in provider is required.', 'Google')).toBe(
+      'Sign-in did not finish. Choose your provider and try again.',
+    );
+    warn.mockRestore();
+  });
+
   it('falls back to plain copy, never the raw message, and logs the raw text', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const raw = 'oauth x HTTP 500 Internal Server Error: {"message":"boom"}';

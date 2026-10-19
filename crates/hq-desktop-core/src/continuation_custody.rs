@@ -297,7 +297,12 @@ impl ContinuationCustody {
         if !entry.attempt.state_matches(state) {
             return Err(CustodyError::StateMismatch);
         }
-        Ok(())
+        // Stamp the arrival now, before the exchange runs, so the browser-wait
+        // cutoff is judged on when the person finished in the browser.
+        entry
+            .attempt
+            .callback_arrived(now)
+            .map_err(CustodyError::Finished)
     }
 
     /// The exchange returned tokens. They go into custody unwritten, and the
@@ -787,6 +792,46 @@ mod tests {
                 )
                 .unwrap_err(),
             CustodyError::Finished(AttemptEnd::Failed)
+        );
+    }
+
+    #[test]
+    fn a_callback_at_89_seconds_that_verifies_at_92_seconds_is_held() {
+        // The browser-wait cutoff is judged when the callback arrives. The
+        // exchange and the backend check that follow may finish after it.
+        let mut custody = ContinuationCustody::new();
+        let started = attempt(&custody, "attempt-1");
+        custody.begin(started);
+        custody
+            .accept_callback("attempt-1", "state-value", NOW + 89_000)
+            .expect("callback inside the wait");
+        custody.tick(NOW + 92_000);
+        assert_eq!(custody.active_attempt_id(), Some("attempt-1"));
+        let identity = custody
+            .hold(
+                "attempt-1",
+                Some("nonce-value"),
+                credentials("a@example.test"),
+                NOW + 92_000,
+            )
+            .expect("tokens held after the wait");
+        assert_eq!(identity.email, "a@example.test");
+        let confirmed = custody
+            .confirm("attempt-1", NOW + 200_000)
+            .expect("confirm");
+        assert_eq!(confirmed.identity().email, "a@example.test");
+    }
+
+    #[test]
+    fn a_callback_after_the_browser_wait_is_refused() {
+        let mut custody = ContinuationCustody::new();
+        let started = attempt(&custody, "attempt-1");
+        custody.begin(started);
+        assert_eq!(
+            custody
+                .accept_callback("attempt-1", "state-value", NOW + 90_000)
+                .unwrap_err(),
+            CustodyError::Finished(AttemptEnd::Expired)
         );
     }
 

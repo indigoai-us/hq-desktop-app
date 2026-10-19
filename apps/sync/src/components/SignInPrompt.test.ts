@@ -95,6 +95,27 @@ describe('SignInPrompt browser continuation', () => {
     resolveConfig({ protocolVersion: 1, minimumDesktopVersion: '0.10.229', variant: 'control', rolloutPercent: 100 });
   });
 
+  it('shows plain copy, never the raw error, when provider sign-in cannot start', async () => {
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'start_oauth_login':
+          return Promise.reject('A sign-in provider is required.');
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    component = mount(SignInPrompt, { target: host });
+
+    await flushUntil(() => providerButtons().length > 0);
+    providerButtons()[0]?.click();
+    await flushUntil(() => host.textContent?.includes('We couldn’t finish sign-in. Try again.') === true);
+
+    expect(host.textContent).not.toContain('A sign-in provider is required.');
+  });
+
   it('asks for email before Microsoft OAuth so work accounts are not sent to MicrosoftPersonal', async () => {
     tauri.invoke.mockImplementation((command: string) => {
       switch (command) {
@@ -295,6 +316,8 @@ describe('provider buttons stay beside a provider-less browser wait', () => {
 
     expect(host.querySelector('[data-testid="continuation-waiting"]')).toBeNull();
     expect(providerActions()?.hasAttribute('hidden')).toBe(false);
+    expect(host.textContent).not.toContain('Timed out waiting');
+    expect(host.textContent).not.toContain('90 seconds');
   });
 
   it('goes straight to the provider buttons when the attempt cannot start', async () => {

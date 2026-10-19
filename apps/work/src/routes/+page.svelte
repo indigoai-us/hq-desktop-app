@@ -18,15 +18,13 @@
   import { env } from "$env/dynamic/public";
   import { resolveHostPlatform } from "@hq/platform";
 
-  import MobileSignInGate from "$lib/MobileSignInGate.svelte";
   import WorkShell from "$lib/WorkShell.svelte";
-  import { createHqProFetch, hqProApiUrl } from "$lib/hq-pro-client";
+  import { createHqProFetch } from "$lib/hq-pro-client";
   import {
     createTauriMobileAuthSession,
     listenForAuthCallback,
     mobileTokenProvider,
   } from "$lib/mobile-auth-host";
-  import { resolveMicrosoftIdentityProvider } from "$lib/mobile-providers";
   import {
     createMobileSignIn,
     type MobileSignInState,
@@ -38,7 +36,6 @@
   const isPhone = platform === "ios" || platform === "android";
 
   let signInState = $state<MobileSignInState>("checking");
-  let signInError = $state<string | null>(null);
 
   // Constructed once, and only on a phone: the desktop and web paths must not
   // pay for a Cognito client they never use.
@@ -48,11 +45,6 @@
         const flow = createMobileSignIn({
           session,
           onState: (state) => (signInState = state),
-          onError: (message) => (signInError = message),
-          resolveMicrosoft: (email) =>
-            resolveMicrosoftIdentityProvider(email, {
-              apiBase: hqProApiUrl(env.PUBLIC_HQ_PRO_API_URL),
-            }),
         });
         return {
           flow,
@@ -103,11 +95,18 @@
     {#if signInState === "checking"}
       <p class="lede" data-testid="mobile-signin-checking">Signing you in…</p>
     {:else}
-      <MobileSignInGate
-        {signInState}
-        error={signInError}
-        onSignIn={(provider, options) => void mobile.flow.signIn(provider, options)}
-      />
+      <h1>Sign in to HQ Work</h1>
+      <p class="lede">
+        This opens your browser to sign in, then brings you straight back.
+      </p>
+      <button
+        class="go"
+        data-testid="mobile-signin-start"
+        disabled={signInState === "opening"}
+        onclick={() => void mobile.flow.signIn()}
+      >
+        {signInState === "opening" ? "Opening your browser…" : "Sign in"}
+      </button>
     {/if}
   </main>
 {/if}
@@ -134,11 +133,35 @@
     opacity: 0.6;
   }
 
+  h1 {
+    margin: 0;
+    font-size: 1.4rem;
+    font-weight: 600;
+  }
+
   .lede {
     margin: 0;
     max-width: 26rem;
     font-size: 0.95rem;
     line-height: 1.5;
     opacity: 0.72;
+  }
+
+  .go {
+    margin-top: 0.75rem;
+    /* Comfortably above the 44pt minimum touch target on both platforms. */
+    min-height: 3rem;
+    min-width: 12rem;
+    padding: 0 1.5rem;
+    border: 0;
+    border-radius: 0.65rem;
+    background: var(--hq-accent, #4c6ef5);
+    color: #fff;
+    font-size: 1rem;
+    font-weight: 600;
+  }
+
+  .go:disabled {
+    opacity: 0.6;
   }
 </style>
