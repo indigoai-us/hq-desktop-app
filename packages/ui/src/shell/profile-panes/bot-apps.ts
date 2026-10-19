@@ -8,8 +8,9 @@ import { botConnectionAccessState, botConnectionIsInteractive, botConnectionIsOn
 export interface BotApp {
   id: string; name: string; domain: string; description: string; provider?: string;
   status: 'ready' | 'available' | 'attention' | 'unknown';
-  detail: string; tools: number | null; canToggle: boolean; enabled: boolean;
+  detail: string; tools: number | null; canToggle: boolean; enabled: boolean; onBot: boolean;
 }
+export type ConnectResult = { kind: 'connected'; id: string | null } | { kind: 'handoff' };
 export interface SupportedApp { id: string; domain: string; name: string; description: string; authClass: 'oauth' | 'key' | 'none'; entryId: string | null; }
 export function supportedApps(payload: unknown): SupportedApp[] {
   const entries = payload && typeof payload === 'object' && 'entries' in payload && Array.isArray(payload.entries) ? payload.entries : [];
@@ -23,7 +24,10 @@ export function supportedApps(payload: unknown): SupportedApp[] {
     return [{ id, domain, name: entry.name || domain, description: entry.description || 'Connect this MCP to give your bot more tools.', authClass: entry.authClass as SupportedApp['authClass'], entryId: entry.entryId ?? null }];
   });
 }
-export function botHasApp(app: BotApp): boolean { return app.enabled || app.id.startsWith('attention:'); }
+export function botHasApp(app: BotApp): boolean { return app.onBot; }
+export function companyHasCatalogApp(rows: BotApp[], app: SupportedApp): boolean {
+  return rows.some(row => row.id === app.id || (!!row.domain && normalizeConnectDomain(row.domain) === app.domain));
+}
 export function botApps(connections: CompanyConnection[], access: Record<string, ConnectionAccess | null>, profile: AgentProfileView | null, uid: string, controls: boolean): BotApp[] {
   const fresh = profile?.freshness.source === 'live';
   const normalize = (provider: string) => provider.toLowerCase().replace(/^factory:/, '');
@@ -31,16 +35,28 @@ export function botApps(connections: CompanyConnection[], access: Record<string,
   const attention = fresh ? profile.apps.attention.map(app => ({ ...app, provider: normalize(app.provider) })) : [];
   const rows: BotApp[] = connections.map(connection => {
     const acl = access[connection.id];
-    const state = acl ? botConnectionAccessState({ botUid: uid, botRole: fresh ? profile.role ?? '' : '', mode: connection.mode, access: acl }) : null;
+    const input = acl ? { botUid: uid, botRole: fresh ? profile.role ?? '' : '', mode: connection.mode } : null;
+    const state = acl && input ? botConnectionAccessState({ ...input, access: acl }) : null;
+    const grant = acl && input ? botConnectionAccessState({ ...input, access: { ...acl, canManage: true } }) : null;
     const active = ready.find(app => app.provider === connection.provider);
     const issue = attention.find(app => app.provider === connection.provider);
-    const enabled = state !== 'read-only' && state !== null && botConnectionIsOn(state);
-    // Runtime readiness is provider-wide, not proof that this particular account is granted.
-    const known = state !== null && state !== 'read-only';
-    return { id: connection.id, provider: connection.provider, name: connection.name, domain: connection.domain ?? '', description: connection.domain ?? connection.provider, status: issue || connection.needsAttention ? 'attention' : enabled ? 'ready' : known ? 'available' : 'unknown', tools: enabled && active ? active.tools : null, enabled, canToggle: controls && fresh && !!state && botConnectionIsInteractive(state), detail: issue ? issue.reason : connection.needsAttention ? 'This connection needs attention. Open connection settings to update its credentials.' : state === 'on-admin' ? 'Available through this bot’s company admin role.' : state === 'on-everyone' ? 'Shared with everyone in the company. Company sharing controls this access.' : !acl ? 'Could not verify this bot’s access. Refresh to try again.' : state === 'read-only' ? 'Ask the connection owner or a company admin to manage access.' : !controls ? 'Per-bot access controls are not enabled for this company.' : enabled ? 'This connection is available to this bot.' : 'Connected to the company. Add access to let this bot use it.' };
+    const readOnly = state === 'read-only';
+    const granted = grant !== null && botConnectionIsOn(grant);
+    const onBot = granted || !!issue || (readOnly && !!active);
+    const enabled = granted;
+    const status: BotApp['status'] = issue || connection.needsAttention ? 'attention' : onBot ? 'ready' : acl ? 'available' : 'unknown';
+    const detail = issue ? issue.reason
+      : connection.needsAttention ? 'This connection needs attention. Open connection settings to update its credentials.'
+      : !acl ? 'Could not verify this bot’s access. Refresh to try again.'
+      : readOnly ? onBot ? 'This bot can use this connection. Ask the connection owner or a company admin to change its access.' : 'Ask the connection owner or a company admin to add this bot.'
+      : grant === 'on-admin' ? 'Available through this bot’s company admin role.'
+      : grant === 'on-everyone' ? 'Shared with everyone in the company. Company sharing controls this access.'
+      : !controls ? 'Per-bot access controls are not enabled for this company.'
+      : enabled ? 'This connection is available to this bot.' : 'Connected to the company. Add access to let this bot use it.';
+    return { id: connection.id, provider: connection.provider, name: connection.name, domain: connection.domain ?? '', description: connection.domain ?? connection.provider, status, tools: onBot && active ? active.tools : null, enabled, onBot, canToggle: controls && fresh && !!state && botConnectionIsInteractive(state), detail };
   });
-  for (const app of ready) if (!connections.some(connection => connection.provider === app.provider)) rows.push({ id: `runtime:${app.provider}:${app.name}`, provider: app.provider, name: app.name, domain: '', description: 'MCP reported by this bot', status: 'ready', detail: 'Available in the bot runtime. This connection is managed outside this panel.', tools: app.tools, canToggle: false, enabled: true });
-  for (const app of attention) if (!connections.some(connection => connection.provider === app.provider)) rows.push({ id: `attention:${app.provider}`, provider: app.provider, name: app.name, domain: '', description: 'MCP needs attention', status: 'attention', detail: app.reason, tools: null, canToggle: false, enabled: false });
+  for (const app of ready) if (!connections.some(connection => connection.provider === app.provider)) rows.push({ id: `runtime:${app.provider}:${app.name}`, provider: app.provider, name: app.name, domain: '', description: 'MCP reported by this bot', status: 'ready', detail: 'Available in the bot runtime. This connection is managed outside this panel.', tools: app.tools, canToggle: false, enabled: true, onBot: true });
+  for (const app of attention) if (!connections.some(connection => connection.provider === app.provider)) rows.push({ id: `attention:${app.provider}`, provider: app.provider, name: app.name, domain: '', description: 'MCP needs attention', status: 'attention', detail: app.reason, tools: null, canToggle: false, enabled: false, onBot: true });
   return rows;
 }
 
