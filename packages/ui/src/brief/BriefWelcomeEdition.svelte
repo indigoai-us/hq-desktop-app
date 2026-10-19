@@ -207,11 +207,12 @@
     margin: 0;
     font-weight: 400;
   }
-  /* The mockup's brief head: the title left, one quiet run line right. */
+  /* The mockup's brief head: the title left, one quiet run line right, set on the
+     bottom of the title row so it keeps clear of the horizon rows above it. */
   .head {
     display: flex;
     justify-content: space-between;
-    align-items: center;
+    align-items: flex-end;
     gap: 16px;
     margin-bottom: 18px;
   }
