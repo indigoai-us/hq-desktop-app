@@ -40,6 +40,38 @@ function sourceFiles(): string[] {
   return out.map((file) => relative(repoRoot, file).split('\\').join('/'));
 }
 
+// A git spawn by bare name is looked up on the PATH HQ inherited. Under
+// launchd that PATH starts with /usr/bin, where git is Apple's prompt stub on a
+// Mac without the developer tools. Every git spawn goes through the resolver in
+// paths.rs instead. Windows has no stub, so Windows-only code may use a bare name.
+const BARE_GIT_SPAWN = [
+  /Command::new\(\s*"git"\s*\)/,
+  /spawn\(\s*"git"/,
+  /"git"\.into\(\)/,
+  /(OsString|OsStr|PathBuf|Path)::(from|new)\(\s*"git"\s*\)/,
+  /\[\s*"-l?c"\s*,\s*"(?:[^"]*[;&|(]\s*)?git\s/,
+];
+const WINDOWS_ONLY = /#\[cfg\((target_os = "windows"|windows)\)\]/;
+
+// Production Rust only: the test module at the end of a file and files under
+// tests/ build their own git fixtures with a clean environment.
+function bareGitSpawns(source: string): number[] {
+  const lines = source.split('\n');
+  const testModule = lines.findIndex(
+    (line, index) => /^\s*#\[cfg\(test\)\]\s*$/.test(line) && /^\s*(pub\s+)?mod\s+\w+/.test(lines[index + 1] ?? ''),
+  );
+  const production = testModule === -1 ? lines : lines.slice(0, testModule);
+  const found: number[] = [];
+  production.forEach((line, index) => {
+    if (line.trim().startsWith('//')) return;
+    if (!BARE_GIT_SPAWN.some((pattern) => pattern.test(line))) return;
+    const before = production.slice(Math.max(0, index - 6), index);
+    if (before.some((prior) => WINDOWS_ONLY.test(prior))) return;
+    found.push(index + 1);
+  });
+  return found;
+}
+
 function hits(pattern: RegExp, allowed: Set<string> = new Set()): string[] {
   const found: string[] = [];
   for (const file of sourceFiles()) {
@@ -68,6 +100,29 @@ describe('no Apple developer tools install in the app', () => {
     expect(
       hits(/command_line_tools|command-line-tools-gate|CLT_GATED_STAGES|HQ_FAKE_CLT_MISSING|clt-mocks/, GATE_NAME_ALLOWED_FILES),
     ).toEqual([]);
+  });
+
+  it('spawns git only through the resolver, never by bare name on the inherited PATH', () => {
+    const found: string[] = [];
+    for (const file of sourceFiles()) {
+      if (!file.endsWith('.rs') || file.includes('/tests/')) continue;
+      for (const line of bareGitSpawns(readFileSync(join(repoRoot, file), 'utf8'))) found.push(`${file}:${line}`);
+    }
+    expect(found).toEqual([]);
+  });
+
+  it('catches the bare git spawns that let the first sync open the Apple prompt', () => {
+    // The mirror's old program lookup (Gate-2 finding) and its shell forms.
+    const oldMirror = ['fn git_program() -> std::ffi::OsString {', '    "git".into()', '}'].join('\n');
+    expect(bareGitSpawns(oldMirror)).toEqual([2]);
+    expect(bareGitSpawns('let out = Command::new("git").args(["status"]).output();')).toEqual([1]);
+    expect(bareGitSpawns('Command::new("/bin/sh").args(["-c", "git --version"])')).toEqual([1]);
+    expect(bareGitSpawns('cmd.args(["-lc", "cd ~/hq && git pull"])')).toEqual([1]);
+
+    // Windows-only code, resolver output and test modules are allowed.
+    expect(bareGitSpawns(['#[cfg(target_os = "windows")]', 'let mut cmd = Command::new("git");'].join('\n'))).toEqual([]);
+    expect(bareGitSpawns('let mut cmd = Command::new(program);')).toEqual([]);
+    expect(bareGitSpawns(['fn a() {}', '#[cfg(test)]', 'mod tests {', '    Command::new("git");', '}'].join('\n'))).toEqual([]);
   });
 
   it('never spawns the /usr/bin git, python3, make or clang shims', () => {

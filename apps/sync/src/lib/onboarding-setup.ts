@@ -700,7 +700,8 @@ export function stageCommandInvocations(
   if (id === 'git-init' && context.hostOs !== 'windows') {
     // git-init blocks setup and runs before the background deps stage, so
     // install HQ's managed git first. On a Mac install_git returns early when
-    // the managed git is present; when it fails, git_init still refuses the
+    // the managed git or a working git of the Mac's own (Xcode, the Command
+    // Line Tools or Homebrew) is present; when it fails, git_init still refuses the
     // macOS stub and reports the failure. Windows keeps its existing order
     // because its install_git runs the package manager every time.
     invocations.unshift({ command: 'install_git', required: false });
