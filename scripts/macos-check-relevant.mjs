@@ -20,6 +20,11 @@
 // change to either one has to run the gate:
 //   apps/sync/src-tauri/src/welcome_window.rs reads welcome.css
 //   apps/sync/src-tauri/src/commands/version_gate.rs reads release.yml
+// Two more inputs are read by Rust at test or build time without include_str!:
+//   imports/** holds scripts that unix Rust tests execute (for example
+//     core_update_retry.rs runs imports/hq-sync-win/scripts/replace-rescue.sh)
+//   apps/sync/package.json is read by apps/sync/src-tauri/build.rs for the
+//     app version, and a Rust test checks that version is valid semver
 // When a Rust test starts reading another file outside these patterns, add it
 // here.
 //
@@ -43,6 +48,8 @@ export const MACOS_RELEVANT_PATTERNS = [
   ".github/workflows/release.yml",
   ".github/workflows/ci.yml",
   "scripts/macos-check-relevant.mjs",
+  "imports/**",
+  "apps/sync/package.json",
 ];
 
 function toRegExp(pattern) {

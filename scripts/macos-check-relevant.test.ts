@@ -32,6 +32,8 @@ describe("macOS Rust gate path scope", () => {
       ".github/workflows/release.yml",
       "apps/sync/src/components/onboarding/welcome/welcome.css",
       "scripts/macos-check-relevant.mjs",
+      "imports/hq-sync-win/scripts/replace-rescue.sh",
+      "apps/sync/package.json",
     ]) {
       expect(isMacosRelevant([path]), path).toBe(true);
     }
@@ -43,7 +45,6 @@ describe("macOS Rust gate path scope", () => {
       "docs/README.md",
       "apps/sync/src/App.svelte",
       "apps/sync/src/lib/api.ts",
-      "apps/sync/package.json",
       "apps/sync/e2e/desktop-alt/home.spec.ts",
       "apps/work/src/App.svelte",
       "apps/intro/package.json",
@@ -118,6 +119,8 @@ describe("macOS Rust gate path scope", () => {
       ".github/workflows/release.yml",
       ".github/workflows/ci.yml",
       "scripts/macos-check-relevant.mjs",
+      "imports/**",
+      "apps/sync/package.json",
     ]);
   });
 });
