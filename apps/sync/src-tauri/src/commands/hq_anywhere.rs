@@ -397,19 +397,42 @@ fn write_desktop_marker(home: &Path, runtime: GlobalRuntime, origin: MarkerOrigi
     );
 }
 
-/// Marks the record before `hq uninstall --global` runs. The CLI removes the
-/// MCP entry first and its install record last, so an uninstall that fails
-/// or times out part way leaves files that no longer match the fingerprint.
-/// The mark keeps the next launch with the setting off removing the rest.
+/// True when a pending record's setup is only what a failed uninstall left:
+/// every part of the setup on disk now is unchanged from the record. A part
+/// that is new or different, such as the install record written by an
+/// `hq install --global` repair, means the setup is no longer the one the
+/// uninstall was removing.
+fn pending_record_is_remnant(home: &Path, runtime: GlobalRuntime) -> bool {
+    let Some(record) = read_desktop_record(home, runtime) else {
+        return false;
+    };
+    let Some(stored) = record.get("fingerprint").and_then(Value::as_str) else {
+        return false;
+    };
+    let stored: std::collections::HashMap<&str, &str> = stored
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_once('='))
+        .collect();
+    let current = install_fingerprint(home, runtime);
+    current
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_once('='))
+        .all(|(key, value)| value.is_empty() || stored.get(key) == Some(&value))
+}
+
+/// Marks the record before `hq uninstall --global` runs and stores the
+/// fingerprint of the setup being removed. The CLI removes the MCP entry
+/// first and its install record last, so an uninstall that fails or times
+/// out part way leaves only parts of that setup. The mark keeps the next
+/// launch with the setting off removing the rest.
 fn mark_uninstall_pending(home: &Path, runtime: GlobalRuntime) {
     let mut record = read_desktop_record(home, runtime)
         .filter(Value::is_object)
-        .unwrap_or_else(|| {
-            serde_json::json!({
-                "v": 2,
-                "fingerprint": install_fingerprint(home, runtime),
-            })
-        });
+        .unwrap_or_else(|| serde_json::json!({}));
+    record["v"] = Value::from(2);
+    record["fingerprint"] = Value::String(install_fingerprint(home, runtime));
     record["uninstall_pending"] = Value::Bool(true);
     write_desktop_record(home, runtime, record);
 }
@@ -694,7 +717,8 @@ where
         } else if !enabled
             && trigger == GlobalInstallTrigger::Reconcile
             && !marker_matches(home, runtime)
-            && !marker_uninstall_pending(home, runtime)
+            && !(marker_uninstall_pending(home, runtime)
+                && pending_record_is_remnant(home, runtime))
         {
             clear_desktop_marker(home, runtime);
             log(
@@ -1600,6 +1624,58 @@ mod tests {
             "the next launch did not finish the removal"
         );
         assert!(!marker.exists());
+    }
+
+    /// A person who repairs a half-removed setup with `hq install --global`
+    /// gets a new install record, so the setup on disk is no longer what the
+    /// failed uninstall left. Launch sync drops the pending removal and leaves
+    /// the repaired setup.
+    #[test]
+    fn a_cli_repair_after_a_failed_launch_uninstall_is_left_by_launch_sync() {
+        let home = TempHome::new();
+        fs::create_dir_all(home.path().join(".claude")).unwrap();
+        let (result, _) = apply_in(home.path(), true, GlobalInstallTrigger::PersonChoice);
+        assert_eq!(result, Ok(()));
+        let marker = home.path().join(".hq/anywhere/claude-desktop-enabled");
+
+        let home_path = home.path().to_path_buf();
+        let result =
+            launch_sync_off_with(home.path(), Duration::from_secs(20), move |_argv, _root| {
+                remove_claude_mcp_entry(&home_path);
+                async { Err("hooks could not be removed".to_string()) }
+            });
+        assert!(result.is_err());
+        assert!(marker.is_file());
+
+        let install_record = home.path().join(".hq/anywhere/claude-install.json");
+        let modified = fs::metadata(&install_record).unwrap().modified().unwrap();
+        write_claude_install(home.path());
+        fs::File::options()
+            .write(true)
+            .open(&install_record)
+            .unwrap()
+            .set_modified(modified + Duration::from_secs(60))
+            .unwrap();
+
+        let calls = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+        let result = launch_sync_off_with(home.path(), Duration::from_secs(20), {
+            let calls = calls.clone();
+            move |argv, _root| {
+                calls.lock().unwrap().push(argv);
+                async { Ok(()) }
+            }
+        });
+        assert_eq!(result, Ok(()));
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "launch sync removed a CLI repair: {:?}",
+            calls.lock().unwrap()
+        );
+        assert!(
+            !marker.exists(),
+            "launch sync kept the pending removal for a CLI repair"
+        );
+        assert!(global_runtime_is_installed(home.path(), GlobalRuntime::Claude));
     }
 
     /// Turning the setting back on after a failed uninstall installs again
