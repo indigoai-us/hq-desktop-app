@@ -32,7 +32,7 @@ const FEED = {
   signup: {
     options: [
       { id: 'free', label: 'Sign up free' },
-      { id: 'enterprise', label: 'Request an enterprise demo' },
+      { id: 'enterprise', label: 'Book a setup call' },
     ],
     selfHosted: { label: 'Use HQ free, self-hosted or on-prem', url: 'https://docs.hq.computer/hq/guide/use-hq-for-free/' },
   },
@@ -69,7 +69,7 @@ describe('the usage card', () => {
   });
 
   it('links the enterprise demo and the self-hosted guide', () => {
-    expect(USAGE_CARD.enterprise).toEqual({ label: 'Request an enterprise demo', url: ENTERPRISE_DEMO_URL });
+    expect(USAGE_CARD.enterprise).toEqual({ label: 'Book a setup call', url: ENTERPRISE_DEMO_URL });
     expect(ENTERPRISE_DEMO_URL).toBe('https://hqforwork.com/call#book');
     expect(USAGE_CARD.selfHosted).toEqual({
       label: 'Use HQ free, self-hosted or on-prem',
@@ -106,7 +106,7 @@ describe('the usage card', () => {
     const card = usageCardFor(feed);
     expect(card.price).toBe('$12');
     expect(card.cta).toBe('Sign up free');
-    expect(card.enterprise?.label).toBe('Request an enterprise demo');
+    expect(card.enterprise?.label).toBe('Book a setup call');
   });
 
   it('falls back to the bundled card for a feed without a usable `usage` block', () => {

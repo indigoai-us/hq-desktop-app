@@ -56,7 +56,7 @@ export interface UsageCardCopy {
   rows: readonly PlanRow[];
   cta: string;
   ctaNote: string;
-  /** "Request an enterprise demo", next to the card's own action. */
+  /** "Book a setup call", next to the card's own action. */
   enterprise: PlanLink | null;
   /** "Use HQ free, self-hosted or on-prem", under the card. */
   selfHosted: PlanLink;
