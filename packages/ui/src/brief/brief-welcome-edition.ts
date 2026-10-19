@@ -32,6 +32,8 @@ export interface WelcomeEditionRow {
   title: string;
   detail: string | null;
   action: WelcomeEditionAction | null;
+  /** The IF YOU DO ONE THING card this watch row becomes when the lead cannot run here. */
+  lead?: WelcomeEditionCard;
 }
 
 export interface WelcomeEditionCard {
@@ -300,29 +302,28 @@ function welcomeFieldsEdition(
   if (f.harness && !actions.some((a) => a.kind === "open_harness")) actions.push(...plainActions([f.harness.action]));
   const lead = primaryAction(listed) ?? primaryAction(actions);
   const cards: WelcomeEditionCard[] = [];
-  if (lead) {
-    cards.push({
-      id: "one-thing",
-      pill: WELCOME_ONE_THING,
-      kicker: actionKicker(lead, f),
-      // The reason, or no title at all: the button already carries the label.
-      title: plainWelcomeText(lead.reason) ?? "",
-      lines: [],
-      label: lead.label,
-      action: welcomeAction(lead),
-    });
-  }
+  const oneThing = (a: WelcomeAction): WelcomeEditionCard => ({
+    id: "one-thing",
+    pill: WELCOME_ONE_THING,
+    kicker: actionKicker(a, f),
+    // The reason, or no title at all: the button already carries the label.
+    title: plainWelcomeText(a.reason) ?? "",
+    lines: [],
+    label: a.label,
+    action: welcomeAction(a),
+  });
+  if (lead) cards.push(oneThing(lead));
   const watch = actions.filter((a) => a !== lead);
   if (watch.length) {
     cards.push({
       id: "watch",
       pill: null,
-      kicker: `Watch · ${watch.length}`,
+      kicker: watchKicker(watch.length),
       title: "",
       lines: [],
       label: null,
       action: null,
-      rows: watch.map((a) => ({ id: a.id, title: a.label, detail: plainWelcomeText(a.reason), action: welcomeAction(a) })),
+      rows: watch.map((a) => ({ id: a.id, title: a.label, detail: plainWelcomeText(a.reason), action: welcomeAction(a), lead: oneThing(a) })),
     });
   }
   const work = (f.recent_work ?? []).flatMap((w, i): WelcomeEditionRow[] => {
@@ -355,6 +356,33 @@ function welcomeFieldsEdition(
     sections: [...company, ...welcomeSections(f)],
     note,
     welcome: true,
+  };
+}
+
+const watchKicker = (n: number) => `Watch · ${n}`;
+
+/**
+ * The welcome edition as this host can run it. A watch row that opens a
+ * harness this host cannot open is dropped, so no row offers to open a tool
+ * it cannot. When IF YOU DO ONE THING cannot run, the first watch action that
+ * can takes its place, so a lead card always carries an action.
+ */
+export function runnableEdition(edition: WelcomeEdition, canRun: (action: WelcomeEditionAction | null) => boolean): WelcomeEdition {
+  if (!edition.welcome) return edition;
+  const deadOpen = (a: WelcomeEditionAction | null) => a?.kind === "welcome" && a.action.kind === "open_harness" && !canRun(a);
+  let rows = edition.cards.find((c) => c.id === "watch")?.rows?.filter((r) => !deadOpen(r.action)) ?? [];
+  const cards = edition.cards.flatMap((card): WelcomeEditionCard[] => {
+    if (card.id === "one-thing" && !canRun(card.action)) {
+      const next = rows.find((r) => r.lead && canRun(r.action));
+      if (!next?.lead) return [];
+      rows = rows.filter((r) => r !== next);
+      return [next.lead];
+    }
+    return [card];
+  });
+  return {
+    ...edition,
+    cards: cards.flatMap((card) => (card.id !== "watch" ? [card] : rows.length ? [{ ...card, kicker: watchKicker(rows.length), rows }] : [])),
   };
 }
 

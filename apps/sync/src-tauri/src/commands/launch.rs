@@ -553,6 +553,60 @@ fn launch_codex_workspace_impl(path: String, prompt: Option<String>) -> Result<(
     Ok(())
 }
 
+/// The program and arguments that open `dir` in Cursor (US-019 welcome
+/// edition). macOS opens the app bundle on the folder; Windows and Linux go
+/// through the `cursor` CLI that Cursor installs. Cursor takes no first
+/// message, so no prompt is passed.
+fn cursor_open_command(dir: &str) -> (String, Vec<String>) {
+    if cfg!(target_os = "macos") {
+        ("open".into(), vec!["-a".into(), "Cursor".into(), dir.into()])
+    } else if cfg!(windows) {
+        let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into());
+        (comspec, vec!["/C".into(), "cursor".into(), dir.into()])
+    } else {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        (shell, vec!["-lc".into(), format!("cursor {}", sh_single_quote(dir))])
+    }
+}
+
+/// Open the HQ folder at `path` in Cursor.
+#[tauri::command]
+pub fn launch_cursor_workspace(path: String) -> Result<(), String> {
+    let result = launch_cursor_workspace_impl(path);
+    crate::commands::cdp_mirror::note_agent_session_launched("cursor", "cursor_app", &result);
+    result
+}
+
+fn launch_cursor_workspace_impl(path: String) -> Result<(), String> {
+    let target = expand_home_path(&path)?;
+    if !target.is_dir() {
+        return Err(format!(
+            "workspace folder does not exist: {}",
+            target.display()
+        ));
+    }
+    let (program, args) = cursor_open_command(&target.to_string_lossy());
+    let mut command = Command::new(program);
+    command.args(&args);
+    #[cfg(windows)]
+    command.env(
+        "PATH",
+        crate::commands::install_deps::extended_search_path(),
+    );
+    let output = command
+        .output()
+        .map_err(|e| format!("failed to open Cursor: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "Cursor failed to open (exit {}): {}",
+            output.status.code().unwrap_or(-1),
+            stderr.trim()
+        ));
+    }
+    Ok(())
+}
+
 /// Claude Code permission modes a launch may ask for (`claude --permission-mode`).
 const CLAUDE_PERMISSION_MODES: &[&str] = &["default", "acceptEdits", "plan", "bypassPermissions"];
 
@@ -891,6 +945,25 @@ pub fn reveal_folder(path: String) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::util::test_support::ENV_MUTEX;
+
+    #[test]
+    fn cursor_opens_the_folder_and_nothing_else() {
+        let (program, args) = cursor_open_command("/Users/a b/HQ's");
+        if cfg!(target_os = "macos") {
+            assert_eq!(program, "open");
+            assert_eq!(args, vec!["-a", "Cursor", "/Users/a b/HQ's"]);
+        } else if cfg!(windows) {
+            assert_eq!(args, vec!["/C", "cursor", "/Users/a b/HQ's"]);
+        } else {
+            assert_eq!(args, vec!["-lc".to_string(), "cursor '/Users/a b/HQ'\\''s'".to_string()]);
+        }
+    }
+
+    #[test]
+    fn cursor_launch_refuses_a_missing_folder() {
+        let err = launch_cursor_workspace_impl("/definitely/not/a/folder/hq".into()).unwrap_err();
+        assert!(err.contains("workspace folder does not exist"), "{err}");
+    }
 
     #[test]
     fn claude_command_adds_only_an_allowed_permission_mode() {

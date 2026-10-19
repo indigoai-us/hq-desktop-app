@@ -53,7 +53,7 @@
     {theme}
     aiApps={{ detect: async () => null, cli: { claudeCode: true, codex: true } }}
     openTool={{ label: 'Open Claude Code', detail: 'Claude Code is set up with HQ. Open it to keep working there.', busy: false, error: null, onopen: () => undefined }}
-    openHarness={{ harnesses: ['claude-code', 'codex'], open: async () => null }}
+    openHarness={{ harnesses: ['claude-code', 'codex', 'cursor'], open: async () => null }}
   >
     <BriefRunsPage adapter={{} as never} companies={[]} {source} onconnectcompany={() => undefined} onlaunch={async () => never()} />
   </WelcomeReport>
