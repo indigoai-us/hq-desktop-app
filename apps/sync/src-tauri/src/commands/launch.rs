@@ -113,15 +113,19 @@ pub(crate) fn unix_terminal_shell_command(
     binary: &str,
     prompt: Option<&str>,
 ) -> String {
-    let escaped_path = path.replace('\'', "'\\''");
+    format!(
+        "cd {} && {}",
+        posix_single_quote(path),
+        unix_terminal_tool_command(binary, prompt)
+    )
+}
+
+/// `<binary>` and, with a prompt, ` -- '<prompt>'`: the part of
+/// [`unix_terminal_shell_command`] after the `cd`.
+fn unix_terminal_tool_command(binary: &str, prompt: Option<&str>) -> String {
     match prompt {
-        Some(prompt) => format!(
-            "cd '{}' && {} -- {}",
-            escaped_path,
-            binary,
-            posix_single_quote(prompt)
-        ),
-        None => format!("cd '{}' && {}", escaped_path, binary),
+        Some(prompt) => format!("{binary} -- {}", posix_single_quote(prompt)),
+        None => binary.to_string(),
     }
 }
 
@@ -130,15 +134,13 @@ pub(crate) fn unix_terminal_shell_command(
 /// and claude, then the managed node bin) at the front of PATH unless it is
 /// already there. Dirs are prepended last to first so they end up in
 /// `managed` order. A dir that is empty or holds a `:` or a control
-/// character cannot go on PATH or into the Terminal line, and one with a `\`
-/// or `!` would be changed by fish or csh quoting before sh sees it; those
-/// are skipped. No usable dir gives an empty prefix.
+/// character cannot go on PATH and is skipped. No usable dir gives an empty
+/// prefix.
 pub(crate) fn unix_terminal_path_prefix(managed: &[PathBuf]) -> String {
     let mut dirs: Vec<String> = Vec::new();
     for dir in managed {
         let dir = dir.to_string_lossy();
-        let unusable =
-            dir.is_empty() || dir.contains([':', '\\', '!']) || dir.chars().any(char::is_control);
+        let unusable = dir.is_empty() || dir.contains(':') || dir.chars().any(char::is_control);
         if !unusable && !dirs.iter().any(|seen| seen.as_str() == dir) {
             dirs.push(dir.into_owned());
         }
@@ -163,30 +165,39 @@ pub(crate) fn unix_terminal_path_prefix(managed: &[PathBuf]) -> String {
 /// The line Terminal runs for a session: [`unix_terminal_shell_command`]
 /// with the managed CLI dirs put on PATH first (see
 /// [`unix_terminal_path_prefix`]). Terminal hands the line to the user's
-/// login shell, which may be zsh, bash, fish, tcsh or another shell, so the
-/// PATH change and the launch run in `/bin/sh -c '…'`. That one
-/// single-quoted word parses the same way in all of those shells. The PATH
-/// change runs after the user's rc files, so their PATH is kept, and it
-/// writes no file. With no usable managed dir the line is unchanged.
+/// login shell, which may be zsh, bash, fish, tcsh or another shell, and
+/// those shells quote differently: fish reads `\'` inside single quotes and
+/// csh expands `!` there. So the PATH change and the tool run in `/bin/sh`
+/// from a base64-encoded script; after the `cd`, which is the same as
+/// before, the login shell only parses fixed text and base64 characters.
+/// The PATH change runs after the user's rc files, so their PATH is kept,
+/// and it writes no file. With no usable managed dir the line is unchanged.
 pub(crate) fn unix_terminal_session_command(
     path: &str,
     binary: &str,
     prompt: Option<&str>,
     managed: &[PathBuf],
 ) -> String {
-    let line = unix_terminal_shell_command(path, binary, prompt);
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
     let prefix = unix_terminal_path_prefix(managed);
     if prefix.is_empty() {
-        return line;
+        return unix_terminal_shell_command(path, binary, prompt);
     }
+    let script = STANDARD.encode(format!(
+        "{prefix}{}",
+        unix_terminal_tool_command(binary, prompt)
+    ));
     format!(
-        "/bin/sh -c {}",
-        posix_single_quote(&format!("{prefix}{line}"))
+        "cd {} && /bin/sh -c 'eval \"$(echo {script} | /usr/bin/base64 --decode)\"'",
+        posix_single_quote(path)
     )
 }
 
 /// `base` PATH for a child the app spawns, with the managed CLI dirs that
-/// exist on this machine put in front unless already present.
+/// exist on this machine put in front unless already present. A dir already
+/// in `base` keeps its place, so where `base` is the extended search path
+/// (which lists the managed Node bin before the npm bin) the order is
+/// unchanged and this only adds a dir `base` lacks.
 fn managed_cli_child_path(base: &str) -> String {
     hq_desktop_core::paths::path_with_managed_cli(
         Some(base),
@@ -1509,8 +1520,6 @@ end tell"#
             PathBuf::from(""),
             PathBuf::from("/a:b/bin"),
             PathBuf::from("/a\nb/bin"),
-            PathBuf::from("/a\\b/bin"),
-            PathBuf::from("/a!b/bin"),
             PathBuf::from("/ok/bin"),
             PathBuf::from("/ok/bin"),
         ];
@@ -1533,8 +1542,8 @@ end tell"#
     }
 
     /// The session line puts the managed dirs on PATH, keeps the existing
-    /// PATH, changes to the folder and passes the prompt through in every
-    /// login shell installed here, csh-family shells included.
+    /// PATH, changes to the folder and passes the prompt through unchanged in
+    /// every login shell installed here, csh-family shells included.
     #[cfg(unix)]
     #[test]
     fn session_line_puts_the_managed_dirs_on_path_in_every_login_shell() {
@@ -1547,6 +1556,9 @@ end tell"#
         let path_line =
             unix_terminal_session_command(folder_str, "/usr/bin/printenv", Some("PATH"), &managed);
         let pwd_line = unix_terminal_session_command(folder_str, "/bin/pwd", None, &managed);
+        let prompt = "it's \\ \"q\" !x $HOME `id`\nline two";
+        let echo_line =
+            unix_terminal_session_command(folder_str, "/bin/echo", Some(prompt), &managed);
         for (shell, flags) in login_shells() {
             assert_eq!(
                 run_session_line(shell, flags, &path_line, "/usr/bin:/bin"),
@@ -1564,7 +1576,37 @@ end tell"#
                 folder_str,
                 "{shell}"
             );
+            assert_eq!(
+                run_session_line(shell, flags, &echo_line, "/usr/bin:/bin"),
+                format!("-- {prompt}"),
+                "{shell}"
+            );
         }
+    }
+
+    /// After the `cd`, the login shell only sees fixed text and base64, so
+    /// fish (which reads `\'` inside single quotes) and csh (which expands
+    /// `!`) parse it the same way sh does.
+    #[test]
+    fn session_line_gives_the_login_shell_only_fixed_text_after_the_cd() {
+        let line = unix_terminal_session_command(
+            "/Users/o'neil/HQ",
+            "claude",
+            Some("it's \\ done!"),
+            &[PathBuf::from("/m/it's/npm-global/bin")],
+        );
+        let (cd, rest) = line.split_once(" && ").unwrap();
+        assert_eq!(cd, "cd '/Users/o'\\''neil/HQ'");
+        let script = rest
+            .strip_prefix("/bin/sh -c 'eval \"$(echo ")
+            .and_then(|rest| rest.strip_suffix(" | /usr/bin/base64 --decode)\"'"))
+            .unwrap_or_else(|| panic!("{line}"));
+        assert!(
+            script
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=')),
+            "{line}"
+        );
     }
 
     /// The full session line survives AppleScript escaping.
@@ -1581,8 +1623,7 @@ end tell"#
             &managed,
         );
         assert!(
-            shell_cmd.starts_with("/bin/sh -c '")
-                && shell_cmd.contains("Indigo HQ/toolchain/npm-global/bin"),
+            shell_cmd.starts_with("cd '/Users/o'\\''neil/HQ' && /bin/sh -c '"),
             "{shell_cmd}"
         );
         let script = terminal_applescript(&shell_cmd);
