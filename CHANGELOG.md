@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Messages: hovering a GitHub pull request or issue link shows a more useful card. It leads with the status (Changes requested, Approved, Open, Draft, Merged or Closed), the repository, the number and when it was last updated, then the title, the author, and how many lines and files changed (comments for an issue). Before, the card showed the repository and number three times and the raw link, and nothing about the pull request itself. Private repositories show details when you are signed in to GitHub with the `gh` command line tool; otherwise the card shows just the repository and number.
+- Shared with Me window: the add-reaction button on shares and direct messages now opens the same grid of common emoji as the main Messages view, instead of the older list with a search box. Message avatars in that window are drawn the same way as in the main Messages view, so they are slightly larger.
 
 ## [0.11.14] — 2026-10-19
 
