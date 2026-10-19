@@ -7,15 +7,15 @@
   // `onsend` callback. Visuals (message row + composer CSS) live here so they travel
   // with the component.
   import { tick } from 'svelte';
-  import ReactionBar from './ReactionBar.svelte';
-  import IdentityMark from './IdentityMark.svelte';
-  import WorkMeshActivityRow from './WorkMeshActivityRow.svelte';
   import { parseWorkSessionEvent } from '../../lib/workSessionEvent';
   import { type ReactionMap } from '../../lib/reactions';
   import { copyableText, type CopyKind } from '../../lib/conversation-copy';
   import { invoke } from '@tauri-apps/api/core';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import {
+    IdentityMark,
+    ReactionBar,
+    WorkMeshActivityRow,
     LinkContextMenu,
     LinkHovercard,
     LinkHovercardController,

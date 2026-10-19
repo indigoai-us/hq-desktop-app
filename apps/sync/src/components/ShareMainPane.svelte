@@ -9,7 +9,7 @@
   import type { ShareEvent } from '../lib/notificationGroups';
   import type { ReactionEvent } from '../lib/reactions';
   import { ShareReactionController } from '../lib/shareReactionController.svelte';
-  import ReactionBar from './messaging/ReactionBar.svelte';
+  import { ReactionBar } from '@hq/ui';
 
   // Main content for share-detail, Messages shell share rows, and when a share
   // is selected from the quick-window side pane. Shared payload surface shows
