@@ -12,10 +12,12 @@
     source: BriefSweepSource;
     companies: { uid: string; slug?: string | null; label: string }[];
     report: Record<string, unknown>;
+    /** Extra brief page props (onconnectcompany, onlaunch). */
+    page?: Record<string, unknown>;
   }
-  let { source, companies, report }: Props = $props();
+  let { source, companies, report, page = {} }: Props = $props();
 </script>
 
 <WelcomeReport ready {...report}>
-  <BriefRunsPage adapter={{}} {source} {companies} />
+  <BriefRunsPage adapter={{}} {source} {companies} {...page} />
 </WelcomeReport>
