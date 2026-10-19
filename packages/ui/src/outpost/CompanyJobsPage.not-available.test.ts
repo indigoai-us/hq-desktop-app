@@ -14,6 +14,19 @@ const BOXES: CompanyBoxOption[] = [
 // Owner, 2026-10-19: no billing, price, payer or charge wording anywhere on this screen.
 const BILLING_WORDS = /bill|payment|\bpay\b|payer|\bpaid\b|charge|price|pricing|cost|invoice|subscription|\$|usd|per month|a month/i;
 
+/**
+ * The live trigger: GET /outpost/status list marks a box blocked with
+ * blockedReason billing_required. The jobs routes never send billing codes.
+ */
+function blockedBoxApi(reason: string) {
+  return {
+    listCompanyOutposts: async () => ({
+      ok: true as const,
+      value: { outposts: [{ outpostId: "opc_1", name: "main", lifecycle: "blocked", blockedReason: reason }] },
+    }),
+  };
+}
+
 function definition(name: string): Record<string, unknown> {
   return {
     prompt: `Run ${name}.`,
@@ -26,6 +39,8 @@ type Fixture = {
   name: string;
   boxes?: CompanyBoxOption[];
   outpostId?: string | null;
+  /** Load boxes from this api instead of the boxes prop. */
+  api?: ReturnType<typeof blockedBoxApi>;
   seed?: (store: CompanyJobStore) => Promise<void>;
   open?: "add" | "watchdog" | "log" | "invalid";
 };
@@ -72,16 +87,12 @@ const FIXTURES: Fixture[] = [
   { name: "blocked", boxes: [{ id: "opc_1", name: "main", blocked: true }], outpostId: "opc_1" },
   { name: "stopped", boxes: [{ id: "opc_1", name: "main", stopped: true }], outpostId: "opc_1" },
   { name: "not-available-box", boxes: [{ id: "opc_1", name: "main", blocked: true, unavailable: true }] },
+  { name: "not-available-list", api: blockedBoxApi("billing_required") },
+  { name: "payment-not-set-up-list", api: blockedBoxApi("payment_not_set_up") },
   {
-    name: "not-available-code",
+    name: "jobs-route-disabled",
     seed: async (store) => {
-      store.failCode = "billing_required";
-    },
-  },
-  {
-    name: "payment-not-set-up",
-    seed: async (store) => {
-      store.failCode = "payment_not_set_up";
+      store.failCode = "feature_disabled";
     },
   },
 ];
@@ -134,6 +145,7 @@ describe("company jobs screen shows no billing wording", () => {
             role,
             client,
             ...(fixture.boxes ? { boxes: fixture.boxes } : {}),
+            ...(fixture.api ? { api: fixture.api, boxes: undefined } : {}),
             ...(fixture.outpostId ? { outpostId: fixture.outpostId } : {}),
           });
           if (fixture.open === "add" || fixture.open === "invalid") {
@@ -183,14 +195,13 @@ describe("company jobs not available yet state", () => {
 
   for (const code of ["billing_required", "payment_not_set_up"]) {
     for (const role of ["admin", "member"] as CompanyJobRole[]) {
-      it(`shows one plain line and Contact us when the read returns ${code} (${role})`, async () => {
+      it(`shows one plain line and Contact us when the box list reports ${code} (${role})`, async () => {
         const store = createCompanyJobStore();
-        store.failCode = code;
         const contact = vi.fn(async () => ({ ok: true as const, value: null }));
         const client = role === "member"
           ? store.client({ uid: "prs_m", role: "member" }, { writesAllowed: false, memberRead: true })
           : store.client({ uid: "prs_a", role: "admin" });
-        const target = await render({ role, client, contact });
+        const target = await render({ role, client, contact, api: blockedBoxApi(code), boxes: undefined });
         await vi.waitFor(() => {
           expect(target.querySelector("[data-testid='company-jobs-not-available']")).not.toBeNull();
         });
@@ -211,7 +222,7 @@ describe("company jobs not available yet state", () => {
         flushSync();
         await vi.waitFor(() => {
           expect(target.querySelector("[data-testid='company-jobs-contact-sent']")?.textContent).toBe(
-            "HQ has been notified and will follow up by email.",
+            "HQ has been notified.",
           );
         });
         expect(contact).toHaveBeenCalledWith("cmp_1");
@@ -250,6 +261,8 @@ describe("company jobs not available yet state", () => {
     expect(target.querySelector("[data-testid='company-jobs-add']")).not.toBeNull();
   });
 
+  // The live jobs routes do not send billing codes today. The write path
+  // still handles one so a future server change cannot show billing text.
   it("switches to the state when a save returns billing_required", async () => {
     const store = createCompanyJobStore();
     const target = await render({ role: "admin", client: store.client({ uid: "prs_a", role: "admin" }) });
@@ -313,10 +326,11 @@ describe("company jobs not available yet state", () => {
 
   it("shows a retry line when the contact request fails", async () => {
     const store = createCompanyJobStore();
-    store.failCode = "billing_required";
     const target = await render({
       role: "admin",
       client: store.client({ uid: "prs_a", role: "admin" }),
+      api: blockedBoxApi("billing_required"),
+      boxes: undefined,
       contact: async () => ({ ok: false as const, reason: "error" as const, code: "http-500" }),
     });
     await vi.waitFor(() => {

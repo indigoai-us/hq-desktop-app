@@ -18,6 +18,9 @@ import {
   isNotAvailableCode,
   isRunnableJob,
   jobFailureCopy,
+  jobReadFailureCopy,
+  jobsFromHealthOnly,
+  parseJobHealth,
   mergeJobHealth,
   outpostJobsDestination,
   parseCompanyBoxes,
@@ -188,26 +191,26 @@ describe("US-006 job health words", () => {
     expect(jobFailureCopy("admin_required")).toBe("Only company owners and admins can do this.");
     expect(jobFailureCopy("box_not_signed_in")).toBe("Sign this Outpost in to Claude before adding or running jobs.");
     expect(jobFailureCopy("revision_not_accepted")).toBe("Someone else changed this job. Reload it and try again.");
-    expect(jobFailureCopy("unsupported_schedule")).toBe("That schedule is not supported. Pick a longer interval.");
+    expect(jobFailureCopy("unsupported_schedule")).toBe("That schedule is not supported. Choose a different schedule.");
     expect(jobFailureCopy("invalid_definition")).toBe("Check the prompt and schedule, then try again.");
-    expect(jobFailureCopy("company_jobs_unavailable")).toBe("Could not load. Retry");
+    expect(jobFailureCopy("company_jobs_unavailable")).toBe("Could not save the job. Try again.");
     expect(jobFailureCopy("feature_disabled")).toBe("Company Outposts are paused right now. Try again later.");
     expect(jobFailureCopy("job_not_found")).toBe("This job was removed.");
     const box = { id: "opc_1", name: "main", blocked: true };
     expect(blockedBoxNote(box, true)).toBe(
-      "This Outpost needs attention. Scheduled jobs are paused. HQ has been notified and will follow up by email.",
+      "This Outpost needs attention. Scheduled jobs are paused. HQ has been notified.",
     );
     expect(blockedBoxNote(box, false)).toBe(
       "This Outpost needs attention. Scheduled jobs are paused. An owner or admin has been notified.",
     );
     expect(parseCompanyBoxes({
       outposts: [
-        { outpostId: "opc_1", name: "ridge", lifecycle: "blocked" },
+        { outpostId: "opc_1", name: "north", lifecycle: "blocked" },
         { outpostId: "opc_2", lifecycle: "stopped" },
         { outpostId: "opc_3", name: "old", lifecycle: "destroyed" },
       ],
     })).toEqual([
-      { id: "opc_1", name: "ridge", blocked: true, stopped: false },
+      { id: "opc_1", name: "north", blocked: true, stopped: false },
       { id: "opc_2", name: "main", blocked: false, stopped: true },
     ]);
     expect(parseCompanyBoxes({ outpost: { outpostId: "outpost_cmp_1", lifecycle: "ready" } })).toEqual([
@@ -234,16 +237,83 @@ describe("not available yet state", () => {
   it("marks a box blocked for billing as unavailable and gives it no blocked note", () => {
     const boxes = parseCompanyBoxes({
       outposts: [
-        { outpostId: "opc_1", name: "ridge", lifecycle: "blocked", blockedReason: "billing_required" },
+        { outpostId: "opc_1", name: "north", lifecycle: "blocked", blockedReason: "billing_required" },
         { outpostId: "opc_2", name: "other", lifecycle: "blocked", blockedReason: "outcome_unknown" },
       ],
     });
     expect(boxes).toEqual([
-      { id: "opc_1", name: "ridge", blocked: true, stopped: false, unavailable: true },
+      { id: "opc_1", name: "north", blocked: true, stopped: false, unavailable: true },
       { id: "opc_2", name: "other", blocked: true, stopped: false },
     ]);
     expect(blockedBoxNote(boxes[0], true)).toBeNull();
     expect(blockedBoxNote(boxes[0], false)).toBeNull();
     expect(blockedBoxNote(boxes[1], true)).toContain("This Outpost needs attention.");
+  });
+});
+
+describe("Shawon re-review at 67abc737", () => {
+  it("critical 1: an edit keeps the job's script, extra context and schedule kind", () => {
+    const job = parseCompanyJob({
+      jobId: "job_1",
+      prompt: "Check the inbox",
+      status: "active",
+      acceptedRevision: "3",
+      target: { outpostId: "opc_1" },
+      schedule: { kind: "recurring", cron: "cron(0 9 ? * MON-FRI *)", timezone: "UTC" },
+      context: { name: "Inbox", owner: "ops", tags: ["a"], skill: "old-skill" },
+      script: "#!/bin/sh\necho hi",
+    })!;
+    expect(job.scheduleKind).toBe("recurring");
+    expect(job.script).toBe("#!/bin/sh\necho hi");
+    const draft = { ...blankJobDraft("opc_1"), name: "Inbox renamed", mode: "prompt" as const, prompt: "Check the inbox", preset: "custom" as const, customCron: job.cron, timezone: "UTC" };
+    expect(revisionDefinition(draft, job)).toEqual({
+      prompt: "Check the inbox",
+      context: { name: "Inbox renamed", owner: "ops", tags: ["a"] },
+      script: "#!/bin/sh\necho hi",
+      schedule: { kind: "recurring", cron: "cron(0 9 ? * MON-FRI *)", timezone: "UTC" },
+    });
+    const once = parseCompanyJob({
+      jobId: "job_2",
+      prompt: "Once",
+      acceptedRevision: "1",
+      schedule: { kind: "once", at: "2026-11-01T09:00:00.000Z", timezone: "UTC" },
+      context: { name: "One time" },
+    })!;
+    expect(once.scheduleKind).toBe("once");
+    expect(once.at).toBe("2026-11-01T09:00:00.000Z");
+    expect(once.script).toBeNull();
+    const onceDraft = { ...blankJobDraft("opc_1"), name: "One time", prompt: "Once", timezone: "UTC" };
+    expect(revisionDefinition(onceDraft, once)).toEqual({
+      prompt: "Once",
+      context: { name: "One time" },
+      schedule: { kind: "once", at: "2026-11-01T09:00:00.000Z", timezone: "UTC" },
+    });
+  });
+
+  it("critical 4: the server's default never-run row reads as waiting for first run", () => {
+    const row = parseJobHealth({ jobId: "job_1", status: "ok", occurrence: null, lastSuccessAt: null, heartbeatAt: null, reason: "not_due", lastRunAt: null })!;
+    expect(row.status).toBe("pending");
+    expect(displayLabel(displayStatus(false, row.status))).toBe("Waiting for first run");
+    expect(parseJobHealth({ jobId: "job_1", status: "ok", lastSuccessAt: null, reason: "within_grace", lastRunAt: null })!.status).toBe("pending");
+    expect(parseJobHealth({ jobId: "job_1", status: "ok", lastSuccessAt: "2026-10-18T13:00:00.000Z", reason: "succeeded", lastRunAt: "2026-10-18T13:00:00.000Z" })!.status).toBe("ok");
+    expect(parseJobHealth({ jobId: "job_1", status: "pending", reason: "awaiting_first_run", lastRunAt: null })!.status).toBe("pending");
+  });
+
+  it("critical 4: a health-only paused row reads as paused, never ran on time", () => {
+    const row = parseJobHealth({ jobId: "job_1", status: "ok", lastSuccessAt: "2026-10-18T13:00:00.000Z", reason: "paused", lastRunAt: "2026-10-18T13:00:00.000Z" })!;
+    const [listed] = jobsFromHealthOnly([row], "opc_2");
+    expect(listed.displayLabel).toBe("Paused");
+    expect(listed.paused).toBe(true);
+    expect(listed.nextRunAt).toBeNull();
+    expect(listed.outpostId).toBe("opc_2");
+  });
+
+  it("uses load copy on reads and no follow-up promise", () => {
+    expect(jobReadFailureCopy("company_jobs_unavailable")).toBe("Could not load jobs. Try again.");
+    expect(jobReadFailureCopy("company_job_freshness_unavailable")).toBe("Could not load jobs. Try again.");
+    expect(jobReadFailureCopy("feature_disabled")).toBe("Company Outposts are paused right now. Try again later.");
+    expect(jobReadFailureCopy("admin_required")).toBe("Only company owners and admins can do this.");
+    expect(jobReadFailureCopy("http-500")).toBe("Could not load jobs. Try again.");
+    expect(jobFailureCopy("unsupported_schedule")).toBe("That schedule is not supported. Choose a different schedule.");
   });
 });

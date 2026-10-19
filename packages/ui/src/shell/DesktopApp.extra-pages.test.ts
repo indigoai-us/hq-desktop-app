@@ -258,13 +258,15 @@ describe("DesktopApp extraPages", () => {
   });
 
   it("sends Contact us on the jobs not-available-yet state through the in-app report path", async () => {
-    const refused = { ok: false as const, reason: "error" as const, code: "billing_required" };
+    // The live trigger is the box list. The jobs routes answer normally.
     const submitBugReport = vi.fn(async () => ok({}));
     const adapter = {
       ...webAdapter(),
       agents: {
-        postCompanyJobs: async () => refused,
-        getCompanyJobsStatus: async () => refused,
+        postCompanyJobs: async () => ok({ jobs: [] }),
+        getCompanyJobsStatus: async () => ok({ companyUid: "cmp_jobs", jobs: [] }),
+        listCompanyOutposts: async () =>
+          ok({ outposts: [{ outpostId: "opc_1", name: "main", lifecycle: "blocked", blockedReason: "billing_required" }] }),
       },
       feedback: { submitBugReport },
     } as unknown as PlatformAdapter;
@@ -296,5 +298,6 @@ describe("DesktopApp extraPages", () => {
     const [title, body] = submitBugReport.mock.calls[0] as unknown as [string, string];
     expect(title).toBe("Outposts not available for a company");
     expect(body).toContain("cmp_jobs");
+    expect(body).not.toMatch(/\bA (unknown|admin|owner)\b/);
   });
 });

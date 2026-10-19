@@ -66,7 +66,8 @@ const WRITE_ACTIONS = new Set<CompanyJobSubmit["action"]>([
 export function companyJobsStatusPath(companyUid: string, outpostId?: string | null): string {
   const company = `companyUid=${encodeURIComponent(companyUid)}`;
   const box = outpostId ? `&outpostId=${encodeURIComponent(outpostId)}` : "";
-  return `${JOBS_STATUS_PATH}?${company}${box}`;
+  // include=pending makes the server report a never-run job as pending, not ok.
+  return `${JOBS_STATUS_PATH}?${company}${box}&include=pending`;
 }
 
 export function companyJobsHttpClient(

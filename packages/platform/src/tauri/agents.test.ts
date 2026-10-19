@@ -308,7 +308,7 @@ describe("createSyncPlatformAdapter company Outpost jobs", () => {
       },
     ]);
     expect(JSON.stringify(body)).not.toMatch(/registered_by/);
-    expect(calls[1]?.args?.url).toBe("/outpost/company/jobs/status?companyUid=cmp_1&outpostId=opc%201");
+    expect(calls[1]?.args?.url).toBe("/outpost/company/jobs/status?companyUid=cmp_1&outpostId=opc%201&include=pending");
   });
 
   it("keeps a 403 on a company job write", async () => {

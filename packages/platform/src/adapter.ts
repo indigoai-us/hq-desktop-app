@@ -1507,7 +1507,8 @@ export const OUTPOST_PATHS = {
   companyJobsStatus: (companyUid: string, outpostId?: string | null): string => {
     const company = `companyUid=${encodeURIComponent(companyUid)}`;
     const box = outpostId ? `&outpostId=${encodeURIComponent(outpostId)}` : "";
-    return `/outpost/company/jobs/status?${company}${box}`;
+    // include=pending makes the server report a never-run job as pending, not ok.
+    return `/outpost/company/jobs/status?${company}${box}&include=pending`;
   },
   /** GET company Outpost list. Falls back to the legacy single row when list is absent. */
   companyOutpostList: (companyUid: string): string =>

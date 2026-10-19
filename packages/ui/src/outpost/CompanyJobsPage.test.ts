@@ -104,7 +104,7 @@ describe("US-004 company jobs screen", () => {
     const create = store.requests.find((row) => row.body?.action === "create");
     expect(JSON.stringify(create?.body)).not.toMatch(/registered_by|notify/);
     expect(target.querySelector("[data-testid='company-jobs-waiting']")).toBeNull();
-    expect(target.querySelector("[data-testid='company-jobs-health']")?.textContent).toContain("Unknown");
+    expect(target.querySelector("[data-testid='company-jobs-health']")?.textContent).toContain("Waiting for first run");
     expect(target.querySelector("[data-testid='company-jobs-health']")?.textContent).not.toContain("Ran on time");
   });
 
@@ -144,7 +144,7 @@ describe("US-004 company jobs screen", () => {
           ok: true as const,
           value: {
             outposts: [
-              { outpostId: "opc_9", name: "ridge", lifecycle: "ready" },
+              { outpostId: "opc_9", name: "north", lifecycle: "ready" },
               { outpostId: "opc_old", name: "gone", lifecycle: "destroyed" },
             ],
           },
@@ -157,7 +157,7 @@ describe("US-004 company jobs screen", () => {
     (filterButton as HTMLButtonElement).click();
     flushSync();
     await vi.waitFor(() => {
-      expect(target.querySelector("[data-testid='company-jobs-box-filter-menu']")?.textContent).toContain("ridge");
+      expect(target.querySelector("[data-testid='company-jobs-box-filter-menu']")?.textContent).toContain("north");
     });
     expect(target.querySelector("[data-testid='company-jobs-box-filter-menu']")?.textContent).not.toContain("gone");
     (filterButton as HTMLButtonElement).click();
@@ -166,7 +166,7 @@ describe("US-004 company jobs screen", () => {
     flushSync();
     (target.querySelector("[data-testid='company-jobs-box']") as HTMLButtonElement).click();
     flushSync();
-    expect(target.querySelector("[data-testid='company-jobs-box-menu']")?.textContent).toContain("ridge");
+    expect(target.querySelector("[data-testid='company-jobs-box-menu']")?.textContent).toContain("north");
   });
 
   it("shows waiting for an admin and no run controls when the revision is not accepted", async () => {
@@ -207,6 +207,7 @@ describe("US-004 company jobs screen", () => {
     (target.querySelector("[data-testid='company-jobs-run-now']") as HTMLButtonElement).click();
     await vi.waitFor(() => expect(store.runs).toHaveLength(1));
     expect(store.runs[0]?.actor).toBe("prs_a");
+    await vi.waitFor(() => expect((target.querySelector("[data-testid='company-jobs-edit']") as HTMLButtonElement).disabled).toBe(false));
 
     (target.querySelector("[data-testid='company-jobs-edit']") as HTMLButtonElement).click();
     flushSync();
@@ -246,15 +247,19 @@ describe("US-004 company jobs screen", () => {
     await admin.submit({ companyUid: "cmp_1", action: "create", outpostId: "opc_1", definition: definition("One") });
     await admin.submit({ companyUid: "cmp_1", action: "create", outpostId: "opc_2", definition: definition("Two") });
     const pending: Array<(value: JobsListResult) => void> = [];
+    // All boxes reads each box. Hold every list call made before the filter changes.
+    let holding = true;
     const client: CompanyJobsClient = {
       list: (company, box) => {
-        if (!box) return new Promise<JobsListResult>((resolve) => pending.push(() => resolve(admin.list(company, box))));
+        if (holding) return new Promise<JobsListResult>((resolve) => pending.push(() => resolve(admin.list(company, box))));
         return admin.list(company, box);
       },
       status: (company, box) => admin.status(company, box),
       submit: (input) => admin.submit(input),
     };
     const target = mountPage({ companyUid: "cmp_1", role: "admin", client });
+    expect(pending.length).toBeGreaterThan(0);
+    holding = false;
     choose(target, "company-jobs-box-filter", "opc_2");
     await vi.waitFor(() => expect(target.textContent).toContain("Two"));
     expect(target.textContent).not.toContain("One");
@@ -412,7 +417,7 @@ describe("US-006 company job health on the screen", () => {
     if (!(option instanceof HTMLElement)) throw new Error("missing opc_2");
     option.click();
     flushSync();
-    await vi.waitFor(() => expect(target.querySelector("[data-testid='company-jobs-load-error']")?.textContent).toContain("Could not load. Retry"));
+    await vi.waitFor(() => expect(target.querySelector("[data-testid='company-jobs-load-error']")?.textContent).toContain("Could not load jobs. Try again."));
     store.failList = false;
     store.failStatus = false;
     (target.querySelector("[data-testid='company-jobs-try-again']") as HTMLButtonElement).click();
@@ -475,7 +480,8 @@ describe("US-006 company job health on the screen", () => {
     if (!(blockedOption instanceof HTMLElement)) throw new Error("missing opc_1");
     blockedOption.click();
     flushSync();
-    expect(target.querySelector("[data-testid='company-jobs-blocked-note']")?.textContent).toContain("HQ has been notified and will follow up by email.");
+    expect(target.querySelector("[data-testid='company-jobs-blocked-note']")?.textContent).toContain("HQ has been notified.");
+    expect(target.textContent).not.toContain("follow up by email");
 
     if (component) await unmount(component);
     component = null;

@@ -30,7 +30,9 @@
 
 <div class="host" data-testid="company-jobs-rail-host">
   {#if Body}
+    {#key companyUid}
     <Body {companyUid} {outpostId} {role} {api} {contact} />
+  {/key}
   {:else}
     <div class="loading" aria-busy="true">
       <ReadLoader testid="company-jobs-host-loader" />

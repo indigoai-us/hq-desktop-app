@@ -19,7 +19,7 @@ export const JOBS_STATUS_PATH = "/outpost/company/jobs/status";
 export const WATCHDOG_NAME = "watchdog-refresh";
 export const WATCHDOG_PROMPT =
   "Check that this company Outpost is signed in and that its scheduled jobs are running. Write a short health note with the UTC time. Do not change anything.";
-/** Twice a day at 8:00 and 20:00. Current CLI form from the Ridge ready kit. */
+/** Twice a day at 8:00 and 20:00. Current CLI form. */
 export const WATCHDOG_CRON = "cron(0 8,20 ? * * *)";
 export const WATCHDOG_TIMEZONE = "America/New_York";
 
@@ -76,6 +76,13 @@ export interface ParsedCompanyJob {
   skill: string | null;
   cron: string;
   timezone: string;
+  /** The server replaces the whole definition on update, so an edit carries these back. */
+  scheduleKind: "recurring" | "once";
+  /** ISO time for a one-time job. */
+  at: string | null;
+  /** The stored context as the server sent it, every key included. */
+  context: Record<string, unknown> | null;
+  script: string | null;
   paused: boolean;
   deleted: boolean;
   accepted: boolean;
@@ -89,6 +96,10 @@ export interface ParsedJobHealth {
   status: JobHealth;
   lastRunAt: string | null;
   nextRunAt: string | null;
+  /** The server reports a paused job as status ok with reason paused. */
+  paused?: boolean;
+  /** The box this row was read from. Set by the page when it reads one box at a time. */
+  outpostId?: string;
 }
 
 export interface ListedCompanyJob extends ParsedCompanyJob {
@@ -278,19 +289,28 @@ export function validateJobDraft(
   return errors;
 }
 
-/** Definition posted as the revision. registered_by is never included. */
-export function revisionDefinition(draft: JobDraft): Record<string, unknown> {
+/**
+ * Definition posted as the revision. registered_by is never included.
+ * Update replaces the stored prompt, schedule, context and script, so an edit
+ * starts from the existing job and changes only what the form edits.
+ */
+export function revisionDefinition(
+  draft: JobDraft,
+  base?: Pick<ParsedCompanyJob, "context" | "script" | "scheduleKind" | "at"> | null,
+): Record<string, unknown> {
   const prompt = draft.mode === "skill" ? draft.skill.trim() : draft.prompt.trim();
-  const context: Record<string, unknown> = { name: draft.name.trim() };
+  const context: Record<string, unknown> = { ...(base?.context ?? {}), name: draft.name.trim() };
   if (draft.mode === "skill") context.skill = draft.skill.trim();
+  else delete context.skill;
+  const timezone = draft.timezone.trim();
+  const schedule: Record<string, unknown> = base?.scheduleKind === "once"
+    ? { kind: "once", at: base.at, timezone }
+    : { kind: "recurring", cron: draftCron(draft), timezone };
   return {
     prompt,
     context,
-    schedule: {
-      kind: "recurring",
-      cron: draftCron(draft),
-      timezone: draft.timezone.trim(),
-    },
+    ...(base?.script != null ? { script: base.script } : {}),
+    schedule,
   };
 }
 
@@ -367,6 +387,10 @@ export function parseCompanyJob(row: unknown): ParsedCompanyJob | null {
     skill,
     cron: schedule && typeof schedule.cron === "string" ? schedule.cron : "",
     timezone: schedule && typeof schedule.timezone === "string" ? schedule.timezone : "",
+    scheduleKind: schedule?.kind === "once" ? "once" : "recurring",
+    at: schedule && typeof schedule.at === "string" ? schedule.at : null,
+    context: context ? { ...context } : null,
+    script: typeof rec.script === "string" ? rec.script : null,
     paused: rec.status === "paused",
     deleted: rec.deleted === true,
     accepted: revision !== null,
@@ -376,14 +400,24 @@ export function parseCompanyJob(row: unknown): ParsedCompanyJob | null {
   };
 }
 
+/** Reasons the server gives a never-run job when the request did not ask for pending. */
+const NEVER_RUN_REASONS = new Set(["not_due", "within_grace", "missing"]);
+
 export function parseJobHealth(row: unknown): ParsedJobHealth | null {
   const rec = asRecord(row);
   if (!rec || typeof rec.jobId !== "string" || !rec.jobId) return null;
+  const lastRunAt = typeof rec.lastRunAt === "string" ? rec.lastRunAt : null;
+  const lastSuccessAt = typeof rec.lastSuccessAt === "string" ? rec.lastSuccessAt : null;
+  const reason = typeof rec.reason === "string" ? rec.reason : "";
+  let status = healthFromUnknown(rec.status);
+  // A server that ignores include=pending still reports a job that never ran as ok.
+  if (status === "ok" && !lastRunAt && !lastSuccessAt && NEVER_RUN_REASONS.has(reason)) status = "pending";
   return {
     jobId: rec.jobId,
-    status: healthFromUnknown(rec.status),
-    lastRunAt: typeof rec.lastRunAt === "string" ? rec.lastRunAt : null,
+    status,
+    lastRunAt,
     nextRunAt: typeof rec.nextRunAt === "string" ? rec.nextRunAt : null,
+    paused: reason === "paused",
   };
 }
 
@@ -398,25 +432,30 @@ export function mergeJobHealth(jobs: readonly ParsedCompanyJob[], health: readon
       health: status,
       display,
       displayLabel: displayLabel(display),
-      scheduleLabel: schedulePlainWords(job.cron) || "Custom schedule",
+      scheduleLabel: job.scheduleKind === "once" ? "One time" : schedulePlainWords(job.cron) || "Custom schedule",
       lastRunAt: row?.lastRunAt ?? null,
       nextRunAt: job.paused ? null : row?.nextRunAt ?? null,
     };
   });
 }
 
-export function jobsFromHealthOnly(health: readonly ParsedJobHealth[]): ListedCompanyJob[] {
+export function jobsFromHealthOnly(health: readonly ParsedJobHealth[], outpostId = ""): ListedCompanyJob[] {
   return health.map((row) => {
-    const display = displayStatus(false, row.status);
+    const paused = row.paused === true;
+    const display = displayStatus(paused, row.status);
     return {
       jobId: row.jobId,
       name: row.jobId,
-      outpostId: "",
+      outpostId: row.outpostId ?? outpostId,
       prompt: "",
       skill: null,
       cron: "",
       timezone: "",
-      paused: false,
+      scheduleKind: "recurring",
+      at: null,
+      context: null,
+      script: null,
+      paused,
       deleted: false,
       accepted: true,
       revision: null,
@@ -427,7 +466,7 @@ export function jobsFromHealthOnly(health: readonly ParsedJobHealth[]): ListedCo
       displayLabel: displayLabel(display),
       scheduleLabel: "Custom schedule",
       lastRunAt: row.lastRunAt,
-      nextRunAt: row.nextRunAt,
+      nextRunAt: paused ? null : row.nextRunAt,
     };
   });
 }
@@ -482,7 +521,7 @@ const NOT_AVAILABLE_CODES = new Set([
 
 export const NOT_AVAILABLE_COPY = "Outposts are not available for this company yet.";
 export const CONTACT_US_LABEL = "Contact us";
-export const CONTACT_SENT_COPY = "HQ has been notified and will follow up by email.";
+export const CONTACT_SENT_COPY = "HQ has been notified.";
 export const CONTACT_FAILED_COPY = "Something went wrong. Try again.";
 
 export function isNotAvailableCode(code: string | null | undefined): boolean {
@@ -494,7 +533,7 @@ export function blockedBoxNote(box: CompanyBoxOption, manage: boolean): string |
   if (box.stopped) return "This Outpost is stopped. Scheduled jobs are paused until it is started.";
   if (box.blocked) {
     return manage
-      ? "This Outpost needs attention. Scheduled jobs are paused. HQ has been notified and will follow up by email."
+      ? "This Outpost needs attention. Scheduled jobs are paused. HQ has been notified."
       : "This Outpost needs attention. Scheduled jobs are paused. An owner or admin has been notified.";
   }
   return null;
@@ -520,15 +559,22 @@ export function jobFailureCopy(code: string): string {
   if (code === "outpost_not_found") return "This Outpost was removed.";
   if (code === "invalid_definition") return "Check the prompt and schedule, then try again.";
   if (code === "schedule_in_past") return "Pick a time in the future.";
-  if (code === "unsupported_schedule") return "That schedule is not supported. Pick a longer interval.";
+  if (code === "unsupported_schedule") return "That schedule is not supported. Choose a different schedule.";
   if (code === "feature_disabled") return "Company Outposts are paused right now. Try again later.";
   if (code === "invalid_outpost" || code === "invalid_input" || code === "invalid_body" || code === "invalid_target") {
     return "Something went wrong. Try again.";
   }
-  if (code === "company_jobs_unavailable" || code === "company_job_freshness_unavailable" || code === "unavailable") {
-    return "Could not load. Retry";
-  }
   return "Could not save the job. Try again.";
+}
+
+export const READ_FAILED_COPY = "Could not load jobs. Try again.";
+
+/** Copy for a failed list or status read. Write-only sentences never show here. */
+export function jobReadFailureCopy(code: string): string {
+  if (isNotAvailableCode(code)) return NOT_AVAILABLE_COPY;
+  if (code === "admin_required" || code === "forbidden") return "Only company owners and admins can do this.";
+  if (code === "feature_disabled") return "Company Outposts are paused right now. Try again later.";
+  return READ_FAILED_COPY;
 }
 
 function clock(hour: number, minute: number): string {

@@ -13359,9 +13359,11 @@
   });
   /** Contact us on the jobs not-available-yet state. Reaches HQ through the in-app report path. */
   function contactAboutJobs(companyUid: string) {
+    const who =
+      jobsRole === "owner" ? "An owner" : jobsRole === "admin" ? "An admin" : jobsRole === "member" ? "A member" : "Someone";
     return adapter.feedback.submitBugReport(
       "Outposts not available for a company",
-      `A ${jobsRole} asked about Outposts from the Jobs screen.\n\nCompany: ${companyUid}`,
+      `${who} asked about Outposts from the Jobs screen.\n\nCompany: ${companyUid}`,
     );
   }
   $effect(() => {

@@ -1,6 +1,6 @@
 /**
  * Headless light and dark shots of the company jobs preview.
- * Writes PNGs outside the repo, under the lane run directory.
+ * Writes PNGs to the folder named by COMPANY_JOBS_SHOTS, which is required.
  */
 import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
@@ -10,8 +10,11 @@ import { fileURLToPath } from "node:url";
 const uiDir = fileURLToPath(new URL("..", import.meta.url));
 const { chromium } = createRequire(new URL("../../../apps/sync/package.json", import.meta.url))("@playwright/test");
 
-const outDir = process.env.COMPANY_JOBS_SHOTS
-  ?? "/Users/stefanjohnson/hq/workspace/lanes-runs/01M583X7XM7Z74255F5SX3NJKX_stefans-macbook-pro-local/screenshots";
+const outDir = process.env.COMPANY_JOBS_SHOTS;
+if (!outDir) {
+  console.error("Set COMPANY_JOBS_SHOTS to the folder the screenshots should go in.");
+  process.exit(1);
+}
 const shots = [
   "list",
   "empty-admin",

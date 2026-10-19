@@ -145,7 +145,7 @@ describe("US-004 company job revisions", () => {
     if (!created.ok || !created.job) throw new Error("create failed");
     store.vaultEdit(created.job.jobId, "This shadow prompt must not run.");
     expect(store.runnablePrompts()).toEqual(["Run the accepted prompt."]);
-    const listed = await admin.list("cmp_1");
+    const listed = await admin.list("cmp_1", "opc_1");
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     expect(listed.jobs[0]?.prompt).toBe("Run the accepted prompt.");
@@ -155,7 +155,7 @@ describe("US-004 company job revisions", () => {
     expect(JOBS_COLLECTION_PATH).toBe(OUTPOST_PATHS.companyJobs);
     expect(JOBS_STATUS_PATH).toBe("/outpost/company/jobs/status");
     expect(companyJobsStatusPath("cmp_1", "opc 1")).toBe(OUTPOST_PATHS.companyJobsStatus("cmp_1", "opc 1"));
-    expect(companyJobsStatusPath("cmp_1")).toBe("/outpost/company/jobs/status?companyUid=cmp_1");
+    expect(companyJobsStatusPath("cmp_1")).toBe("/outpost/company/jobs/status?companyUid=cmp_1&include=pending");
   });
 });
 
@@ -197,5 +197,53 @@ describe("US-006 company job health reads", () => {
     // Server message text is dropped at the parse boundary so no screen can render it.
     expect(health.jobs[0]).not.toHaveProperty("message");
     expect(health.jobs[0]).not.toHaveProperty("nextStep");
+  });
+});
+
+describe("stub matches the live route", () => {
+  it("reads a never-run job as ok unless include=pending is asked for, and the client asks", async () => {
+    const store = createCompanyJobStore({ now: () => NOW });
+    const admin = store.client({ uid: "prs_a", role: "admin" });
+    await admin.submit({ companyUid: "cmp_1", action: "create", outpostId: "opc_1", definition: definition("Fresh") });
+    const actor = { uid: "prs_a", role: "admin" as const };
+    const plain = store.request(actor, "GET", "/outpost/company/jobs/status?companyUid=cmp_1&outpostId=opc_1");
+    expect(plain.ok && (plain.body as { jobs: Record<string, unknown>[] }).jobs[0]).toMatchObject({
+      status: "ok",
+      reason: "not_due",
+      lastRunAt: null,
+      lastSuccessAt: null,
+    });
+    const asked = store.request(actor, "GET", "/outpost/company/jobs/status?companyUid=cmp_1&outpostId=opc_1&include=pending");
+    expect(asked.ok && (asked.body as { jobs: Record<string, unknown>[] }).jobs[0]).toMatchObject({ status: "pending" });
+    const read = await admin.status("cmp_1", "opc_1");
+    expect(read.ok && read.jobs[0]?.status).toBe("pending");
+    expect(store.requests.at(-1)?.path).toContain("include=pending");
+  });
+
+  it("reads only the legacy Outpost when no outpostId is sent", async () => {
+    const store = createCompanyJobStore({ now: () => NOW });
+    const admin = store.client({ uid: "prs_a", role: "admin" });
+    await admin.submit({ companyUid: "cmp_1", action: "create", outpostId: "opc_1", definition: definition("Named") });
+    await admin.submit({ companyUid: "cmp_1", action: "create", outpostId: "outpost_cmp_1", definition: definition("Legacy") });
+    const listed = await admin.list("cmp_1", null);
+    expect(listed.ok && listed.jobs.map((job) => job.name)).toEqual(["Legacy"]);
+    const health = await admin.status("cmp_1", null);
+    expect(health.ok && health.jobs.map((job) => job.jobId)).toEqual(["job_2"]);
+  });
+
+  it("keeps the script and every context key across an update, as the server stores them", async () => {
+    const store = createCompanyJobStore({ now: () => NOW });
+    const admin = store.client({ uid: "prs_a", role: "admin" });
+    await admin.submit({
+      companyUid: "cmp_1",
+      action: "create",
+      outpostId: "opc_1",
+      definition: { ...definition("Scripted"), context: { name: "Scripted", owner: "ops" }, script: "echo hi" },
+    });
+    const listed = await admin.list("cmp_1", "opc_1");
+    expect(listed.ok && listed.jobs[0]).toMatchObject({ script: "echo hi", context: { name: "Scripted", owner: "ops" } });
+    await admin.submit({ companyUid: "cmp_1", action: "update", outpostId: "opc_1", jobId: "job_1", revision: "1", definition: definition("Bare") });
+    const after = await admin.list("cmp_1", "opc_1");
+    expect(after.ok && after.jobs[0]).toMatchObject({ script: null, context: { name: "Bare" } });
   });
 });

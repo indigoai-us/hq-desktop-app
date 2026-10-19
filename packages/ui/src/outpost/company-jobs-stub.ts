@@ -30,7 +30,12 @@ export interface StoredCompanyJob {
   /** A vault edit that the server has not accepted. Never the execution prompt. */
   shadowPrompt: string | null;
   skill: string | null;
+  /** The whole context object as sent. Update replaces it. */
+  context: Record<string, unknown>;
+  script: string | null;
+  scheduleKind: "recurring" | "once";
   cron: string;
+  at: string | null;
   timezone: string;
   paused: boolean;
   deleted: boolean;
@@ -58,9 +63,15 @@ export interface CompanyJobStore {
   requests: { method: string; path: string; body: Record<string, unknown> | null; actor: string }[];
   failStatus: boolean;
   failList: boolean;
-  /** When set, every read and write refuses with this code (503). */
+  /**
+   * When set, every read and write refuses with this code (503). The live
+   * jobs routes only send feature_disabled, company_jobs_unavailable and
+   * company_job_freshness_unavailable. Billing is reported on the box list.
+   */
   failCode: string | null;
   signedIn: boolean;
+  /** One raw request, recorded like a client call. For tests that send their own body. */
+  request(actor: CompanyJobActor, method: "GET" | "POST", path: string, body?: Record<string, unknown>): JobsHttpResult;
   client(actor: CompanyJobActor, options?: { writesAllowed?: boolean; memberRead?: boolean }): CompanyJobsClient;
   vaultEdit(jobId: string, prompt: string): void;
   setHealth(jobId: string, patch: Partial<Pick<StoredCompanyJob, "health" | "lastRunAt" | "nextRunAt" | "message">>): void;
@@ -90,6 +101,10 @@ export function createCompanyJobStore(options?: {
     failList: false,
     failCode: null,
     signedIn: true,
+    request(actor, method, path, body) {
+      requests.push({ method, path, body: body ?? null, actor: actor.uid });
+      return handle(method, path, body, actor, { memberRead: true, autoAccept, now, ids, jobs, audit, runs, store });
+    },
     client(actor, clientOptions) {
       const memberRead = clientOptions?.memberRead !== false;
       const writesAllowed = clientOptions?.writesAllowed ?? canManageRole(actor.role);
@@ -145,21 +160,10 @@ function handle(
     if (ctx.store.failStatus) return fail(500, "company_job_freshness_unavailable");
     const url = new URL(path, "https://hq.local");
     const companyUid = url.searchParams.get("companyUid") ?? "";
-    const outpostId = url.searchParams.get("outpostId");
-    const rows = ctx.jobs.filter((job) => job.companyUid === companyUid && (!outpostId || job.outpostId === outpostId) && !job.deleted);
-    return ok(200, {
-      companyUid,
-      jobs: rows.map((job) => ({
-        jobId: job.jobId,
-        status: job.health,
-        occurrence: job.lastRunAt,
-        lastSuccessAt: job.health === "ok" ? job.lastRunAt : null,
-        lastRunAt: job.lastRunAt,
-        nextRunAt: job.paused ? null : job.nextRunAt,
-        message: job.message,
-        reason: job.paused ? "paused" : job.health,
-      })),
-    });
+    const outpostId = boxOrLegacy(url.searchParams.get("outpostId"), companyUid);
+    const includePending = url.searchParams.get("include") === "pending";
+    const rows = ctx.jobs.filter((job) => job.companyUid === companyUid && job.outpostId === outpostId && !job.deleted);
+    return ok(200, { companyUid, jobs: rows.map((job) => freshnessRow(job, includePending)) });
   }
   if (method !== "POST" || path !== JOBS_COLLECTION_PATH) return fail(404, "not_found");
   const action = typeof body?.action === "string" ? body.action : "";
@@ -206,12 +210,14 @@ function createJob(
   const definition = asRecord(body?.definition);
   const prompt = typeof definition?.prompt === "string" ? definition.prompt : "";
   const schedule = asRecord(definition?.schedule);
+  const once = schedule?.kind === "once";
   const cron = typeof schedule?.cron === "string" ? schedule.cron : "";
+  const at = once && typeof schedule?.at === "string" ? schedule.at : null;
   const timezone = typeof schedule?.timezone === "string" ? schedule.timezone : "UTC";
   const context = asRecord(definition?.context);
   const name = context && typeof context.name === "string" ? context.name : "";
   if (!prompt.trim() || !name.trim()) return fail(400, "invalid_definition");
-  if (scheduleError(cron)) return fail(400, "unsupported_schedule");
+  if (once ? !at : scheduleError(cron)) return fail(400, "unsupported_schedule");
   const outpostId = typeof body?.outpostId === "string" ? body.outpostId : "";
   if (!outpostId) return fail(400, "invalid_outpost");
   const accepted = ctx.autoAccept;
@@ -223,7 +229,11 @@ function createJob(
     prompt,
     shadowPrompt: null,
     skill: context && typeof context.skill === "string" ? context.skill : null,
-    cron,
+    context: { ...context },
+    script: typeof definition?.script === "string" ? definition.script : null,
+    scheduleKind: once ? "once" : "recurring",
+    cron: once ? "" : cron,
+    at,
     timezone,
     paused: false,
     deleted: false,
@@ -231,7 +241,7 @@ function createJob(
     revision: accepted ? "1" : null,
     registeredBy: actor.uid,
     latestEditor: actor.uid,
-    health: "unknown",
+    health: "pending",
     lastRunAt: null,
     nextRunAt: null,
     message: "",
@@ -250,15 +260,24 @@ function updateJob(
   const definition = asRecord(body?.definition);
   const prompt = typeof definition?.prompt === "string" ? definition.prompt : "";
   const schedule = asRecord(definition?.schedule);
-  const cron = typeof schedule?.cron === "string" ? schedule.cron : job.cron;
-  if (!prompt.trim()) return fail(400, "invalid_definition");
-  if (scheduleError(cron)) return fail(400, "unsupported_schedule");
   const context = asRecord(definition?.context);
+  const name = context && typeof context.name === "string" ? context.name.trim() : "";
+  // The live update replaces prompt, schedule, context and script, so a
+  // missing field is lost, not kept.
+  if (!prompt.trim() || !schedule || !name) return fail(400, "invalid_definition");
+  const once = schedule.kind === "once";
+  const cron = typeof schedule.cron === "string" ? schedule.cron : "";
+  const at = once && typeof schedule.at === "string" ? schedule.at : null;
+  if (once ? !at : scheduleError(cron)) return fail(400, "unsupported_schedule");
   job.prompt = prompt;
-  job.cron = cron;
-  job.timezone = typeof schedule?.timezone === "string" ? schedule.timezone : job.timezone;
-  if (context && typeof context.name === "string" && context.name.trim()) job.name = context.name.trim();
-  job.skill = context && typeof context.skill === "string" ? context.skill : null;
+  job.scheduleKind = once ? "once" : "recurring";
+  job.cron = once ? "" : cron;
+  job.at = at;
+  job.timezone = typeof schedule.timezone === "string" ? schedule.timezone : "UTC";
+  job.context = { ...context };
+  job.name = name;
+  job.skill = typeof context?.skill === "string" ? context.skill : null;
+  job.script = typeof definition?.script === "string" ? definition.script : null;
   job.latestEditor = actor.uid;
   job.revision = String(Number(job.revision ?? "0") + 1);
   ctx.audit.push({ actor: actor.uid, action: "update", jobId: job.jobId, at: ctx.now() });
@@ -280,10 +299,43 @@ function mutate(
 }
 
 function wireJobs(jobs: StoredCompanyJob[], companyUid: string, body: Record<string, unknown> | undefined): Record<string, unknown>[] {
-  const outpostId = typeof body?.outpostId === "string" ? body.outpostId : "";
+  const outpostId = boxOrLegacy(typeof body?.outpostId === "string" ? body.outpostId : null, companyUid);
   return jobs
-    .filter((job) => job.companyUid === companyUid && (!outpostId || job.outpostId === outpostId))
+    .filter((job) => job.companyUid === companyUid && job.outpostId === outpostId)
     .map(wire);
+}
+
+/** The live route reads only the legacy company box when outpostId is missing. */
+function boxOrLegacy(outpostId: string | null, companyUid: string): string {
+  return outpostId || `outpost_${companyUid}`;
+}
+
+/**
+ * One row in the shape hq-pro-agents returns. A never-run job is ok/not_due
+ * unless the caller asks for include=pending. Paused is ok/paused. The
+ * server sends no message text.
+ */
+function freshnessRow(job: StoredCompanyJob, includePending: boolean): Record<string, unknown> {
+  let status: string = job.health;
+  let reason: string = job.health === "ok" ? "succeeded" : job.health;
+  if (job.health === "pending") {
+    status = includePending ? "pending" : "ok";
+    reason = includePending ? "awaiting_first_run" : "not_due";
+  }
+  if (job.paused) {
+    status = "ok";
+    reason = "paused";
+  }
+  return {
+    jobId: job.jobId,
+    status,
+    occurrence: job.lastRunAt,
+    lastSuccessAt: job.health === "ok" ? job.lastRunAt : null,
+    heartbeatAt: null,
+    reason,
+    lastRunAt: job.lastRunAt,
+    nextRunAt: job.paused ? null : job.nextRunAt,
+  };
 }
 
 function wire(job: StoredCompanyJob): Record<string, unknown> {
@@ -293,8 +345,11 @@ function wire(job: StoredCompanyJob): Record<string, unknown> {
     companyUid: job.companyUid,
     ownerKind: "company-outpost",
     prompt: job.prompt,
-    schedule: { kind: "recurring", cron: job.cron, timezone: job.timezone },
-    context: { name: job.name, ...(job.skill ? { skill: job.skill } : {}) },
+    schedule: job.scheduleKind === "once"
+      ? { kind: "once", at: job.at, timezone: job.timezone }
+      : { kind: "recurring", cron: job.cron, timezone: job.timezone },
+    context: { ...job.context, name: job.name, ...(job.skill ? { skill: job.skill } : {}) },
+    ...(job.script !== null ? { script: job.script } : {}),
     status: job.paused ? "paused" : "active",
     registeredBy: job.registeredBy,
     latestEditor: job.latestEditor,

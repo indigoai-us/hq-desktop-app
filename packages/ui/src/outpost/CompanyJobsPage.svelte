@@ -22,6 +22,7 @@
     isNotAvailableCode,
     isRunnableJob,
     jobFailureCopy,
+    jobReadFailureCopy,
     jobsFromHealthOnly,
     logSummary,
     mergeJobHealth,
@@ -93,6 +94,11 @@
   let confirmRemoveId = $state<string | null>(null);
   let clock = $state(Date.now());
   let loadedBoxes = $state<CompanyBoxOption[] | null>(null);
+  /** The box list read finished, ok or not. All boxes waits for it. */
+  let boxLoadDone = $state(false);
+  /** One row action at a time. A second click is ignored until the first answers. */
+  let busyJobId = $state<string | null>(null);
+  let busyAction = $state<"enable" | "disable" | "delete" | "run-now" | null>(null);
   let burstUntil = $state(0);
   let burstJobId = $state("");
   let burstAfter = $state("");
@@ -153,14 +159,55 @@
     if (next) filter = next;
   });
 
+  // The rail keeps this page mounted across companies. Nothing read or
+  // refused for one company may show for the next.
+  let lastCompany: string | null | undefined = undefined;
+  $effect(() => {
+    const company = companyUid;
+    if (lastCompany === undefined) {
+      lastCompany = company;
+      return;
+    }
+    if (company === lastCompany) return;
+    lastCompany = company;
+    untrack(() => {
+      generation += 1;
+      refusedNotAvailable = false;
+      writeRefusedNotAvailable = false;
+      contactState = "idle";
+      jobs = [];
+      ready = false;
+      loadError = "";
+      readDenied = false;
+      saveError = "";
+      saving = false;
+      formMode = null;
+      editing = null;
+      fieldErrors = {};
+      confirmRemoveId = null;
+      busyJobId = null;
+      busyAction = null;
+      logId = null;
+      burstUntil = 0;
+      burstJobId = "";
+      burstAfter = "";
+      filter = routedOutpost || "all";
+    });
+  });
+
   $effect(() => {
     const company = companyUid;
     const loader = api?.listCompanyOutposts;
+    untrack(() => {
+      loadedBoxes = null;
+      boxLoadDone = false;
+    });
     if (boxes || !company || !loader) return;
     let cancelled = false;
     void loader(company).then((result) => {
-      if (cancelled || !result.ok) return;
-      loadedBoxes = parseCompanyBoxes(result.value);
+      if (cancelled) return;
+      if (result.ok) loadedBoxes = parseCompanyBoxes(result.value);
+      boxLoadDone = true;
     });
     return () => {
       cancelled = true;
@@ -205,23 +252,56 @@
       readDenied = false;
       return;
     }
+    // Without an outpostId the server reads only the legacy company box, so
+    // All boxes reads each box and merges. Wait for the box list first.
+    const waitingForBoxes = box === "all" && !boxes && !!api?.listCompanyOutposts && !boxLoadDone;
+    const ids = box === "all" ? knownBoxes.map((item) => item.id) : [box];
     const gen = ++generation;
     untrack(() => {
       if (jobs.length === 0) loading = true;
     });
-    void Promise.all([
-      current.list(company, box === "all" ? null : box),
-      current.status(company, box === "all" ? null : box),
-    ]).then(([listRes, statusRes]) => {
+    if (waitingForBoxes) return;
+    void readBoxes(current, company, ids).then(([listRes, statusRes]) => {
       if (gen !== generation) return;
       loading = false;
       ready = true;
-      applyRead(listRes, statusRes);
+      applyRead(listRes, statusRes, box === "all" ? "" : box);
     });
     void token;
   });
 
-  function applyRead(listRes: JobsListResult, statusRes: JobsStatusResult): void {
+  async function readBoxes(
+    current: CompanyJobsClient,
+    company: string,
+    ids: string[],
+  ): Promise<[JobsListResult, JobsStatusResult]> {
+    if (ids.length === 0) return Promise.all([current.list(company, null), current.status(company, null)]);
+    const reads = await Promise.all(
+      ids.map((id) => Promise.all([current.list(company, id), current.status(company, id)])),
+    );
+    const lists = reads.map(([list]) => list);
+    const statuses = reads.map(([, status], index): JobsStatusResult =>
+      status.ok ? { ok: true, jobs: status.jobs.map((row) => ({ ...row, outpostId: ids[index] })) } : status,
+    );
+    return [mergeReads(lists), mergeReads(statuses)];
+  }
+
+  function mergeReads<Row>(
+    results: ({ ok: true; jobs: Row[] } | { ok: false; code: string })[],
+  ): { ok: true; jobs: Row[] } | { ok: false; code: string } {
+    const jobs: Row[] = [];
+    let anyOk = false;
+    for (const result of results) {
+      if (!result.ok) continue;
+      anyOk = true;
+      jobs.push(...result.jobs);
+    }
+    if (anyOk) return { ok: true, jobs };
+    const codes = results.map((result) => (result.ok ? "" : result.code));
+    return { ok: false, code: codes.find(isNotAvailableCode) ?? codes[0] ?? "unavailable" };
+  }
+
+  function applyRead(listRes: JobsListResult, statusRes: JobsStatusResult, box: string): void {
     refusedNotAvailable =
       (!listRes.ok && isNotAvailableCode(listRes.code)) || (!statusRes.ok && isNotAvailableCode(statusRes.code));
     if (refusedNotAvailable) {
@@ -233,7 +313,7 @@
     if (!listRes.ok && !statusRes.ok) {
       jobs = [];
       if (canManageCompanyJobs(role)) {
-        loadError = jobFailureCopy(listRes.code);
+        loadError = jobReadFailureCopy(listRes.code);
         readDenied = false;
       } else {
         loadError = "";
@@ -245,7 +325,7 @@
     readDenied = false;
     if (listRes.ok && statusRes.ok) jobs = mergeJobHealth(listRes.jobs, statusRes.jobs);
     else if (listRes.ok) jobs = mergeJobHealth(listRes.jobs, []);
-    else if (statusRes.ok) jobs = jobsFromHealthOnly(statusRes.jobs);
+    else if (statusRes.ok) jobs = jobsFromHealthOnly(statusRes.jobs, box);
     if (!burstJobId || !burstAfter) return;
     const row = jobs.find((item) => item.jobId === burstJobId);
     const last = row?.lastRunAt ? Date.parse(row.lastRunAt) : Number.NaN;
@@ -281,8 +361,11 @@
   }
 
   function openEdit(job: ListedCompanyJob): void {
-    if (!manage || !job.revision) return;
-    const preset = SCHEDULE_PRESETS.find((item) => item.cron === job.cron);
+    // A one-time job has no editable recurring schedule here. Editing it
+    // would rewrite it as recurring, so it is not offered.
+    if (!manage || !job.revision || job.scheduleKind === "once") return;
+    const cron = job.cron.trim().toLowerCase();
+    const preset = SCHEDULE_PRESETS.find((item) => item.cron.toLowerCase() === cron);
     editing = job;
     formMode = "edit";
     draft = {
@@ -314,19 +397,22 @@
   async function submitForm(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     if (!manage || !companyUid) return;
+    const company = companyUid;
     const errors = validateJobDraft(draft, takenNames(), editing?.name);
     fieldErrors = errors;
     if (Object.keys(errors).length > 0) return;
+    const base = editing ? (jobs.find((job) => job.jobId === editing?.jobId) ?? editing) : null;
     saving = true;
     saveError = "";
     const result = await resolvedClient.submit({
-      companyUid,
+      companyUid: company,
       action: formMode === "edit" ? "update" : "create",
       outpostId: draft.boxId,
-      jobId: editing?.jobId,
-      revision: editing?.revision,
-      definition: revisionDefinition(draft),
+      jobId: base?.jobId,
+      revision: base?.revision,
+      definition: revisionDefinition(draft, base ?? undefined),
     });
+    if (company !== companyUid) return;
     saving = false;
     if (!result.ok) {
       if (isNotAvailableCode(result.code)) {
@@ -342,15 +428,27 @@
   }
 
   async function mutate(action: "enable" | "disable" | "delete" | "run-now", job: ListedCompanyJob): Promise<void> {
-    if (!manage || !companyUid || !job.revision) return;
+    if (!manage || !companyUid || !job.revision || busyJobId !== null) return;
+    const company = companyUid;
     saveError = "";
-    const result = await resolvedClient.submit({
-      companyUid,
-      action,
-      outpostId: job.outpostId,
-      jobId: job.jobId,
-      revision: job.revision,
-    });
+    busyJobId = job.jobId;
+    busyAction = action;
+    let result;
+    try {
+      result = await resolvedClient.submit({
+        companyUid: company,
+        action,
+        outpostId: job.outpostId,
+        jobId: job.jobId,
+        revision: job.revision,
+      });
+    } finally {
+      if (busyJobId === job.jobId) {
+        busyJobId = null;
+        busyAction = null;
+      }
+    }
+    if (company !== companyUid) return;
     if (!result.ok) {
       if (isNotAvailableCode(result.code)) {
         writeRefusedNotAvailable = true;
@@ -370,8 +468,10 @@
 
   async function contactUs(): Promise<void> {
     if (!contact || !companyUid || contactState === "sending") return;
+    const company = companyUid;
     contactState = "sending";
-    const result = await contact(companyUid);
+    const result = await contact(company);
+    if (company !== companyUid) return;
     contactState = result.ok ? "sent" : "error";
   }
 
@@ -528,6 +628,7 @@
           label="Outpost"
           testid="company-jobs-box"
           block
+          disabled={formMode === "edit"}
           onchange={(value) => (draft.boxId = value)}
         />
         {#if fieldErrors.box}<p class="error" data-testid="company-jobs-box-error">{fieldErrors.box}</p>{/if}
@@ -572,21 +673,25 @@
             <span class="actions">
               <button type="button" data-testid="company-jobs-log" onclick={() => (logId = job.jobId)}>Log</button>
               {#if manage && job.accepted && job.revision}
+                {@const busy = busyJobId !== null}
+                {@const mine = busyJobId === job.jobId}
                 {#if job.paused}
-                  <button type="button" data-testid="company-jobs-resume" onclick={() => void mutate("enable", job)}>Resume</button>
+                  <button type="button" data-testid="company-jobs-resume" disabled={busy} aria-busy={mine && busyAction === "enable" ? "true" : undefined} onclick={() => void mutate("enable", job)}>{mine && busyAction === "enable" ? "Resuming…" : "Resume"}</button>
                 {:else}
-                  <button type="button" data-testid="company-jobs-pause" onclick={() => void mutate("disable", job)}>Pause</button>
+                  <button type="button" data-testid="company-jobs-pause" disabled={busy} aria-busy={mine && busyAction === "disable" ? "true" : undefined} onclick={() => void mutate("disable", job)}>{mine && busyAction === "disable" ? "Pausing…" : "Pause"}</button>
                   {#if isRunnableJob(job)}
-                    <button type="button" data-testid="company-jobs-run-now" onclick={() => void mutate("run-now", job)}>Run now</button>
+                    <button type="button" data-testid="company-jobs-run-now" disabled={busy} aria-busy={mine && busyAction === "run-now" ? "true" : undefined} onclick={() => void mutate("run-now", job)}>{mine && busyAction === "run-now" ? "Starting…" : "Run now"}</button>
                   {/if}
                 {/if}
-                <button type="button" data-testid="company-jobs-edit" onclick={() => openEdit(job)}>Edit</button>
+                {#if job.scheduleKind !== "once"}
+                  <button type="button" data-testid="company-jobs-edit" disabled={busy} onclick={() => openEdit(job)}>Edit</button>
+                {/if}
                 {#if confirmRemoveId === job.jobId}
                   <span>Remove this job?</span>
-                  <button type="button" data-testid="company-jobs-remove-confirm" onclick={() => void mutate("delete", job)}>Remove job</button>
-                  <button type="button" onclick={() => (confirmRemoveId = null)}>Cancel</button>
+                  <button type="button" data-testid="company-jobs-remove-confirm" disabled={busy} aria-busy={mine && busyAction === "delete" ? "true" : undefined} onclick={() => void mutate("delete", job)}>{mine && busyAction === "delete" ? "Removing…" : "Remove job"}</button>
+                  <button type="button" disabled={busy} onclick={() => (confirmRemoveId = null)}>Cancel</button>
                 {:else}
-                  <button type="button" data-testid="company-jobs-remove" onclick={() => (confirmRemoveId = job.jobId)}>Remove</button>
+                  <button type="button" data-testid="company-jobs-remove" disabled={busy} onclick={() => (confirmRemoveId = job.jobId)}>Remove</button>
                 {/if}
               {:else if !job.accepted}
                 <span data-testid="company-jobs-waiting">Waiting for an admin</span>
