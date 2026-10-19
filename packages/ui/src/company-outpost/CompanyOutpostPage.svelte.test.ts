@@ -2,10 +2,12 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import CompanyOutpostPage from "./CompanyOutpostPage.svelte";
-import { FIXTURE_BOXES, FIXTURE_NOW, successOutpost } from "./company-outpost.fixture.js";
+import { COMPANY_OUTPOST_SCREENS, companyOutpostPreview, FIXTURE_BOXES, FIXTURE_NOW, successOutpost } from "./company-outpost.fixture.js";
 import { createCompanyOutpostStub } from "./company-outpost-stub.js";
-import { blockedNote, failureCopy, formatOutpostPrice } from "./company-outpost-model.js";
+import { blockedNote, failureCopy, UNAVAILABLE_COPY } from "./company-outpost-model.js";
 import type { CompanyOutpostRole } from "./company-outpost-model.js";
+
+const BILLING_TEXT = /billing|billed|\bbill\b|charge|payment|payer|\bpays?\b|price|pricing|invoice|subscription|USD|\$\s?\d|a month|per month/i;
 
 describe("Company Outpost page", () => {
   let component: Record<string, unknown> | null = null;
@@ -20,7 +22,6 @@ describe("Company Outpost page", () => {
     const client = createCompanyOutpostStub({
       role,
       items: FIXTURE_BOXES,
-      priceHint: formatOutpostPrice(80, "the company"),
       ...options,
     });
     const target = document.createElement("div");
@@ -63,7 +64,7 @@ describe("Company Outpost page", () => {
     expect(target.querySelector("[data-testid='jobs-count-demo-1']")?.textContent).toBe("2");
     expect(target.querySelector("[data-testid='outpost-row-demo-1']")?.textContent).toContain("1 ran on time, 1 missed");
     expect(target.querySelector("[data-testid='add-outpost']")?.textContent).toContain("Add an Outpost");
-    expect(target.querySelector("[data-testid='price-hint']")?.textContent).toContain("USD 80 a month, billed to the company");
+    expect(target.querySelector("[data-testid='cap-hint']")?.textContent).toBe("A company can have up to 5 Outposts.");
   });
 
   it("shows the member list without manage actions", async () => {
@@ -71,7 +72,7 @@ describe("Company Outpost page", () => {
     expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-manage")).toBe("false");
     expect(target.querySelector("[data-testid='add-outpost']")).toBeNull();
     expect(target.querySelector("[data-testid='member-note']")?.textContent).toContain("Only company owners and admins can manage them.");
-    expect(target.querySelector("[data-testid='price-hint']")).toBeNull();
+    expect(target.querySelector("[data-testid='cap-hint']")).toBeNull();
     click(target, "open-demo-1");
     await Promise.resolve();
     flushSync();
@@ -88,7 +89,6 @@ describe("Company Outpost page", () => {
     component = null;
     const member = await show("member", { items: [] });
     expect(member.target.textContent).toContain("Ask an owner or admin to add one.");
-    expect(member.target.querySelector("[data-testid='empty-outposts']")?.textContent).not.toContain("USD");
   });
 
   it("hides add when the company is at the cap", async () => {
@@ -102,67 +102,109 @@ describe("Company Outpost page", () => {
     expect(target.querySelector("[data-testid='cap-note']")?.textContent).toContain("which is the current limit");
   });
 
-  it("does not add a row when provision fails, and records no charge", async () => {
+  it("does not add a row when provision fails", async () => {
     const { target, client } = await show("admin", {
       items: [FIXTURE_BOXES[0]!],
-      plan: [{ status: "failure", charged: false, message: failureCopy(false) }],
+      plan: [{ status: "failure", message: failureCopy() }],
     });
     click(target, "add-outpost");
     click(target, "add-continue");
-    const agree = target.querySelector<HTMLInputElement>("[data-testid='agree']")!;
-    agree.checked = true;
-    agree.dispatchEvent(new Event("change", { bubbles: true }));
-    flushSync();
+    expect(target.querySelector("[data-testid='agree']")).toBeNull();
     click(target, "create-outpost");
     await Promise.resolve();
     flushSync();
-    expect(target.querySelector("[data-testid='provision-notice']")?.textContent).toContain("Nothing was charged.");
+    expect(target.querySelector("[data-testid='provision-notice']")?.textContent).toBe("The Outpost was not added.");
     expect(client.readItems().map((item) => item.id)).toEqual(["demo-1"]);
-    expect(client.chargeCount()).toBe(0);
   });
 
-  it("opens billing for the owner and not for another admin", async () => {
-    const owner = await show("owner", { items: [], plan: [{ status: "payment_not_set_up" }] });
-    click(owner.target, "add-outpost-empty");
-    click(owner.target, "add-continue");
-    const agree = owner.target.querySelector<HTMLInputElement>("[data-testid='agree']")!;
-    agree.checked = true;
-    agree.dispatchEvent(new Event("change", { bubbles: true }));
-    flushSync();
-    click(owner.target, "create-outpost");
-    await Promise.resolve();
-    flushSync();
-    expect(owner.target.querySelector("[data-testid='open-billing']")).not.toBeNull();
-    await unmount(component!);
-    component = null;
-    const admin = await show("admin", { items: [], plan: [{ status: "payment_not_set_up" }] });
-    click(admin.target, "add-outpost-empty");
-    click(admin.target, "add-continue");
-    const box = admin.target.querySelector<HTMLInputElement>("[data-testid='agree']")!;
-    box.checked = true;
-    box.dispatchEvent(new Event("change", { bubbles: true }));
-    flushSync();
-    click(admin.target, "create-outpost");
-    await Promise.resolve();
-    flushSync();
-    expect(admin.target.querySelector("[data-testid='billing-blocked']")).not.toBeNull();
-    expect(admin.target.querySelector("[data-testid='open-billing']")).toBeNull();
+  it("shows the neutral not-available state with one line and one action when the company cannot add an Outpost", async () => {
+    expect(UNAVAILABLE_COPY).toBe("Outposts are not available for this company yet.");
+    for (const role of ["owner", "admin"] as const) {
+      const { target, client } = await show(role, { items: [], plan: [{ status: "unavailable" }, successOutpost()] });
+      click(target, "add-outpost-empty");
+      click(target, "add-continue");
+      click(target, "create-outpost");
+      await Promise.resolve();
+      flushSync();
+      const card = target.querySelector<HTMLElement>("[data-testid='outposts-unavailable']");
+      expect(card).not.toBeNull();
+      expect(card!.querySelectorAll("p")).toHaveLength(1);
+      expect(card!.querySelector("p")?.textContent).toBe(UNAVAILABLE_COPY);
+      expect(card!.querySelectorAll("button")).toHaveLength(1);
+      expect(card!.textContent ?? "").not.toMatch(BILLING_TEXT);
+      expect(client.readItems()).toEqual([]);
+      click(target, "unavailable-retry");
+      expect(target.querySelector("[data-testid='outposts-unavailable']")).toBeNull();
+      click(target, "create-outpost");
+      await Promise.resolve();
+      await Promise.resolve();
+      flushSync();
+      expect(client.readItems().map((item) => item.id)).toEqual(["demo-new"]);
+      await unmount(component!);
+      component = null;
+    }
+  });
+
+  it("opens the not-available state from the preview and goes back to the list", async () => {
+    const preview = companyOutpostPreview("unavailable-admin");
+    const { target } = await show(preview.role, { items: [] }, { initialScreen: preview.initialScreen });
+    expect(target.querySelector("[data-testid='outposts-unavailable'] p")?.textContent).toBe(UNAVAILABLE_COPY);
+    click(target, "back-list");
+    expect(target.querySelector("[data-testid='outposts-unavailable']")).toBeNull();
+    expect(target.querySelector("[data-testid='empty-outposts']")).not.toBeNull();
+  });
+
+  it("renders no billing, price, or payer text in any fixture state for admin and member, light and dark", async () => {
+    for (const theme of ["light", "dark"]) {
+      document.documentElement.setAttribute("data-force-theme", theme);
+      for (const screen of COMPANY_OUTPOST_SCREENS) {
+        for (const role of ["admin", "member"] as const) {
+          const label = `${theme} ${screen} ${role}`;
+          const preview = companyOutpostPreview(screen);
+          const target = document.createElement("div");
+          document.body.appendChild(target);
+          component = mount(CompanyOutpostPage, {
+            target,
+            props: {
+              companyUid: "cmp_1",
+              role,
+              client: preview.client,
+              now: FIXTURE_NOW,
+              pollMs: null,
+              initialScreen: preview.initialScreen,
+              initialOutpostId: preview.initialOutpostId ?? "",
+              initialJobId: preview.initialJobId ?? "",
+              initialNotice: preview.initialNotice ?? "",
+            },
+          });
+          for (let i = 0; i < 10; i += 1) {
+            await Promise.resolve();
+            flushSync();
+            if (target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-ready") === "true") break;
+          }
+          expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-ready"), label).toBe("true");
+          const attributes = [...target.querySelectorAll("[title],[aria-label],[placeholder]")]
+            .map((node) => ["title", "aria-label", "placeholder"].map((name) => node.getAttribute(name) ?? "").join(" "))
+            .join(" ");
+          expect(`${target.textContent ?? ""} ${attributes}`, label).not.toMatch(BILLING_TEXT);
+          await unmount(component);
+          component = null;
+          target.remove();
+        }
+      }
+    }
+    document.documentElement.removeAttribute("data-force-theme");
   });
 
   it("adds a row only after a successful provision", async () => {
     const { target, client } = await show("admin", { items: [], plan: [successOutpost()] });
     click(target, "add-outpost-empty");
     click(target, "add-continue");
-    const agree = target.querySelector<HTMLInputElement>("[data-testid='agree']")!;
-    agree.checked = true;
-    agree.dispatchEvent(new Event("change", { bubbles: true }));
-    flushSync();
     click(target, "create-outpost");
     await Promise.resolve();
     await Promise.resolve();
     flushSync();
     expect(client.readItems().map((item) => item.id)).toEqual(["demo-new"]);
-    expect(client.chargeCount()).toBe(0);
   });
 
   it("shows the blocked note and a job stub on the stable route", async () => {

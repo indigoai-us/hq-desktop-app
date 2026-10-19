@@ -12,31 +12,20 @@ describe("Company Outpost rail host", () => {
     component = null;
   });
 
-  function mountHost(readPricing: () => Promise<AdapterResult<Json>>) {
+  function mountHost(listCompanyOutposts: () => Promise<AdapterResult<Json>>) {
     const target = document.createElement("div");
     document.body.appendChild(target);
     component = mount(CompanyOutpostRailHost, {
       target,
       props: {
         companyUid: "cmp_1",
-        companyLabel: "Indigo",
         role: "member",
-        readPricing,
-        api: {
-          listCompanyOutposts: async () => ({ ok: true as const, value: { outposts: [] } }),
-        },
+        api: { listCompanyOutposts },
       },
     });
     flushSync();
     return target;
   }
-
-  it("shows the shared loader while pricing has not returned", () => {
-    const target = mountHost(() => new Promise(() => {}));
-    expect(target.querySelector(".read-loader")).not.toBeNull();
-    expect(target.querySelector("[data-testid='company-outpost']")).toBeNull();
-    expect(target.textContent ?? "").not.toBe("");
-  });
 
   async function settledList(target: HTMLElement) {
     for (let i = 0; i < 10; i += 1) {
@@ -46,20 +35,19 @@ describe("Company Outpost rail host", () => {
     }
   }
 
-  it("opens the list when pricing fails or throws", async () => {
-    const failed = mountHost(async () => ({ ok: false, reason: "error", message: "pricing unavailable" }));
-    await settledList(failed);
-    expect(failed.querySelector("[data-testid='company-outpost']")?.getAttribute("data-ready")).toBe("true");
-    expect(failed.querySelector("[data-testid='empty-outposts']")).not.toBeNull();
-    expect(failed.querySelector(".read-loader")).toBeNull();
+  it("shows the shared loader while the list has not returned", () => {
+    const target = mountHost(() => new Promise(() => {}));
+    expect(target.querySelector(".read-loader")).not.toBeNull();
+    expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-ready")).toBe("false");
+    expect(target.querySelector("[data-testid='empty-outposts']")).toBeNull();
+  });
 
-    await unmount(component!);
-    component = null;
-    const thrown = mountHost(async () => {
-      throw new Error("forbidden");
-    });
-    await settledList(thrown);
-    expect(thrown.querySelector("[data-testid='company-outpost']")?.getAttribute("data-ready")).toBe("true");
-    expect(thrown.querySelector(".read-loader")).toBeNull();
+  it("opens the list once the list returns, with no billing text", async () => {
+    const target = mountHost(async () => ({ ok: true as const, value: { outposts: [], price: { monthlyUsd: 80, payer: "company" } } }));
+    await settledList(target);
+    expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-ready")).toBe("true");
+    expect(target.querySelector("[data-testid='empty-outposts']")).not.toBeNull();
+    expect(target.querySelector(".read-loader")).toBeNull();
+    expect(target.textContent ?? "").not.toMatch(/billing|billed|charge|payment|payer|USD|\$\d/i);
   });
 });

@@ -17,6 +17,7 @@
     jobHealthSummary,
     lastSeenLabel,
     listAfterProvision,
+    UNAVAILABLE_COPY,
     needsAttentionNote,
     renameError,
     stateLabel,
@@ -35,11 +36,10 @@
     client: CompanyOutpostClient;
     now?: number;
     pollMs?: number | null;
-    initialScreen?: "list" | "add" | "confirm" | "detail" | "remove" | "preparing" | "billing" | "job";
+    initialScreen?: "list" | "add" | "confirm" | "detail" | "remove" | "preparing" | "unavailable" | "job";
     initialOutpostId?: string;
     initialJobId?: string;
     initialNotice?: string;
-    onOpenBilling?: () => void;
     onOpenJob?: (target: { route: typeof OUTPOST_JOBS_ROUTE; companyUid: string; outpostId: string; jobId: string }) => void;
   }
 
@@ -53,7 +53,6 @@
     initialOutpostId = "",
     initialJobId = "",
     initialNotice = "",
-    onOpenBilling,
     onOpenJob,
   }: Props = $props();
 
@@ -63,7 +62,6 @@
   // svelte-ignore state_referenced_locally
   let screen = $state(initialScreen);
   let items = $state<CompanyOutpostListItem[]>([]);
-  let priceHint = $state<string | null>(null);
   let cap = $state(5);
   // svelte-ignore state_referenced_locally
   let selectedId = $state(initialOutpostId);
@@ -74,7 +72,6 @@
   let loadMessage = $state("");
   // svelte-ignore state_referenced_locally
   let ready = $state(role === "guest");
-  let agree = $state(false);
   let previewName = $state("");
   let renaming = $state(false);
   let renameName = $state("");
@@ -87,9 +84,8 @@
   const atCap = $derived(manage && items.length >= cap);
   const selected = $derived(items.find((item) => item.id === selectedId) ?? null);
 
-  function applyList(next: CompanyOutpostListItem[], hint: string | null, nextCap: number) {
+  function applyList(next: CompanyOutpostListItem[], nextCap: number) {
     items = next;
-    priceHint = hint;
     cap = nextCap;
   }
 
@@ -102,7 +98,7 @@
       return false;
     }
     loadMessage = "";
-    applyList(result.items, result.priceHint, result.cap);
+    applyList(result.items, result.cap);
     return true;
   }
 
@@ -134,9 +130,9 @@
       screen = "confirm";
       return;
     }
-    if (result.status === "payment_not_set_up") {
+    if (result.status === "unavailable") {
       notice = "";
-      screen = "billing";
+      screen = "unavailable";
       return;
     }
     if (result.status === "forbidden") {
@@ -151,7 +147,6 @@
   function beginAdd() {
     if (!manage || atCap) return;
     notice = "";
-    agree = false;
     previewName = client.previewAdd(items.map((item) => item.name)).name;
     screen = "add";
   }
@@ -159,12 +154,11 @@
   function continueAdd() {
     if (!manage) return;
     previewName = client.previewAdd(items.map((item) => item.name)).name;
-    agree = false;
     screen = "confirm";
   }
 
   async function createOutpost() {
-    if (!manage || !agree || busy) return;
+    if (!manage || busy) return;
     busy = true;
     try {
       applyProvision(await client.provision());
@@ -289,7 +283,7 @@
       {/if}
     </header>
     {#if manage}
-      <p class="co-hint" data-testid="price-hint">{priceHint ? `${priceHint}. ` : ""}A company can have up to {cap} Outposts.</p>
+      <p class="co-hint" data-testid="cap-hint">A company can have up to {cap} Outposts.</p>
     {:else}
       <div class="co-note" data-testid="member-note">You can view Outposts. Only company owners and admins can manage them.</div>
     {/if}
@@ -303,7 +297,7 @@
       <div class="co-card co-empty" data-testid="empty-outposts">
         <h2>No Outposts yet</h2>
         <h3>What is an Outpost?</h3>
-        <p>An Outpost runs your company's scheduled Claude jobs, even when your computer is off.{manage && priceHint ? ` ${priceHint}.` : ""}</p>
+        <p>An Outpost runs your company's scheduled Claude jobs, even when your computer is off.</p>
         {#if manage}
           <RailButton icon="plus" variant="primary" data-testid="add-outpost-empty" onclick={beginAdd}>Add an Outpost</RailButton>
         {:else}
@@ -358,8 +352,8 @@
     {:else}
       <div class="co-card">
         <h2>What is an Outpost?</h2>
-        <p>An Outpost runs your company's scheduled Claude jobs, even when your computer is off.{screen === "add" && priceHint ? ` ${priceHint}.` : ""}</p>
-        <p class="co-hint">A company can have up to {cap} Outposts.{screen === "add" && priceHint ? ` Each one is ${priceHint}.` : ""}</p>
+        <p>An Outpost runs your company's scheduled Claude jobs, even when your computer is off.</p>
+        <p class="co-hint">A company can have up to {cap} Outposts.</p>
         {#if screen === "confirm"}
           <div class="co-generated" data-testid="generated-name">
             <span class="co-hint">Generated name</span>
@@ -372,15 +366,9 @@
           <div class="co-note" role="status" data-testid="provision-notice">{notice}</div>
         {/if}
         {#if screen === "confirm"}
-          <label class="co-check">
-            <input type="checkbox" data-testid="agree" bind:checked={agree} />
-            <span>I understand that this adds {priceHint ?? "an Outpost billed to the company"}.</span>
-          </label>
           <div class="co-row">
             <RailButton icon="x" data-testid="confirm-back" onclick={() => { screen = "add"; notice = ""; }}>Back</RailButton>
-            <RailButton icon="plus" variant="primary" data-testid="create-outpost" disabled={!agree || busy} onclick={() => void createOutpost()}>
-              {priceHint ? `Add Outpost · ${priceHint}` : "Add Outpost"}
-            </RailButton>
+            <RailButton icon="plus" variant="primary" data-testid="create-outpost" disabled={busy} onclick={() => void createOutpost()}>Add Outpost</RailButton>
           </div>
         {:else}
           <div class="co-row">
@@ -390,17 +378,13 @@
         {/if}
       </div>
     {/if}
-  {:else if screen === "billing"}
-    <button type="button" class="co-link" data-testid="back-list" onclick={() => { screen = "confirm"; }}>‹ Outposts</button>
-    <header class="co-head"><h1>Add an Outpost</h1><p>Company billing</p></header>
-    <div class="co-card" data-testid="billing-blocked">
-      <h2>The company's billing needs attention before you can add an Outpost.</h2>
-      <p>{role === "owner" ? "Review the company payment method, then try again." : "Ask a company owner to review billing, then try again."}</p>
+  {:else if screen === "unavailable"}
+    <button type="button" class="co-link" data-testid="back-list" onclick={() => { screen = "list"; }}>‹ Outposts</button>
+    <header class="co-head"><h1>Add an Outpost</h1></header>
+    <div class="co-card" data-testid="outposts-unavailable">
+      <p>{UNAVAILABLE_COPY}</p>
       <div class="co-row">
-        {#if role === "owner"}
-          <RailButton icon="key" variant="primary" data-testid="open-billing" onclick={() => onOpenBilling?.()}>Open billing</RailButton>
-        {/if}
-        <RailButton icon="refresh" data-testid="billing-retry" onclick={() => { screen = "confirm"; }}>Try again</RailButton>
+        <RailButton icon="refresh" data-testid="unavailable-retry" onclick={() => { screen = "confirm"; }}>Try again</RailButton>
       </div>
     </div>
   {:else if screen === "preparing"}
@@ -417,7 +401,7 @@
     <button type="button" class="co-link" data-testid="back-detail" onclick={() => { screen = "detail"; }}>‹ {selected.name}</button>
     <header class="co-head"><h1>Remove this Outpost</h1><p>{selected.name}</p></header>
     <div class="co-card">
-      <p>Its jobs stop, and billing for this Outpost ends at removal.</p>
+      <p>Its jobs stop.</p>
       <label for="remove-name">Type {selected.name} to confirm.</label>
       <input id="remove-name" data-testid="remove-name" autocomplete="off" bind:value={removeTyped} />
       <div class="co-row">
@@ -582,9 +566,7 @@
   .co-state[data-state="blocked"] { color: #a12622; }
   .co-state[data-state="needs_attention"] { color: #8a5a00; }
   .co-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-  .co-check { display: flex; gap: 8px; align-items: flex-start; margin: 12px 0; }
   label { display: block; margin: 8px 0 4px; }
-  label.co-check { display: flex; gap: 8px; align-items: flex-start; }
   input:not([type]) {
     width: 100%;
     box-sizing: border-box;

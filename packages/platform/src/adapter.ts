@@ -1507,7 +1507,7 @@ export const OUTPOST_PATHS = {
 /**
  * Company Outpost routes. No new paths: list and detail are GET /outpost/status,
  * provision is POST /outpost/provision, remove is POST /outpost/destroy.
- * The company is the payer via ownerKind "company". A payer field is rejected.
+ * Every call sends ownerKind "company".
  */
 export const COMPANY_OUTPOST_PATHS = {
   status: "/outpost/status",
@@ -1817,7 +1817,7 @@ export interface AgentsApi {
   listCompanyOutpostJobs?(companyUid: string, outpostId: string): AdapterPromise<Json>;
   /** GET /outpost/company/jobs/status — job health for one company Outpost. */
   getCompanyOutpostJobHealth?(companyUid: string, outpostId: string): AdapterPromise<Json>;
-  /** POST /outpost/provision with ownerKind company. The company is the payer. */
+  /** POST /outpost/provision with ownerKind company. */
   provisionCompanyOutpost?(companyUid: string): AdapterPromise<Json>;
   /** POST /outpost/status action rename. The server action is not shipped yet. */
   renameCompanyOutpost?(companyUid: string, outpostId: string, name: string): AdapterPromise<Json>;

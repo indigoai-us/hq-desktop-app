@@ -4,9 +4,8 @@
  * Binds to the routes in DESKTOP-API-CONSTRAINTS until
  * design/desktop-api-contract.md lands. No new routes: list, rename, and
  * provision status are actions on POST /outpost/status. Provision is
- * POST /outpost/provision with payer "company" (the company, never a person).
- * A failure does not become a list row. CO-001: a failure with no charge id
- * is reported as not charged.
+ * POST /outpost/provision with ownerKind "company".
+ * A failure does not become a list row.
  */
 import type { AdapterResult, Json } from "@hq/platform";
 
@@ -16,7 +15,6 @@ import {
   countsFromJobs,
   emptyHealth,
   failureCopy,
-  formatOutpostPrice,
   mapLifecycleState,
   nextOutpostName,
   publicMachine,
@@ -42,7 +40,7 @@ export interface CompanyOutpostApi {
 }
 
 export type ListResult =
-  | { ok: true; items: CompanyOutpostListItem[]; priceHint: string | null; cap: number }
+  | { ok: true; items: CompanyOutpostListItem[]; cap: number }
   | { ok: false; code: string; message: string };
 
 export interface ManageResult {
@@ -53,7 +51,7 @@ export interface ManageResult {
 export interface CompanyOutpostClient {
   list(): Promise<ListResult>;
   detail(outpostId: string): Promise<{ ok: true; outpost: CompanyOutpostDetail } | { ok: false; message: string }>;
-  previewAdd(existingNames: readonly string[]): { name: string; priceHint: string | null; cap: number };
+  previewAdd(existingNames: readonly string[]): { name: string; cap: number };
   provision(): Promise<ProvisionResult>;
   pollProvision(attemptId: string): Promise<ProvisionResult>;
   rename(outpostId: string, name: string): Promise<ManageResult>;
@@ -81,15 +79,6 @@ function jobHealthField(body: Record<string, unknown>): JobHealth {
   if (body.health != null) return healthName(body.health);
   if (body.result != null) return healthName(body.result);
   return healthName(body.status);
-}
-
-function pricePhrase(body: Record<string, unknown>): string | null {
-  const hint = asString(body.priceHint);
-  if (hint) return hint;
-  const price = rec(body.price);
-  if (!price || typeof price.monthlyUsd !== "number") return null;
-  const payer = asString(price.payer) === "company" || !asString(price.payer) ? "the company" : asString(price.payer);
-  return formatOutpostPrice(price.monthlyUsd, payer);
 }
 
 function healthCounts(value: unknown, jobs: CompanyOutpostJob[]): JobHealthCounts {
@@ -155,18 +144,17 @@ export function parseListItem(value: unknown): CompanyOutpostListItem | null {
   };
 }
 
-export function parseCompanyOutpostList(value: unknown): { items: CompanyOutpostListItem[]; priceHint: string | null; cap: number } | null {
+export function parseCompanyOutpostList(value: unknown): { items: CompanyOutpostListItem[]; cap: number } | null {
   const body = rec(value);
   if (!body) return null;
   const rows = Array.isArray(body.outposts) ? body.outposts : Array.isArray(body.items) ? body.items : null;
   if (!rows) {
     const one = parseListItem(body);
     if (!one) return null;
-    return { items: [one], priceHint: pricePhrase(body), cap: num(body.cap) || COMPANY_OUTPOST_CAP };
+    return { items: [one], cap: num(body.cap) || COMPANY_OUTPOST_CAP };
   }
   return {
     items: rows.map(parseListItem).filter((item): item is CompanyOutpostListItem => item !== null),
-    priceHint: pricePhrase(body),
     cap: num(body.cap) || COMPANY_OUTPOST_CAP,
   };
 }
@@ -207,17 +195,12 @@ export function parseCompanyOutpostDetail(value: unknown, jobsValue?: unknown): 
   };
 }
 
-function chargedFlag(value: unknown): boolean {
-  const body = rec(value);
-  if (!body) return false;
-  if (body.charged === true) return true;
-  return typeof body.chargeId === "string" && body.chargeId.trim().length > 0;
-}
-
 function codeOf(result: AdapterResult<Json>): string {
   if (result.ok) return "";
   return `${result.code ?? ""} ${result.message ?? ""}`.toLowerCase();
 }
+
+const NOT_AVAILABLE_YET = new Set(["payment_not_set_up", "billing_required"]);
 
 const BUSY_LIFECYCLE = new Set(["provisioning", "confirming", "starting", "stopping", "destroying", "pending"]);
 
@@ -225,10 +208,10 @@ export function parseProvision(result: AdapterResult<Json>): ProvisionResult {
   if (!result.ok) {
     const code = codeOf(result);
     if (code.includes("already_exists") || code.includes("already-exists")) return { status: "already_exists" };
-    if (code.includes("payment") || code.includes("billing") || code.includes("402")) return { status: "payment_not_set_up" };
+    if (code.includes("payment") || code.includes("billing") || code.includes("402")) return { status: "unavailable" };
     if (code.includes("403") || code.includes("forbidden") || code.includes("admin_required")) return { status: "forbidden" };
     if (code.includes("unavailable") || code.includes("dependencies_unavailable")) {
-      return { status: "failure", charged: false, message: failureCopy(false) };
+      return { status: "failure", message: failureCopy() };
     }
     if (
       code.includes("outcome_unknown") ||
@@ -240,7 +223,7 @@ export function parseProvision(result: AdapterResult<Json>): ProvisionResult {
     ) {
       return { status: "pending", attemptId: "" };
     }
-    return { status: "failure", charged: false, message: failureCopy(false) };
+    return { status: "failure", message: failureCopy() };
   }
   const body = rec(result.value) ?? {};
   const status = asString(body.status).toLowerCase().replace(/-/g, "_");
@@ -248,10 +231,9 @@ export function parseProvision(result: AdapterResult<Json>): ProvisionResult {
   if (status === "already_exists" || code === "already_exists") {
     return { status: "already_exists", outpostId: asString(body.outpostId) || undefined };
   }
-  if (status === "payment_not_set_up" || code === "billing_required") return { status: "payment_not_set_up" };
+  if (NOT_AVAILABLE_YET.has(status) || NOT_AVAILABLE_YET.has(code)) return { status: "unavailable" };
   if (status === "failure" || status === "error" || body.error === true) {
-    const charged = chargedFlag(body);
-    return { status: "failure", charged, message: failureCopy(charged) };
+    return { status: "failure", message: failureCopy() };
   }
   const outpostRec = rec(body.outpost);
   const lifecycle = (asString(outpostRec?.lifecycle) || asString(body.lifecycle) || status).toLowerCase().replace(/-/g, "_");
@@ -265,7 +247,7 @@ export function parseProvision(result: AdapterResult<Json>): ProvisionResult {
     return { status: "success", outpost };
   }
   if (asString(body.attemptId) || asString(body.operationId)) return { status: "pending", attemptId };
-  return { status: "failure", charged: chargedFlag(body), message: failureCopy(chargedFlag(body)) };
+  return { status: "failure", message: failureCopy() };
 }
 
 function loadError(result: AdapterResult<Json>): Extract<ListResult, { ok: false }> {
@@ -294,11 +276,9 @@ export function createCompanyOutpostClient(options: {
   companyUid: string;
   canManage: boolean;
   api: CompanyOutpostApi | null;
-  priceHint?: string | null;
   cap?: number;
 }): CompanyOutpostClient {
   const { companyUid, canManage, api } = options;
-  let priceHint = options.priceHint ?? null;
   let cap = options.cap ?? COMPANY_OUTPOST_CAP;
 
   function refuse(): ProvisionResult {
@@ -322,10 +302,9 @@ export function createCompanyOutpostClient(options: {
       if (!result.ok) return loadError(result);
       const parsed = parseCompanyOutpostList(result.value);
       if (!parsed) return { ok: false, code: "unrecognized", message: "Could not load. Retry." };
-      priceHint = parsed.priceHint ?? priceHint;
       cap = parsed.cap;
       const items = await Promise.all(parsed.items.map((item) => fillHealth(item)));
-      return { ok: true, items, priceHint: parsed.priceHint ?? priceHint, cap: parsed.cap };
+      return { ok: true, items, cap: parsed.cap };
     },
     async detail(outpostId) {
       if (!api?.getCompanyOutpost) return { ok: false, message: "Could not load. Retry." };
@@ -342,16 +321,16 @@ export function createCompanyOutpostClient(options: {
       return { ok: true, outpost: parsed };
     },
     previewAdd(existingNames) {
-      return { name: nextOutpostName(existingNames), priceHint, cap };
+      return { name: nextOutpostName(existingNames), cap };
     },
     async provision() {
       if (!canManage) return refuse();
-      if (!api?.provisionCompanyOutpost) return { status: "failure", charged: false, message: failureCopy(false) };
+      if (!api?.provisionCompanyOutpost) return { status: "failure", message: failureCopy() };
       return parseProvision(await api.provisionCompanyOutpost(companyUid));
     },
     async pollProvision(attemptId) {
       if (!canManage) return refuse();
-      if (!api?.pollCompanyOutpostProvision) return { status: "failure", charged: false, message: failureCopy(false) };
+      if (!api?.pollCompanyOutpostProvision) return { status: "failure", message: failureCopy() };
       return parseProvision(await api.pollCompanyOutpostProvision(companyUid, attemptId));
     },
     async rename(outpostId, name) {

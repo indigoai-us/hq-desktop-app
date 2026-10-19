@@ -9,17 +9,6 @@
 
 export const OUTPOST_JOBS_ROUTE = "outpost-jobs";
 
-/**
- * Price phrase from the same catalog the personal Outpost flow reads.
- * The amount is an argument. This module does not pick a price.
- */
-export function formatOutpostPrice(monthlyUsd: number, payer = "the company"): string | null {
-  if (!Number.isFinite(monthlyUsd) || monthlyUsd < 0) return null;
-  const amount = Number.isInteger(monthlyUsd) ? String(monthlyUsd) : monthlyUsd.toFixed(2);
-  const who = payer.trim() || "the company";
-  return `USD ${amount} a month, billed to ${who}`;
-}
-
 export const COMPANY_OUTPOST_CAP = 5;
 
 export const PREP_STEPS = [
@@ -86,8 +75,8 @@ export type ProvisionResult =
   | { status: "pending"; attemptId: string }
   | { status: "success"; outpost: CompanyOutpostListItem }
   | { status: "already_exists"; outpostId?: string }
-  | { status: "payment_not_set_up" }
-  | { status: "failure"; charged: boolean; message: string }
+  | { status: "unavailable" }
+  | { status: "failure"; message: string }
   | { status: "forbidden" };
 
 export function canManageRole(role: CompanyOutpostRole): boolean {
@@ -181,7 +170,7 @@ export function renameError(name: string): string {
 }
 
 /**
- * Only a successful provision adds a row. Pending, already-exists, payment,
+ * Only a successful provision adds a row. Pending, already-exists, unavailable,
  * failure, and forbidden leave the list exactly as it was, including when a
  * failure body named an id.
  */
@@ -252,7 +241,9 @@ export function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-export function failureCopy(charged: boolean): string {
-  if (charged) return "The Outpost was not added. A charge was reported, so HQ will reconcile it.";
-  return "The Outpost was not added. Nothing was charged.";
+export function failureCopy(): string {
+  return "The Outpost was not added.";
 }
+
+/** Shown when the company cannot add Outposts yet. */
+export const UNAVAILABLE_COPY = "Outposts are not available for this company yet.";

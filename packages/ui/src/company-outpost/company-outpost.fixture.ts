@@ -3,13 +3,10 @@
  */
 import {
   emptyHealth,
-  formatOutpostPrice,
+  failureCopy,
   type CompanyOutpostDetail,
   type JobHealthCounts,
 } from "./company-outpost-model.js";
-
-/** Sample catalog amount for screenshots only. The product reads the live catalog. */
-const FIXTURE_PRICE_HINT = formatOutpostPrice(100, "the company");
 import { createCompanyOutpostStub, type CompanyOutpostStub } from "./company-outpost-stub.js";
 import type { CompanyOutpostRole, ProvisionResult } from "./company-outpost-model.js";
 
@@ -88,7 +85,7 @@ export const FIXTURE_BOXES: CompanyOutpostDetail[] = [
 export interface PreviewSetup {
   role: CompanyOutpostRole;
   client: CompanyOutpostStub;
-  initialScreen: "list" | "add" | "confirm" | "detail" | "remove" | "preparing" | "billing" | "job";
+  initialScreen: "list" | "add" | "confirm" | "detail" | "remove" | "preparing" | "unavailable" | "job";
   initialOutpostId?: string;
   initialJobId?: string;
   initialNotice?: string;
@@ -103,15 +100,15 @@ const screens: Record<string, () => PreviewSetup> = {
   add: () => setup("admin", [], "add"),
   confirm: () => setup("admin", [], "confirm"),
   preparing: () => setup("admin", FIXTURE_BOXES, "preparing", { initialOutpostId: "demo-2" }),
-  "billing-owner": () => setup("owner", [], "billing"),
-  "billing-admin": () => setup("admin", [], "billing"),
+  "unavailable-owner": () => setup("owner", [], "unavailable"),
+  "unavailable-admin": () => setup("admin", [], "unavailable"),
   "detail-running": () => setup("admin", FIXTURE_BOXES, "detail", { initialOutpostId: "demo-1" }),
   "detail-blocked-admin": () => setup("admin", FIXTURE_BOXES, "detail", { initialOutpostId: "demo-4" }),
   "detail-blocked-member": () => setup("member", FIXTURE_BOXES, "detail", { initialOutpostId: "demo-4" }),
   "detail-needs-attention": () => setup("admin", FIXTURE_BOXES, "detail", { initialOutpostId: "demo-3" }),
   "detail-preparing": () => setup("member", FIXTURE_BOXES, "detail", { initialOutpostId: "demo-2" }),
   remove: () => setup("admin", FIXTURE_BOXES, "remove", { initialOutpostId: "demo-1" }),
-  failure: () => setup("admin", [FIXTURE_BOXES[0]!], "confirm", { initialNotice: "The Outpost was not added. Nothing was charged." }),
+  failure: () => setup("admin", [FIXTURE_BOXES[0]!], "confirm", { initialNotice: failureCopy() }),
   "already-exists": () => setup("admin", [FIXTURE_BOXES[0]!], "confirm", { initialNotice: "An Outpost already exists for this company." }),
   "job-stub": () => setup("member", FIXTURE_BOXES, "job", { initialOutpostId: "demo-1", initialJobId: "daily-digest" }),
   "member-detail": () => setup("member", FIXTURE_BOXES, "detail", { initialOutpostId: "demo-1" }),
@@ -125,7 +122,7 @@ function setup(
 ): PreviewSetup {
   return {
     role,
-    client: createCompanyOutpostStub({ role, items, priceHint: FIXTURE_PRICE_HINT, cap: 5 }),
+    client: createCompanyOutpostStub({ role, items, cap: 5 }),
     initialScreen,
     ...extra,
   };

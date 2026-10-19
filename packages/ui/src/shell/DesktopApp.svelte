@@ -15084,11 +15084,8 @@
         {:else if railPlaceholder?.id === "outposts" && companyPaneCompany}
           <CompanyOutpostRailHost
             companyUid={companyPaneCompany.uid}
-            companyLabel={companyPaneCompany.label}
             role={companyPaneRole === "Owner" ? "owner" : companyPaneRole === "Admin" ? "admin" : companyPaneRole === "Guest" ? "guest" : "member"}
             api={adapter.agents ?? null}
-            readPricing={adapter.company?.getPricing ?? null}
-            onOpenBilling={() => selectCompanyPaneRow("billing")}
           />
         {:else if railPlaceholder}
           <section

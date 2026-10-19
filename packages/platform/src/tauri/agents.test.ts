@@ -289,7 +289,7 @@ describe("createSyncPlatformAdapter personal Outpost", () => {
 });
 
 describe("createSyncPlatformAdapter company Outpost", () => {
-  it("lists and provisions on the company routes, with the company as payer", async () => {
+  it("lists and provisions on the company routes with ownerKind company", async () => {
     const calls: Invocation[] = [];
     const adapter = createSyncPlatformAdapter({
       invoke: async (cmd, args) => {

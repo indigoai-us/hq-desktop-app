@@ -66,19 +66,18 @@ describe("company outpost model", () => {
 
   it("does not add a box unless provision succeeded", () => {
     const before = [box("demo-1")];
-    const failure: ProvisionResult = { status: "failure", charged: false, message: failureCopy(false) };
+    const failure: ProvisionResult = { status: "failure", message: failureCopy() };
     expect(listAfterProvision(before, failure)).toEqual(before);
     expect(listAfterProvision(before, { status: "pending", attemptId: "a" })).toEqual(before);
     expect(listAfterProvision(before, { status: "already_exists", outpostId: "ghost" })).toEqual(before);
-    expect(listAfterProvision(before, { status: "payment_not_set_up" })).toEqual(before);
+    expect(listAfterProvision(before, { status: "unavailable" })).toEqual(before);
     expect(listAfterProvision(before, { status: "forbidden" })).toEqual(before);
     const added = listAfterProvision(before, { status: "success", outpost: box("demo-new") });
     expect(added.map((item) => item.id)).toEqual(["demo-1", "demo-new"]);
   });
 
-  it("says a failed provision was not charged", () => {
-    expect(failureCopy(false)).toBe("The Outpost was not added. Nothing was charged.");
-    expect(failureCopy(true)).toContain("A charge was reported");
+  it("says a failed provision did not add an Outpost", () => {
+    expect(failureCopy()).toBe("The Outpost was not added.");
   });
 
   it("picks a generated name that is not already used", () => {

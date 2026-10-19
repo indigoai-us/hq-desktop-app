@@ -11,7 +11,7 @@ function ok(value: Json): AdapterResult<Json> {
 describe("company outpost client", () => {
   it("reads the list fields from the list payload", () => {
     const parsed = parseCompanyOutpostList({
-      priceHint: "USD 100 a month, billed to the company",
+      price: { monthlyUsd: 100, currency: "USD", payer: "company" },
       cap: 5,
       outposts: [
         {
@@ -25,7 +25,8 @@ describe("company outpost client", () => {
       ],
     });
     expect(parsed?.items[0]).toMatchObject({ id: "demo-1", name: "main", state: "running", jobsCount: 2 });
-    expect(parsed?.priceHint).toMatch(/USD 100/);
+    expect(parsed).toEqual({ items: parsed?.items, cap: 5 });
+    expect(JSON.stringify(parsed)).not.toMatch(/USD|price|payer|billed/i);
   });
 
   it("does not treat an error body as an empty company", () => {
@@ -54,15 +55,12 @@ describe("company outpost client", () => {
   it("reports provision states and never turns a failure into a box", () => {
     expect(parseProvision(ok({ status: "pending", attemptId: "try-1" }))).toEqual({ status: "pending", attemptId: "try-1" });
     expect(parseProvision(ok({ status: "already_exists", outpostId: "demo-1" }))).toEqual({ status: "already_exists", outpostId: "demo-1" });
-    expect(parseProvision(ok({ status: "payment_not_set_up" }))).toEqual({ status: "payment_not_set_up" });
     const failure = parseProvision(ok({ status: "failure", outpostId: "half", error: "ec2 failed" }));
-    expect(failure).toEqual({ status: "failure", charged: false, message: failureCopy(false) });
+    expect(failure).toEqual({ status: "failure", message: failureCopy() });
     expect(listAfterProvision([], failure).map((item) => item.id)).toEqual([]);
-    const charged = parseProvision(ok({ status: "failure", charged: true, outpostId: "half" }));
-    expect(charged).toMatchObject({ status: "failure", charged: true });
     expect(listAfterProvision([
       { id: "keep", name: "main", state: "running", lastSeenAt: null, jobsCount: 0, jobHealth: emptyHealth() },
-    ], charged)).toHaveLength(1);
+    ], failure)).toHaveLength(1);
   });
 
   it("refuses provision and manage when the person cannot manage, without calling the API", async () => {
@@ -91,7 +89,7 @@ describe("company outpost client", () => {
     expect(signIn).not.toHaveBeenCalled();
   });
 
-  it("lets an admin provision through the company payer call", async () => {
+  it("lets an admin provision through the company call", async () => {
     const provision = vi.fn(async () => ok({
       status: "success",
       outpost: { outpostId: "demo-new", name: "quiet-pine", state: "preparing", jobsCount: 0 },
@@ -115,19 +113,20 @@ describe("company outpost client", () => {
     expect(listAfterProvision([], pending)).toEqual([]);
   });
 
-  it("maps a coded unavailable provision to an uncharged failure", () => {
+  it("maps a coded unavailable provision to a plain failure", () => {
     const failure = parseProvision({ ok: false, reason: "error", code: "unavailable", message: "no resources changed" });
-    expect(failure).toEqual({ status: "failure", charged: false, message: failureCopy(false) });
+    expect(failure).toEqual({ status: "failure", message: failureCopy() });
     expect(listAfterProvision([], failure)).toEqual([]);
   });
 
-  it("reads price from the catalog block instead of a fixed amount", () => {
-    const parsed = parseCompanyOutpostList({
-      price: { monthlyUsd: 80, currency: "USD", payer: "company" },
-      outposts: [],
-    });
-    expect(parsed?.priceHint).toBe("USD 80 a month, billed to the company");
-    expect(parsed?.items).toEqual([]);
+  it("maps billing_required and payment_not_set_up to the neutral unavailable result", () => {
+    expect(parseProvision(ok({ status: "payment_not_set_up" }))).toEqual({ status: "unavailable" });
+    expect(parseProvision(ok({ status: "failure", code: "billing_required" }))).toEqual({ status: "unavailable" });
+    expect(parseProvision(ok({ status: "billing_required" }))).toEqual({ status: "unavailable" });
+    expect(parseProvision(ok({ status: "failure", code: "payment_not_set_up" }))).toEqual({ status: "unavailable" });
+    expect(parseProvision({ ok: false, reason: "error", code: "billing_required", message: "x" })).toEqual({ status: "unavailable" });
+    expect(parseProvision({ ok: false, reason: "error", code: "402", message: "x" })).toEqual({ status: "unavailable" });
+    expect(listAfterProvision([], { status: "unavailable" })).toEqual([]);
   });
 
   it("maps a ready row that is not signed in to needs attention", () => {
