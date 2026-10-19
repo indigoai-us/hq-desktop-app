@@ -1273,6 +1273,19 @@ describe("welcome report (US-009)", () => {
     expect(briefJobs(sendDm)).toHaveLength(1);
   }, 15_000);
 
+  it("while the roster is still loading the welcome report's job keeps all scope, never the personal brief", async () => {
+    const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: null });
+    // The shell starts `companies` as an empty list before the roster lands.
+    await boot(platform, DesktopApp, mount, { companies: [], rosterStatus: "loading" });
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
+    const [, body] = briefJobs(sendDm)[0]!;
+    expect(body.split("\n")[0]).toMatch(/^\/daily-brief --all --run-id brief-\d{8}-\d{6}$/);
+    expect(body).not.toContain("--personal");
+  }, 15_000);
+
   it("with no daily-brief skill in the person's HQ the welcome report's job is never sent and the slow-start line shows at once", async () => {
     const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: null });
     (platform as unknown as { files: { getFileContent: (path: string) => Promise<unknown> } }).files.getFileContent = async () => ({

@@ -205,6 +205,12 @@ function statusState(v: unknown): BriefStatusState | null {
 /** The skill's code for a run whose HQ has no daily-brief skill. */
 export const SKILL_NOT_FOUND = "skill_not_found";
 
+/** A failed run whose bot wrote the missing-skill code, in any case or spelling ("skill not found", "Skill-Not-Found"). */
+export function isSkillNotFound(status: Pick<BriefRunStatus, "state" | "error">): boolean {
+  if (status.state !== "failed" || typeof status.error !== "string") return false;
+  return status.error.trim().toLowerCase().replace(/[\s-]+/g, "_") === SKILL_NOT_FOUND;
+}
+
 export interface BriefRunStatus {
   runId: string;
   state: BriefStatusState;
@@ -277,7 +283,7 @@ const CANCELLED_MESSAGE = "You cancelled this brief.";
  */
 export function failedMessage(status: Pick<BriefRunStatus, "state" | "error" | "message">): string {
   // The bot's own words about a missing skill are operator text.
-  if (status.state === "failed" && status.error === SKILL_NOT_FOUND) return slowStartMessage();
+  if (isSkillNotFound(status)) return slowStartMessage();
   const said = status.message ?? (status.error && /\s/.test(status.error) ? status.error : null);
   if (status.state === "cancelled") return said ?? CANCELLED_MESSAGE;
   return said ?? DEFAULT_FAILED_MESSAGE;
@@ -376,7 +382,7 @@ export function advanceBriefRun(phase: BriefCreatePhase, reading: BriefPollReadi
   const status = "text" in reading && reading.text != null ? parseBriefStatus(reading.text, runId) : null;
   if (status && status.runId === runId) {
     if (status.state === "ready") return { kind: "ready", runId };
-    if (status.state === "failed" && status.error === SKILL_NOT_FOUND) {
+    if (isSkillNotFound(status)) {
       return { kind: "failed", runId, message: slowStartMessage(), heal: "skill-not-found" };
     }
     if (status.state === "failed" || status.state === "cancelled") {

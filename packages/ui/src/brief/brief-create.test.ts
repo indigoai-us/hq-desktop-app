@@ -213,6 +213,20 @@ describe("BriefCreateRun", () => {
     expect(h.creator.dispatch).toHaveBeenCalledTimes(3);
   });
 
+  it("Try again on the welcome brief's slow-start line keeps calling it the welcome brief", async () => {
+    const skillInstalled = vi.fn(async () => false);
+    const h = harness({ skillInstalled });
+    await h.run.start({ label: "welcome brief" });
+    expect(h.run.phase).toMatchObject({ message: "Your welcome brief is taking longer than expected." });
+    // The Try again button calls start() with no label.
+    await h.run.start();
+    expect(h.run.phase).toMatchObject({ message: "Your welcome brief is taking longer than expected." });
+    // A brief started after dismissing is a plain brief again.
+    h.run.dismiss();
+    await h.run.start();
+    expect(h.run.phase).toMatchObject({ message: "Your brief is taking longer than expected." });
+  });
+
   it("a run that started never takes the heal path", async () => {
     const h = harness();
     await h.run.start();

@@ -143,7 +143,9 @@ export class BriefCreateRun {
     }
     this.duplicatePrompt = false;
     this.endWatch();
-    this.label = opts.label?.trim() || "brief";
+    // Try again on the slow-start line keeps its name ("welcome brief").
+    const healing = this.phase.kind === "failed" && this.phase.heal != null;
+    this.label = opts.label?.trim() || (healing ? this.label : "brief");
     this.retried = false;
     return this.begin();
   }

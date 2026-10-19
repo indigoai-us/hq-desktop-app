@@ -274,6 +274,21 @@ describe("status polling state machine", () => {
     expect(failedMessage({ state: "failed", error: "The sweep could not read GitHub.", message: null })).toBe("The sweep could not read GitHub.");
   });
 
+  it("the missing-skill code lands on the heal path in any case or spelling, and its sentence never shows", () => {
+    for (const error of ["SKILL_NOT_FOUND", "skill not found", "Skill-Not-Found", " skill_not_found "]) {
+      expect(advanceBriefRun(waiting, status({ state: "failed", error }), 5_000)).toEqual({
+        kind: "failed",
+        runId: RUN,
+        message: "Your brief is taking longer than expected.",
+        heal: "skill-not-found",
+      });
+      expect(failedMessage({ state: "failed", error, message: "No daily-brief skill is installed in this HQ." })).toBe(
+        "Your brief is taking longer than expected.",
+      );
+    }
+    expect(advanceBriefRun(waiting, status({ state: "failed", error: "skill_not_foundish" }), 5_000)).not.toHaveProperty("heal");
+  });
+
   it("a cancelled run ends like a failure, with the person's own reason", () => {
     expect(advanceBriefRun(waiting, status({ state: "cancelled", step: "Sweeping your day" }), 5_000)).toEqual({
       kind: "failed",

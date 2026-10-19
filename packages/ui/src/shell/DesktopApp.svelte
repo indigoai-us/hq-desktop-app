@@ -6794,8 +6794,13 @@
           await loadLocalBotRuntimeReady(true);
           return checkBriefBot(localBots, localBotRuntimeReady);
         },
-        // Null while the roster has not loaded: the person brief handles zero companies too.
-        hasCompanies: () => (companies == null ? null : memberCompanies(companies).length > 0),
+        // Null until the roster has loaded (the shell starts it as an empty list):
+        // only a loaded roster with no company sends the personal brief.
+        hasCompanies: () => {
+          if (memberCompanies(companies).length > 0 || localCompanies.length > 0) return true;
+          if (companies == null || (rosterStatus != null && rosterStatus !== "ready")) return null;
+          return false;
+        },
         async skillInstalled() {
           if (!adapter.files?.getFileContent) return null;
           const res = await adapter.files.getFileContent(".claude/skills/daily-brief/SKILL.md");
