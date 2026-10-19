@@ -35,12 +35,16 @@ export interface CompanySignInClient {
   submitCode(code: string): Promise<CompanySignInWrite>;
 }
 
+const NOT_AVAILABLE_CODES = new Set(["billing_required", "payment_not_set_up", "payment_required"]);
+
 function reasonFor(result: Extract<CompanySignInPostResult, { ok: false }>): SignInFailure {
   const code = result.code ?? "";
   if (code === "invalid_login_code") return "rejected";
   if (code === "admin_required" || result.status === 403) return "not_admin";
   if (code === "signin_not_started" || code === "confirmed_host_required") return "not_ready";
   if (code === "signin_box_changed") return "link_changed";
+  // The company cannot run an Outpost yet. The card shows a neutral line, never the reason.
+  if (NOT_AVAILABLE_CODES.has(code) || result.status === 402) return "not_available";
   if (
     result.status === null
     || (typeof result.status === "number" && result.status >= 500)

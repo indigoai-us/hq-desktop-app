@@ -89,7 +89,7 @@
     if (manual) busy = null;
     if (result.ok) applyView(result.view);
     else if (!view) failure = result.reason;
-    else if (result.reason === "unreachable") failure = "unreachable";
+    else if (result.reason === "unreachable" || result.reason === "not_available") failure = result.reason;
   }
 
   async function regenerate() {
@@ -137,7 +137,10 @@
       await load(false);
       return;
     }
-    if (result.reason === "not_admin") codeError = SIGNIN_COPY.notAdmin;
+    if (result.reason === "not_available") {
+      notice = null;
+      failure = "not_available";
+    } else if (result.reason === "not_admin") codeError = SIGNIN_COPY.notAdmin;
     else if (result.reason === "unreachable") codeError = SIGNIN_COPY.unreachable;
     else if (result.reason === "link_changed") {
       notice = SIGNIN_COPY.linkChanged;

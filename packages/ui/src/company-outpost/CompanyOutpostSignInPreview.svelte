@@ -3,7 +3,7 @@
   import { COMPANY_OUTPOST_BOX_DETAIL_SIGNIN_SLOT, signInPreviewFrame } from "./company-signin-preview.js";
 
   interface Props {
-    /** not-signed-in, preparing, code-entry, signed-in, expired, failed, member-signed, member-unsigned */
+    /** not-signed-in, preparing, code-entry, signed-in, expired, failed, not-available, member-signed, member-unsigned */
     state?: string;
   }
 

@@ -119,4 +119,19 @@ describe("company sign-in client", () => {
     const early = vi.fn<CompanySignInPost>(async () => ({ ok: false, status: 409, code: "signin_not_started" }));
     expect(await client(early).regenerate()).toEqual({ ok: false, reason: "not_ready" });
   });
+
+  it("maps a company that cannot have an Outpost yet to not_available on every action", async () => {
+    const failures = [
+      { ok: false, status: 503, code: "billing_required" },
+      { ok: false, status: 402, code: "payment_not_set_up" },
+      { ok: false, status: 402, code: "payment_required" },
+      { ok: false, status: 402 },
+    ] as const;
+    for (const failure of failures) {
+      const post = vi.fn<CompanySignInPost>(async () => failure);
+      expect(await client(post).read()).toEqual({ ok: false, reason: "not_available" });
+      expect(await client(post).regenerate()).toEqual({ ok: false, reason: "not_available" });
+      expect(await client(post).submitCode(CODE)).toEqual({ ok: false, reason: "not_available" });
+    }
+  });
 });

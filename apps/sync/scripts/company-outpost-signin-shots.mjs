@@ -16,6 +16,7 @@ const states = [
   "signed-in",
   "expired",
   "failed",
+  "not-available",
   "member-unsigned",
   "member-signed",
 ];

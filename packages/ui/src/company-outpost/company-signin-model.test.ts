@@ -188,6 +188,39 @@ describe("sign-in card presentation", () => {
   });
 });
 
+describe("company not available yet", () => {
+  const NOW = Date.parse("2026-10-18T20:00:00.000Z");
+  const views = [
+    null,
+    { signedIn: false, state: "awaiting_sign_in", loginUrl: "https://claude.ai/oauth/authorize?example=1", loginUrlExpiresAt: "2026-10-18T20:10:00.000Z" },
+    { signedIn: false, state: "no_host" },
+  ] as const;
+
+  it("shows one neutral line and one contact action, for admin and member", () => {
+    for (const role of ["owner", "admin", "member"] as const) {
+      for (const view of views) {
+        const card = deriveSignInPresentation({ role, view, failure: "not_available", codeError: null, now: NOW });
+        expect(card.phase).toBe("not_available");
+        expect(card.headline).toBe(SIGNIN_COPY.notAvailable);
+        expect(card.headline).toBe("Outposts are not available for this company yet.");
+        expect(card.detail).toBeNull();
+        expect(card.expiry).toBeNull();
+        expect(card.showLink).toBe(false);
+        expect(card.showCode).toBe(false);
+        expect(card.showRefresh).toBe(false);
+        expect(card.showNewLink).toBe(false);
+        expect(card.showContact).toBe(true);
+        expect(card.loginUrl).toBeUndefined();
+      }
+    }
+  });
+
+  it("offers contact on no other state", () => {
+    const card = deriveSignInPresentation({ role: "admin", view: views[1], failure: null, codeError: null, now: NOW });
+    expect(card.showContact).toBe(false);
+  });
+});
+
 describe("sign-in route timing", () => {
   it("hides a link the server has not replaced yet", () => {
     const next = suppressUnchangedLink(URL, {

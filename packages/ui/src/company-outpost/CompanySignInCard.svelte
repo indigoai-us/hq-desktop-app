@@ -3,6 +3,7 @@
   import "../common/button/button-standard.css";
   import {
     SIGNIN_COPY,
+    SIGNIN_CONTACT_URL,
     deriveSignInPresentation,
     type CompanySignInRole,
     type CompanySignInView,
@@ -67,7 +68,7 @@
   {#if card.detail}
     <p class="detail" data-testid="company-signin-detail">{card.detail}</p>
   {/if}
-  {#if notice}
+  {#if notice && card.phase !== "not_available"}
     <p class="detail" data-testid="company-signin-notice">{notice}</p>
   {/if}
 
@@ -111,6 +112,12 @@
         <p id="company-signin-error" class="error" role="alert" data-testid="company-signin-error">{card.codeError}</p>
       {/if}
     </form>
+  {/if}
+
+  {#if card.showContact}
+    <div class="actions">
+      <a class="action" data-testid="company-signin-contact" href={SIGNIN_CONTACT_URL} target="_blank" rel="noreferrer">{SIGNIN_COPY.contact}</a>
+    </div>
   {/if}
 
   {#if card.showRefresh || card.showNewLink}
@@ -163,7 +170,7 @@
     padding: 8px 10px;
     font: inherit;
   }
-  button {
+  button, a.action {
     font-family: inherit;
     font-weight: var(--hq-btn-font-weight, 500);
     font-size: var(--hq-btn-font-size, 13px);
@@ -176,6 +183,7 @@
     color: var(--v4-text-1, #111);
     cursor: pointer;
   }
+  a.action { display: inline-flex; align-items: center; box-sizing: border-box; text-decoration: none; }
   button.primary {
     background: var(--v4-primary-bg, #111);
     color: var(--v4-primary-fg, #fff);

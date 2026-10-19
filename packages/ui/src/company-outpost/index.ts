@@ -1,5 +1,6 @@
 export {
   SIGNIN_COPY,
+  SIGNIN_CONTACT_URL,
   deriveSignInPresentation,
   linkExpiryLine,
   parseCompanySignInBody,
@@ -23,5 +24,6 @@ export type {
 } from "./company-signin-client.js";
 export {
   COMPANY_OUTPOST_BOX_DETAIL_SIGNIN_SLOT,
+  SIGNIN_PREVIEW_STATES,
   signInPreviewFrame,
 } from "./company-signin-preview.js";

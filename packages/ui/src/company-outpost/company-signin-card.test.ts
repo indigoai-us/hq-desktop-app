@@ -4,8 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import CompanySignInCard from "./CompanySignInCard.svelte";
 import CompanySignInPanel from "./CompanySignInPanel.svelte";
 import CompanyOutpostSignInPreview from "./CompanyOutpostSignInPreview.svelte";
-import { SIGNIN_COPY } from "./company-signin-model.js";
-import { COMPANY_OUTPOST_BOX_DETAIL_SIGNIN_SLOT } from "./company-signin-preview.js";
+import { SIGNIN_COPY, SIGNIN_CONTACT_URL } from "./company-signin-model.js";
+import { COMPANY_OUTPOST_BOX_DETAIL_SIGNIN_SLOT, SIGNIN_PREVIEW_STATES, signInPreviewFrame } from "./company-signin-preview.js";
 import { createCompanySignInClient, type CompanySignInPost } from "./company-signin-client.js";
 
 const URL = "https://claude.ai/oauth/authorize?example=1";
@@ -276,3 +276,125 @@ describe("sign-in preview slot", () => {
     expect(target.textContent).toContain(SIGNIN_COPY.expired);
   });
 });
+
+// Owner, 2026-10-19: the card carries no billing, price or payer information.
+const MONEY_WORDS = /bill|pric|payer|pays|paid|payment|charg|subscri|invoice|stripe|usd|\$\s?\d|a month|per month|\/mo\b|plan/i;
+
+function visibleStrings(root: HTMLElement): string[] {
+  const out = [root.textContent ?? ""];
+  for (const el of root.querySelectorAll("*")) {
+    for (const name of ["aria-label", "title", "placeholder", "alt", "href"]) {
+      const value = el.getAttribute(name);
+      if (value) out.push(value);
+    }
+  }
+  return out;
+}
+
+describe("no billing text on the sign-in card", () => {
+  let component: Record<string, unknown> | null = null;
+
+  afterEach(async () => {
+    if (component) await unmount(component);
+    component = null;
+    delete document.documentElement.dataset.forceTheme;
+  });
+
+  it("renders no billing, price or payer text in any fixture state, for admin and member, light and dark", async () => {
+    expect(SIGNIN_PREVIEW_STATES).toContain("not-available");
+    for (const theme of ["light", "dark"] as const) {
+      document.documentElement.dataset.forceTheme = theme;
+      for (const state of SIGNIN_PREVIEW_STATES) {
+        for (const role of ["owner", "admin", "member"] as const) {
+          const frame = signInPreviewFrame(state);
+          const target = document.createElement("div");
+          document.body.appendChild(target);
+          component = mount(CompanySignInCard, {
+            target,
+            props: { role, view: frame.view, failure: frame.failure, codeError: frame.codeError, now: frame.now },
+          }) as Record<string, unknown>;
+          flushSync();
+          for (const text of visibleStrings(target)) {
+            expect(text, `${theme} ${state} ${role}`).not.toMatch(MONEY_WORDS);
+          }
+          await unmount(component);
+          component = null;
+          target.remove();
+        }
+        const target = document.createElement("div");
+        document.body.appendChild(target);
+        component = mount(CompanyOutpostSignInPreview, { target, props: { state } }) as Record<string, unknown>;
+        flushSync();
+        for (const text of visibleStrings(target)) {
+          expect(text, `${theme} ${state} preview`).not.toMatch(MONEY_WORDS);
+        }
+        await unmount(component);
+        component = null;
+        target.remove();
+      }
+    }
+  });
+
+  it("keeps every card string free of billing words", () => {
+    for (const value of Object.values(SIGNIN_COPY)) expect(value).not.toMatch(MONEY_WORDS);
+  });
+});
+
+describe("neutral not-available-yet state", () => {
+  let component: Record<string, unknown> | null = null;
+
+  afterEach(async () => {
+    if (component) await unmount(component);
+    component = null;
+  });
+
+  it("shows one plain line and one contact action, with no refresh, link or code", () => {
+    for (const role of ["admin", "member"] as const) {
+      const target = document.createElement("div");
+      document.body.appendChild(target);
+      component = mount(CompanySignInCard, {
+        target,
+        props: { role, now: NOW, failure: "not_available", view: { signedIn: false, state: "awaiting_sign_in", loginUrl: URL } },
+      }) as Record<string, unknown>;
+      flushSync();
+      const card = target.querySelector("[data-testid='company-signin-card']");
+      expect(card?.getAttribute("data-phase")).toBe("not_available");
+      expect(target.querySelector("[data-testid='company-signin-headline']")?.textContent).toBe(
+        "Outposts are not available for this company yet.",
+      );
+      expect(target.querySelector("[data-testid='company-signin-detail']")).toBeNull();
+      const contact = target.querySelector<HTMLAnchorElement>("[data-testid='company-signin-contact']");
+      expect(contact?.textContent?.trim()).toBe("Contact us");
+      expect(contact?.getAttribute("href")).toBe(SIGNIN_CONTACT_URL);
+      expect(contact?.getAttribute("target")).toBe("_blank");
+      expect(target.querySelectorAll("button")).toHaveLength(0);
+      expect(target.querySelector("[data-testid='company-signin-open']")).toBeNull();
+      expect(target.querySelector("[data-testid='company-signin-code']")).toBeNull();
+      void unmount(component);
+      component = null;
+      target.remove();
+    }
+  });
+
+  it("switches the panel to the neutral state when the route says billing_required", async () => {
+    const post = vi.fn<CompanySignInPost>(async () => ({ ok: false, status: 503, code: "billing_required" }));
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    component = mount(CompanySignInPanel, {
+      target,
+      props: {
+        role: "admin",
+        companyUid: "cmp_indigo",
+        client: createCompanySignInClient({ companyUid: "cmp_indigo", role: "admin", post }),
+      },
+    }) as Record<string, unknown>;
+    flushSync();
+    await vi.waitFor(() => {
+      expect(target.querySelector("[data-testid='company-signin-card']")?.getAttribute("data-phase")).toBe("not_available");
+    });
+    expect(target.textContent).toContain(SIGNIN_COPY.notAvailable);
+    expect(target.textContent).not.toMatch(MONEY_WORDS);
+    expect(target.querySelector("[data-testid='company-signin-refresh']")).toBeNull();
+  });
+});
+

@@ -13,6 +13,19 @@ export interface SignInPreviewFrame {
   now: number;
 }
 
+/** Every fixture state the preview page and the screenshot script render. */
+export const SIGNIN_PREVIEW_STATES = [
+  "not-signed-in",
+  "preparing",
+  "code-entry",
+  "signed-in",
+  "expired",
+  "failed",
+  "not-available",
+  "member-unsigned",
+  "member-signed",
+] as const;
+
 /** One fixture per card state. Screenshots and the preview page both use this. */
 export function signInPreviewFrame(state: string): SignInPreviewFrame {
   const admin = { role: "admin" as const, failure: null, codeError: null, now: NOW };
@@ -30,6 +43,9 @@ export function signInPreviewFrame(state: string): SignInPreviewFrame {
   }
   if (state === "failed") {
     return { ...admin, view: null, failure: "unreachable" };
+  }
+  if (state === "not-available") {
+    return { ...admin, view: null, failure: "not_available" };
   }
   if (state === "code-entry") {
     return {

@@ -24,7 +24,17 @@ export interface CompanySignInView {
   signedInAt?: string;
 }
 
-export type SignInFailure = "rejected" | "unreachable" | "not_admin" | "unavailable" | "not_ready" | "link_changed";
+export type SignInFailure =
+  | "rejected"
+  | "unreachable"
+  | "not_admin"
+  | "unavailable"
+  | "not_ready"
+  | "link_changed"
+  | "not_available";
+
+/** Where "Contact us" goes when Outposts are not available for the company yet. */
+export const SIGNIN_CONTACT_URL = "https://hqforwork.com/book";
 
 export const SIGNIN_COPY = {
   title: "Claude sign-in",
@@ -48,6 +58,8 @@ export const SIGNIN_COPY = {
   unreachable: "Could not reach the company Outpost. Try again.",
   notAdmin: "Only company owners and admins can do this.",
   unavailable: "Sign-in status is not available yet.",
+  notAvailable: "Outposts are not available for this company yet.",
+  contact: "Contact us",
   expired: "This sign-in link has expired. Request a new sign-in link to try again.",
   expiresAbout: "This link expires about 10 minutes after the Outpost creates it.",
   badgeNot: "Not signed in",
@@ -115,6 +127,7 @@ export function linkExpiryLine(expiresAt: string | undefined, now: number): { ex
 export type SignInPhase =
   | "loading"
   | "failed"
+  | "not_available"
   | "unavailable"
   | "preparing"
   | "expired"
@@ -132,6 +145,7 @@ export interface SignInPresentation {
   showCode: boolean;
   showRefresh: boolean;
   showNewLink: boolean;
+  showContact: boolean;
   badge: string;
   loginUrl?: string;
 }
@@ -158,8 +172,13 @@ export function deriveSignInPresentation(input: {
     showCode: false,
     showRefresh: canManage && phase !== "loading" && phase !== "signed_in",
     showNewLink: false,
+    showContact: false,
     badge,
   });
+
+  if (input.failure === "not_available") {
+    return { ...blank("not_available", SIGNIN_COPY.notAvailable, null, SIGNIN_COPY.badgeUnavailable), showRefresh: false, showContact: true };
+  }
 
   if (!canManage) {
     const view = input.view;
@@ -218,6 +237,7 @@ export function deriveSignInPresentation(input: {
       showCode: true,
       showRefresh: true,
       showNewLink: true,
+      showContact: false,
       badge: SIGNIN_COPY.badgeNot,
       loginUrl: view.loginUrl,
     };
