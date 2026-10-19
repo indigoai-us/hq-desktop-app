@@ -373,6 +373,7 @@
   .card h3 {
     font: 400 23px/1.15 var(--serif);
     letter-spacing: -0.35px;
+    text-wrap: pretty;
   }
   .card.lead h3 {
     font-size: 27px;

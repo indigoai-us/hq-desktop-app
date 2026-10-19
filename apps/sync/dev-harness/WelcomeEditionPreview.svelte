@@ -34,7 +34,7 @@
   const never = <T,>() => new Promise<T>(() => undefined);
 </script>
 
-<div style="height:100vh;overflow:auto">
+<div style="min-height:100vh">
   <WelcomeReport
     ready
     aiApps={{ detect: async () => null, cli: { claudeCode: true, codex: true } }}

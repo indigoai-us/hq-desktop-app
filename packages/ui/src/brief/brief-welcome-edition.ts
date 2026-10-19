@@ -255,13 +255,12 @@ function welcomeSections(f: WelcomeBriefFields): WelcomeEditionSection[] {
   if (repos.length) out.push({ name: "Your repos", lines: repos });
   if (f.harness) {
     const keys: Record<WelcomeHarnessId, keyof NonNullable<WelcomeBriefFields["harness"]>["counts"]> = { "claude-code": "claude_code", codex: "codex", cursor: "cursor" };
+    // Each harness on its own line, the primary first, so no count sits under another harness's name.
     const primary = f.harness.primary;
-    const mine = f.harness.counts[keys[primary]];
-    const others = (Object.keys(keys) as WelcomeHarnessId[])
-      .filter((h) => h !== primary && f.harness!.counts[keys[h]] > 0)
+    const lines = [primary, ...(Object.keys(keys) as WelcomeHarnessId[]).filter((h) => h !== primary)]
+      .filter((h) => f.harness!.counts[keys[h]] > 0)
       .map((h) => `${WELCOME_HARNESS_NAME[h]} · ${sessions(f.harness!.counts[keys[h]])}`);
-    const lines = [...(mine ? [sessions(mine)] : []), ...others];
-    if (lines.length) out.push({ name: WELCOME_HARNESS_NAME[primary], lines });
+    if (lines.length) out.push({ name: "Where you work", lines });
   }
   if (f.tree) {
     const t = f.tree;

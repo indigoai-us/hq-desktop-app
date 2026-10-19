@@ -147,7 +147,7 @@ describe("welcome edition components (US-019)", () => {
     expect(sections()).toEqual([
       { name: "Your projects", lines: ["Harbor checkout · 46 sessions", "Field notes · 31 sessions", "Pricing site · 24 sessions", "38 projects in all."] },
       { name: "Your repos", lines: ["harbor-checkout", "field-notes", "pricing-site"] },
-      { name: "Claude Code", lines: ["198 sessions", "Codex · 16 sessions"] },
+      { name: "Where you work", lines: ["Claude Code · 198 sessions", "Codex · 16 sessions"] },
       { name: "Your HQ", lines: ["38 projects", "212 knowledge files"] },
     ]);
   });
@@ -205,7 +205,7 @@ describe("welcome edition components (US-019)", () => {
       "Open HQ in Claude Code",
     ]);
     expect(flat(card("timeline")?.querySelector("h3"))).toBe("31 sessions over 6 days");
-    expect(sections()).toEqual([{ name: "Claude Code", lines: ["29 sessions", "Codex · 2 sessions"] }]);
+    expect(sections()).toEqual([{ name: "Where you work", lines: ["Claude Code · 29 sessions", "Codex · 2 sessions"] }]);
   });
 
   it("hides the component of every absent field, with no placeholder", async () => {
