@@ -2202,6 +2202,8 @@ export interface ShellApi {
    *  Backed by the `launch_codex_workspace` command (ChatGPT-bundled CLI's
    *  `codex app <path>` + delayed `codex://threads/new?prompt=` follow-up). */
   launchCodexWorkspace(path: string, prompt?: string): AdapterPromise<void>;
+  /** Open the folder in Cursor (`launch_cursor_workspace`). Cursor takes no first prompt. */
+  launchCursorWorkspace(path: string): AdapterPromise<void>;
   /** Open `{ path, tool }` (tool: claude | codex | grok) in a terminal. An
    *  optional `prompt` string is handed to the tool as its first prompt. */
   launchCliInTerminal(args: Json): AdapterPromise<void>;

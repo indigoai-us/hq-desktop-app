@@ -9,6 +9,7 @@
    * Tauri selects its native adapter. Neither target reads ~/.hq here.
    */
   import { onDestroy, onMount, type Component, type ComponentProps } from "svelte";
+  import { FIRST_RUN_TIMING_TAG, tenantSwitchRemountLine } from "@hq/ui/first-run-timing";
   import type { FirstRunHandoffHint } from "@hq/ui/first-run-handoff";
   import {
     createSyncPlatformAdapter,
@@ -712,6 +713,10 @@
     tenantGeneration = next.generation;
     tenantHydration += 1;
     shellEpoch += 1;
+    (globalThis as { __hqLog?: (tag: string, message: string) => void }).__hqLog?.(
+      FIRST_RUN_TIMING_TAG,
+      tenantSwitchRemountLine(),
+    );
     clearTenantState();
 
     if (next.status !== "active") return;

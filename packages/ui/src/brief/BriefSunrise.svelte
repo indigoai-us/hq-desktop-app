@@ -270,7 +270,7 @@
 >
   <canvas bind:this={canvas} aria-hidden="true"></canvas>
   <div class="over">
-    <div class="eyebrow" style="color:rgba(255,255,255,.8)">Sunrise · {total ? "decisions cleared" : "nothing owed"}</div>
+    <div class="eyebrow" style="color:rgba(255,255,255,.8)">Sunrise · {total ? (cleared ? "decisions cleared" : "decisions today") : "nothing owed"}</div>
     <div class="greet" class:big>
       {#if greet}{partOfDay(new Date())}{userName ? `, ${userName}` : ""}.<br />{/if}<span class="line" aria-label={line}>{lineParts.pre}{#if lineParts.em}<em class="accent-word">{lineParts.em}</em>{/if}{lineParts.post}</span>
     </div>

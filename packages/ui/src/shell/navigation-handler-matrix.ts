@@ -95,6 +95,8 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   openNewChat: "none",
   // Closes Settings (replace), then opens the New bot modal over the rail.
   openNewBotFromSettings: "replace",
+  // Opens the new-company sheet over the welcome report; no navigation.
+  openNewCompanyFromWelcome: "none",
   openNewMessage: "none",
   openAtlasShortcut: "push",
   closeMemberProfile: "none",

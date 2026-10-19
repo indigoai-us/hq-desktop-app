@@ -1673,6 +1673,11 @@ export function createSyncPlatformAdapter(
         if (result.ok) dispatchPostReadyAction('open_cli');
         return result;
       },
+      launchCursorWorkspace: async (path) => {
+        const result = await call<void>('launch_cursor_workspace', { path });
+        if (result.ok) dispatchPostReadyAction('open_cli');
+        return result;
+      },
       launchCliInTerminal: async (args) => {
         const rec = asRecord(args) ?? {};
         const path = String(rec.path ?? '');

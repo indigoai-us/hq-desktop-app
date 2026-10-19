@@ -17,6 +17,10 @@
  * [first-run] kind=team-card event=reply-abandoned
  * [first-run] kind=welcome-report event=<dispatched|blocked|started|landed|failed> [reason=<create-bot|start-bot|sign-in|connect-model>]
  * [first-run] kind=signin event=<start|done|failed|skipped> tool=<claude|codex>
+ * [first-run] kind=account-signin event=timeout provider=<google|microsoft> next=<auto-retry|shown> elapsed_ms=<n>
+ * [first-run] kind=account-signin event=retry provider=<google|microsoft> trigger=<auto|person>
+ * [first-run] kind=shell event=<mount|remount|reload> reason=<word>
+ * [first-run] kind=nav event=auto-welcome reason=<word>
  * ```
  *
  * Route lines come once per change of route value. Flag lines come once per
@@ -34,6 +38,17 @@
  * Sign-in lines follow the coding tool's sign-in that "Continue in <tool>"
  * and the name path run before they go on: started, connected, did not
  * finish (failed, cancelled or timed out), or skipped by the person.
+ * Account sign-in lines follow the HQ account sign-in on the welcome
+ * screen: an attempt that ran out of time (with how long it ran, and whether
+ * the wizard tried again by itself or showed "Sign-in took too long"), and
+ * each attempt started after a timeout, by the wizard or by the person.
+ * They carry the provider only, never an email, code or state.
+ * Shell lines say the UI shell mounted, was remounted (sign-in session,
+ * sign-out, company switch) or reloaded its page. The Rust side writes
+ * launch, reload and relaunch lines of the same shape
+ * (`apps/sync/src-tauri/src/first_run_log.rs`). Nav lines say the app moved
+ * to #welcome by itself, and why. Both reasons are reduced to `[a-z0-9-]`
+ * (40 characters at most), so they can never carry a name, path or address.
  *
  * Install ids: node, git, hq-cli, qmd, claude-code, codex, gh, yq, jq (logged
  * from Rust, `apps/sync/src-tauri/src/first_run_timing.rs`), and content,
@@ -209,10 +224,69 @@ export function formatWelcomeReport(event: WelcomeReportEvent, reason?: string):
   return `kind=welcome-report event=${event}${reasonField}`;
 }
 
-export type SignInEvent = "start" | "done" | "failed" | "skipped";
+/** Reduce a reason to a fixed word: lowercase `[a-z0-9-]`, at most 40 characters. */
+function reasonWord(raw: string | undefined): string {
+  const word = (raw ?? "").toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 40);
+  return word === "" ? "unknown" : word;
+}
+
+export type ShellEvent = "mount" | "remount" | "reload";
+
+export function formatShell(event: ShellEvent, reason: string | undefined): string {
+  return `kind=shell event=${event} reason=${reasonWord(reason)}`;
+}
+
+/**
+ * A newer auth generation remounts the keyed shell. The same generation, or
+ * an older one that arrives late, does not. Callers still ignore an older
+ * generation before they touch shell state.
+ */
+export function authSessionRemountLine(previousGeneration: number, nextGeneration: number): string | null {
+  if (!(nextGeneration > previousGeneration)) return null;
+  return formatShell("remount", "auth-session");
+}
+
+/** Written before the shell generation is bumped for sign-out. */
+export function signOutRemountLine(): string {
+  return formatShell("remount", "sign-out");
+}
+
+/** Written when a tenant switch bumps the keyed shell. */
+export function tenantSwitchRemountLine(): string {
+  return formatShell("remount", "tenant-switch");
+}
+
+/** Written before Start over reloads the page. */
+export function errorBoundaryReloadLine(): string {
+  return formatShell("reload", "error-boundary");
+}
+
+/** An automatic (not person-clicked) navigation to #welcome. */
+export function formatWelcomeNav(reason: string | undefined): string {
+  return `kind=nav event=auto-welcome reason=${reasonWord(reason)}`;
+}
+
+export type SignInEvent ="start" | "done" | "failed" | "skipped";
 
 export function formatSignIn(event: SignInEvent, tool: string): string {
   return `kind=signin event=${event} tool=${sanitizeValue(tool)}`;
+}
+
+/** After an HQ sign-in timeout: the wizard tries once by itself, or shows "Sign-in took too long". */
+export type AccountSignInTimeoutNext = "auto-retry" | "shown";
+/** Who started the attempt after a timeout. */
+export type AccountSignInRetryTrigger = "auto" | "person";
+
+export function formatAccountSignInTimeout(
+  provider: string,
+  next: AccountSignInTimeoutNext,
+  elapsedMs: number,
+): string {
+  return `kind=account-signin event=timeout provider=${sanitizeValue(provider)} next=${next} elapsed_ms=${ms(elapsedMs)}`;
+}
+
+export function formatAccountSignInRetry(provider: string, trigger: AccountSignInRetryTrigger): string {
+  return `kind=account-signin event=retry provider=${sanitizeValue(provider)} trigger=${trigger}`;
 }
 
 /** Writes one line through the sink. A sink that throws does not break the caller. */

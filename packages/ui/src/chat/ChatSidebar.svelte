@@ -344,8 +344,11 @@
     oncommand?: () => void;
     onnavigateMessages?: () => void;
     onopenSettings?: () => void;
-    /** `automatic` distinguishes the initial rail selection from a user click. */
-    onselect?: (row: ConversationRow, options?: { automatic?: boolean }) => void;
+    /**
+     * `automatic` distinguishes the initial rail selection from a user click.
+     * `reason` names which automatic pick it was, for the `[first-run]` log.
+     */
+    onselect?: (row: ConversationRow, options?: { automatic?: boolean; reason?: string }) => void;
     /** Synchronously clears/rekeys the parent when a company tenant changes. */
     oncompanyscopechange?: (companyUid: string | null) => void;
     /** Host-owned sign-out (desktop emitted `tray:sign-out`). */
@@ -1610,7 +1613,7 @@
       if (welcome) {
         autoOpenRequestedId = welcome.id;
         sidebarLog("auto-open-welcome-first", { id: welcome.id });
-        void openRow(welcome, undefined, true);
+        void openRow(welcome, undefined, true, "boot-welcome-first");
         return;
       }
     }
@@ -1634,7 +1637,7 @@
     );
     if (live) {
       autoOpenRequestedId = live.id;
-      void openRow(live, undefined, true);
+      void openRow(live, undefined, true, "boot-live");
       return;
     }
     if (!bootAttempted || loading) return;
@@ -1652,7 +1655,7 @@
       id: fallback.id,
       reason: "no-other-conversations",
     });
-    void openRow(fallback, undefined, true);
+    void openRow(fallback, undefined, true, "boot-fallback");
   });
   const grouped = $derived(
     sortMode === "type"
@@ -3911,6 +3914,7 @@
     row: ConversationRow,
     focus?: { messageId?: string | null; createdAt?: string | null },
     automatic = false,
+    reason?: string,
   ) {
     const started = performance.now();
     sidebarLog("open-row", {
@@ -3921,7 +3925,7 @@
       filter: showFilter,
     });
     activeId = row.id;
-    onselect?.(row, { automatic });
+    onselect?.(row, automatic ? { automatic, reason } : { automatic });
     if (!automatic) onnavigateMessages?.();
 
     // G4: stash the open target SYNCHRONOUSLY, before any awaited IPC. The

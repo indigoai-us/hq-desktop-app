@@ -1,0 +1,300 @@
+import { describe, expect, it } from "vitest";
+import {
+  WELCOME_EDITION_PRIORITIES,
+  WELCOME_EDITION_SUB,
+  WELCOME_EDITION_ZERO_HEADLINE,
+  WELCOME_EDITION_ZERO_SUB,
+  companyName,
+  looksLikePath,
+  welcomeEdition,
+  welcomeGreeting,
+} from "./brief-welcome-edition.js";
+import {
+  WELCOME_RISE_CALENDAR_LINE,
+  WELCOME_RISE_FIELDWORK_TITLE,
+  WELCOME_RISE_FINDING_CLAUDE,
+  WELCOME_RISE_DECISION_LINE,
+  WELCOME_RISE_FINDING_CODEX,
+  WELCOME_RISE_NORTHSTAR_TITLE,
+  WELCOME_RISE_FINDING_REPOS,
+  WELCOME_RISE_STUDIO_TITLE,
+  WELCOME_RISE_WORK_TITLE,
+  welcomeRiseBriefInput,
+} from "./welcome-rise-run.js";
+import type { BriefInput } from "./brief-types.js";
+
+const at = (h: number, m = 0) => new Date(2026, 9, 17, h, m);
+
+function withEvent(input: BriefInput, start: Date, title = "Launch review", attendees = ["Maya Chen", "Jordan Lee", "Sam Ito"]): BriefInput {
+  return {
+    ...input,
+    sourceNotes: [],
+    calendarToday: [{ id: "e1", title, start: start.toISOString(), kind: "team", attendees }],
+  };
+}
+
+describe("welcomeGreeting", () => {
+  it("greets by the local hour of the brief", () => {
+    expect(welcomeGreeting(at(9), "Alex")).toBe("Good morning, Alex.");
+    expect(welcomeGreeting(at(11, 59), "Alex")).toBe("Good morning, Alex.");
+    expect(welcomeGreeting(at(12), "Alex")).toBe("Good afternoon, Alex.");
+    expect(welcomeGreeting(at(17), "Alex")).toBe("Good evening, Alex.");
+  });
+
+  it("drops the name and comma when there is no name", () => {
+    expect(welcomeGreeting(at(9), null)).toBe("Good morning.");
+    expect(welcomeGreeting(at(9), "  ")).toBe("Good morning.");
+  });
+});
+
+describe("companyName", () => {
+  it("prefers the host label and otherwise capitalises the slug", () => {
+    expect(companyName("northstar")).toBe("Northstar");
+    expect(companyName("field-work")).toBe("Field Work");
+    expect(companyName("northstar", new Map([["northstar", "Northstar Labs"]]))).toBe("Northstar Labs");
+  });
+});
+
+describe("welcomeEdition", () => {
+  it("builds the round 11b final page from the captured rise: decision, agenda and work cards, one section per project", () => {
+    const e = welcomeEdition(welcomeRiseBriefInput());
+    expect(e.zero).toBe(false);
+    expect(e.headline).toBe("Good morning, Alex.");
+    expect(e.sub).toBe(WELCOME_EDITION_SUB);
+    expect(e.cards.map((c) => c.id)).toEqual(["decision", "day", "work"]);
+
+    const [decision, day, work] = e.cards;
+    expect(decision).toMatchObject({ pill: "Your decision", kicker: "Northstar", title: WELCOME_RISE_FINDING_CLAUDE, label: "Review the decision" });
+    // The mockup's context line under the decision (gate review: restore PR #248 and Maya).
+    expect(decision!.lines).toEqual([WELCOME_RISE_DECISION_LINE]);
+    expect(decision!.action).toEqual({ kind: "launch", itemId: "rise-claude", prompt: WELCOME_RISE_FINDING_CLAUDE });
+    // The agenda card keeps the mockup's middle slot. The calendar was not read, so the card
+    // is labelled for what it shows (today's priorities) and offers no agenda link.
+    expect(day).toMatchObject({
+      kicker: WELCOME_EDITION_PRIORITIES,
+      title: "4 things for you today.",
+      lines: ["Across Northstar, Fieldwork, and Studio."],
+      label: null,
+      action: null,
+    });
+    expect(work).toMatchObject({
+      pill: null,
+      kicker: "Pick up your work · Northstar",
+      title: WELCOME_RISE_WORK_TITLE,
+      lines: ["The zero-company view is the last open item."],
+      label: "Pick it up",
+    });
+
+    // The project row names every project in the run, so the lower right is never empty.
+    expect(e.sections).toEqual([
+      { name: "Northstar", lines: [WELCOME_RISE_NORTHSTAR_TITLE, "Review ready · 1 decision"] },
+      { name: "Fieldwork", lines: [WELCOME_RISE_FIELDWORK_TITLE, "Maya added 3 interview notes."] },
+      { name: "Studio", lines: [WELCOME_RISE_STUDIO_TITLE, "Jordan's wording is ready to read."] },
+    ]);
+  });
+
+  it("says the unread calendar once, in the quiet run line, next to the count the reveal ended on", () => {
+    const e = welcomeEdition(welcomeRiseBriefInput());
+    expect(e.note).toBe("168 sessions read · 6 repos · Calendar could not be read.");
+    const strings = [...e.cards.flatMap((c) => [c.kicker, c.title, ...c.lines, c.label ?? ""]), ...e.sections.flatMap((s) => [s.name, ...s.lines])];
+    expect(strings.some((s) => /calendar/i.test(s))).toBe(false);
+    expect(strings).not.toContain("Your calendar can wait.");
+    expect([...strings, e.note].filter((s) => s?.includes(WELCOME_RISE_CALENDAR_LINE.replace(/\.$/, "")))).toHaveLength(1);
+  });
+
+  it("counts sessions for the run line when the host has no reveal stats, and leaves it out when there is nothing", () => {
+    const input = { ...welcomeRiseBriefInput(), runStats: null, sourceNotes: [] };
+    expect(welcomeEdition(input).note).toBe("168 sessions read.");
+    expect(welcomeEdition({ ...input, sessions: [] }).note).toBeNull();
+  });
+
+  it("never puts a filename or repo path in a card or section headline", () => {
+    const input = welcomeRiseBriefInput();
+    const last = input.decisions.length - 1;
+    input.decisions[last] = { ...input.decisions[last]!, title: WELCOME_RISE_FINDING_REPOS, summary: "apps/desktop/src/brief" };
+    input.decisions[1] = { ...input.decisions[1]!, summary: "northstar/desktop" };
+    const e = welcomeEdition(input);
+    const work = e.cards.find((c) => c.id === "work")!;
+    // The product name stands in for a title that is a file; a path line is left out.
+    expect(work.title).toBe("Desktop app");
+    expect(work.lines).toEqual([]);
+    expect(e.sections[0]!.lines).toEqual([WELCOME_RISE_NORTHSTAR_TITLE]);
+    const titles = [...e.cards.flatMap((c) => [c.title, ...c.lines]), ...e.sections.flatMap((s) => s.lines)];
+    for (const t of titles) expect(looksLikePath(t, "northstar/desktop")).toBe(false);
+  });
+
+  it("does not repeat a title as the line under it", () => {
+    const input = welcomeRiseBriefInput();
+    input.decisions[2] = { ...input.decisions[2]!, summary: WELCOME_RISE_FIELDWORK_TITLE };
+    expect(welcomeEdition(input).sections[1]!.lines).toEqual([WELCOME_RISE_FIELDWORK_TITLE]);
+  });
+
+  it("falls back to the project name when the product is a path too", () => {
+    const input = welcomeRiseBriefInput();
+    const last = input.decisions.length - 1;
+    input.decisions[last] = { ...input.decisions[last]!, title: "apps/desktop/src/brief/WelcomeReport.svelte", origin: { companyUid: null, repo: "northstar/desktop", product: null } };
+    expect(welcomeEdition(input).cards.find((c) => c.id === "work")!.title).toBe("Northstar");
+  });
+
+  it("tells a filename or path from plain words", () => {
+    expect(looksLikePath("WelcomeReport.svelte still needs the new empty state.")).toBe(true);
+    expect(looksLikePath("apps/desktop/src/brief")).toBe(true);
+    expect(looksLikePath("northstar/desktop")).toBe(true);
+    expect(looksLikePath("Ship northstar/desktop today", "northstar/desktop")).toBe(true);
+    expect(looksLikePath("PR #248 · Restore offline install is ready for review.")).toBe(false);
+    expect(looksLikePath("Finish the welcome state.")).toBe(false);
+    expect(looksLikePath("Homepage copy · revision 4")).toBe(false);
+    expect(looksLikePath("Use either and/or here")).toBe(false);
+  });
+
+  it("reads library names, dates, quarters, and slashed words as prose", () => {
+    for (const t of ["Node.js", "Next.js migration", "Upgrade to Vue.js 3", "10/18/2026", "Due 10/18/2026", "Q1/Q2/Q3 roadmap", "Q3/Q4", "and/or", "24/7 support", "Ask the client/agency team"]) {
+      expect(looksLikePath(t), t).toBe(false);
+    }
+  });
+
+  it("catches filenames and code folders the first pass missed", () => {
+    for (const t of ["schema.sql", "App.vue", "notes.txt", "Fix the bug in src/brief", "Update packages/ui", "Next.js config in next.config.mjs"]) {
+      expect(looksLikePath(t), t).toBe(true);
+    }
+  });
+
+  it("names a fourth company on the agenda card when its item is on a card", () => {
+    const input = welcomeRiseBriefInput();
+    input.companies = [...input.companies, "harbor"];
+    const last = input.decisions[input.decisions.length - 1]!;
+    input.decisions[input.decisions.length - 1] = { ...last, origin: { ...last.origin, companyUid: "harbor" } };
+    const e = welcomeEdition(input);
+    expect(e.cards.find((c) => c.id === "work")!.kicker).toBe("Pick up your work · Harbor");
+    expect(e.cards.find((c) => c.id === "day")!.lines[0]).toContain("Harbor");
+  });
+
+  it("puts the next event still ahead on the day card with up to two attendees", () => {
+    const base = welcomeRiseBriefInput(at(9));
+    const day = welcomeEdition(withEvent(base, at(10, 30))).cards.find((c) => c.id === "day")!;
+    expect(day.title).toBe("10:30 AM · Launch review");
+    expect(day.lines).toEqual(["Maya Chen and Jordan Lee"]);
+    expect(day).toMatchObject({ label: "Open the agenda", action: { kind: "meetings" } });
+  });
+
+  // Review m4 (2026-10-19): an empty-state card says nothing the page does not already show.
+  it("shows no day card when nothing is booked and nothing failed", () => {
+    const input = { ...welcomeRiseBriefInput(), sourceNotes: [] };
+    const e = welcomeEdition(input);
+    expect(e.cards.map((c) => c.id)).toEqual(["decision", "work"]);
+    const all = [...e.cards.flatMap((c) => [c.title, ...c.lines]), ...e.sections.flatMap((s) => s.lines)];
+    expect(all).not.toContain("Your calendar is clear.");
+    expect(all).not.toContain("Nothing is booked today. The time is yours.");
+  });
+
+  it("launches the plan's prompt for a card when there is one, else the decision's own prompt, else its title", () => {
+    const input = welcomeRiseBriefInput();
+    const last = input.decisions.length - 1;
+    input.decisions[last] = { ...input.decisions[last]!, prompt: "Finish the empty state in WelcomeReport.svelte" };
+    const e = welcomeEdition(input, { "rise-claude": "Review the offline installer decision" });
+    expect(e.cards[0]!.action).toEqual({ kind: "launch", itemId: "rise-claude", prompt: "Review the offline installer decision" });
+    expect(e.cards[2]!.action).toEqual({ kind: "launch", itemId: "rise-repos", prompt: "Finish the empty state in WelcomeReport.svelte" });
+  });
+
+  it("names up to three companies, and leaves out one with nothing new", () => {
+    const input = { ...welcomeRiseBriefInput(), companies: ["northstar", "quiet", "studio", "extra"] };
+    const e = welcomeEdition(input, {}, new Map([["studio", "Studio Co"]]));
+    expect(e.sections.map((s) => s.name)).toEqual(["Northstar", "Studio Co"]);
+    expect(e.sections.flatMap((s) => s.lines)).not.toContain("Nothing new for you today.");
+  });
+
+  it("with one decision shows only the decision and agenda cards, and counts only what is shown", () => {
+    const input = welcomeRiseBriefInput();
+    input.decisions = input.decisions.slice(0, 1);
+    const e = welcomeEdition(input);
+    expect(e.cards.map((c) => c.id)).toEqual(["decision", "day"]);
+    expect(e.cards[1]).toMatchObject({ title: "1 thing for you today.", lines: ["Across Northstar."] });
+    // Every company's work is on the cards above, so no company section repeats it.
+    expect(e.sections).toEqual([]);
+  });
+
+  it("never shows a count that differs from the distinct items on the page", () => {
+    const input = welcomeRiseBriefInput();
+    const e = welcomeEdition(input);
+    // Two linked cards and three company sections. The decision card and Northstar's row are
+    // the same PR, so the page shows four distinct things.
+    const titles = [...e.cards.filter((c) => c.action?.kind === "launch").map((c) => c.title), ...e.sections.map((s) => s.lines[0]!)];
+    expect(titles).toHaveLength(5);
+    expect(titles).not.toContain("On the cards above.");
+    expect(titles).not.toContain("Nothing new for you today.");
+    const byTitle = new Map(input.decisions.map((d) => [d.title, d]));
+    const things = new Set(titles.map((t) => byTitle.get(t)!).map((d) => d.thread ?? d.id));
+    expect(things.size).toBe(4);
+    expect(e.cards.find((c) => c.id === "day")!.title).toBe("4 things for you today.");
+    const all = [...e.cards.flatMap((c) => [c.title, ...c.lines]), ...e.sections.flatMap((s) => s.lines)];
+    expect(all.some((s) => /open items? for you/.test(s))).toBe(false);
+  });
+
+  it("counts the same item once when the decision card and a project row are about it (gate review item 9)", () => {
+    const input = welcomeRiseBriefInput();
+    const [decision, row] = input.decisions;
+    expect(decision!.thread).toBeTruthy();
+    expect(row!.thread).toBe(decision!.thread);
+    const e = welcomeEdition(input);
+    expect(e.cards[0]!.title).toBe(decision!.title);
+    expect(e.sections[0]!.lines[0]).toBe(row!.title);
+    expect(e.cards.find((c) => c.id === "day")!.title).toBe("4 things for you today.");
+    // Without the shared thread they are two things.
+    input.decisions[1] = { ...row!, thread: undefined };
+    expect(welcomeEdition(input).cards.find((c) => c.id === "day")!.title).toBe("5 things for you today.");
+    // A blank thread is no thread.
+    input.decisions[1] = { ...row!, thread: "  " };
+    expect(welcomeEdition(input).cards.find((c) => c.id === "day")!.title).toBe("5 things for you today.");
+  });
+
+  it("says ready once on the Northstar row and keeps the PR context on the decision card", () => {
+    const e = welcomeEdition(welcomeRiseBriefInput());
+    const northstar = e.sections.find((s) => s.name === "Northstar")!;
+    expect(northstar.lines.join(" ").match(/ready/gi)).toHaveLength(1);
+    expect(northstar.lines.join(" ")).not.toContain(WELCOME_RISE_FINDING_CODEX);
+    expect(e.cards[0]!.lines.join(" ")).toContain("PR #248");
+    expect(e.cards[0]!.lines.join(" ")).toContain("Maya");
+  });
+
+  it("never offers the agenda when the calendar was not read", () => {
+    const e = welcomeEdition(welcomeRiseBriefInput());
+    const all = e.cards.map((c) => c.label);
+    expect(all).not.toContain("Open the agenda");
+    expect(e.cards.some((c) => c.action?.kind === "meetings")).toBe(false);
+    expect(e.cards.map((c) => c.kicker)).not.toContain("Today · Personal");
+  });
+
+  it("with no company is the getting-started edition with no links", () => {
+    const e = welcomeEdition({ ...welcomeRiseBriefInput(), companies: [] });
+    expect(e).toMatchObject({ zero: true, headline: WELCOME_EDITION_ZERO_HEADLINE, sub: WELCOME_EDITION_ZERO_SUB });
+    expect(e.cards.map((c) => c.title)).toEqual(["Give your agent one small task.", "Start with the work you have."]);
+    expect(e.cards.every((c) => c.action === null && c.label === null)).toBe(true);
+    expect(e.sections.map((s) => s.name)).toEqual(["A space for your team", "Your brief belongs to you."]);
+  });
+
+  it("keeps every string in sentence case with no exclamation marks or em dashes", () => {
+    const pages = [welcomeEdition(welcomeRiseBriefInput()), welcomeEdition({ ...welcomeRiseBriefInput(), companies: [] })];
+    const strings = pages.flatMap((p) => [p.headline, p.sub, p.note ?? "", ...p.cards.flatMap((c) => [c.kicker, c.title, ...c.lines, c.label ?? ""]), ...p.sections.flatMap((s) => [s.name, ...s.lines])]);
+    for (const s of strings) {
+      expect(s).not.toMatch(/[!—]/);
+    }
+  });
+
+  it("puts each item under the company its origin names", () => {
+    const input = { ...welcomeRiseBriefInput(), companies: ["co-north", "northstar", "co-field", "fieldwork"] };
+    input.decisions = input.decisions.map((d, i) => ({ ...d, origin: { ...d.origin, companyUid: i === 1 ? "co-field" : "co-north" } }));
+    const labels = new Map([
+      ["co-north", "Northstar"],
+      ["northstar", "Northstar"],
+      ["co-field", "Fieldwork"],
+      ["fieldwork", "Fieldwork"],
+    ]);
+    const e = welcomeEdition(input, {}, labels);
+    expect(e.cards[0]!.kicker).toBe("Northstar");
+    expect(e.cards[2]!.kicker).toBe("Pick up your work · Northstar");
+    expect(e.sections).toEqual([
+      { name: "Northstar", lines: [WELCOME_RISE_FIELDWORK_TITLE, "Maya added 3 interview notes."] },
+      { name: "Fieldwork", lines: [WELCOME_RISE_NORTHSTAR_TITLE, "Review ready · 1 decision"] },
+    ]);
+  });
+});

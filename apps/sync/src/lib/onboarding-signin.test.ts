@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mapSignInError } from './onboarding-signin';
+import { isSignInTimeout, mapSignInError } from './onboarding-signin';
 
 describe('mapSignInError', () => {
   it('maps referral persistence failures to neutral retryable copy', () => {
@@ -63,5 +63,16 @@ describe('mapSignInError', () => {
     expect(shown).toContain('try again');
     expect(warn).toHaveBeenCalledWith('[signin] sign-in failed', raw);
     warn.mockRestore();
+  });
+});
+
+describe('isSignInTimeout', () => {
+  it('is true only when the person is shown "Sign-in took too long"', () => {
+    expect(isSignInTimeout('Sign-in expired')).toBe(true);
+    expect(isSignInTimeout('Timed out waiting for sign-in')).toBe(true);
+    expect(isSignInTimeout('{"code":"OAUTH_PROVIDER_ERROR","message":"The link has expired."}')).toBe(false);
+    expect(isSignInTimeout('{"code":"MICROSOFT_RESOLVE_FAILED","message":"Token expired"}')).toBe(false);
+    expect(isSignInTimeout('state mismatch: the attempt expired')).toBe(false);
+    expect(isSignInTimeout('network error')).toBe(false);
   });
 });

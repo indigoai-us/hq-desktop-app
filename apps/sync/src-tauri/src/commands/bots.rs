@@ -267,6 +267,17 @@ fn validate_runtime(runtime: &str) -> Result<&'static str, String> {
     }
 }
 
+/// Env passed on every `hq bot` command this process starts.
+///
+/// `HQ_NO_ENSURE_HQ_DESKTOP=1` is what this head guarantees on that command.
+/// hq-cli 5.345.147 and later (pull request 1984) writes it into the bot
+/// launch agent and forces it on model spawns. This app's install floor is
+/// older (5.345.46), so an older hq-cli does not get that stored setting
+/// from this env pair. A browser or Terminal launch is not this command.
+pub(crate) fn hq_bot_child_env() -> [(&'static str, &'static str); 2] {
+    [("HQ_NO_UPDATE_CHECK", "1"), ("HQ_NO_ENSURE_HQ_DESKTOP", "1")]
+}
+
 /// Spawn `hq bot <args…> --json` (argv only, never a shell) with the child
 /// PATH and the configured HQ root, and hand back its exit status and output.
 async fn spawn_hq_bot(args: &[&str], timeout: Duration) -> Result<(std::process::ExitStatus, String, String), String> {
@@ -282,7 +293,7 @@ async fn spawn_hq_bot(args: &[&str], timeout: Duration) -> Result<(std::process:
         command
             .current_dir(&hq_root)
             .env("PATH", paths::child_path())
-            .env("HQ_NO_UPDATE_CHECK", "1")
+            .envs(hq_bot_child_env())
             .env("HQ_ROOT", &hq_root)
             // A child still running at the timeout is killed with the future.
             .kill_on_drop(true)
@@ -714,6 +725,13 @@ pub async fn local_bots_probe(
 #[cfg(test)]
 mod repair_tests {
     use super::*;
+
+    #[test]
+    fn hq_bot_command_passes_the_desktop_hook_switch() {
+        let env = hq_bot_child_env();
+        assert!(env.contains(&("HQ_NO_ENSURE_HQ_DESKTOP", "1")));
+        assert!(env.contains(&("HQ_NO_UPDATE_CHECK", "1")));
+    }
 
     #[test]
     fn set_model_argv_is_exactly_the_cli_shape() {

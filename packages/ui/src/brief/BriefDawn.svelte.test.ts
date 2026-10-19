@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import BriefDawn from "./BriefDawn.svelte";
+import { WELCOME_HORIZON_Y, WELCOME_SEA_BOTTOM } from "./brief-dawn.js";
 
 let target: HTMLElement;
 
@@ -69,5 +70,53 @@ describe("BriefDawn frame loop", () => {
     expect(() => frames[frames.length - 1](now + 16)).not.toThrow();
     expect(frames.length).toBe(scheduled);
     expect(reads.length).toBe(readsBefore);
+  });
+});
+
+describe("BriefDawn welcome sea", () => {
+  /** Draws a few welcome frames and returns the 6 px dots painted below the horizon row. */
+  function dotsBelowHorizon(sea: boolean | undefined): number {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => frames.push(cb));
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    vi.stubGlobal("matchMedia", () => ({ matches: true }));
+    const below: number[] = [];
+    const gradient = { addColorStop() {} };
+    const ctx = new Proxy(
+      {},
+      {
+        get: (_t, k) =>
+          k === "fillRect"
+            ? (_x: number, y: number, w: number, h: number) => {
+                if (w === 6 && h === 6 && y > WELCOME_HORIZON_Y + 8 && y < WELCOME_SEA_BOTTOM) below.push(y);
+              }
+            : String(k).startsWith("create")
+              ? () => gradient
+              : () => undefined,
+        set: () => true,
+      },
+    ) as unknown as CanvasRenderingContext2D;
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(ctx as never);
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => 1200 });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 860 });
+
+    target = document.createElement("div");
+    document.body.appendChild(target);
+    const app = mount(BriefDawn, {
+      target,
+      props: { phase: "ready", progress: 1, layout: "welcome", reflection: false, ...(sea === undefined ? {} : { sea }) },
+    });
+    flushSync();
+    for (let i = 0, now = 0; i < 3 && frames.length; i += 1) frames[frames.length - 1]!((now += 16));
+    unmount(app);
+    return below.length;
+  }
+
+  it("paints the striped sea under the horizon by default, as in the rise", () => {
+    expect(dotsBelowHorizon(undefined)).toBeGreaterThan(0);
+  });
+
+  it("paints nothing under the horizon with the sea off, so the welcome edition's cards sit on clear sky", () => {
+    expect(dotsBelowHorizon(false)).toBe(0);
   });
 });

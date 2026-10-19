@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
 import type { LocalBotRow } from "@hq/platform";
 import BriefRunsPage from "./BriefRunsPage.svelte";
+import WelcomeRunsHarness from "./WelcomeReportRunsHarness.test-support.svelte";
 import { BriefCreateRun, type BriefCreator } from "./brief-create.svelte.js";
 import type { BriefSweepSource } from "./brief-data.js";
 
@@ -384,6 +385,49 @@ describe("BriefRunsPage", () => {
     expect(q("brief-create")).toBeNull();
     expect(creator.dispatch).toHaveBeenCalledTimes(1);
     shared.stop();
+  });
+
+  it("inside the welcome report, a person with companies gets the welcome edition, each item under its own company", async () => {
+    const run: Record<string, string> = {
+      "workspace/brief/index.jsonl": entry(NEW, "2026-10-08T16:00:00Z"),
+      [`workspace/brief/${NEW}/brief-data.json`]: "{}",
+      [`workspace/brief/${NEW}/brief.json`]: JSON.stringify({
+        items: {
+          decisions: [
+            { id: "d1", title: "Approve the launch copy", company: "co-north" },
+            { id: "d2", title: "Pick the pricing page", company: "co-field" },
+            { id: "d3", title: "Merge the installer fix", company: "co-north" },
+          ],
+        },
+      }),
+    };
+    const source: BriefSweepSource = { readHqFile: async (p) => run[p] ?? null };
+    target = document.createElement("div");
+    document.body.appendChild(target);
+    app = mount(WelcomeRunsHarness, {
+      target,
+      props: {
+        source,
+        companies: [
+          { uid: "co-north", slug: "northstar", label: "Northstar" },
+          { uid: "co-field", slug: "fieldwork", label: "Fieldwork" },
+        ],
+        report: { aiApps: { detect: async () => null, cli: { claudeCode: true, codex: false } } },
+      },
+    });
+    await vi.waitFor(() => expect(q("welcome-edition")).not.toBeNull(), { timeout: 5_000 });
+    // One brief, not the summary plus per-company split.
+    expect(q("brief-sections")).toBeNull();
+    expect(target.querySelectorAll('[data-testid="daily-brief"]')).toHaveLength(1);
+    const kicker = (card: string) => target.querySelector(`[data-card="${card}"] .kicker`)?.textContent?.replace(/\s+/g, " ").trim();
+    expect(kicker("decision")).toBe("Your decision Northstar");
+    expect(kicker("work")).toBe("Pick up your work · Northstar");
+    const sections = [...target.querySelectorAll<HTMLElement>('[data-testid="welcome-edition-section"]')].map((el) => [
+      el.querySelector("h3")?.textContent,
+      el.querySelector("p")?.innerHTML.replace(/<!---->/g, "").split("<br>").map((l) => l.trim()),
+    ]);
+    // Northstar's work is all on the cards, so only Fieldwork has a section.
+    expect(sections).toEqual([["Fieldwork", ["Pick the pricing page"]]]);
   });
 
   // The bot's own operator text (its name, "Check that it is running", the
