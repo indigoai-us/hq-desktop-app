@@ -66,7 +66,7 @@ describe('sync plan-limit event contract', () => {
     expect(meetingsWindowSource).toContain('if (isPlanRequiredError(err))');
     expect(meetingsWindowSource).toContain('planRequiredUpgradeUrl(err)');
     expect(meetingsWindowSource).toContain(
-      'Meeting bot recording requires a paid plan for this account.',
+      "Meeting bot recording is not on this account's plan yet.",
     );
     expect(meetingsWindowSource).toContain('testId="meetings-plan-upgrade"');
     expect(meetingsWindowSource).toContain('onUpgrade={openMeetingPlanUpgrade}');

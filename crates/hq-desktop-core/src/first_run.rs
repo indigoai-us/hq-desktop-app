@@ -30,6 +30,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use serde_json::{Map, Value};
 
@@ -58,6 +59,23 @@ pub enum MenubarRead {
     /// A previous safe-write attempt moved corrupt settings aside but did not
     /// finish writing a replacement before the process stopped.
     PreservedCorrupt,
+}
+
+/// The launch kind classified at app `.setup()`, before `ensure_machine_id`
+/// writes `machineId`. Process-wide so code outside Tauri managed state (the
+/// HQ root resolver) sees the same verdict as `LaunchKindState`. Unset in the
+/// CLI and in tests.
+static SETUP_LAUNCH_KIND: OnceLock<LaunchKind> = OnceLock::new();
+
+/// Record the setup-time launch kind. Only the first call takes effect;
+/// returns false when a kind was already recorded.
+pub fn set_setup_launch_kind(kind: LaunchKind) -> bool {
+    SETUP_LAUNCH_KIND.set(kind).is_ok()
+}
+
+/// The launch kind recorded by [`set_setup_launch_kind`], if any.
+pub fn setup_launch_kind() -> Option<LaunchKind> {
+    SETUP_LAUNCH_KIND.get().copied()
 }
 
 /// Pure classifier over an already-parsed `menubar.json` object. Kept
@@ -103,6 +121,23 @@ pub fn classify_from_menubar_read(read: &MenubarRead) -> LaunchKind {
 /// users keep the tray-only launch behavior.
 pub fn should_autoshow_on_launch(kind: LaunchKind) -> bool {
     kind == LaunchKind::FirstRun
+}
+
+/// Whether a cold launch should open the desktop window by itself.
+///
+/// A person who opens HQ (Finder, Launchpad, Spotlight, the Dock while HQ is
+/// not running) expects the desktop view. Three launches stay quiet:
+/// - `setup_card`: setup owns the `main` window and shows its own card.
+/// - `from_login_item`: the login item (or a launchd relaunch) started HQ, so
+///   it stays in the menu bar.
+/// - `opened_with_target`: the launch carries a link or file, whose handler
+///   opens the surface it needs.
+pub fn should_open_desktop_on_launch(
+    setup_card: bool,
+    from_login_item: bool,
+    opened_with_target: bool,
+) -> bool {
+    !setup_card && !from_login_item && !opened_with_target
 }
 
 /// Whether the first-run handoff may schedule one initial sync.
@@ -886,6 +921,21 @@ mod tests {
         assert!(should_autoshow_on_launch(LaunchKind::FirstRun));
         assert!(!should_autoshow_on_launch(LaunchKind::ExistingUpdate));
         assert!(!should_autoshow_on_launch(LaunchKind::Normal));
+    }
+
+    // Owner, 2026-10-16: "when you open the hq app, the desktop view should
+    // appear". A plain open used to start only the menu-bar item.
+    #[test]
+    fn a_plain_open_shows_the_desktop_view() {
+        assert!(should_open_desktop_on_launch(false, false, false));
+    }
+
+    #[test]
+    fn setup_login_item_and_link_launches_do_not_open_the_desktop_view() {
+        assert!(!should_open_desktop_on_launch(true, false, false));
+        assert!(!should_open_desktop_on_launch(false, true, false));
+        assert!(!should_open_desktop_on_launch(false, false, true));
+        assert!(!should_open_desktop_on_launch(true, true, true));
     }
 
     #[test]

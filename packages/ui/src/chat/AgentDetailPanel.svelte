@@ -14,6 +14,10 @@
   import { botKindFor } from "./bot-kind.js";
   import AvatarPickerSlot from "./AvatarPickerSlot.svelte";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
+  import Avatar from "../common/avatar/Avatar.svelte";
+  import PersonName from "../common/people/PersonName.svelte";
+  import { EMPTY_PEOPLE_INDEX } from "../common/people/people.js";
+  import { loadPeople, peopleFor } from "../common/people/people-roster.svelte.js";
   import type { SelfIdentity } from "../identity/self.js";
   import type { AvatarPack, AvatarSelection } from "../avatars/types.js";
   import {
@@ -25,7 +29,8 @@
     headerFromMobileRoster,
     headerFromStatusPayload,
     jobsFromPayload,
-    ownerLabelFromPayload,
+    ownerDisplay,
+    ownerRefFromPayload,
     ownersIncludePerson,
     profileFromPayload,
     routineActionRequest,
@@ -74,8 +79,18 @@
     isAdmin?: boolean | null;
     adapter:
       | (Pick<PlatformAdapter, "agents"> &
-          Partial<Pick<PlatformAdapter, "integrations" | "identity">>)
+          Partial<
+            Pick<PlatformAdapter, "integrations" | "identity" | "company" | "messaging">
+          >)
       | { agents: AgentsApi };
+    /**
+     * Company slug for the people roster the Owner row resolves against
+     * (photo + name instead of a bare email, feedback_cf6347c3). Absent: the
+     * owner shows as the server sent it.
+     */
+    companySlug?: string | null;
+    /** personUid -> photo URL the shell already collected. */
+    avatarByUid?: Readonly<Record<string, string>> | null;
     packs?: AvatarPack[] | null;
     loadPacks?: () => Promise<AvatarPack[]>;
     avatarSaving?: boolean;
@@ -106,6 +121,8 @@
     onclose,
     localBots = null,
     ownedLocalBotUids = null,
+    companySlug = null,
+    avatarByUid = null,
   }: Props = $props();
 
   let header = $state<AgentDetailHeader>(
@@ -133,6 +150,28 @@
   let actionError = $state<string | null>(null);
   let copied = $state(false);
   let panelEl = $state<HTMLElement | null>(null);
+
+  // Owner row: resolve the owner against the company roster so it reads as a
+  // person (photo + name, email muted), not a bare email (feedback_cf6347c3).
+  $effect(() => {
+    const slug = (companySlug ?? "").trim();
+    if (!slug) return;
+    const source = adapter as Partial<Pick<PlatformAdapter, "company" | "messaging">>;
+    void loadPeople({
+      slug,
+      companyUid,
+      company: source.company ?? null,
+      messaging: source.messaging ?? null,
+    });
+  });
+  const ownerIndex = $derived(
+    (companySlug ?? "").trim() ? peopleFor((companySlug ?? "").trim()).index : EMPTY_PEOPLE_INDEX,
+  );
+
+  function ownerPhoto(uid: string | null | undefined): string | null {
+    const key = (uid ?? "").trim();
+    return key ? (avatarByUid?.[key] ?? null) : null;
+  }
 
   const canManage = $derived(
     header.canManage || isAdmin === true,
@@ -236,14 +275,16 @@
       }
 
       if (ownersRes.ok) {
-        const ownerLabel = ownerLabelFromPayload(ownersRes.value);
+        const owner = ownerRefFromPayload(ownersRes.value);
         const manage =
           header.canManage ||
           isAdmin === true ||
           ownersIncludePerson(ownersRes.value, self?.uid);
         header = {
           ...header,
-          ownerLabel: ownerLabel ?? header.ownerLabel,
+          ownerLabel: owner.label ?? header.ownerLabel,
+          ownerPersonUid: owner.personUid ?? header.ownerPersonUid ?? null,
+          ownerEmail: owner.email ?? header.ownerEmail ?? null,
           canManage: manage,
         };
       }
@@ -540,9 +581,27 @@
 
     <dl class="ad-meta">
       {#if header.ownerLabel}
+        {@const owner = ownerDisplay(header, ownerIndex)}
         <div>
           <dt>Owner</dt>
-          <dd data-testid="agent-detail-owner">{header.ownerLabel}</dd>
+          <dd
+            class="ad-owner"
+            data-testid="agent-detail-owner"
+            title={owner?.detail ?? undefined}
+          >
+            {#if owner}
+              <Avatar
+                name={owner.name}
+                id={header.ownerPersonUid ?? owner.key}
+                photo={ownerPhoto(header.ownerPersonUid)}
+                size={18}
+                testid="agent-detail-owner-avatar"
+              />
+              <PersonName person={owner} />
+            {:else}
+              {header.ownerLabel}
+            {/if}
+          </dd>
         </div>
       {/if}
       {#if header.companies.length > 0}
@@ -891,9 +950,22 @@
             </div>
           {/if}
           {#if view.header.ownerLabel}
+            {@const owner = ownerDisplay(view.header, ownerIndex)}
             <div>
               <dt>Owner</dt>
-              <dd>{view.header.ownerLabel}</dd>
+              <dd class="ad-owner" title={owner?.detail ?? undefined}>
+                {#if owner}
+                  <Avatar
+                    name={owner.name}
+                    id={view.header.ownerPersonUid ?? owner.key}
+                    photo={ownerPhoto(view.header.ownerPersonUid)}
+                    size={18}
+                  />
+                  <PersonName person={owner} />
+                {:else}
+                  {view.header.ownerLabel}
+                {/if}
+              </dd>
             </div>
           {/if}
         </dl>
@@ -1367,6 +1439,13 @@
     margin: 2px 0 0;
     color: var(--t1);
     font-size: 13px;
+  }
+
+  .ad-owner {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
   }
 
   .ad-uid {

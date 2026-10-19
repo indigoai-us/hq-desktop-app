@@ -4,6 +4,7 @@
  */
 
 import { getContext, setContext } from "svelte";
+import { contentBox, placePeek, placePeekBelow } from "./brief-layout.js";
 import type { BriefLine } from "./brief-types.js";
 import { loadSenderDms, type BriefDmApi, type BriefDmLoad } from "./brief-dms.js";
 
@@ -78,7 +79,8 @@ export async function launchBriefPromptViaClipboard(engine: BriefEngine, prompt:
 }
 
 export class BriefState {
-  peek = $state<{ content: PeekContent; x: number; y: number; side: "r" | "l" } | null>(null);
+  /** `anchorTop` is the hovered thing's top; the peek measures itself and keeps on screen (peekTop). */
+  peek = $state<{ content: PeekContent; x: number; anchorTop: number; side: "r" | "l" | "b"; anchorBottom?: number } | null>(null);
   engine = $state<BriefEngine>("claude");
   cleared = $state<Record<string, boolean>>({});
   notes = $state<Record<string, string>>({});
@@ -180,17 +182,21 @@ export class BriefState {
     return note;
   }
 
-  showPeek(anchor: HTMLElement, content: PeekContent): void {
+  showPeek(anchor: HTMLElement, content: PeekContent, place: PeekPlace = "side"): void {
     if (this.hideTimer) clearTimeout(this.hideTimer);
     if (this.showTimer) clearTimeout(this.showTimer);
-    this.showTimer = setTimeout(() => {
-      const r = anchor.getBoundingClientRect();
-      const w = 340;
-      const right = r.right + 16 + w < window.innerWidth;
-      const x = right ? r.right + 14 : Math.max(8, r.left - 14 - w);
-      const y = Math.max(16, Math.min(window.innerHeight - 380, r.top + r.height / 2 - 150));
-      this.peek = { content, x, y, side: right ? "r" : "l" };
-    }, 220);
+    const open = () => {
+      const view = { w: window.innerWidth, h: window.innerHeight };
+      // Beside what the hovered thing shows (its text), level with it; or under it for a row of neighbours.
+      const at =
+        place === "below"
+          ? placePeekBelow(anchor.getBoundingClientRect(), view)
+          : placePeek(place === "row" ? anchor.getBoundingClientRect() : contentBox(anchor), view);
+      this.peek = { content, ...at };
+    };
+    // A peek already open follows the pointer straight to the next thing; a fresh one waits a beat.
+    if (this.peek) open();
+    else this.showTimer = setTimeout(open, 220);
   }
 
   hidePeekSoon(): void {
@@ -213,9 +219,12 @@ export function useBrief(): BriefState {
 }
 
 /** `use:peek` for anything with more behind it. */
-export function peek(node: HTMLElement, args: { state: BriefState; content: () => PeekContent }) {
+/** side: beside what the thing shows (its text). row: beside the whole row, for rows with a hover plate. below: under it. */
+export type PeekPlace = "side" | "row" | "below";
+
+export function peek(node: HTMLElement, args: { state: BriefState; content: () => PeekContent; place?: PeekPlace }) {
   let current = args;
-  const enter = () => current.state.showPeek(node, current.content());
+  const enter = () => current.state.showPeek(node, current.content(), current.place);
   const leave = () => current.state.hidePeekSoon();
   node.addEventListener("mouseenter", enter);
   node.addEventListener("mouseleave", leave);

@@ -7,7 +7,7 @@
   import type { ImagePreviewCache } from "./image-preview-cache";
   import type { FileAttachmentModel } from "./channelMessageModels";
   import { attachmentPreviewKind } from "./attachment-preview";
-  import { fileTypeLabel } from "./chat-attachments";
+  import { attachmentBadgeLabel } from "./chat-attachments";
 
   interface Props {
     attachments: FileAttachmentModel[];
@@ -133,7 +133,7 @@
           onclick={() => onopen?.(item)}
         >
           <span class="att-icon" aria-hidden="true"
-            >{fileTypeLabel(item.name, item.contentType)}</span
+            >{attachmentBadgeLabel(item)}</span
           >
           <span class="att-copy">
             <span class="att-name">{item.name}</span>
@@ -222,8 +222,9 @@
     flex: 0 0 auto;
     display: grid;
     place-items: center;
-    width: 28px;
+    min-width: 28px;
     height: 28px;
+    padding: 0 5px;
     border-radius: 6px;
     background: rgba(255, 255, 255, 0.08);
     color: var(--t2);

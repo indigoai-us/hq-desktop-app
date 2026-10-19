@@ -121,7 +121,18 @@
     openUrl,
     refresh,
     started,
-  }: CardModalContentProps = $props();
+    ondisconnect,
+  }: CardModalContentProps & { ondisconnect?: () => Promise<void> } = $props();
+  let disconnectConfirm = $state(false);
+  let disconnectBusy = $state(false);
+  let disconnectError = $state('');
+  async function disconnect() {
+    if (!ondisconnect || disconnectBusy) return;
+    disconnectBusy = true; disconnectError = '';
+    try { await ondisconnect(); frame.onclose(); }
+    catch { disconnectError = 'Could not disconnect Slack. Refresh and try again.'; }
+    finally { disconnectBusy = false; }
+  }
 
   // What this modal has done. None of it is stored: opening the modal again
   // starts from the bot's status.
@@ -311,7 +322,7 @@
   $effect(() => {
     const needs = view.needsAttach;
     untrack(() => {
-      if (!needs || autoStarted) return;
+      if (!needs || autoStarted || disconnectBusy || disconnectConfirm) return;
       autoStarted = true;
       void start();
     });
@@ -441,6 +452,7 @@
   }
 
   function close(): void {
+    if (disconnectBusy) return;
     token = "";
     autoSent = null;
     tokenError = null;
@@ -466,7 +478,7 @@
   });
 </script>
 
-<CardModal {...frame} title={view.title} onclose={close} busy={view.busy} steps={view.indicator}>
+<CardModal {...frame} title={view.title} onclose={close} busy={view.busy || disconnectBusy} steps={view.indicator}>
   {#snippet body()}
     <div class="slack-connect" data-testid="slack-connect" data-stage={view.stage} bind:this={root}>
       {#if view.stage === "blocked" && view.blocked}
@@ -621,6 +633,17 @@
         Connect
       </button>
     {:else if view.stage === "connected"}
+      {#if disconnectError}<p role="alert">{disconnectError}</p>{/if}
+      {#if ondisconnect}
+        {#if disconnectConfirm}
+          <p>Disconnect Slack? This bot will stop receiving Slack messages.</p>
+          <button type="button" class="card-modal-btn is-quiet" disabled={disconnectBusy} onclick={() => disconnectConfirm = false}>Cancel</button>
+          <button type="button" class="card-modal-btn is-quiet" disabled={disconnectBusy} onclick={() => void disconnect()}>Confirm disconnect</button>
+        {:else}<button type="button" class="card-modal-btn is-quiet" onclick={() => disconnectConfirm = true}>Disconnect Slack</button>{/if}
+      {/if}
+      {#if view.appPageUrl}
+        <button type="button" class="card-modal-btn is-quiet" data-testid="slack-connect-settings" onclick={openAppPage}><RailIcon name="sliders" />Slack app settings</button>
+      {/if}
       {#if view.botUrl}
         <button type="button" class="card-modal-btn is-quiet" data-testid="slack-connect-finish" onclick={close}><RailIcon name="check" />Done</button>
         <button

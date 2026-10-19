@@ -221,7 +221,10 @@ describe("official brand marks (OWNER-013)", () => {
     expect(BRAND_ICONS["claude-code"].d.startsWith("M18.7657 62.4437L37.1822 52.1167")).toBe(true);
     expect(BRAND_ICONS.codex).toMatchObject({ viewBox: "176 176 364 364", fill: "mono" });
     expect(BRAND_ICONS.codex.d.startsWith("M508.749 317.399C516.777 287.314")).toBe(true);
-    expect(BRAND_ICONS.grok).toMatchObject({ viewBox: "0 0 16 16", fill: "current" });
+    // Grok: xAI's official mark (both sweeps), drawn in the current colour.
+    expect(BRAND_ICONS.grok).toMatchObject({ viewBox: "0.36 0.5 33.33 32", fill: "current" });
+    expect(BRAND_ICONS.grok.d.startsWith("M13.2371 21.0407L24.3186 12.8506")).toBe(true);
+    expect(BRAND_ICONS.grok.d).toContain("M10.9503 23.0313C7.07343 19.3235");
   });
 
   it("renders each mark at 14px with its own viewBox and colour treatment", () => {

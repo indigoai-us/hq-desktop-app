@@ -112,7 +112,7 @@ export function inviteErrorMessage(kind: InviteErrorKind): string {
     case 'already_member':
       return 'This person is already a member of your company.';
     case 'plan_limit':
-      return 'Your plan has no free seats for another teammate. Upgrade your plan or skip for now.';
+      return "This company's plan does not allow another teammate right now. Check billing in company settings, or skip for now.";
     case 'invalid_email':
       return 'HQ could not use that email address. Check it and try again.';
     case 'forbidden':

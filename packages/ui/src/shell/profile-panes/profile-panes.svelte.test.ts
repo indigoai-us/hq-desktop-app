@@ -43,7 +43,7 @@ describe("ProfilePaneHost", () => {
     await tick();
     const person = host.querySelector('[data-testid="profile-badges"]');
     expect(person?.textContent).toContain("Badges 5");
-    expect([...(person?.querySelectorAll("canvas") ?? [])].map((c) => c.getAttribute("data-badge"))).toEqual([
+    expect([...(person?.querySelectorAll("svg[data-badge]") ?? [])].map((c) => c.getAttribute("data-badge"))).toEqual([
       "liftoff",
       "bughunter",
       "poweruser",
@@ -89,13 +89,11 @@ describe("ProfilePaneHost", () => {
     await tick();
     expect(host.querySelector('[data-testid="bot-profile-pane"]')?.getAttribute("data-phase")).toBe("ready");
     expect(host.querySelector('[data-testid="bot-profile-loading"]')).toBeNull();
-    (host.querySelector('[data-testid="bot-profile-edit"]') as HTMLButtonElement).click();
+    (host.querySelector('.details-button') as HTMLButtonElement).click();
     await tick();
-    expect(host.querySelector('[data-testid="edit-bot-sheet"]')).not.toBeNull();
-    expect(host.querySelector('[data-testid="edit-bot-tab-identity"]')?.getAttribute("aria-selected")).toBe("true");
-    (host.querySelector('[data-testid="edit-bot-tab-runtime"]') as HTMLButtonElement).click();
-    await tick();
-    expect(host.textContent).toContain("heartbeat");
+    expect(host.querySelector('[data-testid="bot-identity-editor"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="edit-bot-name"]')).not.toBeNull();
+    expect(host.textContent).toContain("Profile editing is not available");
   });
 
   it("opens a person profile with the loader when the name is empty", async () => {
@@ -137,7 +135,7 @@ describe("ProfilePaneHost", () => {
     expect(calls).toEqual(["atlas", "manage"]);
   });
 
-  it("confirms Stop and switches the session to the ended state", async () => {
+  it("cancels Stop without displaying a fabricated session outcome", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);
     mount(ProfilePaneHost, {
@@ -145,18 +143,14 @@ describe("ProfilePaneHost", () => {
       props: { kind: "bot", name: "deacon", live: true },
     });
     await tick();
-    (host.querySelector('[data-testid="bot-profile-session"]') as HTMLButtonElement).click();
+    (host.querySelector('[data-testid="bot-profile-stop"]') as HTMLButtonElement).click();
     await tick();
-    expect(host.querySelector('[data-testid="bot-session-pane"]')?.getAttribute("data-phase")).toBe("live");
-    (host.querySelector('[data-testid="bot-session-stop"]') as HTMLButtonElement).click();
+    expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain('Stop bot?');
+    (document.querySelector('[data-testid="confirm-dialog-cancel"]') as HTMLButtonElement).click();
     await tick();
-    expect(host.querySelector('[data-testid="bot-session-confirm"]')).not.toBeNull();
-    expect(host.querySelector('[data-testid="bot-session-pane"]')?.getAttribute("data-phase")).toBe("confirm-stop");
-    (host.querySelector('[data-testid="bot-session-stop-confirm"]') as HTMLButtonElement).click();
-    await tick();
-    expect(host.querySelector('[data-testid="bot-session-pane"]')?.getAttribute("data-phase")).toBe("ended");
-    expect(host.querySelector('[data-testid="bot-session-outcome"]')?.textContent).toContain("Stopped");
-    expect(host.querySelector('[data-testid="bot-session-stats"]')?.textContent).toContain("turns");
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(host.querySelector('[data-testid="bot-profile-pane"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="bot-session-outcome"]')).toBeNull();
   });
 });
 

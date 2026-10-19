@@ -27,6 +27,8 @@ const SOURCES = [join(ROOT, "packages/ui/src"), join(ROOT, "apps/sync/src")];
 
 // Uses of the words that are not a visual placeholder.
 const ALLOWED: Record<string, RegExp> = {
+  // Explicit bot-management design request: one shared skeleton, retaining ReadLoader.
+  "packages/ui/src/shell/profile-panes/BotTabSkeleton.svelte": /skeleton/,
   // The toast's indeterminate progress bar.
   "packages/ui/src/shell/ToastStack.svelte": /ts-shimmer/,
   // A text line ("Connecting to the notetaker…"), not a grey block.

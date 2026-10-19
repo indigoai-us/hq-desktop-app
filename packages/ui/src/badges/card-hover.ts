@@ -4,13 +4,24 @@
  * and a light follows it, eased the same way as BadgeCard.svelte, with the
  * same tilt and camera (badge-card.ts). The element gets the transform and
  * the `--light-x`, `--light-y` and `--light` custom properties its own CSS
- * paints from. Reduced motion keeps it flat. The loop runs only while
- * something is still moving, and never while the window is hidden.
+ * paints from, and `onlight` (if given) the same light after every paint, for
+ * a light drawn in a canvas (back-holo.ts). Reduced motion keeps it flat. The
+ * loop runs only while something is still moving, and never while the window
+ * is hidden.
  */
 
 import { cardTilt, cardTransform, pointerOnCard, prefersReducedMotion } from "./badge-card.js";
+import type { BackLight } from "./back-holo.js";
 
-export function cardHover(node: HTMLElement, enabled: boolean) {
+export interface CardHoverOptions {
+  enabled: boolean;
+  /** Called after every paint with the light and the tilt. */
+  onlight?: (light: BackLight) => void;
+}
+
+export function cardHover(node: HTMLElement, options: boolean | CardHoverOptions) {
+  const read = (o: boolean | CardHoverOptions): CardHoverOptions => (typeof o === "boolean" ? { enabled: o } : o);
+  let onlight = read(options).onlight;
   const s = { px: 0, py: 0, target: 0, hover: 0, tx: 0, ty: 0, lx: 0.2, ly: -0.25 };
   let raf = 0;
   let lastAt = 0;
@@ -21,6 +32,7 @@ export function cardHover(node: HTMLElement, enabled: boolean) {
     node.style.setProperty("--light-x", `${((s.lx + 1) * 50).toFixed(1)}%`);
     node.style.setProperty("--light-y", `${((s.ly + 1) * 50).toFixed(1)}%`);
     node.style.setProperty("--light", s.hover.toFixed(3));
+    onlight?.({ x: s.lx, y: s.ly, hover: s.hover, tiltX: s.tx, tiltY: s.ty });
   }
 
   function step(dt: number): boolean {
@@ -87,11 +99,13 @@ export function cardHover(node: HTMLElement, enabled: boolean) {
     paint();
   }
 
-  if (enabled) start();
+  if (read(options).enabled) start();
   paint();
   return {
-    update(next: boolean) {
-      if (next) start();
+    update(next: boolean | CardHoverOptions) {
+      const o = read(next);
+      onlight = o.onlight;
+      if (o.enabled) start();
       else stop();
     },
     destroy() {

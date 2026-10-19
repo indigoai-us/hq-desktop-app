@@ -9,9 +9,25 @@
   import BriefLogo from "./BriefLogo.svelte";
   import BriefPeekDms from "./BriefPeekDms.svelte";
   import { ENGINES, copyBriefPrompt, useBrief } from "./brief-context.svelte.js";
+  import { peekTop, stackPeek } from "./brief-layout.js";
 
-  const PEEK_MAX_LINES = 5;
   const brief = useBrief();
+  // Level with the hovered thing; moved up only as far as its measured height needs to stay on screen.
+  let peekH = $state(0);
+  // A below-placed peek decides from its natural (unscrolled) height, so capping it never flips the choice.
+  let el = $state<HTMLDivElement | null>(null);
+  let natH = $state(0);
+  $effect(() => {
+    void brief.peek;
+    if (el) natH = el.scrollHeight;
+  });
+  const viewH = () => (typeof window === "undefined" ? 900 : window.innerHeight);
+  const pos = $derived.by(() => {
+    const p = brief.peek;
+    if (!p) return { top: 0, maxH: 460 };
+    if (p.side === "b" && p.anchorBottom != null) return stackPeek({ top: p.anchorTop, bottom: p.anchorBottom }, natH || peekH, viewH());
+    return { top: peekTop(p.anchorTop, peekH, viewH()), maxH: Math.min(460, viewH() - 32) };
+  });
   const engine = $derived(ENGINES.find((e) => e.id === brief.engine)!);
   let copied = $state(false);
 
@@ -30,9 +46,11 @@
     tabindex="-1"
     aria-label={p.content.title}
     data-testid="brief-peek"
+    bind:this={el}
+    bind:offsetHeight={peekH}
     style:left="{p.x}px"
-    style:top="{p.y}px"
-    style:max-height="calc(100vh - {p.y + 16}px)"
+    style:top="{pos.top}px"
+    style:max-height="{pos.maxH}px"
     onmouseenter={() => brief.keepPeek()}
     onmouseleave={() => brief.hidePeekSoon()}
   >
@@ -53,10 +71,10 @@
     {#if p.content.status}<div class="st">{p.content.status}</div>{/if}
     {#each p.content.sections as s, i (i)}
       <div class="sec">
-        <div class="eyebrow {s.tone ? `tone-${s.tone}` : ''}">{s.label}</div>
+        {#if s.label}<div class="eyebrow {s.tone ? `tone-${s.tone}` : ''}">{s.label}</div>{/if}
         {#if s.text}<p>{s.text}</p>{/if}
-        <!-- Never more than five lines: past that a list stops being readable. -->
-        {#each (s.lines ?? []).slice(0, PEEK_MAX_LINES) as line, j (j)}
+        <!-- The full list: the card scrolls past its max height rather than folding into "+N more". -->
+        {#each s.lines ?? [] as line, j (j)}
           <div class="li" data-testid="brief-peek-line">
             <div>{line.label}{#if line.tag}<i class="tag" data-testid="brief-peek-tag">{line.tag}</i>{/if}</div><span class="tone-{line.tone ?? 'neutral'}">{line.state}</span>
           </div>
@@ -69,7 +87,6 @@
             {#if brief.notes[lp.id]}<div class="note" role="status">{brief.notes[lp.id]}</div>{/if}
           {/if}
         {/each}
-        {#if (s.lines?.length ?? 0) > PEEK_MAX_LINES}<div class="more">+{s.lines!.length - PEEK_MAX_LINES} more</div>{/if}
       </div>
     {/each}
     {#if p.content.actions?.length}
@@ -104,20 +121,18 @@
 {/if}
 
 <style>
-  .more {
-    margin-top: 6px;
-    font-size: 12px;
-    color: var(--b-t3);
-  }
   .peek-act {
     all: unset;
     cursor: pointer;
-    font-size: 12.5px;
+    font-family: var(--b-code);
+    font-size: 10px;
     font-weight: 500;
-    padding: 6px 14px;
-    border-radius: 999px;
-    color: #1b1b1e;
-    background: rgba(255, 255, 255, 0.92);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 8px 12px;
+    border-radius: 8px;
+    color: var(--b-bg);
+    background: rgb(var(--b-ink) / 0.92);
   }
   .head {
     display: flex;
@@ -126,21 +141,30 @@
     gap: 10px;
     margin-bottom: 8px;
   }
+  /* The card's kind, in the shared label style: mono, all caps. */
   .head .eyebrow {
     white-space: nowrap;
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--b-t3);
   }
   .ochip {
     display: inline-flex;
     align-items: center;
     gap: 6px;
     min-width: 0;
-    font-size: 11.5px;
+    font-size: 11px;
     color: var(--b-t2);
     white-space: nowrap;
   }
   .compact :global(.ttl) {
-    font-size: 19px;
+    font-size: 15px;
+    line-height: 1.3;
   }
+  /* Two equal buttons, 30px tall: the primary filled in page ink, Copy as a hairline outline. */
   .pills {
     display: flex;
     gap: 8px;
@@ -148,18 +172,35 @@
   }
   .pill {
     all: unset;
+    box-sizing: border-box;
     cursor: pointer;
-    font-size: 12.5px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 1;
+    height: 30px;
+    padding: 0 12px;
+    font-family: var(--b-code);
+    font-size: 10px;
     font-weight: 500;
-    padding: 7px 14px;
-    border-radius: 999px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    border-radius: 8px;
     color: var(--b-t1, #fff);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+    box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.14);
+    transition: background 0.15s;
+  }
+  .pill:hover {
+    background: rgb(var(--b-ink) / 0.05);
   }
   .pill.go {
-    color: #1b1b1e;
-    background: rgba(255, 255, 255, 0.92);
+    color: var(--b-bg);
+    background: rgb(var(--b-ink) / 0.92);
     box-shadow: none;
+  }
+  .pill.go:hover {
+    background: rgb(var(--b-ink) / 0.8);
   }
   .pill:focus-visible {
     outline: 2px solid var(--b-sun, #ffb580);
@@ -169,23 +210,26 @@
     margin: 4px 0 6px;
   }
   .pills.small .pill {
-    font-size: 11.5px;
-    padding: 4px 11px;
+    flex: none;
+    height: 24px;
+    font-size: 10px;
+    padding: 0 10px;
   }
+  /* The shared highlight label (terracotta, white, fully rounded). */
   .tag {
     margin-left: 6px;
-    padding: 0 6px;
+    padding: 2px 8px;
     border-radius: 999px;
-    font-family: var(--b-mono);
-    font-size: 9.5px;
+    font-family: var(--b-ui);
+    font-size: 11px;
     font-style: normal;
-    letter-spacing: 0.06em;
-    color: #1b1b1e;
-    background: var(--b-sun, #ffb580);
+    letter-spacing: 0;
+    color: var(--b-on-hot, #fff);
+    background: var(--b-hot, #c9765a);
   }
   .note {
     margin-top: 8px;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--b-t2);
   }
 </style>

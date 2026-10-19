@@ -119,13 +119,14 @@
 <style>
   .you-wrap { position: relative; display: inline-flex; align-items: center; }
   .trigger { display: inline-flex; }
-  /* The account menu's surface: solid, so nothing reads through it. Opens
-     to the right of the button, its bottom level with the button's, clear
-     of the rail's edge by 8px like the rail tooltips. */
+  /* Solid at every window-transparency setting, so the sidebar never reads
+     through it (the overlay surface turns translucent as transparency goes
+     up). Opens to the right of the button, its bottom level with the
+     button's, clear of the rail's edge by 8px like the rail tooltips. */
   .card {
     position: absolute; left: calc(100% + 18px); bottom: 0; z-index: 10001;
     box-sizing: border-box; width: 300px; padding: 12px 12px 8px;
-    background: var(--overlay-bg);
+    background: var(--overlay-bg-solid, var(--overlay-bg));
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-popover, 8px);
     box-shadow: var(--v4-shadow-popover);
