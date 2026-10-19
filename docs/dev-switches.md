@@ -23,8 +23,9 @@ Code: `apps/sync/src-tauri/src/scratch_build.rs`.
 
 `HQ_CORE_PRERELEASE=1` lets a walk or demo build install and offer the HQ Core
 beta. Code: `apps/sync/src-tauri/src/demo_build.rs`. It is compiled in with
-`option_env!` like the switches above, and it works with or without
-`HQ_SCRATCH_BUILD`.
+`option_env!` like the switches above. A scratch build (`HQ_SCRATCH_BUILD=1`)
+turns off the HQ Core auto-installer, so there the update half of this switch
+does nothing. Build without `HQ_SCRATCH_BUILD` to walk the HQ Core update.
 
 | Switch | What it does |
 | --- | --- |

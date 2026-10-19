@@ -3,8 +3,9 @@
 // (docs/dev-switches.md, apps/sync/src-tauri/src/demo_build.rs).
 //
 // It is read at build time, so a shipped build has it only if the release
-// path sets it. This test fails if any workflow, build script, package script
-// or Tauri config does, and pins that the code reads it at build time only.
+// path sets it. This test fails if any workflow, composite action, build
+// script, Cargo build config, Cargo build script, package script or Tauri
+// config does, and pins that the code reads it at build time only.
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +17,22 @@ const SWITCH = "HQ_CORE_PRERELEASE";
 async function filesIn(dir: string, match: (name: string) => boolean): Promise<string[]> {
   const entries = await readdir(resolve(rootDir, dir), { withFileTypes: true });
   return entries.filter((e) => e.isFile() && match(e.name)).map((e) => join(dir, e.name));
+}
+
+const SKIP_DIRS = new Set([".git", "node_modules", "target", "dist", ".turbo"]);
+
+async function walk(dir: string, match: (path: string) => boolean): Promise<string[]> {
+  const entries = await readdir(resolve(rootDir, dir), { withFileTypes: true }).catch(() => []);
+  const found: string[] = [];
+  for (const e of entries) {
+    const path = join(dir, e.name);
+    if (e.isDirectory()) {
+      if (!SKIP_DIRS.has(e.name)) found.push(...(await walk(path, match)));
+    } else if (e.isFile() && match(path)) {
+      found.push(path);
+    }
+  }
+  return found;
 }
 
 async function read(path: string): Promise<string> {
@@ -52,6 +69,17 @@ describe("HQ_CORE_PRERELEASE", () => {
     const rust = await read("apps/sync/src-tauri/src/demo_build.rs");
     expect(rust).toContain(`option_env!("${SWITCH}")`);
     expect(rust).not.toMatch(/std::env::var(_os)?\("HQ_CORE_PRERELEASE"/);
+  });
+
+  it("is never set by a composite action, Cargo config or Cargo build script", async () => {
+    const actions = await walk(".github/actions", () => true);
+    const cargoConfigs = await walk(".", (p) => /(^|\/)\.cargo\/config(\.toml)?$/.test(p));
+    const buildScripts = await walk(".", (p) => /(^|\/)build\.rs$/.test(p));
+    expect(actions).toContain(join(".github/actions", "pinned-rust-toolchain", "action.yml"));
+    expect(buildScripts).toContain(join("apps/sync/src-tauri", "build.rs"));
+    for (const path of [...actions, ...cargoConfigs, ...buildScripts]) {
+      expect((await read(path)).includes(SWITCH), `${path} mentions ${SWITCH}`).toBe(false);
+    }
   });
 
   it("is in the dev doc", async () => {

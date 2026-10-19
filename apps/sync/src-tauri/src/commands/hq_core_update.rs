@@ -1230,6 +1230,24 @@ mod tests {
         ]"#;
         assert_eq!(latest_tag_from_body(list, true).unwrap(), "16.0.31-beta.7");
 
+        // A lower accepted entry listed first must not win.
+        let stable_first = br#"[
+            {"tag_name":"v16.0.31","prerelease":false,"draft":false},
+            {"tag_name":"v16.0.32-beta.1","prerelease":true,"draft":false}
+        ]"#;
+        assert_eq!(
+            latest_tag_from_body(stable_first, true).unwrap(),
+            "16.0.32-beta.1"
+        );
+        let beta6_first = br#"[
+            {"tag_name":"v16.0.31-beta.6","prerelease":true,"draft":false},
+            {"tag_name":"v16.0.31-beta.10","prerelease":true,"draft":false}
+        ]"#;
+        assert_eq!(
+            latest_tag_from_body(beta6_first, true).unwrap(),
+            "16.0.31-beta.10"
+        );
+
         let stable_only = br#"[{"tag_name":"v16.0.30","prerelease":false,"draft":false}]"#;
         let err = latest_tag_from_body(stable_only, true).unwrap_err();
         assert!(err.contains("16.0.31-beta.6"), "{err}");

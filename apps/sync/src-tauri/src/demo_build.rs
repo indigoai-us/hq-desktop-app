@@ -3,7 +3,7 @@
 //! Read with `option_env!`, like the switches in `scratch_build.rs`, so a
 //! bundle opened from Finder keeps it and a build made without it can never
 //! turn it on. The release workflows never set it
-//! (`scripts/dev-switches-contract.test.ts` pins that). Docs:
+//! (`scripts/demo-core-prerelease-contract.test.ts` pins that). Docs:
 //! `docs/dev-switches.md`.
 //!
 //! When it is on, first-run setup (`commands/content.rs`) and the HQ Core
@@ -230,6 +230,19 @@ mod tests {
         ];
         assert_eq!(pick(&list, true), Some("v16.0.32-beta.1"));
         assert_eq!(pick(&list, false), Some("v16.0.30"));
+    }
+
+    /// An accepted, lower version listed first must not win. "Take the first
+    /// accepted entry" fails both lists.
+    #[test]
+    fn switch_on_skips_a_lower_accepted_entry_listed_first() {
+        let stable_first = [stable("v16.0.31"), beta("v16.0.32-beta.1")];
+        assert_eq!(pick(&stable_first, true), Some("v16.0.32-beta.1"));
+        assert_eq!(pick(&stable_first, false), Some("v16.0.31"));
+
+        let beta6_first = [beta("v16.0.31-beta.6"), beta("v16.0.31-beta.10")];
+        assert_eq!(pick(&beta6_first, true), Some("v16.0.31-beta.10"));
+        assert_eq!(pick(&beta6_first, false), None);
     }
 
     #[test]

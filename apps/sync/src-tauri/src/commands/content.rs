@@ -2866,6 +2866,28 @@ mod api_free_release_fallback_tests {
             (on.tag_name.as_str(), on.tarball_url.as_str()),
             ("v16.0.31-beta.7", "b7")
         );
+
+        // A lower accepted entry listed first must not win.
+        for (body, tag) in [
+            (
+                r#"[
+                    {"tag_name":"v16.0.31","tarball_url":"s","prerelease":false,"draft":false},
+                    {"tag_name":"v16.0.32-beta.1","tarball_url":"b","prerelease":true,"draft":false}
+                ]"#,
+                "v16.0.32-beta.1",
+            ),
+            (
+                r#"[
+                    {"tag_name":"v16.0.31-beta.6","tarball_url":"b6","prerelease":true,"draft":false},
+                    {"tag_name":"v16.0.31-beta.10","tarball_url":"b10","prerelease":true,"draft":false}
+                ]"#,
+                "v16.0.31-beta.10",
+            ),
+        ] {
+            let list = serde_json::from_str::<Vec<ReleaseInfo>>(body).unwrap();
+            let on = crate::demo_build::select_core_release(list, true).unwrap();
+            assert_eq!(on.tag_name, tag);
+        }
     }
 
     #[test]
