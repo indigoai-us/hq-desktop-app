@@ -8085,7 +8085,7 @@ fn git_permission_payload(state: GitPermissionState) -> serde_json::Value {
 
 #[cfg_attr(not(windows), allow(dead_code))]
 fn emit_git_permission<R: tauri::Runtime>(app: &AppHandle<R>, state: GitPermissionState) {
-    let _ = app.emit(GIT_PERMISSION_EVENT, git_permission_payload(state));
+    let _ = app.emit_to("main", GIT_PERMISSION_EVENT, git_permission_payload(state));
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8112,7 +8112,7 @@ fn deps_tool_settled_state(status: &DepInstallStatus) -> DepsToolState {
 }
 
 fn emit_deps_tool<R: tauri::Runtime>(app: &AppHandle<R>, id: &str, state: DepsToolState) {
-    let _ = app.emit(DEPS_TOOL_EVENT, deps_tool_payload(id, state));
+    let _ = app.emit_to("main", DEPS_TOOL_EVENT, deps_tool_payload(id, state));
 }
 const QMD_POST_INSTALL_PROBE_COMMAND: &str = "qmd post-install probe";
 
