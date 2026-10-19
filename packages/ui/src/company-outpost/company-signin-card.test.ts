@@ -396,5 +396,38 @@ describe("neutral not-available-yet state", () => {
     expect(target.textContent).not.toMatch(MONEY_WORDS);
     expect(target.querySelector("[data-testid='company-signin-refresh']")).toBeNull();
   });
+
+  it("stops polling once a new link comes back not available", async () => {
+    vi.useFakeTimers();
+    try {
+      const post = vi.fn<CompanySignInPost>(async (body) =>
+        body.action === "regenerate"
+          ? { ok: false, status: 402, code: "payment_required" }
+          : { ok: true, status: 200, body: { signIn: { signedIn: false, state: "awaiting_sign_in", loginUrl: URL } } });
+      const target = document.createElement("div");
+      document.body.appendChild(target);
+      component = mount(CompanySignInPanel, {
+        target,
+        props: {
+          role: "admin",
+          companyUid: "cmp_indigo",
+          client: createCompanySignInClient({ companyUid: "cmp_indigo", role: "admin", post }),
+        },
+      }) as Record<string, unknown>;
+      await vi.advanceTimersByTimeAsync(0);
+      flushSync();
+      target.querySelector<HTMLButtonElement>("[data-testid='company-signin-new-link']")?.click();
+      await vi.advanceTimersByTimeAsync(0);
+      flushSync();
+      expect(target.querySelector("[data-testid='company-signin-card']")?.getAttribute("data-phase")).toBe("not_available");
+      const calls = post.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(60_000);
+      flushSync();
+      expect(post.mock.calls.length).toBe(calls);
+      expect(target.querySelector("[data-testid='company-signin-card']")?.getAttribute("data-phase")).toBe("not_available");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 

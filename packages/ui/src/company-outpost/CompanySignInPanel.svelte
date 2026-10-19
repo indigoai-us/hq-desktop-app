@@ -57,7 +57,7 @@
   });
 
   $effect(() => {
-    if (preview || !client || !canManage) return;
+    if (preview || !client || !canManage || failure === "not_available") return;
     const delay = signInPollDelayMs(view, finishingUntil !== null);
     if (delay === null) return;
     const timer = setInterval(() => { void load(false); }, delay);
