@@ -1053,98 +1053,45 @@ describe('welcome flow: the backdrop', () => {
   });
 });
 
-describe("welcome flow: Apple's developer tools", () => {
-  const missingTools = { required: true, present: false, installerOpen: false, simulated: false };
-  const installerOpen = { ...missingTools, installerOpen: true };
-  const toolsReady = { ...missingTools, present: true };
+describe('welcome flow: a Mac without Apple developer tools', () => {
+  // A bare Mac: no Command Line Tools, so /usr/bin/git, python3, make and
+  // clang are Apple's install shims. Setup must run every stage on the
+  // managed git and Node it installs itself, and never ask macOS to install
+  // the tools. The host answers any old tools query as "missing".
+  const noTools = { required: true, present: false, installerOpen: false, simulated: false };
 
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  async function advance(ms: number) {
-    await vi.advanceTimersByTimeAsync(ms);
-    await flush();
-  }
-
-  it('shows the waiting card before asking macOS to install, then resumes at the same stage', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
-    let status: Record<string, boolean> = missingTools;
-    let cardUpWhenInstallStarted = false;
+  it('runs every setup stage without asking for or waiting on the Apple tools', async () => {
     stubInvoke({
-      command_line_tools_status: () => status,
-      command_line_tools_start_install: () => {
-        cardUpWhenInstallStarted = !!byId('onboarding-clt-card');
-        status = installerOpen;
-        return status;
-      },
+      command_line_tools_status: () => noTools,
+      command_line_tools_start_install: () => noTools,
       command_line_tools_show_installer: () => true,
     });
     mountAt(2);
-    for (let i = 0; i < 20 && !commands().includes('command_line_tools_start_install'); i += 1) await advance(20);
+    await flushUntil(() => commands().includes('register_search_index'), 'the indexing stage');
 
-    expect(cardUpWhenInstallStarted).toBe(true);
-    const card = byId<HTMLElement>('onboarding-clt-card')!;
-    expect(card.dataset.phase).toBe('installing');
-    expect(card.textContent).toContain("Installing Apple's developer tools");
-    expect(card.textContent).toContain('5 to 15 minutes');
-    expect(card.textContent).toContain('continues on its own');
-    expect(byId('onboarding-clt-progress')).not.toBeNull();
-    expect(commands()).toContain('command_line_tools_show_installer');
-    expect(commands()).not.toContain('start_install_queue');
-    expect(commands()).not.toContain('git_init');
-
-    byId('onboarding-clt-show')!.click();
-    await flush();
-    expect(commands().filter((c) => c === 'command_line_tools_show_installer').length).toBeGreaterThanOrEqual(2);
-
-    status = toolsReady;
-    for (let i = 0; i < 20 && !commands().includes('git_init'); i += 1) await advance(1_000);
-    expect(byId('onboarding-clt-card')).toBeNull();
-    expect(commands()).toContain('start_install_queue');
-    expect(commands()).toContain('git_init');
-    expect(commands().filter((c) => c === 'fetch_and_extract_template')).toHaveLength(1);
-    expect(commands().filter((c) => c === 'command_line_tools_start_install')).toHaveLength(1);
+    // Blocking stages run first, then the background stages.
+    const stageCommands = [
+      'fetch_and_extract_template',
+      'git_init',
+      'personalize_hq',
+      'start_install_queue',
+      'start_initial_cloud_sync',
+      'register_search_index',
+    ];
+    for (const command of stageCommands) expect(commands()).toContain(command);
+    const order = stageCommands.map((command) => commands().indexOf(command));
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(commands().filter((c) => c.startsWith('command_line_tools'))).toEqual([]);
+    expect(host.querySelector('[data-testid^="onboarding-clt"]')).toBeNull();
+    expect(host.textContent ?? '').not.toContain("Apple's developer tools");
   });
 
-  it('offers a plain retry when the Apple install is cancelled, and carries on after it', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    let status: Record<string, boolean> = missingTools;
-    let starts = 0;
-    stubInvoke({
-      command_line_tools_status: () => status,
-      command_line_tools_start_install: () => {
-        starts += 1;
-        status = starts === 1 ? installerOpen : toolsReady;
-        return status;
-      },
-      command_line_tools_show_installer: () => true,
-    });
-    mountAt(2);
-    for (let i = 0; i < 20 && starts === 0; i += 1) await advance(20);
-    status = missingTools; // the person pressed Cancel or Disagree
-    for (let i = 0; i < 20 && byId<HTMLElement>('onboarding-clt-card')?.dataset.phase !== 'cancelled'; i += 1) {
-      await advance(1_000);
-    }
-    const card = byId<HTMLElement>('onboarding-clt-card')!;
-    expect(card.dataset.phase).toBe('cancelled');
-    expect(card.textContent).toContain("Apple's developer tools are not installed yet");
-    expect(card.textContent).not.toMatch(/error|failed|exit|status \d/i);
-    expect(commands()).not.toContain('start_install_queue');
-
-    byId('onboarding-clt-retry')!.click();
-    for (let i = 0; i < 20 && !commands().includes('start_install_queue'); i += 1) await advance(1_000);
-    expect(starts).toBe(2);
-    expect(byId('onboarding-clt-card')).toBeNull();
-    expect(commands()).toContain('start_install_queue');
-  });
-
-  it('shows nothing and never starts an install when the tools are present', async () => {
-    stubInvoke({ command_line_tools_status: () => toolsReady });
+  it('installs the managed git before the git stage runs', async () => {
+    stubInvoke();
     mountAt(2);
     await flushUntil(() => commands().includes('git_init'), 'the git stage');
-    expect(byId('onboarding-clt-card')).toBeNull();
-    expect(commands()).not.toContain('command_line_tools_start_install');
+    const installGit = commands().indexOf('install_git');
+    expect(installGit).toBeGreaterThanOrEqual(0);
+    expect(installGit).toBeLessThan(commands().indexOf('git_init'));
   });
 });

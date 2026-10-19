@@ -8,7 +8,6 @@ import { conflictNoticesSwitch, readsSwitch, switchedHandler, withReadsSwitch } 
 import { emit } from './event';
 import { deployAppsFixture } from '../../../../packages/ui/src/library/personal-deployments.fixture';
 import { companyFlowAnswer, companyFlowEnabled, NOT_HANDLED } from '../company-flow-mocks';
-import { commandLineToolsAnswer } from '../clt-mocks';
 import { storageAnswer } from '../storage-mocks';
 
 const settings = {
@@ -2060,8 +2059,6 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
       .__hqInvokeCounts ??= {});
     counts[cmd] = (counts[cmd] ?? 0) + 1;
   }
-  const clt = commandLineToolsAnswer(cmd);
-  if (clt !== NOT_HANDLED) return clt as T;
   const storage = storageAnswer(cmd);
   if (storage !== NOT_HANDLED) return storage as T;
   if (companyFlowEnabled()) {
