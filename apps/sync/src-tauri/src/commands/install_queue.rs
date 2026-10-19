@@ -105,6 +105,68 @@ async fn wait_until(pred: impl Fn(&QueueRuntime) -> bool) {
     }
 }
 
+/// Where the queue's Node install stands, for a caller that must not start a
+/// second Node install beside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NodeInstall {
+    /// The queue is not installing Node in this process.
+    NotRunning,
+    /// The queue is installing Node right now.
+    Running,
+    /// The queue's Node install ended with Node in place.
+    Finished,
+    /// The queue's Node install failed with this error.
+    Failed(String),
+}
+
+fn node_install_in(rt: &QueueRuntime) -> NodeInstall {
+    let Some(manifest) = rt.manifest.as_ref() else {
+        return NodeInstall::NotRunning;
+    };
+    let Some(record) = manifest.item(QueueItemId::Node) else {
+        return NodeInstall::NotRunning;
+    };
+    match record.state {
+        // A Running row with no live runner is left over from a run that died
+        // mid-install; nothing is installing Node now.
+        ItemState::Running if rt.active => NodeInstall::Running,
+        ItemState::Running | ItemState::Pending => NodeInstall::NotRunning,
+        ItemState::Done | ItemState::Skipped => NodeInstall::Finished,
+        ItemState::Failed => NodeInstall::Failed(
+            record
+                .error
+                .clone()
+                .unwrap_or_else(|| format!("{} failed", QueueItemId::Node.label())),
+        ),
+    }
+}
+
+/// True while the queue's runner is installing Node.
+pub(crate) fn node_install_running() -> bool {
+    node_install_in(&lock_runtime()) == NodeInstall::Running
+}
+
+/// Wait up to `budget` for a Node install the queue is already running, and
+/// return how it ended (`Running` when the budget ran out first).
+///
+/// When no install is running, returns `NotRunning` at once, unless
+/// `report_ended` is set: then an install that has already ended is reported
+/// as `Finished` or `Failed`. That is for a caller that was just told an
+/// install was running, which may have ended before this call.
+pub(crate) async fn wait_for_node_install(budget: Duration, report_ended: bool) -> NodeInstall {
+    let now = node_install_in(&lock_runtime());
+    if now != NodeInstall::Running {
+        return if report_ended { now } else { NodeInstall::NotRunning };
+    }
+    log(LOG_TAG, "node install running in the queue; waiting for it");
+    let _ = tokio::time::timeout(
+        budget,
+        wait_until(|rt| node_install_in(rt) != NodeInstall::Running),
+    )
+    .await;
+    node_install_in(&lock_runtime())
+}
+
 fn manifest_path() -> Option<PathBuf> {
     #[cfg(windows)]
     {
@@ -1108,6 +1170,38 @@ mod tests {
 
     fn manifest() -> QueueManifest {
         core_queue::new_manifest(QueueChoices::default())
+    }
+
+    fn runtime_with(manifest: Option<QueueManifest>, active: bool) -> QueueRuntime {
+        QueueRuntime { manifest, active, ..QueueRuntime::default() }
+    }
+
+    #[test]
+    fn node_install_reads_the_queue_node_item() {
+        assert_eq!(node_install_in(&runtime_with(None, false)), NodeInstall::NotRunning);
+        assert_eq!(node_install_in(&runtime_with(Some(manifest()), true)), NodeInstall::NotRunning);
+
+        let mut running = manifest();
+        running.mark_running(QueueItemId::Node);
+        assert_eq!(node_install_in(&runtime_with(Some(running.clone()), true)), NodeInstall::Running);
+        // A running row left on disk by an earlier process is not an install
+        // in flight: no runner owns it.
+        assert_eq!(node_install_in(&runtime_with(Some(running), false)), NodeInstall::NotRunning);
+
+        let mut done = manifest();
+        done.mark_finished(QueueItemId::Node, &ItemOutcome::Done, 1);
+        assert_eq!(node_install_in(&runtime_with(Some(done), true)), NodeInstall::Finished);
+
+        let mut skipped = manifest();
+        skipped.mark_finished(QueueItemId::Node, &ItemOutcome::Skipped(SKIP_ALREADY_PRESENT.into()), 1);
+        assert_eq!(node_install_in(&runtime_with(Some(skipped), true)), NodeInstall::Finished);
+
+        let mut failed = manifest();
+        failed.mark_finished(QueueItemId::Node, &ItemOutcome::Failed("download failed".into()), 1);
+        assert_eq!(
+            node_install_in(&runtime_with(Some(failed), true)),
+            NodeInstall::Failed("download failed".to_string())
+        );
     }
 
     #[test]
