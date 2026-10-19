@@ -151,10 +151,12 @@ describe("rise pixels", () => {
     for (const [theme, peak] of [["dark", RISE_HALO_ALPHA_DARK], ["light", RISE_HALO_ALPHA_LIGHT]] as const) {
       const cells = riseHaloCells(theme).map((cell) => ({ d: Math.hypot(cell.x + 3, cell.y + 3), alpha: cell.alpha }));
       expect(Math.max(...cells.map((cell) => cell.alpha))).toBeLessThanOrEqual(peak);
+      expect(Math.min(...cells.map((cell) => cell.alpha))).toBeGreaterThanOrEqual(0);
       const inner = cells.filter((cell) => cell.d < RISE_ICON / 2);
       const outer = cells.filter((cell) => cell.d > RISE_ICON / 2 + 20);
       expect(inner.length).toBeGreaterThan(0);
       expect(outer.length).toBeGreaterThan(0);
+      expect(Math.max(...inner.map((cell) => cell.alpha))).toBeGreaterThanOrEqual(peak * 0.8);
       expect(Math.min(...inner.map((cell) => cell.alpha))).toBeGreaterThan(Math.max(...outer.map((cell) => cell.alpha)));
       expect(Math.max(...outer.map((cell) => cell.alpha))).toBeLessThan(peak * 0.25);
     }
@@ -164,6 +166,7 @@ describe("rise pixels", () => {
   it("keeps a short ripple at emergence and none outside that window", () => {
     expect(riseRippleCells(0.2, "dark").length).toBeGreaterThan(0);
     expect(riseRippleCells(0.2, "light").length).toBeGreaterThan(0);
+    expect(riseRippleCells(0.2, "dark").every((cell) => cell.alpha === 1 && cell.color.startsWith("rgba("))).toBe(true);
     expect(riseRippleCells(-0.01, "dark")).toEqual([]);
     expect(riseRippleCells(0.61, "dark")).toEqual([]);
     const cleared = riseFrame(riseRevealAt(0) + RISE_ICON / 2 / RISE_SPEED + 0.02, SOURCES);

@@ -14,7 +14,7 @@ const base = `http://localhost:${process.env.RISE_PORT ?? '1422'}/?view=rise`;
 const STILLS = [
   { phase: 'opening', t: '1', name: 'opening' },
   { phase: 'reveal', t: '9.35', name: 'reveal' },
-  // Mid-emergence: the first icon is half out of the water and the pixel ring is at full reach.
+  // Emergence: the first icon is breaking the water and its pixel ring is spreading on the waterline rows.
   { phase: 'reveal', t: '8.95', name: 'ripple' },
   { phase: 'brief', t: null, name: 'brief' },
 ];
