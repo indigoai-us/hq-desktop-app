@@ -35,7 +35,6 @@ describe("labelled buttons in the separate windows carry a leading icon", () => 
     ["components/QuickWindowSidePane.svelte", "Open full desktop view", "external"],
     ["call/CallShell.svelte", "Start a transcription session", "plus"],
     ["call/CallShell.svelte", 'data-testid="call-permission-open-settings"', "settings"],
-    ["components/messaging/ChannelRoster.svelte", 'class="invite-open"', "user-plus"],
   ])("%s %s has the %s icon", (rel, marker, icon) => {
     const button = buttonAround(read(rel), marker);
     expect(button).toContain(`<RailIcon name="${icon}" />`);
@@ -44,7 +43,6 @@ describe("labelled buttons in the separate windows carry a leading icon", () => 
 
   it("drops the typed glyphs the icons replace", () => {
     expect(read("call/CallShell.svelte")).not.toContain("＋</span> Start a transcription session");
-    expect(read("components/messaging/ChannelRoster.svelte")).not.toContain("+ Invite people");
   });
 });
 

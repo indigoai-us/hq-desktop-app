@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Shared with Me window: the add-reaction button on shares and direct messages now opens the same grid of common emoji as the main Messages view, instead of the older list with a search box. Message avatars in that window are drawn the same way as in the main Messages view, so they are slightly larger.
+
 ## [0.11.14] — 2026-10-19
 
 - Setup: when HQ installs Claude Code, qmd, the HQ command line tool and its other npm tools, the install log now prints a "still installing" line every 15 seconds, so a slow install no longer looks stuck. npm also gives up on a stalled download after 60 seconds instead of 5 minutes and tries 4 more times instead of 2. HQ now names the setup scripts these tools need, such as the one that downloads Claude Code, on every platform. npm 11.16 and later 11.x versions still run the setup scripts of packages that are not named and only warn, but npm 12 blocks them, so without the names a tool could install without the parts it downloads. The bundled HQ command line tool is also allowed by its file path, which is how npm matches a local package. If HQ cannot read the npm version, it names the scripts anyway, because older npm only warns about the option. The npm version check now stops a hung npm after 30 seconds and runs once per setup instead of once per attempt. If npm reports a setup script that HQ did not name, the install log shows a warning for it.
