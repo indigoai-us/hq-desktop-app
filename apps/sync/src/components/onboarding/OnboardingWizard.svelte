@@ -2415,7 +2415,10 @@
     failureScope: OnboardingFailureScope,
     depsTimeoutRetryEnabled: boolean,
   ): Promise<void> {
-    const invocations = stageCommandInvocations(id, { installPath: effectiveInstallPath });
+    const invocations = stageCommandInvocations(id, {
+      installPath: effectiveInstallPath,
+      hostOs: setupHostOs,
+    });
     if (invocations.length === 0) return;
     if (typeof invoke !== 'function') {
       throw new Error('The desktop bridge is not available in this environment.');

@@ -861,6 +861,19 @@ describe('stage command invocations', () => {
     ]);
   });
 
+  it('installs the managed git before git setup', () => {
+    expect(stageCommandInvocations('git-init', { installPath: '/tmp/hq' })).toEqual([
+      { command: 'install_git', required: false },
+      { command: 'git_init', required: true },
+    ]);
+  });
+
+  it('leaves the Windows git stage unchanged', () => {
+    expect(
+      stageCommandInvocations('git-init', { installPath: '/tmp/hq', hostOs: 'windows' }),
+    ).toEqual([{ command: 'git_init', required: true }]);
+  });
+
   it('skips the Claude settings follow-up until an install path is resolved', () => {
     expect(stageCommandInvocations('deps', { installPath: null })).toEqual([
       { command: 'start_install_queue', required: true },
