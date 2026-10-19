@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   GIT_PERMISSION_NOTICE,
   createStageClock,
+  GIT_WAITING_NOTICE,
+  createDepsToolTracker,
   depsFailureRecovery,
-  depsToolDetail,
+  depsStageErrorText,
   setupHeading,
   setupStepSummary,
 } from './onboarding-setup';
@@ -56,28 +58,83 @@ describe('setupHeading (run 006: step 2 said "Almost ready")', () => {
   });
 });
 
-describe('depsToolDetail (run 006: "Wiring them into your shell" for 11 minutes)', () => {
-  it('names the tool being installed', () => {
-    expect(depsToolDetail({ id: 'git', state: 'installing' })).toBe('Installing Git…');
-    expect(depsToolDetail({ id: 'node', state: 'installing' })).toBe('Installing Node.js…');
-    expect(depsToolDetail({ id: 'qmd', state: 'installing' })).toBe('Installing HQ search…');
-    expect(depsToolDetail({ id: 'hq-cli', state: 'installing' })).toBe(
-      'Installing the HQ command line tool…',
-    );
-    expect(depsToolDetail({ id: 'yq', state: 'installing' })).toBe('Installing yq…');
+describe('createDepsToolTracker (run 006 and gate 2 F5: the line named the last install started)', () => {
+  it('names the tool being installed in plain words', () => {
+    const names: Array<[string, string]> = [
+      ['git', 'Git'],
+      ['node', 'Node.js'],
+      ['qmd', 'HQ search'],
+      ['hq-cli', 'the HQ command line tool'],
+      ['yq', 'yq'],
+      ['jq', 'jq'],
+      ['gh', 'GitHub CLI'],
+      ['claude-code', 'Claude Code'],
+      ['homebrew', 'Homebrew'],
+    ];
+    for (const [id, name] of names) {
+      const tracker = createDepsToolTracker();
+      tracker.apply({ id, state: 'installing' });
+      expect(tracker.detail()).toBe(`Installing ${name}…`);
+    }
   });
 
-  it('says nothing for a finished tool or an unusable payload', () => {
-    expect(depsToolDetail({ id: 'git', state: 'done' })).toBeNull();
-    expect(depsToolDetail({ id: '', state: 'installing' })).toBeNull();
-    expect(depsToolDetail(null)).toBeNull();
+  it('never names a tool that already finished (macOS wave: jq done while Node runs)', () => {
+    const tracker = createDepsToolTracker();
+    tracker.apply({ id: 'node', state: 'installing' });
+    tracker.apply({ id: 'jq', state: 'installing' });
+    expect(tracker.detail()).toBe('Installing Node.js and jq…');
+    tracker.apply({ id: 'jq', state: 'done' });
+    expect(tracker.detail()).toBe('Installing Node.js…');
+    tracker.apply({ id: 'node', state: 'failed' });
+    expect(tracker.detail()).toBeNull();
+  });
+
+  it('counts the other tools when more than two install at once', () => {
+    const tracker = createDepsToolTracker();
+    for (const id of ['node', 'yq', 'git', 'jq']) tracker.apply({ id, state: 'installing' });
+    expect(tracker.detail()).toBe('Installing Node.js and 3 other tools…');
+  });
+
+  it('drops a tool that is queued behind another install (Windows runs installers one at a time)', () => {
+    const tracker = createDepsToolTracker();
+    tracker.apply({ id: 'git', state: 'installing' });
+    tracker.apply({ id: 'gh', state: 'installing' });
+    tracker.apply({ id: 'gh', state: 'queued' });
+    expect(tracker.detail()).toBe('Installing Git…');
+    tracker.apply({ id: 'git', state: 'done' });
+    tracker.apply({ id: 'gh', state: 'installing' });
+    expect(tracker.detail()).toBe('Installing GitHub CLI…');
+  });
+
+  it('says HQ keeps waiting when an install runs long, until it finishes', () => {
+    const tracker = createDepsToolTracker();
+    tracker.apply({ id: 'gh', state: 'installing' });
+    expect(tracker.waitingNotice()).toBeNull();
+    tracker.apply({ id: 'gh', state: 'waiting' });
+    expect(tracker.waitingNotice()).toBe(
+      'Installing GitHub CLI is taking longer than usual. HQ keeps waiting for it to finish.',
+    );
+    expect(tracker.detail()).toBe('Installing GitHub CLI…');
+    tracker.apply({ id: 'gh', state: 'done' });
+    expect(tracker.waitingNotice()).toBeNull();
+  });
+
+  it('ignores an unusable payload and can be reset', () => {
+    const tracker = createDepsToolTracker();
+    tracker.apply(null);
+    tracker.apply({ id: '', state: 'installing' });
+    tracker.apply({ id: 'git', state: 'unknown' });
+    expect(tracker.detail()).toBeNull();
+    tracker.apply({ id: 'git', state: 'installing' });
+    tracker.reset();
+    expect(tracker.detail()).toBeNull();
   });
 });
 
 describe('depsExpectationCopy', () => {
   it('gives an honest time on Windows only', () => {
     expect(depsExpectationCopy('windows')).toBe(
-      'This step can take up to 10 minutes on Windows.',
+      'Some installs can take several minutes on Windows.',
     );
     expect(depsExpectationCopy('macos')).toBeNull();
   });
@@ -102,16 +159,23 @@ describe('Git permission (run 006 grid-0025: Windows prompt arrived with no warn
     });
   });
 
-  it('offers Try again when winget ran past its deadline', () => {
+  it('says Windows may be waiting for permission when the Git install runs long', () => {
+    expect(GIT_WAITING_NOTICE).toBe(
+      'Windows may be waiting for your permission to install Git. Look for a permission prompt on the taskbar.',
+    );
+  });
+
+  it('no longer treats a long install as a failure (gate 2 F1: no deadline kill)', () => {
     expect(
-      depsFailureRecovery(
-        'git: [winget-timeout] Installing Git took longer than 10 minutes and was stopped.',
-      ),
-    ).toEqual({
-      kind: 'winget-timeout',
-      message:
-        'Installing Git took longer than 10 minutes and was stopped. Select Try again to start it again.',
-    });
+      depsFailureRecovery('git: [winget-timeout] Installing Git took longer than 10 minutes and was stopped.'),
+    ).toBeNull();
+  });
+
+  it('keeps the bracketed marker out of the stage error text', () => {
+    expect(
+      depsStageErrorText('[git-permission-declined] Windows permission to install Git was declined.'),
+    ).toBe('Git was not installed because permission was declined. Select Try again and choose Yes when Windows asks.');
+    expect(depsStageErrorText('network unreachable')).toBe('network unreachable');
   });
 
   it('leaves other failures alone', () => {
@@ -192,6 +256,9 @@ describe('toolsWaitHint (run 007 note-0018)', () => {
   it('says why the tool button is not available yet', () => {
     expect(toolsWaitHint(['Claude Code'])).toBe('You can open Claude Code when setup finishes.');
     expect(toolsWaitHint(['Claude Code', 'Codex'])).toBe('You can open Claude Code or Codex when setup finishes.');
+    expect(toolsWaitHint(['Claude Code', 'Codex', 'Grok'])).toBe(
+      'You can open Claude Code, Codex or Grok when setup finishes.',
+    );
     expect(toolsWaitHint([])).toBeNull();
   });
 });

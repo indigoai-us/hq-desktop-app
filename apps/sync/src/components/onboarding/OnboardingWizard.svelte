@@ -129,13 +129,15 @@
     type StageId,
     type StageState,
     GIT_PERMISSION_NOTICE,
+    GIT_WAITING_NOTICE,
+    createDepsToolTracker,
     createStageClock,
     createSetupBandPacer,
     readyBodyCopy,
     toolsWaitHint,
     SETUP_BAND_DWELL_MS,
     depsFailureRecovery,
-    depsToolDetail,
+    depsStageErrorText,
     setupHeading,
     setupStepSummary,
     type DepsFailureRecovery,
@@ -580,8 +582,12 @@
   /** Real backend progress text for the running stage, when one was reported. */
   let stageDetail = $state<string | null>(null);
   // Run 006: Windows asks for permission before Git installs, and a declined
-  // prompt or a stuck winget run waits here for the user's Try again.
+  // prompt waits here for the user's Try again. A long install is never
+  // stopped; the screen says HQ keeps waiting instead.
   let gitPermissionRequested = $state(false);
+  let gitPermissionWaiting = $state(false);
+  const depsTools = createDepsToolTracker();
+  let depsWaitingNotice = $state<string | null>(null);
   let depsRecovery = $state<DepsFailureRecovery | null>(null);
   let depsRecoveryResolve: (() => void) | null = null;
   /** Set while the active stage waits for its automatic next attempt. */
@@ -844,15 +850,20 @@
     setupStepSummary(setupCompleted ? 100 : Math.min(99, shownPercent)),
   );
   // One line under the sub-status for the tools step: the Windows permission
-  // warning, a Try again reason, or the honest Windows time.
+  // warning, a Try again reason, a long-install notice, or the Windows time.
   const depsNotice = $derived(
     depsRecovery
       ? depsRecovery.message
-      : gitPermissionRequested
-        ? GIT_PERMISSION_NOTICE
-        : currentStageId === 'deps'
-          ? depsExpectation
-          : null,
+      : gitPermissionWaiting
+        ? GIT_WAITING_NOTICE
+        : gitPermissionRequested
+          ? GIT_PERMISSION_NOTICE
+          : currentStageId === 'deps'
+            ? (depsWaitingNotice ?? depsExpectation)
+            : null,
+  );
+  const depsNoticeIsStatus = $derived(
+    Boolean(depsRecovery || gitPermissionRequested || gitPermissionWaiting || depsWaitingNotice),
   );
   const thisComputer = $derived(thisComputerNounFor(setupHostOs));
   // The global shortcut is Option-Shift-O on a Mac and Alt+Shift+O elsewhere.
@@ -1010,6 +1021,8 @@
     stageCreep = 0;
     stageElapsedMs = 0;
     stageDetail = null;
+    depsTools.reset();
+    depsWaitingNotice = null;
 
     if (done || activeId === null) return;
 
@@ -2334,7 +2347,9 @@
       'setup:deps-tool',
       (event) => {
         if (!isCurrentRun(runId) || currentStageId !== 'deps') return;
-        const detail = depsToolDetail(event.payload);
+        depsTools.apply(event.payload);
+        depsWaitingNotice = depsTools.waitingNotice();
+        const detail = depsTools.detail();
         if (detail) stageDetail = detail;
       },
     ));
@@ -2342,7 +2357,10 @@
       'setup:git-permission',
       (event) => {
         if (!isCurrentRun(runId)) return;
-        gitPermissionRequested = event.payload?.state === 'requesting';
+        const state = event.payload?.state;
+        // 'waiting' arrives after 'requesting' once the install runs long.
+        gitPermissionWaiting = state === 'waiting';
+        gitPermissionRequested = state === 'requesting' || state === 'waiting';
       },
     ));
     if (!isCurrentRun(runId)) {
@@ -2732,11 +2750,14 @@
     if (result.kind === 'failed') {
       const message = errorMessage(result.err);
       gitPermissionRequested = false;
+      gitPermissionWaiting = false;
+      depsTools.reset();
+      depsWaitingNotice = null;
       const userRecovery = id === 'deps' ? depsFailureRecovery(message) : null;
       if (userRecovery) {
-        // A declined Windows prompt or a stuck winget run: the user starts
-        // the next attempt, so it never fails on its own.
-        stages = setStageStatus(stages, id, 'retrying', message);
+        // A declined Windows prompt: the user starts the next attempt, so it
+        // never fails on its own.
+        stages = setStageStatus(stages, id, 'retrying', depsStageErrorText(message));
         await journalStageFailure(id, message);
         recordStep(SETUP_STEP_INDEX, 'failed', {
           component: id,
@@ -5283,7 +5304,7 @@
           {#if depsNotice}
             <p
               class="substatus deps-notice"
-              role={depsRecovery || gitPermissionRequested ? 'status' : undefined}
+              role={depsNoticeIsStatus ? 'status' : undefined}
               data-testid="welcome-ready-deps-notice"
             >{depsNotice}</p>
           {/if}

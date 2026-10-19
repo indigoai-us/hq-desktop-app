@@ -72,7 +72,7 @@ export function setupExpectationCopy(os: OnboardingHostOs): string {
 
 /** The honest time for the tools step, shown only where it runs long. */
 export function depsExpectationCopy(os: OnboardingHostOs): string | null {
-  return os === "windows" ? "This step can take up to 10 minutes on Windows." : null;
+  return os === "windows" ? "Some installs can take several minutes on Windows." : null;
 }
 
 /** Which drawn keyboard the shortcut scene shows. */

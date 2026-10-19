@@ -1337,28 +1337,88 @@ const DEPS_TOOL_NAMES: Record<string, string> = {
   git: 'Git',
   node: 'Node.js',
   yq: 'yq',
+  jq: 'jq',
+  gh: 'GitHub CLI',
   qmd: 'HQ search',
   'hq-cli': 'the HQ command line tool',
+  'claude-code': 'Claude Code',
+  homebrew: 'Homebrew',
 };
 
+function depsToolName(id: string): string {
+  return DEPS_TOOL_NAMES[id] ?? humanizeStageId(id);
+}
+
+export interface DepsToolTracker {
+  /** Apply one `setup:deps-tool` event. */
+  apply(payload: { id?: unknown; state?: unknown } | null | undefined): void;
+  /** The deps sub-status line for the installs running now, or null. */
+  detail(): string | null;
+  /** Shown while a running install has passed its time budget, or null. */
+  waitingNotice(): string | null;
+  reset(): void;
+}
+
 /**
- * The deps sub-status line for a `setup:deps-tool` event: the tool that is
- * installing now, or null when the event says nothing worth showing.
+ * Tracks which tools are installing right now, so the deps line names the
+ * installs that are actually running and never one that already finished or
+ * is queued behind another installer.
  */
-export function depsToolDetail(
-  payload: { id?: unknown; state?: unknown } | null | undefined,
-): string | null {
-  if (!payload || payload.state !== 'installing') return null;
-  const id = typeof payload.id === 'string' ? payload.id.trim() : '';
-  if (!id) return null;
-  return `Installing ${DEPS_TOOL_NAMES[id] ?? humanizeStageId(id)}…`;
+export function createDepsToolTracker(): DepsToolTracker {
+  const running: string[] = [];
+  let waiting: string | null = null;
+  const remove = (id: string) => {
+    const index = running.indexOf(id);
+    if (index >= 0) running.splice(index, 1);
+    if (waiting === id) waiting = null;
+  };
+  return {
+    apply(payload) {
+      if (!payload) return;
+      const id = typeof payload.id === 'string' ? payload.id.trim() : '';
+      if (!id) return;
+      switch (payload.state) {
+        case 'installing':
+          if (!running.includes(id)) running.push(id);
+          break;
+        case 'waiting':
+          if (!running.includes(id)) running.push(id);
+          waiting = id;
+          break;
+        case 'queued':
+        case 'done':
+        case 'failed':
+          remove(id);
+          break;
+      }
+    },
+    detail() {
+      if (running.length === 0) return null;
+      const first = depsToolName(running[0]);
+      if (running.length === 1) return `Installing ${first}…`;
+      if (running.length === 2) return `Installing ${first} and ${depsToolName(running[1])}…`;
+      return `Installing ${first} and ${running.length - 1} other tools…`;
+    },
+    waitingNotice() {
+      if (!waiting) return null;
+      return `Installing ${depsToolName(waiting)} is taking longer than usual. HQ keeps waiting for it to finish.`;
+    },
+    reset() {
+      running.length = 0;
+      waiting = null;
+    },
+  };
 }
 
 /** Shown once Windows is about to ask for permission to install Git. */
 export const GIT_PERMISSION_NOTICE =
   'Windows will ask for permission to install Git. Choose Yes to continue.';
 
-export type DepsFailureRecoveryKind = 'git-permission-declined' | 'winget-timeout';
+/** Shown when the Git install passes its time budget, likely on the prompt. */
+export const GIT_WAITING_NOTICE =
+  'Windows may be waiting for your permission to install Git. Look for a permission prompt on the taskbar.';
+
+export type DepsFailureRecoveryKind = 'git-permission-declined';
 
 export interface DepsFailureRecovery {
   kind: DepsFailureRecoveryKind;
@@ -1378,16 +1438,12 @@ export function depsFailureRecovery(error: string | null | undefined): DepsFailu
         'Git was not installed because permission was declined. Select Try again and choose Yes when Windows asks.',
     };
   }
-  const timeout = /\[winget-timeout\]\s*([^\n]*)/.exec(error);
-  if (timeout) {
-    const reason =
-      timeout[1]?.trim() || 'Installing a tool took longer than 10 minutes and was stopped.';
-    return {
-      kind: 'winget-timeout',
-      message: `${reason} Select Try again to start it again.`,
-    };
-  }
   return null;
+}
+
+/** The deps error text to show: the plain recovery message, never the marker. */
+export function depsStageErrorText(error: string): string {
+  return depsFailureRecovery(error)?.message ?? error;
 }
 
 // ─── Windows onboarding run 007 ─────────────────────────────────────
@@ -1452,5 +1508,7 @@ export function readyBodyCopy({
 /** Why the AI tool buttons wait while setup runs (run 007 note-0018). */
 export function toolsWaitHint(names: readonly string[]): string | null {
   if (names.length === 0) return null;
-  return `You can open ${names.join(' or ')} when setup finishes.`;
+  const list =
+    names.length > 1 ? `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}` : names[0];
+  return `You can open ${list} when setup finishes.`;
 }
