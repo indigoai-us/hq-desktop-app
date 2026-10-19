@@ -120,7 +120,7 @@ import {
 } from '../../lib/onboarding-wizard';
 import { __INTERNALS__ } from '../../lib/onboarding-step-telemetry';
 import { __resetInstallerStepTelemetryForTests } from '../../lib/installer-step-telemetry';
-import { stageTimeoutMs } from '../../lib/onboarding-setup';
+import { GIT_WAITING_NOTICE, stageTimeoutMs } from '../../lib/onboarding-setup';
 import { appendChildFolderPath } from '../../lib/onboarding-path';
 
 const NO_AI_TOOLS = {
@@ -4183,6 +4183,296 @@ describe('setup progress direction', () => {
     await flushUntil(() =>
       tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
     );
+  });
+
+  it.each([false, true])(
+    'never stops a silent Windows install that runs past every deps timeout (auto-retry %s)',
+    async (retryEnabled) => {
+      const baseHasFeature = onboardingFlags.hasFeature.getMockImplementation();
+      onboardingFlags.hasFeature.mockImplementation(async (flag: string) =>
+        flag === 'desktop.setup-deps-timeout-retry-v1'
+          ? { ok: true, value: retryEnabled }
+          : baseHasFeature!(flag),
+      );
+      let resolveInstall: (() => void) | undefined;
+      tauri.invoke.mockImplementation(async (command: string) => {
+        switch (command) {
+          case 'resolve_hq_path':
+            return '/Users/test/hq';
+          case 'detect_ai_tools':
+            return NO_AI_TOOLS;
+          case 'install_deps':
+            return new Promise<void>((resolve) => {
+              resolveInstall = resolve;
+            });
+          default:
+            return undefined;
+        }
+      });
+
+      component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+      await flushUntil(() =>
+        tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+        eventHarness.handlers.has('install:progress') &&
+        eventHarness.handlers.has('setup:installer-run') &&
+        eventHarness.handlers.has('setup:git-permission'),
+      );
+      const installArgs = tauri.invoke.mock.calls.find(
+        ([command]) => command === 'install_deps',
+      )?.[1] as { failureScope: { setupRunId: string } };
+
+      // winget starts the Git installer, prints one line, then goes silent on
+      // an unanswered Windows permission prompt.
+      emitTauriEvent('setup:deps-tool', { id: 'git', state: 'installing' });
+      emitTauriEvent('setup:git-permission', { state: 'requesting' });
+      emitTauriEvent('setup:installer-run', { id: 'git', state: 'running' });
+      emitTauriEvent('install:progress', {
+        handle: 'winget-git',
+        setupRunId: installArgs.failureScope.setupRunId,
+        line: 'Starting package install...',
+      });
+
+      const failures = () =>
+        tauri.invoke.mock.calls.filter(
+          ([command, args]) =>
+            command === 'emit_desktop_operational_telemetry' &&
+            (args as { properties?: { action?: string; failureStage?: string } }).properties
+              ?.action === 'failed' &&
+            (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+              'deps',
+        );
+      const cancels = () =>
+        tauri.invoke.mock.calls.filter(([command]) => command === 'cancel_install');
+      const installRuns = () =>
+        tauri.invoke.mock.calls.filter(([command]) => command === 'install_deps');
+
+      // Past the inactivity timeout: the screen says Windows may be waiting.
+      await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') + 1);
+      await flush();
+      expect(host.textContent).toContain(GIT_WAITING_NOTICE);
+
+      // Past the stage ceiling (3x) and well beyond.
+      await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') * 6);
+      await flush();
+      expect(cancels()).toHaveLength(0);
+      expect(failures()).toHaveLength(0);
+      expect(installRuns()).toHaveLength(1);
+      expect(host.textContent).toContain(GIT_WAITING_NOTICE);
+
+      // The person answers the prompt and the same install finishes.
+      emitTauriEvent('setup:installer-run', { id: 'git', state: 'done' });
+      emitTauriEvent('setup:git-permission', { state: 'done' });
+      emitTauriEvent('setup:deps-tool', { id: 'git', state: 'done' });
+      emitTauriEvent('install:progress', {
+        handle: 'winget-git',
+        line: '',
+        finished: true,
+        error: null,
+      });
+      resolveInstall?.();
+      await flushUntil(() =>
+        tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
+      );
+      expect(cancels()).toHaveLength(0);
+      expect(installRuns()).toHaveLength(1);
+      expect(failures()).toHaveLength(0);
+    },
+  );
+
+  it('shows Try again when Git does not start after installing, and waits for it (gate 2 N5)', async () => {
+    let installCalls = 0;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          installCalls += 1;
+          if (installCalls === 1) {
+            throw new Error(
+              'Dependency install failed: Git: [install-retry] Git could not be started after installing. Select Try again.',
+            );
+          }
+          return undefined;
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    const retryButton = () =>
+      host.querySelector<HTMLButtonElement>('[data-testid="welcome-ready-deps-retry"]');
+    await flushUntil(() => retryButton() !== null);
+    expect(host.querySelector('[data-testid="welcome-ready-deps-notice"]')?.textContent).toBe(
+      'Git could not be started after installing. Select Try again.',
+    );
+    expect(host.textContent).not.toContain('[install-retry]');
+
+    // Nothing starts again until the person selects Try again.
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') * 4);
+    await flush();
+    expect(installCalls).toBe(1);
+
+    retryButton()!.click();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
+    );
+    expect(installCalls).toBe(2);
+    expect(retryButton()).toBeNull();
+  });
+
+  it('keeps a Git install running to the end, so a timeout never leaves Git half installed', async () => {
+    let resolveInstall: (() => void) | undefined;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          return new Promise<void>((resolve) => {
+            resolveInstall = resolve;
+          });
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      eventHarness.handlers.has('setup:installer-run'),
+    );
+    const installArgs = tauri.invoke.mock.calls.find(
+      ([command]) => command === 'install_deps',
+    )?.[1] as { failureScope: { setupRunId: string } };
+    emitTauriEvent('setup:installer-run', { id: 'git', state: 'running' });
+    // A chatty install that keeps printing still outlasts the stage ceiling.
+    for (let minute = 0; minute < 60; minute += 1) {
+      emitTauriEvent('install:progress', {
+        handle: 'winget-git',
+        setupRunId: installArgs.failureScope.setupRunId,
+        line: `Copying files ${minute}`,
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+    }
+    expect(
+      tauri.invoke.mock.calls.filter(([command]) => command === 'cancel_install'),
+    ).toHaveLength(0);
+
+    emitTauriEvent('setup:installer-run', { id: 'git', state: 'done' });
+    emitTauriEvent('install:progress', { handle: 'winget-git', line: '', finished: true, error: null });
+    resolveInstall?.();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
+    );
+    expect(
+      tauri.invoke.mock.calls.filter(([command]) => command === 'install_deps'),
+    ).toHaveLength(1);
+  });
+
+  it('times out a silent deps step again once the installer has finished', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          return new Promise<void>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      eventHarness.handlers.has('setup:installer-run'),
+    );
+    const timeoutFailures = () =>
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { action?: string; failureStage?: string; errorKind?: string } })
+            .properties?.action === 'failed' &&
+          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
+            'deps' &&
+          (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
+            'setup_stage_timeout',
+      );
+    emitTauriEvent('setup:installer-run', { id: 'gh', state: 'running' });
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') * 4);
+    await flush();
+    expect(timeoutFailures()).toHaveLength(0);
+
+    // After the installer exits, a hung non-installer step gets a full window,
+    // then times out as before.
+    emitTauriEvent('setup:installer-run', { id: 'gh', state: 'done' });
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') - 1);
+    await flush();
+    expect(timeoutFailures()).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(2);
+    await flushUntil(() => timeoutFailures().length > 0);
+  });
+
+  it('clears the tool line when the last running tool finishes (gate 2 N4)', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          return new Promise<void>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      eventHarness.handlers.has('setup:deps-tool'),
+    );
+    emitTauriEvent('setup:deps-tool', { id: 'node', state: 'installing' });
+    await flush();
+    expect(host.textContent).toContain('Installing Node.js…');
+    emitTauriEvent('setup:deps-tool', { id: 'node', state: 'done' });
+    await flush();
+    expect(host.textContent).not.toContain('Installing Node.js');
+  });
+
+  it('points at the permission prompt while a silent GitHub CLI install runs long (gate 2 N6)', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          return new Promise<void>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      eventHarness.handlers.has('setup:installer-run'),
+    );
+    emitTauriEvent('setup:deps-tool', { id: 'gh', state: 'installing' });
+    emitTauriEvent('setup:installer-run', { id: 'gh', state: 'running' });
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') + 1);
+    await flush();
+    expect(host.textContent).toContain(
+      'Windows may be waiting for your permission to install GitHub CLI. Look for a permission prompt on the taskbar.',
+    );
+    expect(
+      tauri.invoke.mock.calls.filter(([command]) => command === 'cancel_install'),
+    ).toHaveLength(0);
   });
 
   it('renews the deps timeout only for lock-wait progress from its installer handle', async () => {

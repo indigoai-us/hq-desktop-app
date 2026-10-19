@@ -141,6 +141,7 @@
     setupHeading,
     setupStepSummary,
     type DepsFailureRecovery,
+    type ProgressTimeoutProgressOptions,
   } from '../../lib/onboarding-setup';
   import {
     SHORTCUT_NEXT_BUSY_HINT,
@@ -627,6 +628,14 @@
   let activeInitialSyncTimeoutProgress: (() => void) | null = null;
   let activeDepsLockWaitTimeoutProgress: (() => void) | null = null;
   let activeDepsOutputTimeoutProgress: (() => void) | null = null;
+  // Gate 2 N1: installers that are running right now, by tool id. While any
+  // runs, the deps timeout only changes the notice. It never cancels winget,
+  // because a killed installer can leave Git half installed and frees the
+  // installer lock for a second copy.
+  const runningInstallers = new Map<string, number>();
+  let activeDepsInstallerDoneProgress:
+    | ((options?: ProgressTimeoutProgressOptions) => void)
+    | null = null;
   let activeContentTimeoutProgress: (() => void) | null = null;
   let activeIndexingOutputTimeoutProgress: (() => void) | null = null;
   const activeInstallHandles = new Set<string>();
@@ -2229,6 +2238,8 @@
     stages = resetRetryingStages(stages);
     activeDepsLockWaitTimeoutProgress = null;
     activeDepsOutputTimeoutProgress = null;
+    activeDepsInstallerDoneProgress = null;
+    runningInstallers.clear();
     activeContentTimeoutProgress = null;
     activeIndexingOutputTimeoutProgress = null;
     activeInstallHandles.clear();
@@ -2284,6 +2295,20 @@
     ) {
       activeDepsOutputTimeoutProgress?.();
     }
+  }
+
+  /** A held deps timeout shows why setup is still waiting (gate 2 N1). */
+  function showInstallerWaiting(runId: number): void {
+    if (!isCurrentRun(runId)) return;
+    for (const id of runningInstallers.keys()) {
+      if (id === 'git') {
+        gitPermissionRequested = true;
+        gitPermissionWaiting = true;
+      } else {
+        depsTools.apply({ id, state: 'waiting' });
+      }
+    }
+    depsWaitingNotice = depsTools.waitingNotice();
   }
 
   function trackContentProgress(runId: number, payload: ContentProgressPayload): void {
@@ -2349,8 +2374,25 @@
         if (!isCurrentRun(runId) || currentStageId !== 'deps') return;
         depsTools.apply(event.payload);
         depsWaitingNotice = depsTools.waitingNotice();
-        const detail = depsTools.detail();
-        if (detail) stageDetail = detail;
+        // Gate 2 N4: a finished or queued tool leaves the line at once.
+        stageDetail = depsTools.detail();
+      },
+    ));
+    const unlistenInstallerRun = safeUnlisten(await listen<{ id?: string; state?: string }>(
+      'setup:installer-run',
+      (event) => {
+        if (!isCurrentRun(runId)) return;
+        const id = event.payload?.id;
+        if (!id) return;
+        const count = runningInstallers.get(id) ?? 0;
+        if (event.payload?.state === 'running') {
+          runningInstallers.set(id, count + 1);
+        } else if (event.payload?.state === 'done' && count > 0) {
+          if (count === 1) runningInstallers.delete(id);
+          else runningInstallers.set(id, count - 1);
+          // The steps after an installer get a full timeout window of their own.
+          activeDepsInstallerDoneProgress?.({ extendCeiling: true });
+        }
       },
     ));
     const unlistenGitPermission = safeUnlisten(await listen<{ state?: string }>(
@@ -2367,6 +2409,7 @@
       unlisten();
       unlistenCliLockWait();
       unlistenDepsTool();
+      unlistenInstallerRun();
       unlistenGitPermission();
       return;
     }
@@ -2374,6 +2417,7 @@
       unlisten();
       unlistenCliLockWait();
       unlistenDepsTool();
+      unlistenInstallerRun();
       unlistenGitPermission();
     };
 
@@ -2544,6 +2588,7 @@
             onTimeout,
             (onProgress) => {
               activeDepsLockWaitTimeoutProgress = onProgress;
+              activeDepsInstallerDoneProgress = onProgress;
               if (activityTimeoutEnabled) {
                 activeDepsOutputTimeoutProgress = onProgress;
               }
@@ -2553,6 +2598,9 @@
                 }
                 if (activeDepsOutputTimeoutProgress === onProgress) {
                   activeDepsOutputTimeoutProgress = null;
+                }
+                if (activeDepsInstallerDoneProgress === onProgress) {
+                  activeDepsInstallerDoneProgress = null;
                 }
               };
             },
@@ -2564,6 +2612,10 @@
             depsTimeoutRetryEnabled
               ? SETUP_TIMEOUT_NATIVE_SETTLE_TIMEOUT_MS
               : 0,
+            {
+              active: () => isCurrentRun(runId) && runningInstallers.size > 0,
+              onHold: () => showInstallerWaiting(runId),
+            },
           );
         } else if (id === 'content' && activityTimeoutEnabled) {
           await withProgressTimeout(
@@ -2755,8 +2807,8 @@
       depsWaitingNotice = null;
       const userRecovery = id === 'deps' ? depsFailureRecovery(message) : null;
       if (userRecovery) {
-        // A declined Windows prompt: the user starts the next attempt, so it
-        // never fails on its own.
+        // A declined Windows prompt or an install the user can try again:
+        // the user starts the next attempt, so it never fails on its own.
         stages = setStageStatus(stages, id, 'retrying', depsStageErrorText(message));
         await journalStageFailure(id, message);
         recordStep(SETUP_STEP_INDEX, 'failed', {
@@ -3681,6 +3733,8 @@
     activeInitialSyncTimeoutProgress = null;
     activeDepsLockWaitTimeoutProgress = null;
     activeDepsOutputTimeoutProgress = null;
+    activeDepsInstallerDoneProgress = null;
+    runningInstallers.clear();
     activeContentTimeoutProgress = null;
     activeIndexingOutputTimeoutProgress = null;
     // A stage that failed and is waiting on its auto-retry never settles once

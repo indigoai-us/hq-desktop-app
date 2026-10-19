@@ -1006,19 +1006,39 @@ function settlesWithin(
   });
 }
 
+export interface ProgressTimeoutHold {
+  /** True while work that must never be stopped on a timer is running. */
+  active(): boolean;
+  /** Called each time the timeout comes due while held. */
+  onHold?(): void;
+}
+
+export interface ProgressTimeoutProgressOptions {
+  /** Also give the run a full window past the ceiling, e.g. once held work ends. */
+  extendCeiling?: boolean;
+}
+
+/**
+ * Rejects `promise` after `ms` without progress, or at `maxElapsedMs`. While
+ * `hold.active()` is true the timeout never fires: it calls `hold.onHold` so
+ * the screen can say what it is waiting on, and checks again after `ms`.
+ */
 export function withProgressTimeout<T>(
   promise: Promise<T>,
   ms: number,
   onTimeout: (timeoutMs?: number) => Error,
-  subscribeToProgress: (onProgress: () => void) => () => void,
+  subscribeToProgress: (
+    onProgress: (options?: ProgressTimeoutProgressOptions) => void,
+  ) => () => void,
   onTimeoutCancel?: () => void | Promise<void>,
   maxElapsedMs?: number,
   awaitTimeoutCancel = false,
   awaitTimeoutOperationMs = 0,
+  hold?: ProgressTimeoutHold,
 ): Promise<T> {
   if (!(ms > 0)) return promise;
   return new Promise<T>((resolve, reject) => {
-    const maxDeadline =
+    let maxDeadline =
       maxElapsedMs != null && maxElapsedMs > 0
         ? Date.now() + maxElapsedMs
         : null;
@@ -1029,14 +1049,23 @@ export function withProgressTimeout<T>(
       clearTimeout(timer);
       unlisten();
     };
-    const reset = () => {
+    const extendCeiling = () => {
+      if (maxDeadline != null) maxDeadline = Math.max(maxDeadline, Date.now() + ms);
+    };
+    const reset = (options?: ProgressTimeoutProgressOptions) => {
       clearTimeout(timer);
+      if (options?.extendCeiling) extendCeiling();
       const remainingMs =
         maxDeadline == null ? ms : Math.max(0, maxDeadline - Date.now());
       const timeoutMs = Math.min(ms, remainingMs);
       const reachedMaxElapsed = maxDeadline != null && remainingMs <= ms;
       timer = setTimeout(() => {
         if (settled) return;
+        if (hold?.active()) {
+          hold.onHold?.();
+          reset({ extendCeiling: true });
+          return;
+        }
         settled = true;
         const timeoutError = onTimeout(reachedMaxElapsed ? maxElapsedMs : ms);
         if (awaitTimeoutCancel && onTimeoutCancel) {
@@ -1401,7 +1430,9 @@ export function createDepsToolTracker(): DepsToolTracker {
     },
     waitingNotice() {
       if (!waiting) return null;
-      return `Installing ${depsToolName(waiting)} is taking longer than usual. HQ keeps waiting for it to finish.`;
+      // Only a Windows installer run reports 'waiting', and any of them can
+      // be sitting on a permission prompt.
+      return `Windows may be waiting for your permission to install ${depsToolName(waiting)}. Look for a permission prompt on the taskbar.`;
     },
     reset() {
       running.length = 0;
@@ -1418,7 +1449,10 @@ export const GIT_PERMISSION_NOTICE =
 export const GIT_WAITING_NOTICE =
   'Windows may be waiting for your permission to install Git. Look for a permission prompt on the taskbar.';
 
-export type DepsFailureRecoveryKind = 'git-permission-declined';
+export type DepsFailureRecoveryKind = 'git-permission-declined' | 'install-retry';
+
+/** Tags a Windows install error whose copy tells the user to select Try again. */
+const INSTALL_RETRY_MARKER = '[install-retry]';
 
 export interface DepsFailureRecovery {
   kind: DepsFailureRecoveryKind;
@@ -1437,6 +1471,14 @@ export function depsFailureRecovery(error: string | null | undefined): DepsFailu
       message:
         'Git was not installed because permission was declined. Select Try again and choose Yes when Windows asks.',
     };
+  }
+  const marker = error.indexOf(INSTALL_RETRY_MARKER);
+  if (marker >= 0) {
+    // The backend joins per-tool errors with "; ", so stop at the next one.
+    const rest = error.slice(marker + INSTALL_RETRY_MARKER.length);
+    const end = rest.indexOf('; ');
+    const message = (end >= 0 ? rest.slice(0, end) : rest).trim();
+    if (message) return { kind: 'install-retry', message };
   }
   return null;
 }

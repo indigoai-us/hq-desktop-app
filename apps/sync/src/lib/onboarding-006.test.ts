@@ -106,17 +106,23 @@ describe('createDepsToolTracker (run 006 and gate 2 F5: the line named the last 
     expect(tracker.detail()).toBe('Installing GitHub CLI…');
   });
 
-  it('says HQ keeps waiting when an install runs long, until it finishes', () => {
+  it('points at the permission prompt when an install runs long, until it finishes (gate 2 N6)', () => {
     const tracker = createDepsToolTracker();
     tracker.apply({ id: 'gh', state: 'installing' });
     expect(tracker.waitingNotice()).toBeNull();
     tracker.apply({ id: 'gh', state: 'waiting' });
     expect(tracker.waitingNotice()).toBe(
-      'Installing GitHub CLI is taking longer than usual. HQ keeps waiting for it to finish.',
+      'Windows may be waiting for your permission to install GitHub CLI. Look for a permission prompt on the taskbar.',
     );
     expect(tracker.detail()).toBe('Installing GitHub CLI…');
     tracker.apply({ id: 'gh', state: 'done' });
     expect(tracker.waitingNotice()).toBeNull();
+  });
+
+  it('uses the same words as the Git notice for Git', () => {
+    const tracker = createDepsToolTracker();
+    tracker.apply({ id: 'git', state: 'waiting' });
+    expect(tracker.waitingNotice()).toBe(GIT_WAITING_NOTICE);
   });
 
   it('ignores an unusable payload and can be reset', () => {
@@ -176,6 +182,27 @@ describe('Git permission (run 006 grid-0025: Windows prompt arrived with no warn
       depsStageErrorText('[git-permission-declined] Windows permission to install Git was declined.'),
     ).toBe('Git was not installed because permission was declined. Select Try again and choose Yes when Windows asks.');
     expect(depsStageErrorText('network unreachable')).toBe('network unreachable');
+  });
+
+  it('offers Try again for an install that stopped or a Git that does not start (gate 2 N5)', () => {
+    const cases: Array<[string, string]> = [
+      [
+        'Dependency install failed: Git: [install-retry] Git could not be started after installing. Select Try again.; Node.js: network unreachable',
+        'Git could not be started after installing. Select Try again.',
+      ],
+      [
+        'Dependency install failed: GitHub CLI: [install-retry] An install stopped before it finished. Select Try again.',
+        'An install stopped before it finished. Select Try again.',
+      ],
+      [
+        '[install-retry] HQ could not update the Windows PATH setting. Select Try again.',
+        'HQ could not update the Windows PATH setting. Select Try again.',
+      ],
+    ];
+    for (const [error, message] of cases) {
+      expect(depsFailureRecovery(error)).toEqual({ kind: 'install-retry', message });
+      expect(depsStageErrorText(error)).toBe(message);
+    }
   });
 
   it('leaves other failures alone', () => {

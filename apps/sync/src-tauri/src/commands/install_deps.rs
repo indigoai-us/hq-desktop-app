@@ -5497,6 +5497,25 @@ fn write_user_path_value(env: &RegKey, value: &UserPathValue) -> Result<(), Stri
 
 #[cfg(windows)]
 pub fn append_user_path(new_dir: &Path) -> Result<(), String> {
+    let result = append_user_path_unrecorded(new_dir);
+    if result.is_err() {
+        let failure_scope = ACTIVE_ONBOARDING_FAILURE_SCOPE
+            .try_with(|scope| scope.clone())
+            .ok();
+        record_onboarding_failure_detail(
+            "deps",
+            failure_scope.as_ref(),
+            Some("path-write"),
+            OnboardingErrorCategory::Unknown,
+        );
+    }
+    result
+}
+
+/// [`append_user_path`] without marking the deps step failed. Registry
+/// errors go to the log; the caller gets plain copy.
+#[cfg(windows)]
+fn append_user_path_unrecorded(new_dir: &Path) -> Result<(), String> {
     let result = (|| {
         let dir_str = new_dir.to_string_lossy().to_string();
 
@@ -5536,18 +5555,7 @@ pub fn append_user_path(new_dir: &Path) -> Result<(), String> {
         Ok(())
     })();
 
-    if result.is_err() {
-        let failure_scope = ACTIVE_ONBOARDING_FAILURE_SCOPE
-            .try_with(|scope| scope.clone())
-            .ok();
-        record_onboarding_failure_detail(
-            "deps",
-            failure_scope.as_ref(),
-            Some("path-write"),
-            OnboardingErrorCategory::Unknown,
-        );
-    }
-    result
+    result.map_err(|error| plain_path_write_error(&error))
 }
 
 /// Remove `dir` from the user's persistent PATH. Idempotent.
@@ -5721,6 +5729,7 @@ async fn run_streaming<R: tauri::Runtime>(
                         emit_deps_tool(&app, id, DepsToolState::Queued);
                     }
                 },
+                |state| emit_installer_run(&app, dependency, state),
                 || {
                     if let (true, Some(id)) = (queued.get(), dependency) {
                         emit_deps_tool(&app, id, DepsToolState::Installing);
@@ -5733,7 +5742,7 @@ async fn run_streaming<R: tauri::Runtime>(
     .await
     .unwrap_or_else(|error| {
         eprintln!("[hq-deps] '{label}' runner stopped: {error}");
-        Err("An install stopped before it finished. Select Try again.".to_string())
+        Err(INSTALL_STOPPED_ERROR.to_string())
     })
 }
 
@@ -5969,14 +5978,21 @@ fn run_streaming_with_npm_cache_blocking<R: tauri::Runtime>(
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
-        if is_cancelled(&handle_id) && !cancel_signal_sent {
+        let tick = runner_tick(
+            is_cancelled(&handle_id),
+            cancel_signal_sent,
+            started.elapsed(),
+            wait_notice_after,
+            wait_notice_sent,
+        );
+        if tick.terminate {
             if let Err(e) = terminate_process_tree(&handle_id) {
                 record_cleanup_failure(&handle_id, e);
             }
             cancel_signal_sent = true;
         }
 
-        if !wait_notice_sent && install_wait_notice_due(started.elapsed(), wait_notice_after) {
+        if tick.wait_notice {
             // Never stop a slow install: Windows may be waiting on a
             // permission prompt. Say so, and keep waiting for it to exit.
             emit_install_wait(
@@ -6640,16 +6656,24 @@ fn winget_git_cmd_folders() -> Vec<String> {
 }
 
 /// Puts the folder of the Git that runs now on the user PATH, so new
-/// terminals find it even when it was already installed before setup.
+/// terminals find it, unless the PATH they get already has it. Only
+/// `record_failure` runs (after an install) mark the deps step failed.
 #[cfg(windows)]
-fn ensure_git_on_user_path() -> Result<(), String> {
+fn ensure_git_on_user_path(record_failure: bool) -> Result<(), String> {
     let status = check_dep_impl("git", None);
     let Some(path) = status.path.filter(|_| status.installed) else {
-        return Err("Git was installed but did not start. Select Try again.".to_string());
+        return Err(GIT_DID_NOT_START_ERROR.to_string());
     };
-    match git_path_entry_for(&path.to_string_lossy()) {
-        Some(folder) => append_user_path(Path::new(&folder)),
-        None => Ok(()),
+    let effective_path = std::env::var("PATH").unwrap_or_default();
+    let Some(folder) = git_user_path_addition(&path.to_string_lossy(), &effective_path, |file| {
+        Path::new(file).is_file()
+    }) else {
+        return Ok(());
+    };
+    if record_failure {
+        append_user_path(Path::new(&folder))
+    } else {
+        append_user_path_unrecorded(Path::new(&folder))
     }
 }
 
@@ -7983,13 +8007,16 @@ const GIT_PERMISSION_DECLINED_MARKER: &str = "[git-permission-declined]";
 /// holding `lock` when the command is an installer. The guard lives until
 /// `run` returns, so a winget install keeps the lock until winget and the
 /// installer it waits on have exited. `on_wait` fires once when another
-/// installer already holds the lock.
+/// installer already holds the lock. `on_run` gets `Running` once the lock is
+/// taken and `Done` when the run ends, panics included, so the setup screen
+/// knows an installer is still running and never times it out.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn run_installer_serialized<T>(
     lock: &Mutex<()>,
     program: &str,
     args: &[&str],
     on_wait: impl FnOnce(),
+    on_run: impl Fn(InstallerRunState),
     run: impl FnOnce() -> T,
 ) -> T {
     let _guard = is_installer_program(program, args).then(|| match lock.try_lock() {
@@ -8000,7 +8027,29 @@ fn run_installer_serialized<T>(
             recover_lock(lock)
         }
     });
+    // Declared after the lock guard, so it drops first: `Done` is reported
+    // while the lock is still held.
+    let _run_end = _guard.is_some().then(|| {
+        on_run(InstallerRunState::Running);
+        InstallerRunEnd(&on_run)
+    });
     run()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+enum InstallerRunState {
+    Running,
+    Done,
+}
+
+/// Reports `Done` when dropped, so an installer run that panics still ends.
+struct InstallerRunEnd<'a>(&'a dyn Fn(InstallerRunState));
+
+impl Drop for InstallerRunEnd<'_> {
+    fn drop(&mut self) {
+        (self.0)(InstallerRunState::Done);
+    }
 }
 
 /// A winget install still running after this long gets a waiting notice
@@ -8013,15 +8062,58 @@ const WINGET_WAIT_NOTICE_AFTER: Duration = Duration::from_secs(10 * 60);
 fn install_wait_notice_after(program: &str, args: &[&str]) -> Option<Duration> {
     let file_name = program_file_name(program);
     let is_winget = program_stem(&file_name) == "winget";
-    let is_install = args.first().is_some_and(|sub| {
-        matches!(sub.to_ascii_lowercase().as_str(), "install" | "upgrade")
-    });
+    let is_install = args
+        .first()
+        .is_some_and(|sub| matches!(sub.to_ascii_lowercase().as_str(), "install" | "upgrade"));
     (is_winget && is_install).then_some(WINGET_WAIT_NOTICE_AFTER)
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
 fn install_wait_notice_due(elapsed: Duration, after: Option<Duration>) -> bool {
     after.is_some_and(|after| elapsed > after)
+}
+
+/// What the Windows runner does on one pass of its wait loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+struct RunnerTick {
+    terminate: bool,
+    wait_notice: bool,
+}
+
+/// The runner stops a child only when the person cancelled. Time alone only
+/// brings up the waiting notice, once.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn runner_tick(
+    cancelled: bool,
+    cancel_signal_sent: bool,
+    elapsed: Duration,
+    wait_notice_after: Option<Duration>,
+    wait_notice_sent: bool,
+) -> RunnerTick {
+    RunnerTick {
+        terminate: cancelled && !cancel_signal_sent,
+        wait_notice: !wait_notice_sent && install_wait_notice_due(elapsed, wait_notice_after),
+    }
+}
+
+// "[install-retry]" tells the setup screen to show its Try again button and
+// the text after the marker (onboarding-setup.ts `depsFailureRecovery`).
+#[cfg_attr(not(windows), allow(dead_code))]
+const INSTALL_STOPPED_ERROR: &str =
+    "[install-retry] An install stopped before it finished. Select Try again.";
+#[cfg_attr(not(windows), allow(dead_code))]
+const GIT_DID_NOT_START_ERROR: &str =
+    "[install-retry] Git could not be started after installing. Select Try again.";
+#[cfg_attr(not(windows), allow(dead_code))]
+const PATH_WRITE_ERROR: &str =
+    "[install-retry] HQ could not update the Windows PATH setting. Select Try again.";
+
+/// Logs a raw registry error and returns the copy the setup screen shows.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn plain_path_write_error(raw: &str) -> String {
+    eprintln!("[hq-deps] user PATH update failed: {raw}");
+    PATH_WRITE_ERROR.to_string()
 }
 
 /// Where the waiting notice goes: the Git permission notice for Git, the
@@ -8052,23 +8144,64 @@ fn emit_install_wait<R: tauri::Runtime>(app: &AppHandle<R>, signal: Option<Insta
     }
 }
 
-/// The PATH folder for a resolved `git.exe`: Git for Windows' `cmd` folder
-/// for its `bin` and `mingw64\bin` copies, else the folder holding it.
+/// The PATH folder for a resolved `git.exe`. Git for Windows' `bin` and
+/// `mingw64\bin` copies map to its `cmd` folder, but only when
+/// `cmd\git.exe` exists there; Chocolatey, Cygwin and MSYS2 keep their
+/// `bin` folder. `None` unless the folder returned holds a `git.exe`
+/// (`is_file` is asked about full file paths).
 #[cfg_attr(not(windows), allow(dead_code))]
-fn git_path_entry_for(git_exe: &str) -> Option<String> {
+fn git_path_entry_for(git_exe: &str, is_file: impl Fn(&str) -> bool) -> Option<String> {
     let parts: Vec<&str> = git_exe.split(['\\', '/']).collect();
     if parts.len() < 2 {
         return None;
     }
     let folder = &parts[..parts.len() - 1];
-    if folder.last().is_some_and(|name| name.eq_ignore_ascii_case("bin")) && folder.len() >= 2 {
+    let mut entry = folder.join("\\");
+    if folder
+        .last()
+        .is_some_and(|name| name.eq_ignore_ascii_case("bin"))
+        && folder.len() >= 2
+    {
         let mut root = &folder[..folder.len() - 1];
-        if root.last().is_some_and(|name| name.eq_ignore_ascii_case("mingw64")) {
+        if root
+            .last()
+            .is_some_and(|name| name.eq_ignore_ascii_case("mingw64"))
+        {
             root = &root[..root.len() - 1];
         }
-        return Some(format!("{}\\cmd", root.join("\\")));
+        let cmd = format!("{}\\cmd", root.join("\\"));
+        if is_file(&format!("{cmd}\\git.exe")) {
+            entry = cmd;
+        }
     }
-    Some(folder.join("\\"))
+    is_file(&format!("{entry}\\git.exe")).then_some(entry)
+}
+
+/// True when `folder` is already one of the `;`-separated `path` entries
+/// (case and trailing `\` ignored).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn path_list_contains(path: &str, folder: &str) -> bool {
+    let normalize = |entry: &str| {
+        entry
+            .trim()
+            .trim_end_matches(['\\', '/'])
+            .to_ascii_lowercase()
+    };
+    let folder = normalize(folder);
+    !folder.is_empty() && path.split(';').any(|entry| normalize(entry) == folder)
+}
+
+/// The folder to add to the user PATH for the Git at `git_exe`, or `None`
+/// when there is nothing to add: no usable folder, or new terminals already
+/// find it through `effective_path`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn git_user_path_addition(
+    git_exe: &str,
+    effective_path: &str,
+    is_file: impl Fn(&str) -> bool,
+) -> Option<String> {
+    git_path_entry_for(git_exe, is_file)
+        .filter(|folder| !path_list_contains(effective_path, folder))
 }
 
 /// After a Git install, runs `git --version` from each expected Git folder
@@ -8089,7 +8222,7 @@ fn verify_git_install(
                     .is_some_and(|version| version.trim_start().starts_with("git version"))
         })
         .cloned()
-        .ok_or_else(|| "Git was installed but did not start. Select Try again.".to_string())
+        .ok_or_else(|| GIT_DID_NOT_START_ERROR.to_string())
 }
 
 /// ERROR_CANCELLED: the user answered No at the UAC prompt.
@@ -8100,7 +8233,10 @@ const HRESULT_ERROR_CANCELLED: i32 = 0x8007_04C7_u32 as i32;
 
 #[cfg_attr(not(windows), allow(dead_code))]
 fn winget_output_indicates_permission_declined(exit_code: Option<i32>, output: &str) -> bool {
-    if matches!(exit_code, Some(WINDOWS_ERROR_CANCELLED) | Some(HRESULT_ERROR_CANCELLED)) {
+    if matches!(
+        exit_code,
+        Some(WINDOWS_ERROR_CANCELLED) | Some(HRESULT_ERROR_CANCELLED)
+    ) {
         return true;
     }
     let lower = output.to_ascii_lowercase();
@@ -8215,6 +8351,33 @@ fn deps_tool_settled_state(status: &DepInstallStatus) -> DepsToolState {
 
 fn emit_deps_tool<R: tauri::Runtime>(app: &AppHandle<R>, id: &str, state: DepsToolState) {
     let _ = app.emit_to("main", DEPS_TOOL_EVENT, deps_tool_payload(id, state));
+}
+
+/// Tells the setup screen an installer is running (or has ended). While one
+/// runs, the screen's step timeout only changes what it says.
+#[cfg_attr(not(windows), allow(dead_code))]
+const INSTALLER_RUN_EVENT: &str = "setup:installer-run";
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn installer_run_payload(id: Option<&str>, state: InstallerRunState) -> serde_json::Value {
+    let state = match state {
+        InstallerRunState::Running => "running",
+        InstallerRunState::Done => "done",
+    };
+    serde_json::json!({ "id": id.unwrap_or("installer"), "state": state })
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn emit_installer_run<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    id: Option<&str>,
+    state: InstallerRunState,
+) {
+    let _ = app.emit_to(
+        "main",
+        INSTALLER_RUN_EVENT,
+        installer_run_payload(id, state),
+    );
 }
 const QMD_POST_INSTALL_PROBE_COMMAND: &str = "qmd post-install probe";
 
@@ -8951,13 +9114,28 @@ fn finish_orchestrated_dep_install(
     }
 }
 
+/// Says a tool is installing only once it is known to be missing, so a tool
+/// that is already present never shows on the running-tools line. Returns
+/// whether the tool needs installing.
+fn announce_install_if_missing(satisfied: bool, announce: impl FnOnce()) -> bool {
+    if satisfied {
+        return false;
+    }
+    announce();
+    true
+}
+
 async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), String> {
-    if dep_is_satisfied(app, dep) {
-        // A Git found before (or left by an earlier attempt) still needs its
-        // folder on the user PATH.
+    if !announce_install_if_missing(dep_is_satisfied(app, dep), || {
+        emit_deps_tool(app, dep.id, DepsToolState::Installing)
+    }) {
+        // A Git that already works only gets its folder on the user PATH when
+        // new terminals would not find it. That is not worth failing setup for.
         #[cfg(windows)]
         if dep.id == "git" {
-            ensure_git_on_user_path()?;
+            if let Err(error) = ensure_git_on_user_path(false) {
+                eprintln!("[hq-deps] git PATH update skipped: {error}");
+            }
         }
         return Ok(());
     }
@@ -8997,7 +9175,7 @@ async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), S
     finish_orchestrated_dep_install(dep.label, install_result, dep_is_satisfied(app, dep))?;
     #[cfg(windows)]
     if dep.id == "git" {
-        ensure_git_on_user_path()?;
+        ensure_git_on_user_path(true)?;
     }
     Ok(())
 }
@@ -9033,7 +9211,6 @@ pub async fn install_deps(
             let app = app.clone();
             let failure_scope = failure_scope.clone();
             async move {
-                emit_deps_tool(&app, dep.id, DepsToolState::Installing);
                 let collector = SetupDiagnosticCollector::new();
                 let cancellation_collector = InstallCancellationCollector::new();
                 let install_result = ACTIVE_SETUP_DEPENDENCY
@@ -9071,12 +9248,7 @@ pub async fn install_deps(
                 let cleanup_reported = cancellation_collector.cleanup_failure_reported();
                 let result = result_from_install(dep, install_result, cancellation.as_ref());
                 emit_deps_tool(&app, dep.id, deps_tool_settled_state(&result.status));
-                (
-                    result,
-                    collector.take(),
-                    cancellation,
-                    cleanup_reported,
-                )
+                (result, collector.take(), cancellation, cleanup_reported)
             }
         }))
         .await;
@@ -14550,21 +14722,42 @@ mod install_deps_windows_onboarding_tests {
 
     #[test]
     fn installer_programs_are_serialized() {
-        assert!(is_installer_program("winget", &["install", "--id", "Git.Git"]));
-        assert!(is_installer_program(r"C:\Users\me\AppData\Local\Microsoft\WindowsApps\winget.exe", &["install"]));
-        assert!(is_installer_program("WINGET.EXE", &["upgrade", "--id", "Git.Git"]));
+        assert!(is_installer_program(
+            "winget",
+            &["install", "--id", "Git.Git"]
+        ));
+        assert!(is_installer_program(
+            r"C:\Users\me\AppData\Local\Microsoft\WindowsApps\winget.exe",
+            &["install"]
+        ));
+        assert!(is_installer_program(
+            "WINGET.EXE",
+            &["upgrade", "--id", "Git.Git"]
+        ));
         assert!(is_installer_program("scoop", &["install", "git"]));
         assert!(is_installer_program("scoop.cmd", &["update", "gh"]));
         assert!(is_installer_program("msiexec", &["/i", "node.msi", "/qn"]));
-        assert!(is_installer_program(r"C:\Windows\System32\msiexec.exe", &["/i", "x.msi"]));
+        assert!(is_installer_program(
+            r"C:\Windows\System32\msiexec.exe",
+            &["/i", "x.msi"]
+        ));
         assert!(is_installer_program(r"C:\Temp\hq\node-v22-x64.msi", &[]));
-        assert!(is_installer_program(r"C:\Temp\hq\Git-2.47.0-64-bit-setup.exe", &["/VERYSILENT"]));
-        assert!(is_installer_program(r"C:\Temp\hq\GitHubCLI-installer.exe", &[]));
+        assert!(is_installer_program(
+            r"C:\Temp\hq\Git-2.47.0-64-bit-setup.exe",
+            &["/VERYSILENT"]
+        ));
+        assert!(is_installer_program(
+            r"C:\Temp\hq\GitHubCLI-installer.exe",
+            &[]
+        ));
     }
 
     #[test]
     fn non_installer_programs_are_not_serialized() {
-        assert!(!is_installer_program("npm", &["install", "-g", "@indigoai-us/hq-cli"]));
+        assert!(!is_installer_program(
+            "npm",
+            &["install", "-g", "@indigoai-us/hq-cli"]
+        ));
         assert!(!is_installer_program("npm.cmd", &["install", "-g", "qmd"]));
         assert!(!is_installer_program("node", &["--version"]));
         assert!(!is_installer_program("git", &["--version"]));
@@ -14585,8 +14778,14 @@ mod install_deps_windows_onboarding_tests {
             Some(WINGET_WAIT_NOTICE_AFTER)
         );
         assert_eq!(install_wait_notice_after("winget", &["--version"]), None);
-        assert_eq!(install_wait_notice_after("npm", &["install", "-g", "qmd"]), None);
-        assert_eq!(install_wait_notice_after("scoop", &["install", "git"]), None);
+        assert_eq!(
+            install_wait_notice_after("npm", &["install", "-g", "qmd"]),
+            None
+        );
+        assert_eq!(
+            install_wait_notice_after("scoop", &["install", "git"]),
+            None
+        );
     }
 
     #[test]
@@ -14600,8 +14799,14 @@ mod install_deps_windows_onboarding_tests {
 
     #[test]
     fn install_wait_notice_targets_the_git_permission_notice_for_git() {
-        assert_eq!(install_wait_signal(Some("git")), Some(InstallWaitSignal::GitPermission));
-        assert_eq!(install_wait_signal(Some("gh")), Some(InstallWaitSignal::Tool("gh")));
+        assert_eq!(
+            install_wait_signal(Some("git")),
+            Some(InstallWaitSignal::GitPermission)
+        );
+        assert_eq!(
+            install_wait_signal(Some("gh")),
+            Some(InstallWaitSignal::Tool("gh"))
+        );
         assert_eq!(install_wait_signal(None), None);
         assert_eq!(
             git_permission_payload(GitPermissionState::Waiting),
@@ -14618,18 +14823,35 @@ mod install_deps_windows_onboarding_tests {
     }
 
     #[test]
-    fn the_runner_has_no_install_deadline_kill() {
-        // Gate 2 F1: a winget install past its time budget keeps running (and
-        // keeps the installer lock) until winget and its installer exit.
-        let source = include_str!("install_deps.rs");
-        let runner_start = source
-            .find("#[cfg(windows)]\nfn run_streaming_with_npm_cache_blocking<")
-            .expect("windows runner present");
-        let runner = &source[runner_start..];
-        let runner = &runner[..runner.find("\n}\n").expect("runner end")];
-        assert!(!runner.contains("timed_out"));
-        assert!(runner.contains("install_wait_notice_due("));
-        assert!(!source.contains(concat!("[winget-", "timeout]")));
+    fn the_runner_never_stops_a_slow_install_on_its_own() {
+        // Gate 2 F1/N7: walk a winget install through a day of silence, one
+        // runner pass every 100 ms. Time never stops it; it gets one waiting
+        // notice, after 10 minutes.
+        let after = install_wait_notice_after("winget", &["install", "--id", "Git.Git"]);
+        let mut notice_sent = false;
+        let mut notices = Vec::new();
+        let mut elapsed = Duration::ZERO;
+        while elapsed <= Duration::from_secs(24 * 60 * 60) {
+            let tick = runner_tick(false, false, elapsed, after, notice_sent);
+            assert!(!tick.terminate, "stopped at {elapsed:?}");
+            if tick.wait_notice {
+                notices.push(elapsed);
+                notice_sent = true;
+            }
+            elapsed += Duration::from_millis(100);
+        }
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0] > WINGET_WAIT_NOTICE_AFTER);
+        assert!(notices[0] <= WINGET_WAIT_NOTICE_AFTER + Duration::from_millis(100));
+    }
+
+    #[test]
+    fn the_runner_stops_a_child_once_when_the_person_cancels() {
+        let after = install_wait_notice_after("winget", &["install", "--id", "Git.Git"]);
+        let first = runner_tick(true, false, Duration::from_secs(5), after, false);
+        assert!(first.terminate);
+        let again = runner_tick(true, true, Duration::from_secs(6), after, false);
+        assert!(!again.terminate);
     }
 
     #[test]
@@ -14677,7 +14899,8 @@ mod install_deps_windows_onboarding_tests {
         let diagnostic = SetupCommandDiagnostic {
             command: "winget install --id Git.Git".to_string(),
             exit_code: Some(-1978335226),
-            stdout: "Starting package install...\nInstaller failed with exit code: 1223".to_string(),
+            stdout: "Starting package install...\nInstaller failed with exit code: 1223"
+                .to_string(),
             stderr: String::new(),
             error: "Process exited with code -1978335226".to_string(),
         };
@@ -14735,10 +14958,22 @@ mod install_deps_windows_onboarding_tests {
 
     #[test]
     fn deps_tool_settled_state_maps_install_status() {
-        assert_eq!(deps_tool_settled_state(&DepInstallStatus::Ok), DepsToolState::Done);
-        assert_eq!(deps_tool_settled_state(&DepInstallStatus::Skipped), DepsToolState::Done);
-        assert_eq!(deps_tool_settled_state(&DepInstallStatus::Failed), DepsToolState::Failed);
-        assert_eq!(deps_tool_settled_state(&DepInstallStatus::Cancelled), DepsToolState::Failed);
+        assert_eq!(
+            deps_tool_settled_state(&DepInstallStatus::Ok),
+            DepsToolState::Done
+        );
+        assert_eq!(
+            deps_tool_settled_state(&DepInstallStatus::Skipped),
+            DepsToolState::Done
+        );
+        assert_eq!(
+            deps_tool_settled_state(&DepInstallStatus::Failed),
+            DepsToolState::Failed
+        );
+        assert_eq!(
+            deps_tool_settled_state(&DepInstallStatus::Cancelled),
+            DepsToolState::Failed
+        );
     }
 
     /// Runs `program args` through the serializer on its own thread. The run
@@ -14753,10 +14988,17 @@ mod install_deps_windows_onboarding_tests {
     ) -> std::thread::JoinHandle<bool> {
         std::thread::spawn(move || {
             let waited = std::cell::Cell::new(false);
-            run_installer_serialized(lock, program, args, || waited.set(true), || {
-                started.send(program).unwrap();
-                release.recv().unwrap();
-            });
+            run_installer_serialized(
+                lock,
+                program,
+                args,
+                || waited.set(true),
+                |_| {},
+                || {
+                    started.send(program).unwrap();
+                    release.recv().unwrap();
+                },
+            );
             waited.get()
         })
     }
@@ -14775,7 +15017,10 @@ mod install_deps_windows_onboarding_tests {
             started_tx.clone(),
             release_git_rx,
         );
-        assert_eq!(started_rx.recv_timeout(Duration::from_secs(5)), Ok("winget"));
+        assert_eq!(
+            started_rx.recv_timeout(Duration::from_secs(5)),
+            Ok("winget")
+        );
         // The Git install is still running, so the lock is held.
         assert!(LOCK.try_lock().is_err());
 
@@ -14792,11 +15037,17 @@ mod install_deps_windows_onboarding_tests {
 
         release_git_tx.send(()).unwrap();
         assert!(!git.join().unwrap(), "the first installer never waits");
-        assert_eq!(started_rx.recv_timeout(Duration::from_secs(5)), Ok("msiexec"));
+        assert_eq!(
+            started_rx.recv_timeout(Duration::from_secs(5)),
+            Ok("msiexec")
+        );
         assert!(LOCK.try_lock().is_err());
 
         release_node_tx.send(()).unwrap();
-        assert!(node.join().unwrap(), "the second installer reports that it waited");
+        assert!(
+            node.join().unwrap(),
+            "the second installer reports that it waited"
+        );
         assert!(LOCK.try_lock().is_ok());
     }
 
@@ -14814,7 +15065,10 @@ mod install_deps_windows_onboarding_tests {
             started_tx.clone(),
             release_git_rx,
         );
-        assert_eq!(started_rx.recv_timeout(Duration::from_secs(5)), Ok("winget"));
+        assert_eq!(
+            started_rx.recv_timeout(Duration::from_secs(5)),
+            Ok("winget")
+        );
 
         let npm = spawn_serialized_run(
             &LOCK,
@@ -14831,25 +15085,205 @@ mod install_deps_windows_onboarding_tests {
         assert!(!git.join().unwrap());
     }
 
+    /// A file probe that knows only `files` (compared case-insensitively).
+    fn files_exist(files: &'static [&'static str]) -> impl Fn(&str) -> bool {
+        move |file| files.iter().any(|known| known.eq_ignore_ascii_case(file))
+    }
+
     #[test]
     fn git_path_entry_is_the_git_cmd_folder() {
+        let git_for_windows = files_exist(&[
+            r"C:\Program Files\Git\cmd\git.exe",
+            r"C:\Program Files\Git\bin\git.exe",
+            r"C:\Program Files\Git\mingw64\bin\git.exe",
+        ]);
+        for exe in [
+            r"C:\Program Files\Git\cmd\git.exe",
+            r"C:\Program Files\Git\bin\git.exe",
+            r"C:\Program Files\Git\mingw64\bin\git.exe",
+        ] {
+            assert_eq!(
+                git_path_entry_for(exe, &git_for_windows).as_deref(),
+                Some(r"C:\Program Files\Git\cmd"),
+                "{exe}"
+            );
+        }
         assert_eq!(
-            git_path_entry_for(r"C:\Program Files\Git\cmd\git.exe").as_deref(),
-            Some(r"C:\Program Files\Git\cmd")
-        );
-        assert_eq!(
-            git_path_entry_for(r"C:\Program Files\Git\bin\git.exe").as_deref(),
-            Some(r"C:\Program Files\Git\cmd")
-        );
-        assert_eq!(
-            git_path_entry_for(r"C:\Program Files\Git\mingw64\bin\git.exe").as_deref(),
-            Some(r"C:\Program Files\Git\cmd")
-        );
-        assert_eq!(
-            git_path_entry_for(r"C:\Users\me\scoop\shims\git.exe").as_deref(),
+            git_path_entry_for(
+                r"C:\Users\me\scoop\shims\git.exe",
+                files_exist(&[r"C:\Users\me\scoop\shims\git.exe"])
+            )
+            .as_deref(),
             Some(r"C:\Users\me\scoop\shims")
         );
-        assert_eq!(git_path_entry_for("git.exe"), None);
+        assert_eq!(git_path_entry_for("git.exe", |_| true), None);
+    }
+
+    #[test]
+    fn git_path_entry_keeps_bin_folders_that_have_no_git_cmd_folder() {
+        // Gate 2 N2: Chocolatey, Cygwin and MSYS2 have no `cmd\git.exe`.
+        for (exe, folder) in [
+            (
+                r"C:\ProgramData\chocolatey\bin\git.exe",
+                r"C:\ProgramData\chocolatey\bin",
+            ),
+            (r"C:\cygwin64\bin\git.exe", r"C:\cygwin64\bin"),
+            (r"C:\msys64\usr\bin\git.exe", r"C:\msys64\usr\bin"),
+        ] {
+            let exists = |file: &str| file.eq_ignore_ascii_case(exe);
+            assert_eq!(
+                git_path_entry_for(exe, exists).as_deref(),
+                Some(folder),
+                "{exe}"
+            );
+        }
+    }
+
+    #[test]
+    fn git_path_entry_is_none_when_the_folder_has_no_git() {
+        assert_eq!(git_path_entry_for(r"C:\Gone\bin\git.exe", |_| false), None);
+    }
+
+    #[test]
+    fn git_already_on_the_path_is_not_written_again() {
+        // Gate 2 N3: a Git that new terminals already find leaves the user
+        // PATH alone, whatever the case or trailing slash.
+        let exists = files_exist(&[r"C:\Program Files\Git\cmd\git.exe"]);
+        let exe = r"C:\Program Files\Git\cmd\git.exe";
+        assert_eq!(
+            git_user_path_addition(
+                exe,
+                r"C:\Windows\system32;c:\program files\git\CMD\",
+                &exists
+            ),
+            None
+        );
+        assert_eq!(
+            git_user_path_addition(exe, r"C:\Windows\system32", &exists).as_deref(),
+            Some(r"C:\Program Files\Git\cmd")
+        );
+        assert!(!path_list_contains(r"C:\Windows;;", ""));
+    }
+
+    #[test]
+    fn path_write_errors_use_plain_copy() {
+        let message = plain_path_write_error(r"HKCU\Environment open failed: Access is denied.");
+        assert_eq!(
+            message,
+            "[install-retry] HQ could not update the Windows PATH setting. Select Try again."
+        );
+        assert!(!message.contains("HKCU"));
+    }
+
+    #[test]
+    fn a_tool_that_is_already_present_is_never_announced_as_installing() {
+        // Gate 2 N4.
+        let announced = std::cell::Cell::new(false);
+        assert!(!announce_install_if_missing(true, || announced.set(true)));
+        assert!(!announced.get());
+        assert!(announce_install_if_missing(false, || announced.set(true)));
+        assert!(announced.get());
+    }
+
+    #[test]
+    fn installer_runs_report_running_then_done_while_holding_the_lock() {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let states = std::cell::RefCell::new(Vec::new());
+        run_installer_serialized(
+            &LOCK,
+            "winget",
+            &["install", "--id", "Git.Git"],
+            || {},
+            |state| states.borrow_mut().push((state, LOCK.try_lock().is_err())),
+            || {
+                assert_eq!(
+                    states.borrow().len(),
+                    1,
+                    "Running comes before the install starts"
+                )
+            },
+        );
+        // Both reports happen while the lock is held.
+        assert_eq!(
+            *states.borrow(),
+            vec![
+                (InstallerRunState::Running, true),
+                (InstallerRunState::Done, true)
+            ]
+        );
+        assert!(LOCK.try_lock().is_ok());
+    }
+
+    #[test]
+    fn installer_runs_report_done_when_the_run_panics() {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let states = std::sync::Mutex::new(Vec::new());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_installer_serialized(
+                &LOCK,
+                "msiexec",
+                &["/i", "node.msi"],
+                || {},
+                |state| states.lock().unwrap().push(state),
+                || panic!("runner stopped"),
+            )
+        }));
+        assert!(result.is_err());
+        assert_eq!(
+            *states.lock().unwrap(),
+            vec![InstallerRunState::Running, InstallerRunState::Done]
+        );
+    }
+
+    #[test]
+    fn non_installer_runs_report_nothing() {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let reported = std::cell::Cell::new(false);
+        run_installer_serialized(
+            &LOCK,
+            "npm",
+            &["install", "-g", "qmd"],
+            || {},
+            |_| reported.set(true),
+            || {},
+        );
+        assert!(!reported.get());
+    }
+
+    #[test]
+    fn installer_run_payload_names_the_tool() {
+        assert_eq!(INSTALLER_RUN_EVENT, "setup:installer-run");
+        assert_eq!(
+            installer_run_payload(Some("git"), InstallerRunState::Running),
+            serde_json::json!({ "id": "git", "state": "running" })
+        );
+        assert_eq!(
+            installer_run_payload(None, InstallerRunState::Done),
+            serde_json::json!({ "id": "installer", "state": "done" })
+        );
+    }
+
+    #[test]
+    fn install_errors_that_say_try_again_show_the_try_again_button() {
+        // Gate 2 N5: "Select Try again" only where the button shows. The
+        // setup screen shows Try again for errors tagged [install-retry].
+        assert_eq!(
+            INSTALL_STOPPED_ERROR,
+            "[install-retry] An install stopped before it finished. Select Try again."
+        );
+        assert_eq!(
+            GIT_DID_NOT_START_ERROR,
+            "[install-retry] Git could not be started after installing. Select Try again."
+        );
+        for message in [
+            INSTALL_STOPPED_ERROR,
+            GIT_DID_NOT_START_ERROR,
+            PATH_WRITE_ERROR,
+        ] {
+            assert!(message.starts_with("[install-retry] "), "{message}");
+            assert!(message.ends_with("Select Try again."), "{message}");
+            assert!(!message.contains("Git was installed"), "{message}");
+        }
     }
 
     fn git_status(installed: bool, version: Option<&str>) -> DepStatus {
@@ -14875,7 +15309,10 @@ mod install_deps_windows_onboarding_tests {
                 git_status(false, None)
             }
         });
-        assert_eq!(verified.as_deref(), Ok(r"C:\Users\me\AppData\Local\Programs\Git\cmd"));
+        assert_eq!(
+            verified.as_deref(),
+            Ok(r"C:\Users\me\AppData\Local\Programs\Git\cmd")
+        );
         assert_eq!(probed.borrow().len(), 2);
     }
 
@@ -14886,8 +15323,7 @@ mod install_deps_windows_onboarding_tests {
         let wrong_output = verify_git_install(&folders, |_| git_status(true, Some("")));
         for result in [not_found, wrong_output] {
             let error = result.unwrap_err();
-            assert_eq!(error, "Git was installed but did not start. Select Try again.");
-            assert!(!error.contains('['));
+            assert_eq!(error, GIT_DID_NOT_START_ERROR);
             assert!(!error.contains("Git.Git"));
         }
     }
