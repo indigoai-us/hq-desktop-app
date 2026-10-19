@@ -233,7 +233,9 @@ describe("the workflow keeps both required checks reachable", () => {
   it("runs the relevance decision on a cheap runner", () => {
     const body = jobHead("changes");
 
-    expect(body).toContain("runs-on: ubuntu-latest");
+    expect(body).toContain(
+      'runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX || \'"ubuntu-latest"\') }}',
+    );
     expect(workflow).toContain("scripts/windows-check-relevant.mjs");
   });
 
