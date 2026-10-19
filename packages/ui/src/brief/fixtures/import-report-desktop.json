@@ -1,0 +1,20 @@
+{
+  "_source": "An import report as the desktop writes it at the end of the first-run tree step (import report contract, 2026-10-19).",
+  "report": {
+    "scan_id": "desktop-2026-10-19T08-12-30",
+    "counts": {
+      "plans": 0, "commands": 0, "skills": 0, "hooks": 0, "policies": 0, "agents": 0, "claude_md": 0,
+      "settings_fragments": 0, "mcp_servers": 2, "knowledge_dirs": 0, "claude_repos": 6, "conversations": 0
+    },
+    "categories": {},
+    "discovery": { "ok": true, "errors": [] },
+    "sessions": {
+      "total": 402, "claude": 371, "codex": 31, "cursor": 0, "days_seen": 37,
+      "first_at": "2026-08-30T14:02:11Z", "last_at": "2026-10-19T07:58:40Z"
+    },
+    "tools": ["claude-code", "codex"],
+    "projects": ["hq", "hq-desktop-app", "billing-api"],
+    "source": "desktop-tree-step",
+    "written_at": "2026-10-19T08:12:30Z"
+  }
+}

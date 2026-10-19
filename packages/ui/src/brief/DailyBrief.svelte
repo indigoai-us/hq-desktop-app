@@ -44,6 +44,7 @@
   import { getWelcomeAiApps } from "./welcome-ai-apps.js";
   import { welcomeEdition } from "./brief-welcome-edition.js";
   import type { BriefWelcome } from "./brief-welcome.js";
+  import type { FirstViewData } from "./brief-first-view-load.js";
   import { actionCardData, type BriefActions } from "./brief-action-cards.js";
   import type { Snippet } from "svelte";
   import type { BriefHousekeeping as BriefHousekeepingData } from "./brief-run-files.js";
@@ -103,6 +104,8 @@
     welcome?: BriefWelcome | null;
     /** Opens the start-or-join-a-company flow from the edition's company action. */
     onconnectcompany?: () => void;
+    /** Inside the welcome report: the first view's reads for `buildFirstView` (not drawn yet). */
+    firstViewData?: FirstViewData | null;
   }
   let { input, companies = [], onlaunch, header, tools, sectionOnly = false, summaryOnly = false, clearedItemIds = [], housekeeping = null, dmApi = null, onopenthread, onopenmeetings, onlog, actions = null, welcome = null, onconnectcompany }: Props = $props();
 

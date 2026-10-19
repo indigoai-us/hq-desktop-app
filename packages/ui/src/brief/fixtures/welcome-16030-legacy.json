@@ -1,0 +1,15 @@
+{
+  "_source": "brief.json welcome as the 16.0.30 daily-brief skill writes it: only the 16.0.30 keys, import null (no import report yet).",
+  "welcome": {
+    "first_run": true,
+    "import": null,
+    "sessions": { "total": 41, "claude": 38, "codex": 3, "days_seen": 9 },
+    "repos": [],
+    "apps": ["Claude Code", "Codex"],
+    "next_steps": [
+      { "id": "connect-company", "kind": "connect_company", "reason": "Meetings, meeting signals, agents and integrations need a company." },
+      { "id": "import", "kind": "import", "reason": "No import report yet. Importing past Claude Code and Codex work fills in the history." }
+    ],
+    "getting_started": "Ask your agent to plan the next hour."
+  }
+}

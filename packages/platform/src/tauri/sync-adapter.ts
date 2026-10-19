@@ -1880,6 +1880,12 @@ export function createSyncPlatformAdapter(
       scan: () => call('scan_local_sessions'),
     },
 
+    // (src-tauri/src/commands/import_report.rs)
+    importReport: {
+      write: (input) => call('import_report_write', { input }),
+      latest: () => call('import_report_latest'),
+    },
+
     settings: {
       getConfig: () => call('get_config'),
       getSettings: () => call('get_settings'),
