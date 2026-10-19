@@ -112,10 +112,17 @@ export function plainWelcomeText(text: string | null | undefined, max = 140): st
 
 /** A stack trace or traceback line: Python's header and frames, a JS frame, or an exception's first line. */
 const STACK = /\b[Tt]raceback \(most recent call last\)|^\s*File "[^"]*", line \d+|^\s*at \S.*\(\S*:\d+(?::\d+)?\)|^\s*[A-Z]\w*(?:Error|Exception): /;
-/** An absolute path into the machine: /Users/, /home/, /Volumes/, file://, or ~/ and ~user/ followed by a path. */
-const HOME_PATH = /(?:^|[^\w.-])(?:\/(?:Users|home|Volumes)\/|~[a-z_][\w.-]*\/|~\/\S)|\bfile:\/\//;
-/** A Windows home or user path: C:\Users\ or C:/Users/ on any drive, a UNC \\server\share path, or WSL's /mnt/c/Users/. */
-const WINDOWS_PATH = /(?:^|[^\w])[a-z]:[\\/]users[\\/]|(?:^|[^\w\\])\\\\[^\s\\]+\\[^\s\\]|\/mnt\/[a-z]\/users\//i;
+/**
+ * A path into the machine: /Users/, /home/ or /Volumes/ followed by a name, wherever it appears (so /var/home/,
+ * /usr/home/ and ../Users/ count too; Users in any case), file://, or ~/ and ~user/ followed by a path.
+ */
+const HOME_PATH = /\/(?:[Uu][Ss][Ee][Rr][Ss]|home|Volumes)\/[^/\s]|(?:^|[^\w.-])(?:~[a-z_][\w.-]*\/|~\/\S)|\bfile:\/\//;
+/**
+ * A Windows home or user path: C:\Users\ or C:/Users/ on any drive, Documents and Settings followed by a slash,
+ * a UNC \\server\share path, or WSL's /mnt/c/Users/.
+ */
+const WINDOWS_PATH =
+  /(?:^|[^\w])[a-z]:[\\/]users[\\/]|documents and settings[\\/]|(?:^|[^\w\\])\\\\[^\s\\]+\\[^\s\\]|\/mnt\/[a-z]\/users\//i;
 /**
  * High-confidence credential tokens, matched without regard to case:
  * - GitHub (ghp_, gho_, github_pat_), Slack xox?- tokens, AWS key ids (AKIA, ASIA), JWTs, and any sk-ant- or

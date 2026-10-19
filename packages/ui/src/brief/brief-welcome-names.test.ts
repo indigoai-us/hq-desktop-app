@@ -12,8 +12,8 @@ const SHOWN = [
   "MONKEY: business",
   "usage: docs",
 ];
-/** Round 6: plain words that name a secret but carry no value. plainLine shows these too. */
-const SHOWN_WORDS = ["Token budget review", "API key rotation plan"];
+/** Round 6: plain words that name a secret but carry no value; round 7: titles with a slash or a dot. plainLine shows these too. */
+const SHOWN_WORDS = ["Token budget review", "API key rotation plan", "Q3/Q4 plan", "Node.js upgrade"];
 
 // Built at run time so no secret-shaped literal sits in the source.
 const v = "A1b2C3d4E5f6G7h8J9k0L1m2N3p4Q5r6S7t8U9v0";
@@ -75,6 +75,11 @@ const HIDDEN = [
   `Clone https://x-access-token:${v}@github.com/o/r`,
   `ASI${"A"}${"Q".repeat(16)}`,
   `Rotate ${awsSecret}`,
+  // Round 7, C1: home paths after another path segment, a relative "../", or Windows' Documents and Settings.
+  "Fix build in /var/home/sam/projects/web-app",
+  "Notes in /usr/home/sam/hq",
+  "Open ../Users/sam/hq",
+  "Copy D:\\Documents and Settings\\Sam\\hq",
   // A line or paragraph separator also makes the text multi-line (round 6, m4).
   "Fix the login page\u2028and the signup page",
   "Ship it\u2029now",
