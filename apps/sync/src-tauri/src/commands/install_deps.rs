@@ -2404,16 +2404,26 @@ pub async fn configure_claude_settings_path(
     Ok("[path] skipped - PATH is registry-managed on Windows".to_string())
 }
 
-/// Internal implementation shared by `check_dep` (uses real PATH) and
-/// `check_dep_in` (uses a caller-supplied search path — useful for tests).
-/// True when `(tool, bin_path)` is the macOS `/usr/bin/git` CLT shim. Pure so
-/// the path classification is unit-tested without filesystem/xcode-select; the
-/// caller layers the CLT-presence check on top to decide "usable or not".
-#[cfg(not(windows))]
-pub fn is_macos_git_shim(tool: &str, bin_path: &std::path::Path) -> bool {
-    tool == "git" && bin_path == std::path::Path::new("/usr/bin/git")
+/// True when `(tool, bin_path)` is one of the stubs macOS ships at `/usr/bin`
+/// in place of Apple's developer tools: git, python3, make and clang. On a Mac
+/// without those tools, running a stub opens Apple's install prompt (a
+/// multi-GB download). HQ never runs them and never installs Apple's tools: it
+/// provisions its own prebuilt git and Node instead. Pure path check, so it
+/// needs no filesystem and never spawns anything.
+pub fn is_macos_clt_shim(tool: &str, bin_path: &std::path::Path) -> bool {
+    matches!(tool, "git" | "python3" | "make" | "clang")
+        && bin_path == std::path::Path::new("/usr/bin").join(tool)
 }
 
+/// True when `(tool, bin_path)` is the macOS `/usr/bin/git` stub. Kept for
+/// existing callers; [`is_macos_clt_shim`] covers the other stubs too.
+#[cfg(not(windows))]
+pub fn is_macos_git_shim(tool: &str, bin_path: &std::path::Path) -> bool {
+    tool == "git" && is_macos_clt_shim(tool, bin_path)
+}
+
+/// Internal implementation shared by `check_dep` (uses real PATH) and
+/// `check_dep_in` (uses a caller-supplied search path — useful for tests).
 #[cfg(not(windows))]
 pub fn check_dep_impl(tool: &str, search_path: Option<&str>) -> DepStatus {
     // Locate the binary.
@@ -2435,26 +2445,26 @@ pub fn check_dep_impl(tool: &str, search_path: Option<&str>) -> DepStatus {
         }
     };
 
-    // macOS ships a non-functional `git` shim at /usr/bin/git that forwards to
-    // the Xcode Command Line Tools. With no CLT installed it can't run git — it
-    // errors and pops the "install developer tools" dialog. Treat it as NOT
-    // installed so the managed (dugite) git gets provisioned instead. Detected
-    // via path + `xcode-select -p` so we never RUN the shim (running it is what
-    // pops the dialog). Once the toolchain git is installed, which_in resolves
-    // to it first (toolchain is ahead of /usr/bin), so this guard stops firing.
-    if is_macos_git_shim(tool, &bin_path) {
-        let clt_present = Command::new("/usr/bin/xcode-select")
-            .arg("-p")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if !clt_present {
-            return DepStatus {
-                installed: false,
-                version: None,
-                path: None,
-            };
-        }
+    let probe_path = search_path
+        .map(str::to_owned)
+        .unwrap_or_else(extended_search_path);
+    check_dep_resolved(tool, bin_path, &probe_path)
+}
+
+/// Classify a located binary. A macOS `/usr/bin` developer-tools stub counts
+/// as not installed, decided from the path alone, so the managed (dugite) git
+/// gets provisioned and the stub is never run (running it is what opens
+/// Apple's install prompt). Once the toolchain git is installed, `which_in`
+/// resolves to it first (the toolchain is ahead of /usr/bin), so this branch
+/// stops firing.
+#[cfg(not(windows))]
+pub fn check_dep_resolved(tool: &str, bin_path: PathBuf, probe_path: &str) -> DepStatus {
+    if is_macos_clt_shim(tool, &bin_path) {
+        return DepStatus {
+            installed: false,
+            version: None,
+            path: None,
+        };
     }
 
     // Run `<tool> --version` and capture the first line of stdout.
@@ -2465,9 +2475,6 @@ pub fn check_dep_impl(tool: &str, search_path: Option<&str>) -> DepStatus {
     // `version: None` for a perfectly healthy qmd. A non-zero exit is a
     // FAILED probe — a leftover stub that prints and exits 97 must not be
     // mistaken for a working tool (install matrix `stale-toolchain`, 2026-09-03).
-    let probe_path = search_path
-        .map(str::to_owned)
-        .unwrap_or_else(extended_search_path);
     let version = Command::new(&bin_path)
         .arg("--version")
         .env("PATH", probe_path)
@@ -4509,6 +4516,13 @@ async fn npm_install_global_managed<R: tauri::Runtime>(
 /// hq-cli's package.json. Installing `latest` here produced a live three-way
 /// skew (2.8.3 vs 2.5.3 vs 1.0.7) that the install matrix caught on
 /// 2026-09-03 — `setup.sh` then "downgraded" what the app had just installed.
+///
+/// Do not bump this without checking qmd's native modules. qmd 2.8.x depends
+/// on better-sqlite3 13.0.3, which ships no darwin prebuild for the managed
+/// Node's ABI (node-v127). npm then compiles it from source, and on a Mac
+/// without Apple's Command Line Tools that compile runs the /usr/bin clang,
+/// make and python3 shims and opens Apple's install prompt. 2.5.3 installs
+/// from prebuilt binaries only.
 pub const MANAGED_QMD_VERSION: &str = "2.5.3";
 
 /// Install qmd via `npm install -g @tobilu/qmd@<pin>`.
@@ -9988,6 +10002,51 @@ mod install_deps_tests {
     }
 
     #[test]
+    fn test_is_macos_clt_shim_covers_git_python3_make_and_clang() {
+        for tool in ["git", "python3", "make", "clang"] {
+            let shim = Path::new("/usr/bin").join(tool);
+            assert!(is_macos_clt_shim(tool, &shim), "{tool} at {shim:?}");
+            assert!(!is_macos_clt_shim(
+                tool,
+                &Path::new("/opt/homebrew/bin").join(tool)
+            ));
+        }
+        assert!(!is_macos_clt_shim(
+            "git",
+            Path::new("/Users/x/Library/Application Support/Indigo HQ/toolchain/git/bin/git")
+        ));
+        assert!(!is_macos_clt_shim("node", Path::new("/usr/bin/node")));
+        assert!(!is_macos_clt_shim("python3", Path::new("/usr/bin/git")));
+    }
+
+    /// A Mac without Apple's developer tools: every /usr/bin shim counts as
+    /// missing so HQ installs its own copy, and the shim is never run (running
+    /// it opens Apple's install prompt). No probe of the developer tools runs
+    /// either: the decision is the path alone.
+    #[cfg(not(windows))]
+    #[test]
+    fn test_check_dep_resolved_reports_clt_shims_missing_without_running_them() {
+        for tool in ["git", "python3", "make", "clang"] {
+            let status =
+                check_dep_resolved(tool, Path::new("/usr/bin").join(tool), "/usr/bin:/bin");
+            assert!(!status.installed, "{tool} shim must not count as installed");
+            assert!(status.path.is_none());
+            assert!(status.version.is_none());
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_check_dep_resolved_still_probes_real_binaries() {
+        let dir = tempfile::TempDir::new().unwrap();
+        make_fake_bin(&dir, "git");
+        let bin = dir.path().join("git");
+        let status = check_dep_resolved("git", bin.clone(), dir.path().to_str().unwrap());
+        assert!(status.installed);
+        assert_eq!(status.path, Some(bin));
+    }
+
+    #[test]
     fn test_managed_git_env_empty_when_not_installed() {
         let home = tempfile::TempDir::new().unwrap();
         let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
@@ -11792,7 +11851,13 @@ mod git_shim_tests {
 
     #[test]
     fn qmd_pin_matches_setup_sh_contract() {
-        assert_eq!(MANAGED_QMD_VERSION, "2.5.3");
+        assert_eq!(
+            MANAGED_QMD_VERSION, "2.5.3",
+            "qmd versions that pull better-sqlite3 13.x have no darwin node-v127 \
+             prebuild and compile from source, which needs Apple's Command Line \
+             Tools. Confirm every native dependency of the new qmd ships a darwin \
+             prebuild for the managed Node before changing this pin."
+        );
     }
 }
 

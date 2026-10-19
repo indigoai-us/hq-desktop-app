@@ -2323,9 +2323,14 @@ pub fn spawn_command(path: &str, args: &[&str]) -> std::process::Command {
 /// Applies [`no_window`] so Windows project/Overview refreshes do not flash a
 /// console for every `git` invocation. Also sets `GIT_OPTIONAL_LOCKS=0` so
 /// read-only history walks never contend with an interactive git index lock.
+///
+/// PATH is [`child_path`], so `git` resolves to HQ's managed git ahead of
+/// `/usr/bin/git`. On a Mac without Apple's developer tools that file is a
+/// shim that opens Apple's install prompt when run.
 pub fn git_command() -> Command {
     let mut cmd = Command::new("git");
     no_window(&mut cmd);
+    cmd.env("PATH", child_path());
     cmd.env("GIT_OPTIONAL_LOCKS", "0");
     cmd
 }
@@ -4432,6 +4437,41 @@ mod tests {
             .get_envs()
             .find_map(|(key, value)| (key == "GIT_OPTIONAL_LOCKS").then_some(value));
         assert_eq!(locks, Some(Some(std::ffi::OsStr::new("0"))));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn git_command_puts_the_managed_git_ahead_of_usr_bin() {
+        let _guard = crate::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let shim = managed_git_shim_dir_in(&home).join("git");
+        write_unix_exec(&shim);
+        let _home = crate::test_support::ScopedEnv::set("HOME", home.as_os_str());
+
+        let cmd = git_command();
+        let path = cmd
+            .get_envs()
+            .find_map(|(key, value)| (key == "PATH").then_some(value))
+            .flatten()
+            .expect("git_command must set PATH for the child")
+            .to_string_lossy()
+            .into_owned();
+        let dirs: Vec<&str> = path.split(':').collect();
+        let managed = dirs
+            .iter()
+            .position(|dir| Path::new(dir) == shim.parent().unwrap())
+            .expect("the managed git dir must be on the child PATH");
+        let usr_bin = dirs
+            .iter()
+            .position(|dir| *dir == "/usr/bin")
+            .expect("/usr/bin stays on the child PATH");
+        assert!(
+            managed < usr_bin,
+            "managed git must come before /usr/bin/git: {path}"
+        );
     }
 
     #[test]
