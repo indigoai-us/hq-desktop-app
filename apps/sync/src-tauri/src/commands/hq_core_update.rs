@@ -60,6 +60,11 @@ pub use hq_desktop_core::hq_version::{get_local_version, strip_v_prefix};
 /// public `hq-core` repo via `/personal:release-hq-core`.
 const RELEASES_URL: &str = "https://api.github.com/repos/indigoai-us/hq-core/releases/latest";
 
+/// Full releases list for the same repo, prereleases included. Read only by a
+/// demo build (`HQ_CORE_PRERELEASE`, see `demo_build.rs`); `/releases/latest`
+/// never returns a prerelease.
+const RELEASES_LIST_URL: &str = "https://api.github.com/repos/indigoai-us/hq-core/releases";
+
 /// HTTP request timeout — keep tight so a flaky network doesn't stall the
 /// `install_hq_core_update` handler.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -87,6 +92,53 @@ struct ManagedGitRetryResult {
 #[derive(Debug, Deserialize)]
 struct GithubRelease {
     tag_name: String,
+    #[serde(default)]
+    prerelease: bool,
+    #[serde(default)]
+    draft: bool,
+}
+
+impl crate::demo_build::CoreRelease for GithubRelease {
+    fn tag(&self) -> &str {
+        &self.tag_name
+    }
+    fn prerelease(&self) -> bool {
+        self.prerelease
+    }
+    fn draft(&self) -> bool {
+        self.draft
+    }
+}
+
+fn releases_url(allow_prerelease: bool) -> &'static str {
+    if allow_prerelease {
+        RELEASES_LIST_URL
+    } else {
+        RELEASES_URL
+    }
+}
+
+/// The tag to install, without its `v`, from the body of
+/// [`releases_url`]. Off: one `/releases/latest` object, as before. On: the
+/// releases list, through `demo_build::select_core_release`.
+fn latest_tag_from_body(body: &[u8], allow_prerelease: bool) -> Result<String, String> {
+    let tag = if allow_prerelease {
+        let releases: Vec<GithubRelease> =
+            serde_json::from_slice(body).map_err(|e| format!("parse GitHub releases JSON: {e}"))?;
+        crate::demo_build::select_core_release(releases, true)
+            .ok_or_else(|| {
+                format!(
+                    "no hq-core release at or above {}",
+                    crate::demo_build::MIN_CORE_VERSION
+                )
+            })?
+            .tag_name
+    } else {
+        let parsed: GithubRelease =
+            serde_json::from_slice(body).map_err(|e| format!("parse GitHub release JSON: {e}"))?;
+        parsed.tag_name
+    };
+    Ok(strip_v_prefix(tag.trim()).to_string())
 }
 
 fn github_api_client(token: Option<&str>) -> Result<reqwest::Client, String> {
@@ -161,15 +213,15 @@ async fn fetch_latest(token: Option<&str>) -> Result<String, String> {
     } else {
         crate::commands::github_api::ApiScope::Anonymous
     };
-    let resp = crate::commands::github_api::get(&client, RELEASES_URL, scope)
+    let allow_prerelease = crate::demo_build::core_prerelease();
+    let url = releases_url(allow_prerelease);
+    let resp = crate::commands::github_api::get(&client, url, scope)
         .await
-        .map_err(|e| format!("GET {RELEASES_URL}: {e}"))?;
+        .map_err(|e| format!("GET {url}: {e}"))?;
     if !resp.status().is_success() {
         return Err(format!("GitHub API returned HTTP {}", resp.status()));
     }
-    let parsed: GithubRelease = serde_json::from_slice(&resp.body)
-        .map_err(|e| format!("parse GitHub release JSON: {e}"))?;
-    Ok(strip_v_prefix(parsed.tag_name.trim()).to_string())
+    latest_tag_from_body(&resp.body, allow_prerelease)
 }
 
 /// Tauri command — bounded, off-thread read of the local hq-core `hqVersion`.
@@ -545,9 +597,8 @@ async fn install_hq_core_update_inner(
         if crate::commands::hq_core_staging::rescue_git_version_is_supported(&git_version)
             == Some(false)
         {
-            let diagnostic = crate::commands::hq_core_staging::rescue_git_preflight_diagnostic(
-                &git_version,
-            );
+            let diagnostic =
+                crate::commands::hq_core_staging::rescue_git_preflight_diagnostic(&git_version);
             crate::commands::hq_core_state::emit_core_update_git_preflight_failure(
                 update_source,
                 crate::commands::hq_core_state::Channel::Release,
@@ -1156,6 +1207,50 @@ mod tests {
     fn prod_source_agrees_with_release_feed() {
         assert_eq!(PROD_HQ_CORE_REPO, "indigoai-us/hq-core");
         assert!(RELEASES_URL.contains(PROD_HQ_CORE_REPO));
+        assert!(RELEASES_LIST_URL.contains(PROD_HQ_CORE_REPO));
+    }
+
+    /// A shipped build (switch off) still reads `/releases/latest` and takes
+    /// its one tag as-is; a demo build reads the list and applies the minimum.
+    #[test]
+    fn core_update_feed_follows_the_prerelease_switch() {
+        assert_eq!(releases_url(false), RELEASES_URL);
+        assert!(RELEASES_URL.ends_with("/releases/latest"));
+        assert_eq!(releases_url(true), RELEASES_LIST_URL);
+        assert!(RELEASES_LIST_URL.ends_with("/releases"));
+
+        let latest = br#"{"tag_name":"v16.0.30","prerelease":false,"draft":false}"#;
+        assert_eq!(latest_tag_from_body(latest, false).unwrap(), "16.0.30");
+
+        let list = br#"[
+            {"tag_name":"v16.0.32","prerelease":false,"draft":true},
+            {"tag_name":"v16.0.31-beta.7","prerelease":true,"draft":false},
+            {"tag_name":"v16.0.31-beta.6","prerelease":true,"draft":false},
+            {"tag_name":"v16.0.30","prerelease":false,"draft":false}
+        ]"#;
+        assert_eq!(latest_tag_from_body(list, true).unwrap(), "16.0.31-beta.7");
+
+        // A lower accepted entry listed first must not win.
+        let stable_first = br#"[
+            {"tag_name":"v16.0.31","prerelease":false,"draft":false},
+            {"tag_name":"v16.0.32-beta.1","prerelease":true,"draft":false}
+        ]"#;
+        assert_eq!(
+            latest_tag_from_body(stable_first, true).unwrap(),
+            "16.0.32-beta.1"
+        );
+        let beta6_first = br#"[
+            {"tag_name":"v16.0.31-beta.6","prerelease":true,"draft":false},
+            {"tag_name":"v16.0.31-beta.10","prerelease":true,"draft":false}
+        ]"#;
+        assert_eq!(
+            latest_tag_from_body(beta6_first, true).unwrap(),
+            "16.0.31-beta.10"
+        );
+
+        let stable_only = br#"[{"tag_name":"v16.0.30","prerelease":false,"draft":false}]"#;
+        let err = latest_tag_from_body(stable_only, true).unwrap_err();
+        assert!(err.contains("16.0.31-beta.6"), "{err}");
     }
 
     #[cfg(not(windows))]
