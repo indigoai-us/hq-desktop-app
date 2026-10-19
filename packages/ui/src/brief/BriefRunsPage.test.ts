@@ -334,10 +334,8 @@ describe("BriefRunsPage", () => {
       el.querySelector("h3")?.textContent,
       el.querySelector("p")?.innerHTML.replace(/<!---->/g, "").split("<br>").map((l) => l.trim()),
     ]);
-    expect(sections).toEqual([
-      ["Northstar", ["On the cards above."]],
-      ["Fieldwork", ["Pick the pricing page"]],
-    ]);
+    // Northstar's work is all on the cards, so only Fieldwork has a section.
+    expect(sections).toEqual([["Fieldwork", ["Pick the pricing page"]]]);
   });
 
   // The bot's own operator text (its name, "Check that it is running", the

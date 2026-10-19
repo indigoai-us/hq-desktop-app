@@ -344,7 +344,7 @@
   import FirstRunHeldBackdrop from "../chat/first-run/FirstRunHeldBackdrop.svelte";
   import type { FirstRunHandoffHint } from "../chat/first-run/first-run-handoff.js";
   import { mostUsedTool } from "../chat/first-run/visual-first-run.js";
-  import { continueInTool, openPreparedCodingTool } from "../chat/first-run/continue-in-tool.js";
+  import { continueInTool, openPreparedCodingTool, openWelcomeHarness, WELCOME_OPENABLE_HARNESSES } from "../chat/first-run/continue-in-tool.js";
   import {
     briefOpenToolConnectorId,
     briefInstallAfterCheck,
@@ -4305,6 +4305,13 @@
     return null;
   }
   /** Open on the welcome edition, and the same action later on the Daily Brief. */
+  /** The welcome edition's "Open HQ in <harness>": opens the harness the button names (US-019). */
+  const welcomeOpenHarness = {
+    harnesses: WELCOME_OPENABLE_HARNESSES,
+    open: (harness: "claude-code" | "codex" | "cursor", prompt: string) =>
+      openWelcomeHarness({ harness, prompt, settings: adapter.settings, shell: adapter.shell }),
+  };
+
   async function openRememberedCodingTool(): Promise<void> {
     const runtime = briefOpenTool;
     if (!runtime || briefOpenToolBusy) return;
@@ -16162,6 +16169,7 @@
               session={welcomeConnectSession}
               blocked={welcomeReportBlocked}
               openTool={briefOpenToolAction}
+              openHarness={welcomeOpenHarness}
               companies={railCompanyRoster.map((company) => ({ id: company.uid, name: company.label }))}
             >
               {@render briefPage(false)}

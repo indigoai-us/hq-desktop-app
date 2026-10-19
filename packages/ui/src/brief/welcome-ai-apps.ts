@@ -10,6 +10,7 @@ import type { FoundWorkApps } from "@hq/platform";
 import type { YourAppsHost } from "../chat/first-run/your-apps-host.js";
 import type { WelcomeConnectSession } from "./welcome-connect-session.svelte.js";
 import type { BriefOpenToolAction } from "./brief-open-tool.js";
+import type { WelcomeHarnessId } from "./brief-welcome-contract.js";
 
 /**
  * What the connect section did for one company, kept by its owner across
@@ -71,6 +72,17 @@ export function welcomeAppsCompanyFor<T extends { uid: string }>(
   return roster[0] ?? null;
 }
 
+/**
+ * Opens HQ in the harness a welcome action names, with the action's prompt.
+ * Never the tool picked at Continue and never the brief's saved engine.
+ */
+export interface WelcomeOpenHarness {
+  /** The harnesses this host can open; an action naming another one shows no button. */
+  harnesses: readonly WelcomeHarnessId[];
+  /** Resolves with a plain line when the harness could not open, else null. */
+  open(harness: WelcomeHarnessId, prompt: string): Promise<string | null>;
+}
+
 const KEY = Symbol("welcome-ai-apps");
 
 /** What the welcome report shares with the brief inside it. Read through getters, so a change reaches the brief. */
@@ -78,6 +90,8 @@ export interface WelcomeAiAppsSource {
   readonly current: WelcomeAiApps | null;
   /** The report's "Open <tool>" action, for the edition's open-in-harness component. */
   readonly openTool?: BriefOpenToolAction | null;
+  /** Opens HQ in a named harness, for the edition's "Open HQ in <harness>" action. */
+  readonly openHarness?: WelcomeOpenHarness | null;
   /**
    * The edition shows the open action itself, so the report drops its own
    * bar. Returns the release, called when the edition no longer shows it.

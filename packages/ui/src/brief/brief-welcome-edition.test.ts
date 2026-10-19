@@ -177,10 +177,14 @@ describe("welcomeEdition", () => {
     expect(day).toMatchObject({ label: "Open the agenda", action: { kind: "meetings" } });
   });
 
-  it("says the calendar is clear, with no link, when nothing is booked and nothing failed", () => {
+  // Review m4 (2026-10-19): an empty-state card says nothing the page does not already show.
+  it("shows no day card when nothing is booked and nothing failed", () => {
     const input = { ...welcomeRiseBriefInput(), sourceNotes: [] };
-    const day = welcomeEdition(input).cards.find((c) => c.id === "day")!;
-    expect(day).toMatchObject({ title: "Your calendar is clear.", lines: ["Nothing is booked today. The time is yours."], label: null, action: null });
+    const e = welcomeEdition(input);
+    expect(e.cards.map((c) => c.id)).toEqual(["decision", "work"]);
+    const all = [...e.cards.flatMap((c) => [c.title, ...c.lines]), ...e.sections.flatMap((s) => s.lines)];
+    expect(all).not.toContain("Your calendar is clear.");
+    expect(all).not.toContain("Nothing is booked today. The time is yours.");
   });
 
   it("launches the plan's prompt for a card when there is one, else the decision's own prompt, else its title", () => {
@@ -192,11 +196,11 @@ describe("welcomeEdition", () => {
     expect(e.cards[2]!.action).toEqual({ kind: "launch", itemId: "rise-repos", prompt: "Finish the empty state in WelcomeReport.svelte" });
   });
 
-  it("names up to three companies, the others with nothing new", () => {
+  it("names up to three companies, and leaves out one with nothing new", () => {
     const input = { ...welcomeRiseBriefInput(), companies: ["northstar", "quiet", "studio", "extra"] };
     const e = welcomeEdition(input, {}, new Map([["studio", "Studio Co"]]));
-    expect(e.sections.map((s) => s.name)).toEqual(["Northstar", "Quiet", "Studio Co"]);
-    expect(e.sections[1]!.lines).toEqual(["Nothing new for you today."]);
+    expect(e.sections.map((s) => s.name)).toEqual(["Northstar", "Studio Co"]);
+    expect(e.sections.flatMap((s) => s.lines)).not.toContain("Nothing new for you today.");
   });
 
   it("with one decision shows only the decision and agenda cards, and counts only what is shown", () => {
@@ -205,11 +209,8 @@ describe("welcomeEdition", () => {
     const e = welcomeEdition(input);
     expect(e.cards.map((c) => c.id)).toEqual(["decision", "day"]);
     expect(e.cards[1]).toMatchObject({ title: "1 thing for you today.", lines: ["Across Northstar."] });
-    expect(e.sections).toEqual([
-      { name: "Northstar", lines: ["On the cards above."] },
-      { name: "Fieldwork", lines: ["Nothing new for you today."] },
-      { name: "Studio", lines: ["Nothing new for you today."] },
-    ]);
+    // Every company's work is on the cards above, so no company section repeats it.
+    expect(e.sections).toEqual([]);
   });
 
   it("never shows a count that differs from the distinct items on the page", () => {

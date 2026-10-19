@@ -209,7 +209,8 @@ describe("welcome edition components (US-019)", () => {
     button("import-history")!.click();
     await settle();
     expect(onlaunch).toHaveBeenCalledTimes(1);
-    expect(onlaunch.mock.calls[0]).toEqual(["import-history", "/import-context"]);
+    // The page's launch takes (engine, prompt); the prompt is Core's, sent as is.
+    expect((onlaunch.mock.calls[0] as unknown[])[1]).toBe("/import-context");
     // Prompts are sent, never shown.
     expect(target.textContent).not.toContain("/import-context");
     expect(target.textContent).not.toContain(CATCH_UP);
@@ -340,7 +341,8 @@ describe("welcome edition components (US-019)", () => {
     expect(b?.textContent?.trim()).toBe("Connect your AI apps");
     b!.click();
     await settle();
-    expect(onlaunch).toHaveBeenCalledWith("connect-ai-apps", "Help me connect Claude Code, Codex and Cursor to HQ.");
+    expect(onlaunch).toHaveBeenCalledTimes(1);
+    expect((onlaunch.mock.calls[0] as unknown[])[1]).toBe("Help me connect Claude Code, Codex and Cursor to HQ.");
   });
 
   it("renders the 16.0.30 shape without an empty-state line", async () => {

@@ -76,7 +76,18 @@
   let failedCompanies = $state<BriefFailedCompany[]>([]);
   // Inside the welcome report the page is one brief, so the welcome edition
   // (which carries its own company sections) replaces the split layout.
-  const inWelcome = !!getWelcomeAiApps();
+  const welcomeSource = getWelcomeAiApps();
+  const inWelcome = !!welcomeSource;
+  // While the welcome brief loads the report's open-tool bar stays out, so it never flashes before
+  // the edition (which carries its own open action) or before a brief that gets the bar under it.
+  let loadingClaim: (() => void) | null = welcomeSource?.claimOpenTool?.() ?? null;
+  $effect(() => {
+    if ((input || failed) && loadingClaim) {
+      loadingClaim();
+      loadingClaim = null;
+    }
+  });
+  onDestroy(() => loadingClaim?.());
   const sections = $derived(input ? briefSections(input, companies.filter(c => !failedCompanies.some(f => f.company === c.uid || f.company === c.slug) && !exclusions.some(e => e.company === c.uid || e.company === c.slug))) : []);
   let housekeeping = $state<BriefHousekeeping | null>(null);
   let missing = $state<string[]>([]);
@@ -357,7 +368,8 @@
   <div class="brief-content" data-testid="brief-content">
   {#if dawn}<div class="masthead-wrap">{@render dawnScene("masthead")}</div>{/if}
   {#if welcome && !inWelcome}<BriefWelcome {welcome} {onconnectcompany} />{/if}
-  {#if exclusions.length}
+  <!-- In the welcome report nothing sits above the brief (US-019); its company sections say what is in it. -->
+  {#if exclusions.length && !inWelcome}
     <aside class="brief-exclusions" data-testid="brief-exclusions" aria-label="Not included">
       {#each exclusions as excluded}
         {@const excludedCompany = companies.find(c => c.uid === excluded.company || c.slug === excluded.company)}
@@ -365,7 +377,7 @@
       {/each}
     </aside>
   {/if}
-  {#if failedCompanies.length}
+  {#if failedCompanies.length && !inWelcome}
     <aside class="brief-exclusions" data-testid="brief-company-failures">
       {#each failedCompanies as failure}
         {@const failedCompany = companies.find(c => c.uid === failure.company || c.slug === failure.company)}

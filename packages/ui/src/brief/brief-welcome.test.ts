@@ -14,7 +14,7 @@ describe("welcome edition", () => {
       skills: 4, conversations: 12, sessions: 31, apps: ["Claude Code", "Codex"], connectCompany: true,
       fields: {
         sessions: { total: 31, claude: 0, codex: 0, days_seen: 0 },
-        actions: [{ id: "connect-company", kind: "connect_company", label: "Start or join a company", reason: "", launch_prompt: "", primary: false }],
+        actions: [{ id: "connect-company", kind: "connect_company", label: "Create or join a company", reason: "", launch_prompt: "", primary: false }],
       },
     });
   });

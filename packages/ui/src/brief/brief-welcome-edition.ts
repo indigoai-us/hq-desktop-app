@@ -11,6 +11,8 @@ import { WELCOME_HARNESS_NAME, primaryAction, type WelcomeAction, type WelcomeBr
 
 export const WELCOME_EDITION_EYEBROW = "Your welcome edition · Ready";
 export const WELCOME_EDITION_SUB = "Your decisions, your day, and the work worth picking up.";
+/** The sub on the edition drawn from brief.json `welcome`: it shows what HQ knows, not decisions. */
+export const WELCOME_FIELDS_SUB = "What HQ knows about your work so far, and one place to start.";
 export const WELCOME_EDITION_ZERO_HEADLINE = "A place to begin.";
 export const WELCOME_EDITION_ZERO_SUB = "Your personal brief is ready. No company needed.";
 export const WELCOME_EDITION_HEAD = "Your day, ready to read.";
@@ -164,8 +166,10 @@ function calendarFailed(input: BriefInput): boolean {
  * The agenda card. A calendar that could not be read is never its headline (that is
  * the quiet note under the greeting); the card then counts what the page shows today,
  * under the priorities label, with no agenda link because there is no agenda to open.
+ * With nothing booked and nothing to count there is no card: an empty-state line
+ * says nothing the page does not already show.
  */
-function dayCard(input: BriefInput, now: Date, shown: number, names: readonly string[]): WelcomeEditionCard {
+function dayCard(input: BriefInput, now: Date, shown: number, names: readonly string[]): WelcomeEditionCard | null {
   const event = nextEvent(input.calendarToday, now);
   if (event) {
     const who = (event.attendees ?? []).slice(0, 2);
@@ -179,26 +183,18 @@ function dayCard(input: BriefInput, now: Date, shown: number, names: readonly st
       action: { kind: "meetings" },
     };
   }
-  if (calendarFailed(input)) {
+  if (calendarFailed(input) && shown) {
     return {
       id: "day",
       pill: null,
       kicker: WELCOME_EDITION_PRIORITIES,
-      title: shown ? `${shown} ${shown === 1 ? "thing" : "things"} for you today.` : "Nothing is waiting on you.",
+      title: `${shown} ${shown === 1 ? "thing" : "things"} for you today.`,
       lines: names.length ? [`Across ${listOf(names)}.`] : [],
       label: null,
       action: null,
     };
   }
-  return {
-    id: "day",
-    pill: null,
-    kicker: "Today · Personal",
-    title: "Your calendar is clear.",
-    lines: ["Nothing is booked today. The time is yours."],
-    label: null,
-    action: null,
-  };
+  return null;
 }
 
 /** "Northstar", "Northstar and Studio", "Northstar, Fieldwork, and Studio". */
@@ -223,7 +219,7 @@ function actionKicker(a: WelcomeAction, fields: WelcomeBriefFields): string {
     case "connect_integration":
       return plainWelcomeText(a.integration?.name) ?? "Your apps";
     case "open_harness":
-      return WELCOME_HARNESS_NAME[fields.harness?.action.harness ?? fields.harness?.primary ?? "claude-code"];
+      return WELCOME_HARNESS_NAME[a.harness ?? fields.harness?.action.harness ?? fields.harness?.primary ?? "claude-code"];
     case "connect_company":
       return "A space for your team";
     case "import_history":
@@ -237,9 +233,18 @@ const sessions = (n: number) => `${n} ${n === 1 ? "session" : "sessions"}`;
 const dayOf = (iso: string) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 const welcomeAction = (a: WelcomeAction): WelcomeEditionAction => ({ kind: "welcome", action: a });
 
-/** True when brief.json `welcome` carries anything the edition draws a component from. */
+/** True when brief.json `welcome` carries anything the edition draws a component from. A tree of all zeros draws nothing. */
 function hasComponents(f: WelcomeBriefFields): boolean {
-  return !!(f.actions || f.harness || f.recent_work || f.top_projects || f.top_repos || f.tree || (f.sessions?.total ?? 0) > 0);
+  const tree = !!f.tree && f.tree.companies + f.tree.projects + f.tree.knowledge_files > 0;
+  return !!(f.actions || f.harness || f.recent_work || f.top_projects || f.top_repos || tree || (f.sessions?.total ?? 0) > 0);
+}
+
+/** The welcome actions with plain labels; an action whose label is raw text is dropped, so no button shows it. */
+function plainActions(actions: readonly WelcomeAction[]): WelcomeAction[] {
+  return actions.flatMap((a) => {
+    const label = plainWelcomeText(a.label);
+    return label ? [{ ...a, label }] : [];
+  });
 }
 
 /** Projects, repos, the harness and the tree: one section each, when the field is present. */
@@ -288,16 +293,20 @@ function welcomeFieldsEdition(
   company: WelcomeEditionSection[],
 ): WelcomeEdition {
   const now = new Date(input.now);
-  const actions = [...(f.actions ?? [])];
-  if (f.harness && !actions.some((a) => a.kind === "open_harness")) actions.push(f.harness.action);
-  const lead = primaryAction(f.actions) ?? primaryAction(actions);
+  // Every open action names its harness, so the button opens that one and nothing else.
+  const target = f.harness?.action.harness ?? f.harness?.primary ?? "claude-code";
+  const listed = plainActions(f.actions ?? []).map((a) => (a.kind === "open_harness" ? { ...a, harness: a.harness ?? target } : a));
+  const actions = [...listed];
+  if (f.harness && !actions.some((a) => a.kind === "open_harness")) actions.push(...plainActions([f.harness.action]));
+  const lead = primaryAction(listed) ?? primaryAction(actions);
   const cards: WelcomeEditionCard[] = [];
   if (lead) {
     cards.push({
       id: "one-thing",
       pill: WELCOME_ONE_THING,
       kicker: actionKicker(lead, f),
-      title: plainWelcomeText(lead.reason) ?? lead.label,
+      // The reason, or no title at all: the button already carries the label.
+      title: plainWelcomeText(lead.reason) ?? "",
       lines: [],
       label: lead.label,
       action: welcomeAction(lead),
@@ -341,7 +350,7 @@ function welcomeFieldsEdition(
   return {
     zero: false,
     headline: plainWelcomeText(f.headline) ?? welcomeGreeting(now, input.userName),
-    sub: WELCOME_EDITION_SUB,
+    sub: WELCOME_FIELDS_SUB,
     cards,
     sections: [...company, ...welcomeSections(f)],
     note,
@@ -423,15 +432,12 @@ export function welcomeEdition(
   // Each company lists its first item not on a card, in brief order, with its own line.
   const names = [...new Set(companies.map((slug) => companyName(slug, labels)))].slice(0, 3);
   const shown = new Set(onCards);
-  const sections = names.map((name): WelcomeEditionSection => {
-    const mine = input.decisions.filter((d) => owner(d) === name);
-    const next = mine.find((d) => !onCards.has(d.id));
-    if (next) {
-      shown.add(next.id);
-      return { name, lines: [plainTitle(next, name), ...plainLines(next, plainTitle(next, name))] };
-    }
-    if (mine.length) return { name, lines: ["On the cards above."] };
-    return { name, lines: ["Nothing new for you today."] };
+  // A company with nothing left to list has no section; an empty-state line adds nothing.
+  const sections = names.flatMap((name): WelcomeEditionSection[] => {
+    const next = input.decisions.find((d) => owner(d) === name && !onCards.has(d.id));
+    if (!next) return [];
+    shown.add(next.id);
+    return [{ name, lines: [plainTitle(next, name), ...plainLines(next, plainTitle(next, name))] }];
   });
 
   const cards: WelcomeEditionCard[] = [];
@@ -451,7 +457,8 @@ export function welcomeEdition(
   const onPage = input.decisions.filter((d) => shown.has(d.id));
   const things = new Set(onPage.map((d) => d.thread?.trim() || `id:${d.id}`));
   const shownNames = [...new Set(onPage.map(owner))];
-  cards.push(dayCard(input, now, things.size, shownNames));
+  const day = dayCard(input, now, things.size, shownNames);
+  if (day) cards.push(day);
   if (work) {
     cards.push({
       id: "work",

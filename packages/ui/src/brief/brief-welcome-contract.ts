@@ -12,7 +12,7 @@
  *   "first_run": true,
  *   "import": { "conversations": 12, "skills": 3 },
  *   "sessions": { "total": 41, "claude": 38, "codex": 3, "days_seen": 9,
- *                 "local": 41, "imported": 12 },          // local, imported: new
+ *                 "local": 41, "imported": 12, "cursor": 0 },  // local, imported, cursor: new
  *   "repos": [],
  *   "apps": ["Linear", "Slack"],
  *   "next_steps": [{ "id": "company", "kind": "connect_company", "reason": "..." }],
@@ -30,20 +30,29 @@
  *                 "harness": "claude-code", "label": "Open HQ in Claude Code", "launch_prompt": "..." }
  *   },
  *   "actions": [{ "id", "kind", "label", "reason", "launch_prompt", "primary",
+ *                 "harness"?: "claude-code",              // open_harness only
  *                 "integration"?: { "slug", "name" } }],
  *   "tree": { "companies": 2, "projects": 38, "knowledge_files": 214 },
  *   "note": "Plain sentence, set when part of the welcome could not be read."
  * }
  * ```
  *
+ * Harness ids are hyphenated (claude-code). Core PR 1432's earlier head wrote
+ * claude_code, so either spelling reads as claude-code wherever a harness id
+ * appears (harness.primary, harness.action.harness, actions[].harness,
+ * top_projects[].harness, recent_work[].harness). `harness.counts` keys are
+ * underscored; a "claude-code" count key reads the same.
+ *
  * `actions[].kind` is one of open_harness, connect_ai_apps,
- * connect_integration, connect_company, import_history, open_tree. Exactly
- * one action is `primary` and drives IF YOU DO ONE THING; with none marked,
- * the first action does.
+ * connect_integration, connect_company, import_history, open_tree. At most
+ * one action is `primary` and drives IF YOU DO ONE THING: when several are
+ * marked, the first marked one wins; with none marked, the first action does.
+ *
+ * `recent_work` is sorted newest first before the list is capped at five.
  *
  * The 16.0.30 shape (no new keys) still renders: `next_steps` become actions
  * (connect_company, import becomes import_history) and `sessions.claude` /
- * `sessions.codex` become the harness counts.
+ * `sessions.codex` / `sessions.cursor` become the harness counts.
  */
 
 export type WelcomeHarnessId = "claude-code" | "codex" | "cursor";
@@ -85,6 +94,8 @@ export interface WelcomeAction {
   reason: string;
   launch_prompt: string;
   primary: boolean;
+  /** open_harness only: the harness the button opens. */
+  harness?: WelcomeHarnessId;
   integration?: { slug: string; name: string };
 }
 
@@ -105,6 +116,7 @@ export interface WelcomeSessions {
   claude: number;
   codex: number;
   days_seen: number;
+  cursor?: number;
   local?: number;
   imported?: number;
 }
@@ -141,8 +153,9 @@ export const WELCOME_HARNESS_NAME: Record<WelcomeHarnessId, string> = {
 };
 
 /** The 16.0.30 next-step labels. Same words as the old welcome block and the onboarding copy. */
-export const WELCOME_CONNECT_COMPANY_LABEL = "Start or join a company";
-export const WELCOME_IMPORT_LABEL = "Import your past work";
+/** Core's labels for the 16.0.30 next steps, the same words Core writes for these actions (hq-core-staging c7b8a026). */
+export const WELCOME_CONNECT_COMPANY_LABEL = "Create or join a company";
+export const WELCOME_IMPORT_LABEL = "Bring in your past work";
 
 const object = (value: unknown): Record<string, unknown> | null =>
   value != null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
@@ -152,15 +165,23 @@ const when = (value: unknown): string | null => {
   const t = text(value);
   return t && Number.isFinite(Date.parse(t)) ? t : null;
 };
-const harnessId = (value: unknown): WelcomeHarnessId | null =>
-  HARNESSES.includes(value as WelcomeHarnessId) ? (value as WelcomeHarnessId) : null;
-const list = <T>(value: unknown, one: (row: Record<string, unknown>) => T | null): T[] | undefined => {
+/** A harness id in either spelling: claude_code reads as claude-code. */
+const harnessId = (value: unknown): WelcomeHarnessId | null => {
+  const id = typeof value === "string" ? value.trim().replace(/_/g, "-") : null;
+  return HARNESSES.includes(id as WelcomeHarnessId) ? (id as WelcomeHarnessId) : null;
+};
+const list = <T>(
+  value: unknown,
+  one: (row: Record<string, unknown>) => T | null,
+  order?: (a: T, b: T) => number,
+): T[] | undefined => {
   if (!Array.isArray(value)) return undefined;
   const rows = value.flatMap((v) => {
     const row = object(v);
     const parsed = row ? one(row) : null;
     return parsed ? [parsed] : [];
   });
+  if (order) rows.sort(order);
   return rows.length ? rows.slice(0, LIMIT) : undefined;
 };
 
@@ -172,6 +193,7 @@ function action(row: Record<string, unknown>): WelcomeAction | null {
   const integration = object(row.integration);
   const slug = text(integration?.slug);
   const name = text(integration?.name);
+  const target = kind === "open_harness" ? harnessId(row.harness) : null;
   return {
     id,
     kind,
@@ -179,8 +201,15 @@ function action(row: Record<string, unknown>): WelcomeAction | null {
     reason: text(row.reason) ?? "",
     launch_prompt: text(row.launch_prompt) ?? "",
     primary: row.primary === true,
+    ...(target ? { harness: target } : {}),
     ...(slug && name ? { integration: { slug, name } } : {}),
   };
+}
+
+/** Keeps the first action marked primary; any later mark is dropped. */
+function onePrimary(actions: WelcomeAction[] | undefined): WelcomeAction[] | undefined {
+  const first = actions?.findIndex((a) => a.primary) ?? -1;
+  return actions?.map((a, i) => (a.primary && i !== first ? { ...a, primary: false } : a));
 }
 
 function harness(row: Record<string, unknown> | null): WelcomeHarness | undefined {
@@ -192,7 +221,7 @@ function harness(row: Record<string, unknown> | null): WelcomeHarness | undefine
   const target = harnessId(act?.harness) ?? primary;
   return {
     primary,
-    counts: { claude_code: count(counts?.claude_code), codex: count(counts?.codex), cursor: count(counts?.cursor) },
+    counts: { claude_code: count(counts?.claude_code ?? counts?.["claude-code"]), codex: count(counts?.codex), cursor: count(counts?.cursor) },
     action: {
       ...(parsed ?? { id: "open-hq-in-harness", label: `Open HQ in ${WELCOME_HARNESS_NAME[target]}`, reason: "", launch_prompt: "", primary: false }),
       kind: "open_harness",
@@ -213,12 +242,13 @@ function legacyActions(steps: unknown): WelcomeAction[] | undefined {
   });
 }
 
-/** 16.0.30 `sessions.claude` / `sessions.codex` as the harness, when either has a session. */
+/** 16.0.30 `sessions.claude` / `codex` / `cursor` as the harness, when any has a session. The most used wins; a tie goes to the earlier one. */
 function legacyHarness(sessions: Record<string, unknown> | null): WelcomeHarness | undefined {
-  const claude = count(sessions?.claude);
-  const codex = count(sessions?.codex);
-  if (!claude && !codex) return undefined;
-  return harness({ primary: codex > claude ? "codex" : "claude-code", counts: { claude_code: claude, codex, cursor: 0 } });
+  const counts = { claude_code: count(sessions?.claude), codex: count(sessions?.codex), cursor: count(sessions?.cursor) };
+  const order: [WelcomeHarnessId, number][] = [["claude-code", counts.claude_code], ["codex", counts.codex], ["cursor", counts.cursor]];
+  const [primary, most] = order.reduce((best, next) => (next[1] > best[1] ? next : best));
+  if (!most) return undefined;
+  return harness({ primary, counts });
 }
 
 /**
@@ -234,12 +264,13 @@ export function parseWelcomeFields(row: Record<string, unknown>): WelcomeBriefFi
         claude: count(sessionsRow.claude),
         codex: count(sessionsRow.codex),
         days_seen: count(sessionsRow.days_seen),
+        ...(typeof sessionsRow.cursor === "number" ? { cursor: count(sessionsRow.cursor) } : {}),
         ...(typeof sessionsRow.local === "number" ? { local: count(sessionsRow.local) } : {}),
         ...(typeof sessionsRow.imported === "number" ? { imported: count(sessionsRow.imported) } : {}),
       }
     : undefined;
   const treeRow = object(row.tree);
-  const actions = list(row.actions, action) ?? (Array.isArray(row.actions) ? undefined : legacyActions(row.next_steps));
+  const actions = onePrimary(list(row.actions, action) ?? (Array.isArray(row.actions) ? undefined : legacyActions(row.next_steps)));
   const fields: WelcomeBriefFields = {
     headline: text(row.headline) ?? undefined,
     top_projects: list(row.top_projects, (p) => {
@@ -254,7 +285,7 @@ export function parseWelcomeFields(row: Record<string, unknown>): WelcomeBriefFi
       const title = text(w.title);
       const at = when(w.at);
       return title && at ? { title, project: text(w.project), at, harness: harnessId(w.harness) } : null;
-    })?.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)),
+    }, (a, b) => Date.parse(b.at) - Date.parse(a.at)),
     harness: harness(object(row.harness)) ?? legacyHarness(sessionsRow),
     actions,
     tree: treeRow ? { companies: count(treeRow.companies), projects: count(treeRow.projects), knowledge_files: count(treeRow.knowledge_files) } : undefined,

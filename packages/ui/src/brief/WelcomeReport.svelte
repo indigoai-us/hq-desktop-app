@@ -28,7 +28,7 @@
   import BriefRise from "./BriefRise.svelte";
   import type { BriefOpenToolAction } from "./brief-open-tool.js";
   import { welcomeRiseSources, type RiseCompany } from "./brief-rise.js";
-  import { setWelcomeAiApps, type WelcomeAiApps } from "./welcome-ai-apps.js";
+  import { setWelcomeAiApps, type WelcomeAiApps, type WelcomeOpenHarness } from "./welcome-ai-apps.js";
   import { WelcomeConnectSession } from "./welcome-connect-session.svelte.js";
 
   interface Props {
@@ -72,6 +72,8 @@
      * welcome report that did not prepare a tool.
      */
     openTool?: BriefOpenToolAction | null;
+    /** Opens HQ in the harness a welcome action names; null shows no such button. */
+    openHarness?: WelcomeOpenHarness | null;
     /** Companies in this brief. None is a getting-started rise, never a company gate. */
     companies?: readonly RiseCompany[];
     /** Frozen rise time for stills. Absent: the sunrise runs while the brief builds. */
@@ -88,6 +90,7 @@
     session: given = null,
     blocked = null,
     openTool = null,
+    openHarness = null,
     companies = [],
     elapsed = null,
     theme = null,
@@ -152,6 +155,9 @@
     get openTool() {
       return openTool;
     },
+    get openHarness() {
+      return openHarness;
+    },
     claimOpenTool() {
       untrack(() => (openToolClaims += 1));
       let held = true;
@@ -181,11 +187,8 @@
 </script>
 
 <div class="welcome" class:rising data-testid="welcome-report" data-theme={theme === "light" || theme === "dark" ? theme : undefined}>
-  <!-- Before the report is ready the open action leads. Once the brief shows, nothing sits above it (US-019):
-       the welcome edition carries the open action, and a brief without one gets the bar under it. -->
-  {#if openTool && !ready}
-    <BriefOpenTool label={openTool.label} detail={openTool.detail} busy={openTool.busy} error={openTool.error} onopen={openTool.onopen} />
-  {/if}
+  <!-- Nothing sits above the sunrise or the brief (US-019): while the report loads the open action follows the
+       sunrise, the welcome edition carries its own, and a brief without one gets the bar under it. -->
   {#if ready}
     <div class="report reveal" data-testid="welcome-report-ready">
       {@render children()}
@@ -208,6 +211,9 @@
     </section>
   {/if}
   {#if !ready}
+    {#if openTool}
+      <BriefOpenTool label={openTool.label} detail={openTool.detail} busy={openTool.busy} error={openTool.error} onopen={openTool.onopen} />
+    {/if}
     {#if onsetup}
       <section class="card loading" data-testid="welcome-report-setup">
         <h2>{WELCOME_REPORT_NEEDS_ASSISTANT}</h2>

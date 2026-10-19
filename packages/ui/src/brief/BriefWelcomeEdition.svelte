@@ -7,9 +7,11 @@
    *
    * With brief.json `welcome` fields (US-019) the cards are IF YOU DO ONE
    * THING, the watch list and the timeline, and each welcome action runs its
-   * own flow: the connect card opens here, the open action uses the report's
-   * prepared tool, the company flow and launches go to the page.
+   * own flow: the connect card opens here, the open action opens the harness
+   * it names (never the tool picked at Continue), the company flow and
+   * launches go to the page.
    */
+  import { onDestroy, untrack } from "svelte";
   import BriefConnectApps from "./BriefConnectApps.svelte";
   import BriefDawn from "./BriefDawn.svelte";
   import { WELCOME_HORIZON_Y, welcomeSunX } from "./brief-dawn.js";
@@ -48,11 +50,17 @@
     edition.cards.flatMap((c) => [c.action, ...(c.rows ?? []).map((r) => r.action)]).flatMap((a) => (a?.kind === "welcome" ? [a.action] : [])),
   );
   // The edition shows the open action itself, so the report leaves out its own bar.
+  // Claimed while the edition first renders, so the bar never shows for a frame.
+  const showsOpen = $derived(welcomeActions.some((a) => a.kind === "open_harness"));
+  let release: (() => void) | null = untrack(() => showsOpen) ? (welcomeApps?.claimOpenTool?.() ?? null) : null;
   $effect(() => {
-    if (!welcomeApps?.openTool || !welcomeApps.claimOpenTool) return;
-    if (!welcomeActions.some((a) => a.kind === "open_harness")) return;
-    return welcomeApps.claimOpenTool();
+    if (showsOpen && !release) release = welcomeApps?.claimOpenTool?.() ?? null;
+    if (!showsOpen && release) {
+      release();
+      release = null;
+    }
   });
+  onDestroy(() => release?.());
 
   let host = $state<HTMLDivElement | null>(null);
   let width = $state(0);
@@ -76,9 +84,9 @@
     switch (a.kind) {
       case "connect_ai_apps":
       case "connect_integration":
-        return !!welcomeApps?.current;
+        return !!welcomeApps?.current || !!a.launch_prompt;
       case "open_harness":
-        return !!welcomeApps?.openTool || !!a.launch_prompt;
+        return !!a.harness && !!welcomeApps?.openHarness?.harnesses.includes(a.harness);
       case "connect_company":
         return !!onconnectcompany;
       default:
@@ -93,11 +101,12 @@
   const busyFor = (action: WelcomeEditionAction | null): boolean => {
     if (action?.kind === "launch") return !!busy[action.itemId];
     if (action?.kind !== "welcome") return false;
-    if (action.action.kind === "open_harness" && welcomeApps?.openTool) return welcomeApps.openTool.busy;
     return !!busy[action.action.id];
   };
+  /** The plain line from a harness that could not open, by action id. */
+  let errors = $state<Record<string, string | null>>({});
   const errorFor = (action: WelcomeEditionAction | null): string | null =>
-    action?.kind === "welcome" && action.action.kind === "open_harness" ? (welcomeApps?.openTool?.error ?? null) : null;
+    action?.kind === "welcome" ? (errors[action.action.id] ?? null) : null;
   /** Items whose launch is still in flight; their link is disabled so a double click starts one session. */
   let busy = $state<Record<string, boolean>>({});
   async function run(action: WelcomeEditionAction | null): Promise<void> {
@@ -110,7 +119,7 @@
     let prompt: string;
     if (action.kind === "welcome") {
       const a = action.action;
-      if (a.kind === "connect_ai_apps" || a.kind === "connect_integration") {
+      if ((a.kind === "connect_ai_apps" || a.kind === "connect_integration") && welcomeApps?.current) {
         connectOpen = !connectOpen;
         return;
       }
@@ -118,8 +127,8 @@
         onconnectcompany?.();
         return;
       }
-      if (a.kind === "open_harness" && welcomeApps?.openTool) {
-        welcomeApps.openTool.onopen();
+      if (a.kind === "open_harness") {
+        await openHarness(a);
         return;
       }
       if (!a.launch_prompt) return;
@@ -137,6 +146,19 @@
       // The launch failed before it could say why; the link stays so the person can try again.
     } finally {
       busy = { ...busy, [itemId]: false };
+    }
+  }
+  async function openHarness(a: WelcomeAction): Promise<void> {
+    const host = welcomeApps?.openHarness;
+    if (!host || !a.harness || busy[a.id]) return;
+    busy = { ...busy, [a.id]: true };
+    errors = { ...errors, [a.id]: null };
+    try {
+      errors = { ...errors, [a.id]: await host.open(a.harness, a.launch_prompt) };
+    } catch {
+      errors = { ...errors, [a.id]: "HQ could not open. Try again in a moment." };
+    } finally {
+      busy = { ...busy, [a.id]: false };
     }
   }
   const noteFor = (action: WelcomeEditionAction | null) =>
@@ -216,7 +238,7 @@
         <BriefConnectApps detect={connect.detect} cli={connect.cli} suggest={connect.suggest} session={connect.session} anywhereOnId={connect.anywhereOnId ?? null} {theme} />
       </div>
     {/if}
-    <div class="sections">
+    <div class="sections" style:--cols={Math.max(1, Math.min(edition.sections.length, 4))}>
       {#each edition.sections as section (section.name)}
         <section class="section" data-testid="welcome-edition-section">
           <h3>{section.name}</h3>
@@ -244,7 +266,8 @@
     box-sizing: border-box;
     min-height: 854px;
     padding: 29px 48px 28px var(--pad);
-    overflow: hidden;
+    /* Clips the sky sideways only, so a long brief grows the page and is never cut off at the bottom. */
+    overflow-x: clip;
     background: rgb(20, 18, 25);
     color: var(--ink);
     font-family: var(--font-ui, "Geist", system-ui, sans-serif);
@@ -457,6 +480,15 @@
   }
   .zero .sections {
     grid-template-columns: 1fr 1fr;
+  }
+  /* One row for up to four sections, so none sits alone on a second row. */
+  .welcome .sections {
+    grid-template-columns: repeat(var(--cols), 1fr);
+  }
+  @media (max-width: 1100px) {
+    .welcome .sections {
+      grid-template-columns: 1fr 1fr;
+    }
   }
   .section {
     min-height: 94px;

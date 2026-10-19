@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ensureHqAnywhereGlobalRuntime, HQ_ANYWHERE_RUNTIME_FLAG } from "@hq/platform";
 import { type LaunchShell } from "../../settings/launch-actions";
-import { continueInTool, continueWillInstallHq, openPreparedCodingTool, FIRST_RUN_INSTALL_WAIT_MS, type ContinueInToolInput } from "./continue-in-tool";
+import {
+  continueInTool,
+  continueWillInstallHq,
+  openPreparedCodingTool,
+  openWelcomeHarness,
+  FIRST_RUN_INSTALL_WAIT_MS,
+  WELCOME_HARNESS_NO_FOLDER,
+  type ContinueInToolInput,
+} from "./continue-in-tool";
 
 const ok = <T>(value: T) => ({ ok: true as const, value });
 const failure = (reason: string, message: string) => ({ ok: false as const, reason, message });
@@ -328,5 +336,40 @@ describe("openPreparedCodingTool", () => {
     await expect(openPreparedCodingTool({ ...input("codex"), shell: shell as LaunchShell })).resolves.toEqual({ kind: "opened" });
     expect(shell.launchCodexWorkspace).toHaveBeenCalledWith("/tmp/HQ");
     expect(launchClaudeCode).not.toHaveBeenCalled();
+  });
+});
+
+describe("openWelcomeHarness (US-019)", () => {
+  const PROMPT = "Catch me up on my HQ.";
+  const open = (harness: "claude-code" | "codex" | "cursor", s: ReturnType<typeof setup>) =>
+    openWelcomeHarness({ harness, prompt: PROMPT, settings: s.input("claude").settings, shell: s.shell as LaunchShell });
+
+  it("opens Codex with the action's prompt, whatever was picked at Continue", async () => {
+    const s = setup({ tools: { claude_cli: true, codex_cli: false, codex_desktop: true } });
+    await expect(open("codex", s)).resolves.toBeNull();
+    expect(s.shell.launchCodexWorkspace).toHaveBeenCalledWith("/tmp/HQ", PROMPT);
+    expect(s.launchClaudeCode).not.toHaveBeenCalled();
+  });
+
+  it("opens Claude Code with the action's prompt and leaves Codex closed", async () => {
+    const s = setup();
+    await expect(open("claude-code", s)).resolves.toBeNull();
+    expect(s.shell.launchCliInTerminal).toHaveBeenCalledWith(expect.objectContaining({ path: "/tmp/HQ", tool: "claude", prompt: PROMPT }));
+    expect(s.shell.launchCodexWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("opens nothing for Cursor and says so plainly", async () => {
+    const s = setup();
+    await expect(open("cursor", s)).resolves.toBe("HQ cannot open Cursor yet. Open your HQ folder in Cursor to keep going.");
+    expect(s.launchClaudeCode).not.toHaveBeenCalled();
+    expect(s.shell.launchCodexWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("says plainly when there is no HQ folder or the harness could not open, and never quotes the prompt", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await expect(open("codex", setup({ folder: "" }))).resolves.toBe(WELCOME_HARNESS_NO_FOLDER);
+    const missing = await open("claude-code", setup({ tools: { claude_cli: false } }));
+    expect(missing).toBe("Claude Code could not open. Open your HQ folder in Claude Code to keep going.");
+    expect(missing).not.toContain(PROMPT);
   });
 });

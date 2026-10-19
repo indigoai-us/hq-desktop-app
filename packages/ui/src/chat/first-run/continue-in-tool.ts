@@ -223,3 +223,41 @@ export async function openPreparedCodingTool(input: {
   }
   return { kind: "opened" };
 }
+
+/** What the welcome edition says when there is no HQ folder to open. */
+export const WELCOME_HARNESS_NO_FOLDER = "Could not find your HQ folder. Try again in a moment.";
+
+/** The harnesses the desktop app can open from the welcome edition. Cursor has no launcher yet. */
+export const WELCOME_OPENABLE_HARNESSES = ["claude-code", "codex"] as const;
+
+/**
+ * Opens HQ in the harness a welcome action names, with the action's prompt
+ * (US-019). It never reads the tool picked at Continue or the brief's saved
+ * engine. Resolves with a plain line when it could not open, else null.
+ */
+export async function openWelcomeHarness(input: {
+  harness: "claude-code" | "codex" | "cursor";
+  prompt: string;
+  settings: ContinueInToolInput["settings"];
+  shell: LaunchShell;
+}): Promise<string | null> {
+  if (input.harness === "cursor") return "HQ cannot open Cursor yet. Open your HQ folder in Cursor to keep going.";
+  const folder = await hqFolder(input.settings);
+  if (!folder) {
+    console.warn("[brief] no HQ folder to open the welcome harness in");
+    return WELCOME_HARNESS_NO_FOLDER;
+  }
+  const actions = createLaunchActions({
+    shell: input.shell,
+    hqFolderPath: folder,
+    prompt: input.prompt,
+    // The terminal CLIs get the prompt too, as their first message.
+    terminalPrompt: input.prompt,
+  });
+  const error = input.harness === "claude-code" ? await actions.launchClaude() : await actions.launchCodex();
+  if (!error) return null;
+  // The launcher's own copy can quote the prompt; the edition never shows a prompt.
+  console.warn("[brief] could not open the welcome harness:", error);
+  const name = input.harness === "claude-code" ? "Claude Code" : "Codex";
+  return name + " could not open. Open your HQ folder in " + name + " to keep going.";
+}
