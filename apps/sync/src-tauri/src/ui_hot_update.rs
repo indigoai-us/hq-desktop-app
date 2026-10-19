@@ -327,15 +327,26 @@ pub fn ui_hot_boot_failed(app: AppHandle, reason: String) {
     roll_back(&app, &format!("ui fatal boot error: {reason}"));
 }
 
-/// True while a call window is open or any secondary window is visible —
-/// the UI then shows the reload toast instead of reloading on its own.
+/// True while a call window is open, any secondary window is visible, or
+/// setup is installing tools — the UI then shows the reload toast instead of
+/// reloading on its own.
 #[tauri::command]
 pub fn ui_hot_call_active(app: AppHandle) -> bool {
-    app.webview_windows().iter().any(|(label, window)| {
+    let secondary_window_visible = app.webview_windows().iter().any(|(label, window)| {
         label.as_str() != "main"
             && label.as_str() != "desktop-alt"
             && window.is_visible().unwrap_or(true)
-    })
+    });
+    reload_must_wait(
+        secondary_window_visible,
+        crate::commands::install_deps::setup_installing(),
+    )
+}
+
+/// A reload in the middle of a setup install would bring the setup screen
+/// back without knowing what it had started, so it waits.
+fn reload_must_wait(secondary_window_visible: bool, setup_installing: bool) -> bool {
+    secondary_window_visible || setup_installing
 }
 
 /// The "Interface updated — reload" action.
@@ -571,7 +582,7 @@ fn after_apply(app: &AppHandle, version: &str) {
         return;
     }
     if ui_hot_call_active(app.clone()) || crate::updater::sync_in_progress() {
-        log(&format!("{version} ready; reload deferred (sync or call active)"));
+        log(&format!("{version} ready; reload deferred (sync, call or setup install active)"));
         return;
     }
     log(&format!("{version} ready; no window in use, reloading now"));
@@ -635,6 +646,14 @@ mod tests {
             pointer_url("beta"),
             "https://github.com/indigoai-us/hq-desktop-app/releases/download/ui-updates/ui-latest-beta.json"
         );
+    }
+
+    #[test]
+    fn a_reload_waits_while_setup_is_installing() {
+        // Gate 2 NEW-1.
+        assert!(!reload_must_wait(false, false));
+        assert!(reload_must_wait(false, true));
+        assert!(reload_must_wait(true, false));
     }
 
     #[test]

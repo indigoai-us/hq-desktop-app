@@ -1374,8 +1374,16 @@ const DEPS_TOOL_NAMES: Record<string, string> = {
   homebrew: 'Homebrew',
 };
 
+/** True for a tool the deps stage installs and has a plain name for. */
+export function isKnownDepsTool(id: unknown): id is string {
+  return typeof id === 'string' && Object.prototype.hasOwnProperty.call(DEPS_TOOL_NAMES, id);
+}
+
+/** Downloaded rather than installed, so Windows never asks permission for them. */
+const DOWNLOADED_DEPS_TOOLS = new Set(['jq', 'yq']);
+
 function depsToolName(id: string): string {
-  return DEPS_TOOL_NAMES[id] ?? humanizeStageId(id);
+  return DEPS_TOOL_NAMES[id];
 }
 
 export interface DepsToolTracker {
@@ -1405,14 +1413,15 @@ export function createDepsToolTracker(): DepsToolTracker {
     apply(payload) {
       if (!payload) return;
       const id = typeof payload.id === 'string' ? payload.id.trim() : '';
-      if (!id) return;
+      // An installer that is not tied to a known tool is never named.
+      if (!isKnownDepsTool(id)) return;
       switch (payload.state) {
         case 'installing':
           if (!running.includes(id)) running.push(id);
           break;
         case 'waiting':
           if (!running.includes(id)) running.push(id);
-          waiting = id;
+          if (!DOWNLOADED_DEPS_TOOLS.has(id)) waiting = id;
           break;
         case 'queued':
         case 'done':
@@ -1438,6 +1447,24 @@ export function createDepsToolTracker(): DepsToolTracker {
       running.length = 0;
       waiting = null;
     },
+  };
+}
+
+/** The installers running now, as the backend reports them (gate 2 NEW-1). */
+export interface InstallerRunsSnapshot {
+  seq: number;
+  /** Tool ids; null for an installer that is not tied to a known tool. */
+  running: Array<string | null>;
+}
+
+/** Reads an `installer_runs_active` reply or `setup:installer-run` payload. */
+export function readInstallerRunsSnapshot(value: unknown): InstallerRunsSnapshot | null {
+  if (!value || typeof value !== 'object') return null;
+  const { seq, running } = value as { seq?: unknown; running?: unknown };
+  if (typeof seq !== 'number' || !Number.isFinite(seq) || !Array.isArray(running)) return null;
+  return {
+    seq,
+    running: running.map((id) => (typeof id === 'string' && id ? id : null)),
   };
 }
 

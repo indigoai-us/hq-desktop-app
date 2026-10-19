@@ -2,7 +2,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 vi.mock('svelte', async () => {
   // @ts-expect-error Vitest needs Svelte's browser entry for happy-dom mounts.
@@ -3177,7 +3177,8 @@ describe('setup restart', () => {
       tauri.invoke.mock.calls.filter(([command]) => command === 'hq_pro_fetch'),
     ).toHaveLength(0);
     await flushUntil(() => cancelCall() !== undefined);
-    expect(cancelCall()?.[1]).toEqual({ handle: 'setup-installer-handle' });
+    // Back is the person choosing to stop, so an installer may be stopped too.
+    expect(cancelCall()?.[1]).toEqual({ handle: 'setup-installer-handle', user: true });
   });
 
   it('starts over when the person leaves mid-stage and comes back', async () => {
@@ -4225,7 +4226,7 @@ describe('setup progress direction', () => {
       // an unanswered Windows permission prompt.
       emitTauriEvent('setup:deps-tool', { id: 'git', state: 'installing' });
       emitTauriEvent('setup:git-permission', { state: 'requesting' });
-      emitTauriEvent('setup:installer-run', { id: 'git', state: 'running' });
+      emitTauriEvent('setup:installer-run', { id: 'git', state: 'running', seq: 1, running: ['git'] });
       emitTauriEvent('install:progress', {
         handle: 'winget-git',
         setupRunId: installArgs.failureScope.setupRunId,
@@ -4260,7 +4261,7 @@ describe('setup progress direction', () => {
       expect(host.textContent).toContain(GIT_WAITING_NOTICE);
 
       // The person answers the prompt and the same install finishes.
-      emitTauriEvent('setup:installer-run', { id: 'git', state: 'done' });
+      emitTauriEvent('setup:installer-run', { id: 'git', state: 'done', seq: 2, running: [] });
       emitTauriEvent('setup:git-permission', { state: 'done' });
       emitTauriEvent('setup:deps-tool', { id: 'git', state: 'done' });
       emitTauriEvent('install:progress', {
@@ -4278,6 +4279,148 @@ describe('setup progress direction', () => {
       expect(failures()).toHaveLength(0);
     },
   );
+
+  it('keeps a running install going after the window reloads mid-install (gate 2 NEW-1)', async () => {
+    // The window reloaded while the backend still runs the Git installer.
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'installer_runs_active':
+          return { seq: 1, running: ['git'] };
+        case 'install_deps':
+          return new Promise<void>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      eventHarness.handlers.has('install:progress'),
+    );
+    const installArgs = tauri.invoke.mock.calls.find(
+      ([command]) => command === 'install_deps',
+    )?.[1] as { failureScope: { setupRunId: string } };
+    emitTauriEvent('install:progress', {
+      handle: 'winget-git',
+      setupRunId: installArgs.failureScope.setupRunId,
+      line: 'Starting package install...',
+    });
+
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') + 1);
+    await flush();
+    expect(host.textContent).toContain(GIT_WAITING_NOTICE);
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') * 6);
+    await flush();
+    expect(
+      tauri.invoke.mock.calls.filter(([command]) => command === 'cancel_install'),
+    ).toHaveLength(0);
+    expect(
+      tauri.invoke.mock.calls.filter(([command]) => command === 'install_deps'),
+    ).toHaveLength(1);
+    expect(host.textContent).toContain(GIT_WAITING_NOTICE);
+  });
+
+  it('ignores an installer report older than the one it already has (gate 2 NEW-1)', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'installer_runs_active':
+          return { seq: 3, running: ['git'] };
+        case 'install_deps':
+          return new Promise<void>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      eventHarness.handlers.has('setup:installer-run'),
+    );
+    // A done event sent before the reload arrives late. Git is still running.
+    emitTauriEvent('setup:installer-run', { id: 'git', state: 'done', seq: 2, running: [] });
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') * 6);
+    await flush();
+    expect(
+      tauri.invoke.mock.calls.filter(([command]) => command === 'cancel_install'),
+    ).toHaveLength(0);
+    expect(host.textContent).toContain(GIT_WAITING_NOTICE);
+  });
+
+  it('never names an installer that has no known tool (gate 2 NEW-3)', async () => {
+    const userAgent = vi
+      .spyOn(window.navigator, 'userAgent', 'get')
+      .mockReturnValue('Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+    onTestFinished(() => userAgent.mockRestore());
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          return new Promise<void>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      eventHarness.handlers.has('setup:installer-run'),
+    );
+    emitTauriEvent('setup:installer-run', { id: null, state: 'running', seq: 1, running: [null] });
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') + 1);
+    await flush();
+    expect(host.textContent).not.toContain('Installer');
+    expect(host.textContent).not.toContain('permission to install');
+    expect(
+      host.querySelector('[data-testid="welcome-ready-deps-notice"]')?.textContent,
+    ).toBe('Some installs can take several minutes on Windows.');
+    expect(
+      tauri.invoke.mock.calls.filter(([command]) => command === 'cancel_install'),
+    ).toHaveLength(0);
+  });
+
+  it('never says jq waits for permission (gate 2 NEW-4)', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'install_deps':
+          return new Promise<void>(() => {});
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      eventHarness.handlers.has('setup:installer-run'),
+    );
+    emitTauriEvent('setup:deps-tool', { id: 'jq', state: 'installing' });
+    emitTauriEvent('setup:installer-run', { id: 'jq', state: 'running', seq: 1, running: ['jq'] });
+    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') + 1);
+    await flush();
+    expect(host.textContent).toContain('Installing jq…');
+    expect(host.textContent).not.toContain('permission to install');
+    expect(
+      host.querySelector('[data-testid="welcome-ready-deps-notice"]')?.textContent ?? '',
+    ).not.toContain('permission');
+  });
 
   it('shows Try again when Git does not start after installing, and waits for it (gate 2 N5)', async () => {
     let installCalls = 0;
@@ -4347,7 +4490,7 @@ describe('setup progress direction', () => {
     const installArgs = tauri.invoke.mock.calls.find(
       ([command]) => command === 'install_deps',
     )?.[1] as { failureScope: { setupRunId: string } };
-    emitTauriEvent('setup:installer-run', { id: 'git', state: 'running' });
+    emitTauriEvent('setup:installer-run', { id: 'git', state: 'running', seq: 1, running: ['git'] });
     // A chatty install that keeps printing still outlasts the stage ceiling.
     for (let minute = 0; minute < 60; minute += 1) {
       emitTauriEvent('install:progress', {
@@ -4361,7 +4504,7 @@ describe('setup progress direction', () => {
       tauri.invoke.mock.calls.filter(([command]) => command === 'cancel_install'),
     ).toHaveLength(0);
 
-    emitTauriEvent('setup:installer-run', { id: 'git', state: 'done' });
+    emitTauriEvent('setup:installer-run', { id: 'git', state: 'done', seq: 2, running: [] });
     emitTauriEvent('install:progress', { handle: 'winget-git', line: '', finished: true, error: null });
     resolveInstall?.();
     await flushUntil(() =>
@@ -4402,14 +4545,14 @@ describe('setup progress direction', () => {
           (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
             'setup_stage_timeout',
       );
-    emitTauriEvent('setup:installer-run', { id: 'gh', state: 'running' });
+    emitTauriEvent('setup:installer-run', { id: 'gh', state: 'running', seq: 1, running: ['gh'] });
     await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') * 4);
     await flush();
     expect(timeoutFailures()).toHaveLength(0);
 
     // After the installer exits, a hung non-installer step gets a full window,
     // then times out as before.
-    emitTauriEvent('setup:installer-run', { id: 'gh', state: 'done' });
+    emitTauriEvent('setup:installer-run', { id: 'gh', state: 'done', seq: 2, running: [] });
     await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') - 1);
     await flush();
     expect(timeoutFailures()).toHaveLength(0);
@@ -4464,7 +4607,7 @@ describe('setup progress direction', () => {
       eventHarness.handlers.has('setup:installer-run'),
     );
     emitTauriEvent('setup:deps-tool', { id: 'gh', state: 'installing' });
-    emitTauriEvent('setup:installer-run', { id: 'gh', state: 'running' });
+    emitTauriEvent('setup:installer-run', { id: 'gh', state: 'running', seq: 1, running: ['gh'] });
     await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps') + 1);
     await flush();
     expect(host.textContent).toContain(

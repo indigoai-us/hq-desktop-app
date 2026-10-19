@@ -125,6 +125,30 @@ describe('createDepsToolTracker (run 006 and gate 2 F5: the line named the last 
     expect(tracker.waitingNotice()).toBe(GIT_WAITING_NOTICE);
   });
 
+  it('never names an installer it does not know (gate 2 NEW-3: "Installing Installer…")', () => {
+    const tracker = createDepsToolTracker();
+    tracker.apply({ id: 'installer', state: 'installing' });
+    tracker.apply({ id: 'installer', state: 'waiting' });
+    tracker.apply({ id: null, state: 'waiting' });
+    expect(tracker.detail()).toBeNull();
+    expect(tracker.waitingNotice()).toBeNull();
+    tracker.apply({ id: 'node', state: 'installing' });
+    tracker.apply({ id: 'mystery-tool', state: 'installing' });
+    expect(tracker.detail()).toBe('Installing Node.js…');
+  });
+
+  it('never says jq or yq wait for permission (gate 2 NEW-4: they are downloads)', () => {
+    for (const [id, name] of [
+      ['jq', 'jq'],
+      ['yq', 'yq'],
+    ]) {
+      const tracker = createDepsToolTracker();
+      tracker.apply({ id, state: 'waiting' });
+      expect(tracker.waitingNotice()).toBeNull();
+      expect(tracker.detail()).toBe(`Installing ${name}…`);
+    }
+  });
+
   it('ignores an unusable payload and can be reset', () => {
     const tracker = createDepsToolTracker();
     tracker.apply(null);

@@ -25,7 +25,7 @@ use std::time::Duration;
 #[cfg(not(windows))]
 use std::time::Instant;
 
-use futures_util::future::join_all;
+use futures_util::future::{join_all, BoxFuture, FutureExt, Shared};
 #[cfg(unix)]
 use nix::sys::signal::{self, Signal};
 #[cfg(unix)]
@@ -492,6 +492,8 @@ static CANCEL_REGISTRY: std::sync::OnceLock<Arc<Mutex<HashMap<String, CancelStat
 #[derive(Default)]
 struct CancelState {
     cancelled: bool,
+    /// The handle runs an installer, which only a person's cancel may stop.
+    installer: bool,
     cleanup_failure: Option<CancellationCleanupFailure>,
     #[cfg(unix)]
     pgid: Option<i32>,
@@ -519,6 +521,20 @@ fn is_cancelled(handle: &str) -> bool {
 
 fn deregister_handle(handle: &str) {
     recover_lock(cancel_registry()).remove(handle);
+}
+
+/// Marks a handle as an installer run, so only a person's cancel stops it.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn mark_installer_handle(handle: &str) {
+    if let Some(state) = recover_lock(cancel_registry()).get_mut(handle) {
+        state.installer = true;
+    }
+}
+
+/// An installer stops only on a person's explicit cancel (`user`). A step
+/// timeout, a closing window or a reloaded page never stops one.
+fn cancel_allowed(installer: bool, user: Option<bool>) -> bool {
+    !installer || user == Some(true)
 }
 
 /// A non-process phase (such as waiting for the CLI update lock) still needs a
@@ -2524,13 +2540,17 @@ pub fn check_dep_in(tool: &str, path_dirs: &str) -> DepStatus {
 /// Set the cancel flag for the given handle.
 ///
 /// Returns `true` if the handle was registered (i.e. an install was in
-/// progress), `false` otherwise.
+/// progress) and was cancelled, `false` otherwise. A running installer is
+/// only cancelled when `user` is `Some(true)`: the person chose to stop it.
 #[tauri::command]
-pub fn cancel_install(handle: String) -> bool {
+pub fn cancel_install(handle: String, user: Option<bool>) -> bool {
     let mut reg = recover_lock(cancel_registry());
     let Some(state) = reg.get_mut(&handle) else {
         return false;
     };
+    if !cancel_allowed(state.installer, user) {
+        return false;
+    }
     state.cancelled = true;
     drop(reg);
 
@@ -5756,6 +5776,9 @@ fn run_streaming_with_npm_cache_blocking<R: tauri::Runtime>(
     let setup_run_id = current_setup_run_id();
     let handle_id = Uuid::new_v4().to_string();
     register_cancel_handle(handle_id.clone());
+    if is_installer_program(program, args) {
+        mark_installer_handle(&handle_id);
+    }
 
     let search_path = extended_search_path();
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -8106,8 +8129,21 @@ const INSTALL_STOPPED_ERROR: &str =
 const GIT_DID_NOT_START_ERROR: &str =
     "[install-retry] Git could not be started after installing. Select Try again.";
 #[cfg_attr(not(windows), allow(dead_code))]
-const PATH_WRITE_ERROR: &str =
+const PATH_WRITE_ERROR: &str = "HQ could not update the Windows PATH setting.";
+/// The setup step's form of [`PATH_WRITE_ERROR`], where the Try again button shows.
+#[cfg_attr(not(windows), allow(dead_code))]
+const PATH_WRITE_RETRY_ERROR: &str =
     "[install-retry] HQ could not update the Windows PATH setting. Select Try again.";
+
+/// Adds the Try again tag to a PATH write error on the setup step only. Other
+/// callers keep the plain copy.
+fn deps_step_error(error: String) -> String {
+    if error == PATH_WRITE_ERROR {
+        PATH_WRITE_RETRY_ERROR.to_string()
+    } else {
+        error
+    }
+}
 
 /// Logs a raw registry error and returns the copy the setup screen shows.
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -8129,6 +8165,8 @@ enum InstallWaitSignal {
 fn install_wait_signal(dependency: Option<&'static str>) -> Option<InstallWaitSignal> {
     match dependency? {
         "git" => Some(InstallWaitSignal::GitPermission),
+        // Downloaded, never run through a Windows installer.
+        "jq" | "yq" => None,
         id => Some(InstallWaitSignal::Tool(id)),
     }
 }
@@ -8358,13 +8396,72 @@ fn emit_deps_tool<R: tauri::Runtime>(app: &AppHandle<R>, id: &str, state: DepsTo
 #[cfg_attr(not(windows), allow(dead_code))]
 const INSTALLER_RUN_EVENT: &str = "setup:installer-run";
 
+/// The installers running now, by dependency id (`None` when the installer
+/// is not tied to a known tool). `seq` goes up on every change, so the setup
+/// screen can drop an event older than the snapshot it already has.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct InstallerRunsSnapshot {
+    seq: u64,
+    running: Vec<Option<String>>,
+}
+
+/// Kept in the backend so a reloaded setup screen still knows an installer
+/// is running and never times it out.
+#[derive(Debug, Default)]
+struct InstallerRuns {
+    seq: u64,
+    running: Vec<Option<String>>,
+}
+
+impl InstallerRuns {
+    const fn new() -> Self {
+        Self {
+            seq: 0,
+            running: Vec::new(),
+        }
+    }
+
+    fn apply(&mut self, id: Option<&str>, state: InstallerRunState) -> InstallerRunsSnapshot {
+        self.seq += 1;
+        match state {
+            InstallerRunState::Running => self.running.push(id.map(str::to_string)),
+            InstallerRunState::Done => {
+                if let Some(index) = self.running.iter().position(|run| run.as_deref() == id) {
+                    self.running.remove(index);
+                }
+            }
+        }
+        self.snapshot()
+    }
+
+    fn snapshot(&self) -> InstallerRunsSnapshot {
+        InstallerRunsSnapshot {
+            seq: self.seq,
+            running: self.running.clone(),
+        }
+    }
+}
+
+static INSTALLER_RUNS: Mutex<InstallerRuns> = Mutex::new(InstallerRuns::new());
+
+/// The installers running now. The setup screen reads this when it opens,
+/// including after a reload in the middle of an install.
+#[tauri::command]
+pub fn installer_runs_active() -> InstallerRunsSnapshot {
+    recover_lock(&INSTALLER_RUNS).snapshot()
+}
+
 #[cfg_attr(not(windows), allow(dead_code))]
-fn installer_run_payload(id: Option<&str>, state: InstallerRunState) -> serde_json::Value {
+fn installer_run_payload(
+    id: Option<&str>,
+    state: InstallerRunState,
+    runs: &InstallerRunsSnapshot,
+) -> serde_json::Value {
     let state = match state {
         InstallerRunState::Running => "running",
         InstallerRunState::Done => "done",
     };
-    serde_json::json!({ "id": id.unwrap_or("installer"), "state": state })
+    serde_json::json!({ "id": id, "state": state, "seq": runs.seq, "running": runs.running })
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -8373,11 +8470,57 @@ fn emit_installer_run<R: tauri::Runtime>(
     id: Option<&str>,
     state: InstallerRunState,
 ) {
+    let runs = recover_lock(&INSTALLER_RUNS).apply(id, state);
     let _ = app.emit_to(
         "main",
         INSTALLER_RUN_EVENT,
-        installer_run_payload(id, state),
+        installer_run_payload(id, state, &runs),
     );
+}
+
+/// Runs one future at a time. A call made while one is running joins it and
+/// gets the same result. A call after it finished starts a new one.
+struct SingleFlight<T: Clone> {
+    current: Mutex<Option<Shared<BoxFuture<'static, T>>>>,
+}
+
+impl<T: Clone + Send + Sync + 'static> SingleFlight<T> {
+    const fn new() -> Self {
+        Self {
+            current: Mutex::new(None),
+        }
+    }
+
+    fn run(&self, start: impl FnOnce() -> BoxFuture<'static, T>) -> Shared<BoxFuture<'static, T>> {
+        let mut current = recover_lock(&self.current);
+        if let Some(running) = current.as_ref().filter(|future| future.peek().is_none()) {
+            return running.clone();
+        }
+        let future = start().shared();
+        *current = Some(future.clone());
+        future
+    }
+
+    fn in_flight(&self) -> bool {
+        recover_lock(&self.current)
+            .as_ref()
+            .is_some_and(|future| future.peek().is_none())
+    }
+}
+
+static INSTALL_DEPS_FLIGHT: SingleFlight<Result<(), String>> = SingleFlight::new();
+
+fn setup_installing_from(deps_in_flight: bool, running_installers: usize) -> bool {
+    deps_in_flight || running_installers > 0
+}
+
+/// True while setup is installing tools. A hot UI reload waits until it ends,
+/// so a reload never lands in the middle of an install.
+pub fn setup_installing() -> bool {
+    setup_installing_from(
+        INSTALL_DEPS_FLIGHT.in_flight(),
+        recover_lock(&INSTALLER_RUNS).running.len(),
+    )
 }
 const QMD_POST_INSTALL_PROBE_COMMAND: &str = "qmd post-install probe";
 
@@ -9140,6 +9283,10 @@ async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), S
         return Ok(());
     }
 
+    install_orchestrated_dep_unmapped(app, dep).await.map_err(deps_step_error)
+}
+
+async fn install_orchestrated_dep_unmapped(app: &AppHandle, dep: &DepDef) -> Result<(), String> {
     let install_result = match dep.id {
         #[cfg(not(windows))]
         "homebrew" => install_homebrew(app.clone()).await,
@@ -9180,8 +9327,20 @@ async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), S
     Ok(())
 }
 
+/// Installs the setup dependencies. A call made while an install is already
+/// running (a reloaded setup screen) joins that install instead of starting
+/// a second one.
 #[tauri::command]
 pub async fn install_deps(
+    app: AppHandle,
+    failure_scope: Option<crate::commands::install_stages::OnboardingFailureScope>,
+) -> Result<(), String> {
+    INSTALL_DEPS_FLIGHT
+        .run(|| install_deps_inner(app, failure_scope).boxed())
+        .await
+}
+
+async fn install_deps_inner(
     app: AppHandle,
     failure_scope: Option<crate::commands::install_stages::OnboardingFailureScope>,
 ) -> Result<(), String> {
@@ -10872,7 +11031,7 @@ mod install_deps_tests {
 
     #[test]
     fn test_cancel_install_unknown_handle_returns_false() {
-        let result = cancel_install("handle-that-does-not-exist-abc999".to_string());
+        let result = cancel_install("handle-that-does-not-exist-abc999".to_string(), None);
         assert!(!result);
     }
 
@@ -10881,7 +11040,7 @@ mod install_deps_tests {
         let handle = "test-handle-registered-001".to_string();
 
         register_cancel_handle(handle.clone());
-        let result = cancel_install(handle);
+        let result = cancel_install(handle, None);
 
         assert!(result);
     }
@@ -10891,7 +11050,7 @@ mod install_deps_tests {
         let handle = Uuid::new_v4().to_string();
         register_cancel_handle(handle.clone());
 
-        assert!(cancel_install(handle.clone()));
+        assert!(cancel_install(handle.clone(), None));
         assert!(cancel_registry().lock().unwrap()[&handle].cancelled);
     }
 
@@ -14340,7 +14499,7 @@ mod cancellation_reporting_tests {
             handle: Uuid::new_v4().to_string(),
         };
         register_cancel_handle(registration.handle.clone());
-        assert!(cancel_install(registration.handle.clone()));
+        assert!(cancel_install(registration.handle.clone(), None));
 
         let collector = InstallCancellationCollector::new();
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -14808,6 +14967,10 @@ mod install_deps_windows_onboarding_tests {
             Some(InstallWaitSignal::Tool("gh"))
         );
         assert_eq!(install_wait_signal(None), None);
+        // Gate 2 NEW-4: jq and yq are downloaded, never installed by a Windows
+        // installer, so they never get the permission wording.
+        assert_eq!(install_wait_signal(Some("jq")), None);
+        assert_eq!(install_wait_signal(Some("yq")), None);
         assert_eq!(
             git_permission_payload(GitPermissionState::Waiting),
             serde_json::json!({ "state": "waiting" })
@@ -15167,12 +15330,25 @@ mod install_deps_windows_onboarding_tests {
 
     #[test]
     fn path_write_errors_use_plain_copy() {
+        // Gate 2 NEW-2: the shared PATH error never carries the internal tag.
         let message = plain_path_write_error(r"HKCU\Environment open failed: Access is denied.");
+        assert_eq!(message, "HQ could not update the Windows PATH setting.");
+        assert!(!message.contains("HKCU"));
+        assert!(!message.contains("[install-retry]"));
+        assert!(!message.contains("Try again"));
+    }
+
+    #[test]
+    fn the_setup_step_offers_try_again_for_a_path_write_error() {
         assert_eq!(
-            message,
+            deps_step_error(PATH_WRITE_ERROR.to_string()),
             "[install-retry] HQ could not update the Windows PATH setting. Select Try again."
         );
-        assert!(!message.contains("HKCU"));
+        assert_eq!(deps_step_error("jq failed".to_string()), "jq failed");
+        assert_eq!(
+            deps_step_error(GIT_DID_NOT_START_ERROR.to_string()),
+            GIT_DID_NOT_START_ERROR
+        );
     }
 
     #[test]
@@ -15252,15 +15428,121 @@ mod install_deps_windows_onboarding_tests {
 
     #[test]
     fn installer_run_payload_names_the_tool() {
+        // Gate 2 NEW-3: an installer with no known tool has a null id, so the
+        // setup screen never names a tool called "Installer".
         assert_eq!(INSTALLER_RUN_EVENT, "setup:installer-run");
+        let mut runs = InstallerRuns::default();
+        let running = runs.apply(Some("git"), InstallerRunState::Running);
         assert_eq!(
-            installer_run_payload(Some("git"), InstallerRunState::Running),
-            serde_json::json!({ "id": "git", "state": "running" })
+            installer_run_payload(Some("git"), InstallerRunState::Running, &running),
+            serde_json::json!({ "id": "git", "state": "running", "seq": 1, "running": ["git"] })
         );
+        let unnamed = runs.apply(None, InstallerRunState::Running);
         assert_eq!(
-            installer_run_payload(None, InstallerRunState::Done),
-            serde_json::json!({ "id": "installer", "state": "done" })
+            installer_run_payload(None, InstallerRunState::Running, &unnamed),
+            serde_json::json!({ "id": null, "state": "running", "seq": 2, "running": ["git", null] })
         );
+    }
+
+    #[test]
+    fn installer_runs_are_kept_in_the_backend_for_a_reloaded_window() {
+        // Gate 2 NEW-1: a reloaded setup screen reads which installers are
+        // still running instead of starting from an empty page.
+        let mut runs = InstallerRuns::default();
+        assert_eq!(runs.snapshot(), InstallerRunsSnapshot { seq: 0, running: vec![] });
+        runs.apply(Some("git"), InstallerRunState::Running);
+        runs.apply(Some("node"), InstallerRunState::Running);
+        let after_git = runs.apply(Some("git"), InstallerRunState::Done);
+        assert_eq!(
+            after_git,
+            InstallerRunsSnapshot { seq: 3, running: vec![Some("node".to_string())] }
+        );
+        assert_eq!(runs.snapshot(), after_git);
+        let after_node = runs.apply(Some("node"), InstallerRunState::Done);
+        assert_eq!(after_node, InstallerRunsSnapshot { seq: 4, running: vec![] });
+        // A Done with no matching run changes nothing but the sequence.
+        assert_eq!(
+            runs.apply(Some("gh"), InstallerRunState::Done),
+            InstallerRunsSnapshot { seq: 5, running: vec![] }
+        );
+    }
+
+    #[test]
+    fn installer_runs_active_reports_the_process_wide_snapshot() {
+        let snapshot = installer_runs_active();
+        assert_eq!(snapshot, recover_lock(&INSTALLER_RUNS).snapshot());
+        assert_eq!(
+            serde_json::to_value(InstallerRunsSnapshot { seq: 7, running: vec![None] }).unwrap(),
+            serde_json::json!({ "seq": 7, "running": [null] })
+        );
+    }
+
+    #[test]
+    fn only_a_person_can_stop_a_running_installer() {
+        // Gate 2 NEW-1: a timeout or a reloaded page never stops an installer.
+        assert!(cancel_allowed(false, None));
+        assert!(cancel_allowed(false, Some(false)));
+        assert!(cancel_allowed(true, Some(true)));
+        assert!(!cancel_allowed(true, None));
+        assert!(!cancel_allowed(true, Some(false)));
+
+        let handle = Uuid::new_v4().to_string();
+        register_cancel_handle(handle.clone());
+        mark_installer_handle(&handle);
+        assert!(!cancel_install(handle.clone(), None));
+        assert!(!cancel_install(handle.clone(), Some(false)));
+        assert!(!recover_lock(cancel_registry())[&handle].cancelled);
+        assert!(cancel_install(handle.clone(), Some(true)));
+        assert!(recover_lock(cancel_registry())[&handle].cancelled);
+        deregister_handle(&handle);
+    }
+
+    #[test]
+    fn a_second_install_call_joins_the_one_already_running() {
+        // Gate 2 NEW-1: a reloaded setup screen that calls install_deps again
+        // gets the running install's result instead of a second install.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime builds");
+        runtime.block_on(async {
+            let flight: SingleFlight<Result<u32, String>> = SingleFlight::new();
+            let starts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let (release, gate) = tokio::sync::oneshot::channel::<()>();
+            let start = |starts: Arc<std::sync::atomic::AtomicUsize>, gate| {
+                move || {
+                    starts.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        let _ = gate.await;
+                        Ok::<u32, String>(7)
+                    }
+                    .boxed()
+                }
+            };
+            assert!(!flight.in_flight());
+            let first = flight.run(start(starts.clone(), gate));
+            assert!(flight.in_flight());
+            let (_unused, unused_gate) = tokio::sync::oneshot::channel::<()>();
+            let second = flight.run(start(starts.clone(), unused_gate));
+            assert_eq!(starts.load(Ordering::SeqCst), 1, "the second call starts nothing");
+            release.send(()).unwrap();
+            let (first, second) = tokio::join!(first, second);
+            assert_eq!(first, Ok(7));
+            assert_eq!(second, Ok(7));
+            assert!(!flight.in_flight());
+
+            let (later_release, later_gate) = tokio::sync::oneshot::channel::<()>();
+            later_release.send(()).unwrap();
+            assert_eq!(flight.run(start(starts.clone(), later_gate)).await, Ok(7));
+            assert_eq!(starts.load(Ordering::SeqCst), 2, "a later call starts a new install");
+        });
+    }
+
+    #[test]
+    fn hot_reloads_wait_while_setup_is_installing() {
+        assert!(!setup_installing_from(false, 0));
+        assert!(setup_installing_from(true, 0));
+        assert!(setup_installing_from(false, 1));
     }
 
     #[test]
@@ -15278,7 +15560,7 @@ mod install_deps_windows_onboarding_tests {
         for message in [
             INSTALL_STOPPED_ERROR,
             GIT_DID_NOT_START_ERROR,
-            PATH_WRITE_ERROR,
+            PATH_WRITE_RETRY_ERROR,
         ] {
             assert!(message.starts_with("[install-retry] "), "{message}");
             assert!(message.ends_with("Select Try again."), "{message}");

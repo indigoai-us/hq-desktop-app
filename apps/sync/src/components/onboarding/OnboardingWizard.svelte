@@ -131,6 +131,9 @@
     GIT_PERMISSION_NOTICE,
     GIT_WAITING_NOTICE,
     createDepsToolTracker,
+    isKnownDepsTool,
+    readInstallerRunsSnapshot,
+    type InstallerRunsSnapshot,
     createStageClock,
     createSetupBandPacer,
     readyBodyCopy,
@@ -628,11 +631,13 @@
   let activeInitialSyncTimeoutProgress: (() => void) | null = null;
   let activeDepsLockWaitTimeoutProgress: (() => void) | null = null;
   let activeDepsOutputTimeoutProgress: (() => void) | null = null;
-  // Gate 2 N1: installers that are running right now, by tool id. While any
-  // runs, the deps timeout only changes the notice. It never cancels winget,
+  // Gate 2 N1 and NEW-1: the installers running right now, as the backend
+  // reports them (a null id is an installer with no known tool). The backend
+  // keeps this list, so a reloaded window reads it on mount. While any runs,
+  // the deps timeout only changes the notice. It never cancels winget,
   // because a killed installer can leave Git half installed and frees the
   // installer lock for a second copy.
-  const runningInstallers = new Map<string, number>();
+  let installerRuns: InstallerRunsSnapshot = { seq: 0, running: [] };
   let activeDepsInstallerDoneProgress:
     | ((options?: ProgressTimeoutProgressOptions) => void)
     | null = null;
@@ -2239,7 +2244,7 @@
     activeDepsLockWaitTimeoutProgress = null;
     activeDepsOutputTimeoutProgress = null;
     activeDepsInstallerDoneProgress = null;
-    runningInstallers.clear();
+    installerRuns = { seq: 0, running: [] };
     activeContentTimeoutProgress = null;
     activeIndexingOutputTimeoutProgress = null;
     activeInstallHandles.clear();
@@ -2251,13 +2256,18 @@
     return runId === currentRunId && !setupCancelled;
   }
 
-  async function cancelActiveInstallHandles(runId: number): Promise<void> {
+  /**
+   * `user` is true only when the person chose to stop setup. The backend
+   * stops a running installer only then (gate 2 NEW-1): a timeout, a closing
+   * window or a reload never does.
+   */
+  async function cancelActiveInstallHandles(runId: number, user: boolean): Promise<void> {
     if (runId !== currentRunId) return;
     const handles = [...activeInstallHandles];
     activeInstallHandles.clear();
     await Promise.allSettled(
       handles.map((handle) =>
-        invoke('cancel_install', { handle }),
+        invoke('cancel_install', user ? { handle, user: true } : { handle }),
       ),
     );
   }
@@ -2271,9 +2281,9 @@
     );
   }
 
-  async function cancelForegroundWork(runId: number): Promise<void> {
+  async function cancelForegroundWork(runId: number, user = false): Promise<void> {
     await Promise.allSettled([
-      cancelActiveInstallHandles(runId),
+      cancelActiveInstallHandles(runId, user),
       cancelActiveContentHandles(runId),
     ]);
   }
@@ -2300,15 +2310,34 @@
   /** A held deps timeout shows why setup is still waiting (gate 2 N1). */
   function showInstallerWaiting(runId: number): void {
     if (!isCurrentRun(runId)) return;
-    for (const id of runningInstallers.keys()) {
+    for (const id of installerRuns.running) {
       if (id === 'git') {
         gitPermissionRequested = true;
         gitPermissionWaiting = true;
-      } else {
+      } else if (isKnownDepsTool(id)) {
+        // An installer with no known tool is never named (gate 2 NEW-3).
         depsTools.apply({ id, state: 'waiting' });
       }
     }
     depsWaitingNotice = depsTools.waitingNotice();
+  }
+
+  /** Takes a backend snapshot only when it is newer than the one held. */
+  function applyInstallerRuns(snapshot: unknown): boolean {
+    const next = readInstallerRunsSnapshot(snapshot);
+    if (!next || next.seq <= installerRuns.seq) return false;
+    installerRuns = next;
+    return true;
+  }
+
+  /** A reloaded window learns which installers are still running. */
+  async function seedInstallerRuns(runId: number): Promise<void> {
+    try {
+      const snapshot = await invoke<unknown>('installer_runs_active');
+      if (isCurrentRun(runId)) applyInstallerRuns(snapshot);
+    } catch {
+      // Older backends do not report installer runs.
+    }
   }
 
   function trackContentProgress(runId: number, payload: ContentProgressPayload): void {
@@ -2378,18 +2407,12 @@
         stageDetail = depsTools.detail();
       },
     ));
-    const unlistenInstallerRun = safeUnlisten(await listen<{ id?: string; state?: string }>(
+    const unlistenInstallerRun = safeUnlisten(await listen<{ state?: string }>(
       'setup:installer-run',
       (event) => {
         if (!isCurrentRun(runId)) return;
-        const id = event.payload?.id;
-        if (!id) return;
-        const count = runningInstallers.get(id) ?? 0;
-        if (event.payload?.state === 'running') {
-          runningInstallers.set(id, count + 1);
-        } else if (event.payload?.state === 'done' && count > 0) {
-          if (count === 1) runningInstallers.delete(id);
-          else runningInstallers.set(id, count - 1);
+        if (!applyInstallerRuns(event.payload)) return;
+        if (event.payload?.state === 'done') {
           // The steps after an installer get a full timeout window of their own.
           activeDepsInstallerDoneProgress?.({ extendCeiling: true });
         }
@@ -2613,7 +2636,7 @@
               ? SETUP_TIMEOUT_NATIVE_SETTLE_TIMEOUT_MS
               : 0,
             {
-              active: () => isCurrentRun(runId) && runningInstallers.size > 0,
+              active: () => isCurrentRun(runId) && installerRuns.running.length > 0,
               onHold: () => showInstallerWaiting(runId),
             },
           );
@@ -3697,6 +3720,8 @@
       if (!isCurrentRun(runId)) return;
       if (installPath) effectiveInstallPath = installPath;
       await listenForProgress(runId);
+      await seedInstallerRuns(runId);
+      if (!isCurrentRun(runId)) return;
       let startStage: StageId = STAGE_ORDER[0];
       if (!recoveringMissingRoot) {
         try {
@@ -3720,7 +3745,8 @@
     }
   }
 
-  function cancelSetupRun() {
+  /** `user` is true only when the person chose to leave setup. */
+  function cancelSetupRun({ user = false }: { user?: boolean } = {}) {
     setupCancelled = true;
     unlistenInstallProgress?.();
     unlistenInstallProgress = null;
@@ -3734,7 +3760,7 @@
     activeDepsLockWaitTimeoutProgress = null;
     activeDepsOutputTimeoutProgress = null;
     activeDepsInstallerDoneProgress = null;
-    runningInstallers.clear();
+    installerRuns = { seq: 0, running: [] };
     activeContentTimeoutProgress = null;
     activeIndexingOutputTimeoutProgress = null;
     // A stage that failed and is waiting on its auto-retry never settles once
@@ -3743,7 +3769,7 @@
     // next run owns it again.
     stages = resetRetryingStages(stages);
     setupRetry = null;
-    void cancelForegroundWork(currentRunId);
+    void cancelForegroundWork(currentRunId, user);
   }
 
   /** Any stage left waiting on a retry goes back to 'pending'. */
@@ -4032,7 +4058,7 @@
     furthestStep = Math.max(furthestStep, next);
 
     if (next < SETUP_STEP_INDEX && setupStarted && !setupCompleted) {
-      cancelSetupRun();
+      cancelSetupRun({ user: true });
       setupStarted = false;
       stages = buildInitialStages();
       // The only genuine start-over: the next run earns its percent again.

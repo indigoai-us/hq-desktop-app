@@ -888,6 +888,7 @@ fn main() {
             commands::install_stages::start_initial_cloud_sync,
             commands::install_deps::check_dep,
             commands::install_deps::cancel_install,
+            commands::install_deps::installer_runs_active,
             #[cfg(not(windows))]
             commands::install_deps::install_homebrew,
             commands::install_deps::install_node,
