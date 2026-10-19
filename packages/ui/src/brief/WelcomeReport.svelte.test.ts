@@ -385,6 +385,26 @@ describe("WelcomeReport", () => {
     expect(onopen).toHaveBeenCalledTimes(1);
   });
 
+  it("puts the Open bar after the setup and blocked cards, never above them (US-019)", async () => {
+    const openTool = { label: "Open Claude Code", detail: null, busy: false, error: null, onopen: vi.fn() };
+    for (const state of [
+      { onsetup: vi.fn(), card: "welcome-report-setup" },
+      { blocked: { message: "Quill has no model connected on this computer.", label: "Connect a model", onfix: vi.fn() }, card: "welcome-report-blocked" },
+    ]) {
+      const { card: testid, ...rest } = state;
+      mountReport({ ready: false, progress: null, openTool, ...rest, children: briefPage });
+      await settle();
+      const card = q(`[data-testid="${testid}"]`)!;
+      const bar = q('[data-testid="brief-open-tool"]')!;
+      expect(card).not.toBeNull();
+      expect(bar).not.toBeNull();
+      expect(card.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      if (component) await unmount(component);
+      component = null;
+      target?.remove();
+    }
+  });
+
   it("leaves the Open action out when no tool was prepared", async () => {
     mountReport({ ready: false, children: briefPage });
     await settle();
