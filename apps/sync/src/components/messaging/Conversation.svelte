@@ -8,7 +8,7 @@
   // with the component.
   import { tick } from 'svelte';
   import { parseWorkSessionEvent } from '../../lib/workSessionEvent';
-  import { type ReactionMap } from '../../lib/reactions';
+  import { type ReactionMap, reactionsForBar } from '../../lib/reactions';
   import { copyableText, type CopyKind } from '../../lib/conversation-copy';
   import { invoke } from '@tauri-apps/api/core';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
@@ -117,6 +117,9 @@
     // preview) simply omit the callback and no bar renders.
     reactions?: ReactionMap;
     ontogglereaction?: (messageId: string, emoji: string) => void;
+    /** The signed-in person's uid. The @hq/ui ReactionBar says "You" for this
+     *  reactor; without it reactor names are hidden (see reactionsForBar). */
+    selfPersonUid?: string | null;
     // Share timeline: called with a share-card bubble's ShareEvent when its
     // "Open in Claude" action is tapped (the host owns the deep link).
     onopenshareinclaude?: (share: ShareEvent) => void | Promise<void>;
@@ -155,6 +158,7 @@
     activeRootEventId = null,
     reactions = {},
     ontogglereaction,
+    selfPersonUid = null,
     onopenshareinclaude,
     onopenattachments,
     onnavigatefiles,
@@ -781,7 +785,8 @@
       {#if ontogglereaction && !msg.pending}
         <ReactionBar
           messageId={msg.eventId}
-          reactions={reactions[msg.eventId]}
+          reactions={reactionsForBar(reactions[msg.eventId], selfPersonUid)}
+          {selfPersonUid}
           ontoggle={ontogglereaction}
         />
       {/if}
@@ -2021,7 +2026,8 @@
   .dm-msg,
   :global([data-window='messages']) .dm-msg {
     display: grid;
-    grid-template-columns: 28px minmax(0, 720px);
+    /* 32px = the @hq/ui IdentityMark regular size (Conversation.avatar-column.test.ts). */
+    grid-template-columns: 32px minmax(0, 720px);
     align-self: stretch;
     align-items: start;
     gap: 0.625rem;
@@ -2049,7 +2055,7 @@
   .dm-msg-avatar,
   .dm-msg-avatar-spacer {
     display: block;
-    width: 28px;
+    width: 32px;
     min-height: 1px;
   }
 
@@ -2130,6 +2136,7 @@
   }
 
   .date-separator {
-    margin-left: 38px;
+    /* Avatar column (32px) + grid gap (10px): lines up with the message text. */
+    margin-left: 42px;
   }
 </style>

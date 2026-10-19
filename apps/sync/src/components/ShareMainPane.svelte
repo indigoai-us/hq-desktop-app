@@ -9,6 +9,8 @@
   import type { ShareEvent } from '../lib/notificationGroups';
   import type { ReactionEvent } from '../lib/reactions';
   import { ShareReactionController } from '../lib/shareReactionController.svelte';
+  import { reactionsForBar } from '../lib/reactions';
+  import { loadSelfPersonUid } from '../lib/selfPersonUid';
   import { ReactionBar } from '@hq/ui';
 
   // Main content for share-detail, Messages shell share rows, and when a share
@@ -54,6 +56,18 @@
   const reactionCtl = new ShareReactionController();
   $effect(() => {
     void reactionCtl.setShares(events.map((e) => e.eventId));
+  });
+
+  // The shared ReactionBar names reactors and says "You" for this uid.
+  let selfPersonUid = $state<string | null>(null);
+  $effect(() => {
+    let cancelled = false;
+    void loadSelfPersonUid().then((uid) => {
+      if (!cancelled) selfPersonUid = uid;
+    });
+    return () => {
+      cancelled = true;
+    };
   });
 
   function formatDate(iso: string): string {
@@ -219,7 +233,8 @@
 
         <ReactionBar
           messageId={evt.eventId}
-          reactions={reactionCtl.map[evt.eventId]}
+          reactions={reactionsForBar(reactionCtl.map[evt.eventId], selfPersonUid)}
+          {selfPersonUid}
           ontoggle={reactionCtl.toggle}
         />
 
