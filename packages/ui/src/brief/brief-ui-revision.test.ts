@@ -38,7 +38,8 @@ it("renders getting-started content and one plain welcome error line", async () 
   expect(target.textContent).toContain("Begin with a personal task.");
   const errors = target.querySelectorAll('[data-testid="brief-welcome-error"]');
   expect(errors).toHaveLength(1);
-  expect(errors[0]!.textContent).toBe("Import unavailable");
+  expect(errors[0]!.textContent).toBe("Some of your welcome details could not be loaded this time.");
+  expect(target.textContent).not.toContain("Import unavailable");
 });
 
 it("renders the failed company notice without an empty company section", async () => {

@@ -64,9 +64,10 @@ test.describe('daily brief: user path', () => {
     const create = page.getByTestId('brief-create').first();
     await expect(create).toBeVisible({ timeout: 30_000 });
     await create.click();
-    // Until the bot writes its first status, the sunrise says where the job
-    // went and that it is waiting, by the bot's name.
-    await expect(page.getByTestId('brief-dawn-step')).toContainText('Sent to demo, waiting for it to start', { timeout: 2_000 });
+    // Until the bot writes its first status, the sunrise says the brief is
+    // getting started, and never names the bot.
+    await expect(page.getByTestId('brief-dawn-step')).toContainText('Getting your brief started', { timeout: 2_000 });
+    await expect(page.getByTestId('brief-dawn-step')).not.toContainText('demo');
     // The sunrise loader shows the run's progress while the simulated bot works.
     await expect(page.getByTestId('brief-loader')).toBeVisible({ timeout: 10_000 });
     // The simulated run takes about twenty seconds, then the brief renders.
