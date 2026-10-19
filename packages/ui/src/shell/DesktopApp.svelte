@@ -5231,7 +5231,7 @@
     const settled =
       teamCardRecords[teamCardRecordKey(self?.uid, bot.agentUid)] ?? teamCardSettledFromReply(timeline, bot.agentUid);
     if (settled) return { anchor, settled };
-    const due = teamCardDue(timeline, bot.agentUid, firstRunSettled.team === null, teamBlockInMessage, messageHasVisibleContent);
+    const due = teamCardDue(timeline, bot.agentUid, firstRunSettled.team === null && !accountKindReturning, teamBlockInMessage, messageHasVisibleContent);
     if (!due || (due === "fallback" && firstRunHandoffName === null)) return null;
     return { anchor, settled: null };
   });
@@ -9826,7 +9826,7 @@
     if (selectedRow && isSetupChannel(selectedRow.channelId)) {
       const welcome = withoutCompaniesSummaryCards(
         withoutSeededCreateCompanyCards(merged, {
-          hasCompany: hasRosterCompany,
+          hasCompany: hasRosterCompany || accountKindReturning,
           createRequested: createCompanyRequested,
           rosterLoading: setupRosterLoading(companies, rosterStatus),
         }),
@@ -11064,6 +11064,12 @@
    * Unknown until the host answers; unknown means owed, as before.
    */
   let welcomeSetupOwed = $state<boolean | null>(null);
+  /**
+   * US-023: setup recognised this account as returning (it already has
+   * companies or history). It owes no welcome setup, takeover, team card or
+   * automatic tour, and the shell offers no create-company push.
+   */
+  let accountKindReturning = $state(untrack(() => firstRunHandoff?.accountKind === "returning"));
   /** The boot pick never waits longer than this for the host's answer. */
   const WELCOME_OWED_TIMEOUT_MS = 2000;
   onMount(() => {
@@ -11071,6 +11077,12 @@
     const resolve = (owed: boolean): void => {
       if (settled) return;
       settled = true;
+      if (accountKindReturning) {
+        owed = false;
+        // A returning account skips the takeover; it is finished here too.
+        if (!firstRunDev.dry) markVisualFirstRunFinished();
+        visualFirstRunFinished = true;
+      }
       welcomeSetupOwed = owed;
       if (owed) return;
       if (!welcomeSetupRun) writeFirstRunLine(firstRunTimingLog, formatSetupRunSet("mark-already-set-up"));
@@ -11082,7 +11094,7 @@
     // The welcome window handed its setup status over: no 2 s wait.
     if (firstRunHandoff) {
       tourHostStatus = {
-        owed: firstRunHandoff.welcomeSetupOwed,
+        owed: firstRunHandoff.welcomeSetupOwed && !accountKindReturning,
         shown: firstRunHandoff.welcomeTourShown,
       };
       resolve(firstRunHandoff.welcomeSetupOwed);
@@ -11093,12 +11105,13 @@
       try {
         const res = await adapter.settings.getSetupStatus();
         const status = res.ok
-          ? (res.value as { welcomeSetupOwed?: unknown; welcomeTourShown?: unknown } | null)
+          ? (res.value as { welcomeSetupOwed?: unknown; welcomeTourShown?: unknown; accountKind?: unknown } | null)
           : null;
         const owed = status?.welcomeSetupOwed;
+        if (status?.accountKind === "returning") accountKindReturning = true;
         if (status) {
           tourHostStatus = {
-            owed: owed === true,
+            owed: owed === true && !accountKindReturning,
             shown: status.welcomeTourShown === true,
           };
         }
@@ -16195,6 +16208,7 @@
               onconnectcompany={() => (newCompanyOpen = true)}
               onshown={(runId) => (briefShownRunId = runId)}
               openTool={showOpenTool ? briefOpenToolAction : null}
+              firstView={{ returning: accountKindReturning }}
             />
           {/snippet}
           {#if welcomeReportOwed}
@@ -17030,7 +17044,7 @@
                         : undefined}
                       companies={rosterCompanies}
                       onopencompany={openCompanyFromSetup}
-                      oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
+                      oncreatecompany={canRunEntryPoints && !accountKindReturning ? createCompanyEntry : null}
                       {rosterStatus}
                       {onretryroster}
                       onsetupstarted={() => recordWelcomeSetupRun("welcome-setup-started")}

@@ -85,7 +85,7 @@ vi.mock('@hq/platform', async () => {
       },
     },
       sync: {
-        startSync: () => onboardingFlags.startSync(),
+        startSync: (company?: string) => onboardingFlags.startSync(company),
       },
       settings: {
         getHqAnywherePersonSetting: async () => {
@@ -123,6 +123,7 @@ import { __resetInstallerStepTelemetryForTests } from '../../lib/installer-step-
 import { stageTimeoutMs } from '../../lib/onboarding-setup';
 import { __setReadyTimingsForTests } from '../../lib/welcome-flow';
 import { appendChildFolderPath } from '../../lib/onboarding-path';
+import { MEMBERSHIP_ME_WITH_HISTORY_URL as MEMBERSHIP_ME } from '../../lib/first-run-company';
 
 const NO_AI_TOOLS = {
   claude_cli: false,
@@ -2163,12 +2164,17 @@ describe('onboarding launch handoff', () => {
     host.replaceChildren();
 
     const onfinish = vi.fn();
-    tauri.invoke.mockImplementation(async (command: string) => {
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
       switch (command) {
         case 'resolve_hq_path':
           return '/placeholder/hq';
         case 'detect_ai_tools':
           return claudeDesktopOnly;
+        case 'hq_pro_fetch':
+          // A brand-new account: no memberships and no company history.
+          return args?.url === MEMBERSHIP_ME
+            ? { status: 200, body: JSON.stringify({ memberships: [], historicalCompanyIdentities: {} }) }
+            : undefined;
         case 'start_install_queue':
           throw new Error('dependency installation failed');
         case 'detect_claude_desktop_connectors':
@@ -3047,7 +3053,7 @@ describe('first-folder sync onboarding step', () => {
       // connector import has a company to import into.
       const base = tauri.invoke.getMockImplementation()!;
       tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
-        if (command === 'hq_pro_fetch' && args?.url === '/membership/me') {
+        if (command === 'hq_pro_fetch' && args?.url === MEMBERSHIP_ME) {
           return {
             status: 200,
             body: JSON.stringify({
@@ -3120,7 +3126,9 @@ describe('first-folder sync onboarding step', () => {
   });
 
   it('offers the connector import only after the first-folder step, then settles on ready', async () => {
-    await reachPostSetupStep(true, true);
+    // A new account with no company has nothing to import into, so it is
+    // never offered; the first-folder step stays the only follow-on step.
+    await reachPostSetupStep(true);
     const connectorChecks = () =>
       tauri.invoke.mock.calls.filter(
         ([command]) => command === 'detect_claude_desktop_connectors',
@@ -3130,6 +3138,29 @@ describe('first-folder sync onboarding step', () => {
     host.querySelector<HTMLButtonElement>(
       '[data-testid="onboarding-first-folder-sync-skip"]',
     )?.click();
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+
+    expectReadyWithConsent();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flush();
+    expect(connectorChecks()).toBe(0);
+    expect(firstFolderSyncActions()).toEqual(['entered', 'skipped']);
+    expect(host.querySelector('.hq-welcome')?.getAttribute('data-current-scene')).toBe('ready');
+  });
+
+  it('offers a returning member the connector import only after the company pull, then settles on ready (US-023)', async () => {
+    await reachPostSetupStep(true, true);
+    const connectorChecks = () =>
+      tauri.invoke.mock.calls.filter(
+        ([command]) => command === 'detect_claude_desktop_connectors',
+      ).length;
+    // The pull replaces the first-folder step and is still running.
+    await flushUntil(() => onboardingFlags.startSync.mock.calls.length > 0);
+    expect(host.querySelector('[data-testid="onboarding-first-folder-sync"]')?.classList.contains('on')).not.toBe(true);
+    expect(connectorChecks()).toBe(0);
+
+    emitTauriEvent('sync:all-complete', { companiesAttempted: 1, filesDownloaded: 1, bytesDownloaded: 1, errors: [] });
     await flushUntil(() => connectorChecks() > 0);
     await vi.advanceTimersByTimeAsync(500);
     await flush();
@@ -3138,7 +3169,8 @@ describe('first-folder sync onboarding step', () => {
     // Each follow-on step is offered once: back on ready, nothing reopens.
     await vi.advanceTimersByTimeAsync(1_000);
     await flush();
-    expect(firstFolderSyncActions()).toEqual(['entered', 'skipped']);
+    expect(connectorChecks()).toBe(1);
+    expect(firstFolderSyncActions()).toEqual(['completed']);
     expect(host.querySelector('.hq-welcome')?.getAttribute('data-current-scene')).toBe('ready');
   });
 
@@ -3260,10 +3292,15 @@ describe('first-folder sync onboarding step', () => {
     await flushUntil(() => Boolean(host.querySelector('[role="alert"]')));
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('could not sync this folder');
     expect(host.textContent).not.toContain('VLT-2');
-    const failed = tauri.invoke.mock.calls.flatMap(([command, raw]) => {
-      const args = raw as { properties?: Record<string, unknown> };
-      return command === 'emit_desktop_operational_telemetry' && args.properties?.selfHeal === 'failed' ? [args.properties] : [];
-    });
+    const selfHealFailures = () =>
+      tauri.invoke.mock.calls.flatMap(([command, raw]) => {
+        const args = raw as { properties?: Record<string, unknown> };
+        return command === 'emit_desktop_operational_telemetry' && args.properties?.selfHeal === 'failed' ? [args.properties] : [];
+      });
+    // The telemetry row is sent after an async device-fingerprint read, so it
+    // can land a few ticks after the alert renders.
+    await flushUntil(() => selfHealFailures().length > 0);
+    const failed = selfHealFailures();
     expect(failed[0]).toMatchObject({ provisioningStep: 'activate-cloud:server_error', companyUid: 'cmp_01ABC' });
     const button = host.querySelector<HTMLButtonElement>('[data-testid="onboarding-first-folder-sync-start"]');
     expect(button?.disabled).toBe(false);
@@ -3387,7 +3424,7 @@ describe('invite teammate onboarding step', () => {
                 : {}),
             };
           }
-          if (url === '/membership/me') {
+          if (url === MEMBERSHIP_ME) {
             return {
               status: 200,
               body: JSON.stringify({ memberships: [ownerMembership] }),
@@ -3513,7 +3550,7 @@ describe('invite teammate onboarding step', () => {
   it('retries throttled membership reads using Retry-After before showing the step', async () => {
     await reachInviteScenario({
       fetchResponses: {
-        '/membership/me': [
+        [MEMBERSHIP_ME]: [
           { status: 503, body: { error: 'busy' }, retryAfter: '0' },
           { status: 200, body: { memberships: [ownerMembership] } },
         ],
@@ -3525,7 +3562,7 @@ describe('invite teammate onboarding step', () => {
     });
 
     expect(host.querySelector('[data-testid="onboarding-invite-teammate"]')).not.toBeNull();
-    for (const url of ['/membership/me', '/membership/company/cmp_demo']) {
+    for (const url of [MEMBERSHIP_ME, '/membership/company/cmp_demo']) {
       expect(
         tauri.invoke.mock.calls.filter(
           ([command, args]) =>
@@ -4497,6 +4534,8 @@ describe('company onboarding step', () => {
     inviteError?: (email: string) => string | null;
     /** After GET /entity/cmp_new first answers ready, later reads answer "provisioning" again. */
     entityRegresses?: boolean;
+    /** The wizard's onfinish; a fresh mock when unset. */
+    onfinish?: Parameters<typeof mountWizard>[0];
   } = {}): Promise<void> {
     onboardingFlags.firstFolderSyncEnabled = false;
     onboardingFlags.companyNamePrefillEnabled = options.companyNamePrefillEnabled ?? false;
@@ -4508,7 +4547,7 @@ describe('company onboarding step', () => {
     let activeCompany = options.activeCompany ?? null;
     let signedOut = false;
     let entityAnsweredReady = false;
-    mountWizard(vi.fn(), SETUP_STEP_INDEX);
+    mountWizard(options.onfinish ?? vi.fn(), SETUP_STEP_INDEX);
     tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
       switch (command) {
         case 'resolve_hq_path':
@@ -4609,7 +4648,7 @@ describe('company onboarding step', () => {
             const answer = options.pricing ?? { status: 503, body: { error: 'PRICING_UNAVAILABLE' } };
             return { status: answer.status, body: JSON.stringify(answer.body) };
           }
-          if (args?.url === '/membership/me') {
+          if (args?.url === MEMBERSHIP_ME) {
             membershipReads += 1;
             if (options.membershipDelayMs) {
               await new Promise((resolve) => setTimeout(resolve, options.membershipDelayMs));
@@ -4622,7 +4661,11 @@ describe('company onboarding step', () => {
             }
             return {
               status: 200,
-              body: JSON.stringify({ ...(options.membershipExtra ?? {}), memberships: options.memberships ?? [] }),
+              body: JSON.stringify({
+                historicalCompanyIdentities: {},
+                ...(options.membershipExtra ?? {}),
+                memberships: options.memberships ?? [],
+              }),
             };
           }
           if (typeof args?.url === 'string' && args.url.startsWith('/membership/me?anonId=')) {
@@ -4822,7 +4865,7 @@ describe('company onboarding step', () => {
     });
     await flushUntil(() =>
       tauri.invoke.mock.calls.filter(
-        ([command, args]) => command === 'hq_pro_fetch' && (args as { url?: string })?.url === '/membership/me',
+        ([command, args]) => command === 'hq_pro_fetch' && (args as { url?: string })?.url === MEMBERSHIP_ME,
       ).length === 2,
     );
     await flushUntil(() => companyRows().some((row) => row.decision === 'create'));
@@ -4844,7 +4887,7 @@ describe('company onboarding step', () => {
 
     expect(
       tauri.invoke.mock.calls.filter(
-        ([command, args]) => command === 'hq_pro_fetch' && (args as { url?: string })?.url === '/membership/me',
+        ([command, args]) => command === 'hq_pro_fetch' && (args as { url?: string })?.url === MEMBERSHIP_ME,
       ),
     ).toHaveLength(2);
     expect(
@@ -4854,25 +4897,29 @@ describe('company onboarding step', () => {
     ).toBe(true);
   });
 
-  it('records lookup_failed after the retry and leaves the existing setup recovery as the path', async () => {
+  it('records lookup_failed after every retry and shows the plain error with Try again, never the create path (US-023)', async () => {
     await reachCompanyScenario({
-      membershipFailures: 2,
+      membershipFailures: 3,
       companyRouteLookupRetryEnabled: true,
     });
     await flushUntil(() => companyRows().some((row) => row.decision === 'lookup_failed'));
 
     expect(
       tauri.invoke.mock.calls.filter(
-        ([command, args]) => command === 'hq_pro_fetch' && (args as { url?: string })?.url === '/membership/me',
+        ([command, args]) => command === 'hq_pro_fetch' && (args as { url?: string })?.url === MEMBERSHIP_ME,
       ),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
     expect(companyRows()).toContainEqual(expect.objectContaining({
       action: 'started',
       outcome: 'route_lookup_failed',
       decision: 'lookup_failed',
     }));
     expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
+    expect(host.textContent).not.toContain('Name your company');
     expect(host.querySelector('[data-testid="onboarding-summary"]')?.classList.contains('on')).toBe(true);
+    const error = host.querySelector('[data-testid="account-lookup-error"]');
+    expect(error?.textContent).toContain("We couldn't check your account. Check your connection and try again.");
+    expect(host.querySelector('[data-testid="account-lookup-retry"]')?.textContent).toContain('Try again');
     expect(
       tauri.invoke.mock.calls.some(
         ([command, args]) => command === 'run_card_action' && (args as { cardId?: string })?.cardId === 'card_create_company',
@@ -4882,7 +4929,7 @@ describe('company onboarding step', () => {
 
   it('omits unknown membership counts from lookup-failure telemetry', async () => {
     await reachCompanyScenario({
-      membershipFailures: 2,
+      membershipFailures: 3,
       companyRouteLookupRetryEnabled: true,
     });
     await flushUntil(() => companyRows().some((row) => row.decision === 'lookup_failed'));
@@ -4894,17 +4941,225 @@ describe('company onboarding step', () => {
     expect(row).not.toHaveProperty('pendingInvites');
   });
 
-  it('keeps the original one-read behavior when the company-route retry flag is off', async () => {
+  it('retries the account lookup even with the company-route retry flag off, then shares that read (US-023)', async () => {
     await reachCompanyScenario({ membershipFailures: 1 });
+    await flushUntil(() => companyRows().some((row) => row.decision === 'create'));
 
+    // One failure, one successful retry; the company route reuses the read.
     expect(
       tauri.invoke.mock.calls.filter(
-        ([command, args]) => command === 'hq_pro_fetch' && (args as { url?: string })?.url === '/membership/me',
+        ([command, args]) => command === 'hq_pro_fetch' && (args as { url?: string })?.url === MEMBERSHIP_ME,
       ),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
     expect(companyRows().some((row) => row.decision === 'lookup_failed')).toBe(false);
-    expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
+    expect(host.querySelector('[data-testid="account-lookup-error"]')).toBeNull();
     expect(onboardingFlags.hasFeature).toHaveBeenCalledWith('desktop.company-route-lookup-retry-v1');
+  });
+
+  describe('returning account on a new Mac (US-023)', () => {
+    const acmeAndGlobex = [
+      { companyUid: 'cmp_acme', companySlug: 'acme', companyName: 'Acme', personUid: 'prs_me', status: 'active', role: 'owner', bucketName: 'b1' },
+      { companyUid: 'cmp_globex', companySlug: 'globex', companyName: 'Globex', personUid: 'prs_me', status: 'active', role: 'member', planTier: 'team', bucketName: 'b2' },
+    ];
+
+    function readyHeading(): string {
+      return host.querySelector('#onboarding-title-ready')?.textContent?.trim() ?? '';
+    }
+
+    function pullRows(): Array<{ company: string | null; status: string | null; text: string }> {
+      return [...host.querySelectorAll('[data-testid="company-pull-row"]')].map((row) => ({
+        company: row.getAttribute('data-company'),
+        status: row.getAttribute('data-status'),
+        text: row.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+      }));
+    }
+
+    function syncedSlugs(): unknown[] {
+      return onboardingFlags.startSync.mock.calls.map(([slug]) => slug);
+    }
+
+    function pullOutcomes(): Array<Record<string, unknown>> {
+      return tauri.invoke.mock.calls.flatMap(([command, rawArgs]) => {
+        const args = rawArgs as { properties?: Record<string, unknown> };
+        return command === 'emit_desktop_operational_telemetry' && typeof args.properties?.companyPull === 'string'
+          ? [args.properties]
+          : [];
+      });
+    }
+
+    function accountKindRows(): Array<Record<string, unknown>> {
+      return tauri.invoke.mock.calls.flatMap(([command, rawArgs]) => {
+        const args = rawArgs as { properties?: Record<string, unknown> };
+        return command === 'emit_desktop_operational_telemetry' && typeof args.properties?.accountKind === 'string'
+          ? [args.properties]
+          : [];
+      });
+    }
+
+    /** Answer the scoped sync that is running for `slug`. */
+    async function completePull(slug: string, errors: Array<{ company?: string; message: string }> = []): Promise<void> {
+      await flushUntil(() => syncedSlugs().filter((candidate) => candidate === slug).length > 0 && pullRows().some((row) => row.company === slug && row.status === 'pulling'));
+      emitTauriEvent('sync:all-complete', { companiesAttempted: 1, filesDownloaded: 1, bytesDownloaded: 1, errors });
+      await flush();
+    }
+
+    /** Let the ready screen run (rAF reveal, consent dwell) without a finish predicate. */
+    async function idle(rounds = 300): Promise<void> {
+      for (let round = 0; round < rounds; round += 1) {
+        await flush();
+        await vi.advanceTimersByTimeAsync(16);
+        await new Promise((resolve) => realSetTimeout(resolve, 5));
+      }
+    }
+
+    function createPushed(): boolean {
+      return tauri.invoke.mock.calls.some(
+        ([command, args]) => command === 'run_card_action' && (args as { cardId?: string })?.cardId === 'card_create_company',
+      );
+    }
+
+    it('pulls both companies with per-company progress, then says they are on this Mac', async () => {
+      const onfinish = vi.fn();
+      await reachCompanyScenario({ memberships: acmeAndGlobex, onfinish });
+      await flushUntil(() => pullRows().some((row) => row.status === 'pulling'));
+
+      expect(host.querySelector('[data-testid="company-pull"]')?.textContent).toContain('Bringing your companies to this Mac');
+      expect(pullRows()).toEqual([
+        { company: 'acme', status: 'pulling', text: 'Acme Pulling' },
+        { company: 'globex', status: 'queued', text: 'Globex Waiting' },
+      ]);
+      expect(readyHeading()).toBe('Welcome back. Bringing Acme and Globex to this Mac.');
+
+      await completePull('acme');
+      await completePull('globex');
+      await flushUntil(() => pullRows().every((row) => row.status === 'done'));
+
+      expect(syncedSlugs()).toEqual(['acme', 'globex']);
+      expect(pullRows().map((row) => row.text)).toEqual(['Acme Ready', 'Globex Ready']);
+      expect(readyHeading()).toBe('Welcome back. Acme and Globex are on this Mac.');
+      // No create or join step, and the paid company is the active one.
+      expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
+      expect(enteredSteps()).not.toContain('company');
+      expect(host.textContent).not.toContain('Name your company');
+      expect(createPushed()).toBe(false);
+      expect(tauri.invoke).toHaveBeenCalledWith('set_desktop_active_company', { companySlug: 'globex' });
+      expect(tauri.invoke).toHaveBeenCalledWith('set_account_kind', { kind: 'returning' });
+      expect(accountKindRows()).toEqual([
+        expect.objectContaining({ step: 'setup', action: 'started', accountKind: 'returning', accountSignal: 'active_membership' }),
+      ]);
+      expect(pullOutcomes()).toEqual([
+        expect.objectContaining({ action: 'completed', companyUid: 'cmp_acme', companyPull: 'done', attemptCount: 1 }),
+        expect.objectContaining({ action: 'completed', companyUid: 'cmp_globex', companyPull: 'done', attemptCount: 1 }),
+      ]);
+      await untilFinished(onfinish);
+      expect(onfinish).toHaveBeenCalledOnce();
+    });
+
+    it('lists a failed pull with Try again and does not finish Ready until it succeeds', async () => {
+      const onfinish = vi.fn();
+      await reachCompanyScenario({ memberships: acmeAndGlobex, onfinish });
+      await completePull('acme', [{ company: 'acme', message: 'network down' }]);
+      await completePull('globex');
+      await flushUntil(() => pullRows().every((row) => row.status !== 'pulling' && row.status !== 'queued'));
+
+      expect(pullRows()[0]).toMatchObject({ company: 'acme', status: 'failed' });
+      expect(pullRows()[0]!.text).toContain("Couldn't pull Acme");
+      expect(host.querySelector('[data-testid="company-pull-retry"]')?.textContent).toBe('Try again');
+      expect(host.querySelector('[data-testid="company-pull-continue"]')?.textContent).toBe('Continue');
+      expect(readyHeading()).not.toContain('on this Mac.');
+      expect(readyHeading()).not.toBe('HQ is ready.');
+      expect(pullOutcomes()).toContainEqual(
+        expect.objectContaining({ action: 'failed', companyUid: 'cmp_acme', companyPull: 'failed', companyPullError: 'sync_error' }),
+      );
+      // Give the ready screen the same time it takes to finish on success.
+      await idle();
+      expect(onfinish).not.toHaveBeenCalled();
+
+      click('company-pull-retry');
+      await completePull('acme');
+      await flushUntil(() => pullRows().every((row) => row.status === 'done'));
+
+      expect(syncedSlugs()).toEqual(['acme', 'globex', 'acme']);
+      expect(readyHeading()).toBe('Welcome back. Acme and Globex are on this Mac.');
+      expect(pullOutcomes()).toContainEqual(
+        expect.objectContaining({ action: 'completed', companyUid: 'cmp_acme', companyPull: 'done', attemptCount: 2 }),
+      );
+      await untilFinished(onfinish);
+      expect(onfinish).toHaveBeenCalledOnce();
+    });
+
+    it('lets the person continue past a failed pull, saying HQ keeps trying', async () => {
+      const onfinish = vi.fn();
+      await reachCompanyScenario({ memberships: acmeAndGlobex, onfinish });
+      await completePull('acme', [{ company: 'acme', message: 'network down' }]);
+      await completePull('globex');
+      await flushUntil(() => Boolean(host.querySelector('[data-testid="company-pull-continue"]')));
+
+      click('company-pull-continue');
+      await flush();
+
+      expect(pullRows()[0]!.text).toBe("Couldn't bring Acme yet. HQ keeps trying.");
+      expect(host.querySelector('[data-testid="company-pull-retry"]')).toBeNull();
+      expect(readyHeading()).toBe('Welcome back. Globex is on this Mac.');
+      await untilFinished(onfinish);
+      expect(onfinish).toHaveBeenCalledOnce();
+    });
+
+    it('after a failed lookup, Try again finds the account and takes the returning path', async () => {
+      await reachCompanyScenario({ memberships: acmeAndGlobex, membershipFailures: 3 });
+      await flushUntil(() => Boolean(host.querySelector('[data-testid="account-lookup-error"]')));
+      expect(syncedSlugs()).toEqual([]);
+
+      click('account-lookup-retry');
+      await flushUntil(() => pullRows().length === 2);
+
+      expect(host.querySelector('[data-testid="account-lookup-error"]')).toBeNull();
+      expect(createPushed()).toBe(false);
+      expect(companyRows().some((row) => row.decision === 'create' && row.action !== 'skipped')).toBe(false);
+      await completePull('acme');
+      await completePull('globex');
+      await flushUntil(() => readyHeading() === 'Welcome back. Acme and Globex are on this Mac.');
+    });
+
+    it('a returning account with zero companies gets the personal path: no create push and nothing to pull', async () => {
+      const onfinish = vi.fn();
+      await reachCompanyScenario({
+        memberships: [],
+        membershipExtra: { historicalCompanyIdentities: { cmp_old: { uid: 'cmp_old', name: 'Old Co', slug: 'old-co' } } },
+        onfinish,
+      });
+      await flushUntil(() => accountKindRows().length > 0);
+
+      expect(accountKindRows()).toEqual([
+        expect.objectContaining({ accountKind: 'returning', accountSignal: 'company_history' }),
+      ]);
+      expect(tauri.invoke).toHaveBeenCalledWith('set_account_kind', { kind: 'returning' });
+      expect(host.querySelector('[data-testid="company-pull"]')).toBeNull();
+      expect(syncedSlugs()).toEqual([]);
+      expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
+      expect(companyRows().some((row) => row.decision === 'create')).toBe(false);
+      expect(createPushed()).toBe(false);
+      expect(tauri.invoke.mock.calls.some(([command]) => command === 'set_desktop_active_company')).toBe(false);
+      await untilFinished(onfinish);
+      expect(readyHeading()).toBe('Welcome back. HQ is ready.');
+      expect(onfinish).toHaveBeenCalledOnce();
+    });
+
+    it('a brand-new account (no memberships, empty history) keeps the unchanged new-person flow', async () => {
+      const onfinish = vi.fn();
+      await reachCompanyScenario({ memberships: [], onfinish });
+      await flushUntil(() => companyRows().some((row) => row.decision === 'create'));
+
+      expect(accountKindRows()).toEqual([expect.objectContaining({ accountKind: 'new' })]);
+      expect(accountKindRows()[0]).not.toHaveProperty('accountSignal');
+      expect(tauri.invoke).toHaveBeenCalledWith('set_account_kind', { kind: 'new' });
+      expect(host.querySelector('[data-testid="company-pull"]')).toBeNull();
+      expect(syncedSlugs()).toEqual([]);
+      await untilFinished(onfinish);
+      expect(readyHeading()).toBe('HQ is ready.');
+      expect(host.textContent).not.toContain('Welcome back');
+      expect(onfinish).toHaveBeenCalledOnce();
+    });
   });
 
   it('skips "Name your company" for a paid company and selects it', async () => {
@@ -4919,6 +5174,14 @@ describe('company onboarding step', () => {
     expect(tauri.invoke).toHaveBeenCalledWith('record_onboarding_workspace_selected', { companyUid: 'cmp_paid' });
     expect(companyRows().find((row) => row.decision === 'paid_existing')).toMatchObject({ paidCompany: true });
   });
+
+  /** A returning member's company pull runs first; let it finish (US-023). */
+  async function finishCompanyPull(): Promise<void> {
+    await flushUntil(() => onboardingFlags.startSync.mock.calls.length > 0);
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'detect_claude_desktop_connectors')).toBe(false);
+    emitTauriEvent('sync:all-complete', { companiesAttempted: 1, filesDownloaded: 1, bytesDownloaded: 1, errors: [] });
+    await flush();
+  }
 
   function connectorRows(): Array<Record<string, unknown>> {
     return tauri.invoke.mock.calls.flatMap(([command, rawArgs]) => {
@@ -4971,6 +5234,7 @@ describe('company onboarding step', () => {
         errorCategory: 'exit-nonzero',
       },
     });
+    await finishCompanyPull();
     await flushUntil(() => Boolean(host.querySelector('[data-testid="connector-import-import"]')));
     click('connector-import-import');
     await flushUntil(() => Boolean(host.querySelector('[data-testid="connector-import-failure"]')));
@@ -5005,6 +5269,7 @@ describe('company onboarding step', () => {
       ],
       connectorCount: 2,
     });
+    await finishCompanyPull();
     await flushUntil(() => Boolean(host.querySelector('[data-testid="connector-import-import"]')));
     expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
     click('connector-import-import');
@@ -5013,22 +5278,25 @@ describe('company onboarding step', () => {
     expect(importCalls()).toEqual([{ company: 'demo' }]);
   });
 
-  it('falls back to the app\'s active company when the company lookup fails', async () => {
-    await reachCompanyScenario({ membershipFailures: 1, activeCompany: 'demo', connectorCount: 1 });
-    await flushUntil(() => Boolean(host.querySelector('[data-testid="connector-import-import"]')));
-    click('connector-import-import');
-    await flushUntil(() => Boolean(host.querySelector('[data-testid="connector-import-success"]')));
-
-    expect(importCalls()).toEqual([{ company: 'demo' }]);
-  });
-
-  it('skips the connector import when the company lookup fails and no company is active', async () => {
-    await reachCompanyScenario({ membershipFailures: 1, activeCompany: null, connectorCount: 1 });
+  it('does not import into the app\'s active company when the account lookup fails (US-023)', async () => {
+    await reachCompanyScenario({ membershipFailures: 3, activeCompany: 'demo', connectorCount: 1 });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="account-lookup-error"]')));
     await vi.advanceTimersByTimeAsync(2_000);
     await flush();
 
     const commands = tauri.invoke.mock.calls.map(([command]) => command);
-    expect(commands).toContain('get_desktop_active_company');
+    expect(commands).not.toContain('detect_claude_desktop_connectors');
+    expect(importCalls()).toEqual([]);
+    expect(host.querySelector('[data-testid="connector-import-offer"]')).toBeNull();
+  });
+
+  it('skips the connector import when the account lookup fails and no company is active', async () => {
+    await reachCompanyScenario({ membershipFailures: 3, activeCompany: null, connectorCount: 1 });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="account-lookup-error"]')));
+    await vi.advanceTimersByTimeAsync(2_000);
+    await flush();
+
+    const commands = tauri.invoke.mock.calls.map(([command]) => command);
     expect(commands).not.toContain('detect_claude_desktop_connectors');
     expect(commands).not.toContain('import_claude_desktop_connectors');
     expect(onScreen('ready')).toBe(true);
@@ -5041,6 +5309,7 @@ describe('company onboarding step', () => {
       ],
       connectorCount: 0,
     });
+    await finishCompanyPull();
     await flushUntil(() => connectorRows().length >= 2);
 
     expect(connectorRows().map((row) => row.action)).toEqual(['entered', 'skipped']);

@@ -413,6 +413,53 @@ pub fn migrate_retired_hq_work_handoff(path: &Path) -> Result<bool, String> {
     remove_menubar_keys(path, &[RETIRED_HQ_WORK_HANDOFF_KEY])
 }
 
+/// menubar.json key holding whether the signed-in account was new or returning
+/// when this Mac's setup looked it up (US-023). Only the kind and the time are
+/// kept, never the email; sign-out removes both.
+pub const ACCOUNT_KIND_KEY: &str = "accountKind";
+/// menubar.json key holding when [`ACCOUNT_KIND_KEY`] was written (RFC 3339).
+pub const ACCOUNT_KIND_AT_KEY: &str = "accountKindAt";
+
+/// The account kinds setup records. Anything else is refused on write and
+/// ignored on read.
+fn known_account_kind(kind: &str) -> Option<&'static str> {
+    match kind.trim() {
+        "returning" => Some("returning"),
+        "new" => Some("new"),
+        _ => None,
+    }
+}
+
+/// Remember the signed-in account's kind for this Mac.
+pub fn write_account_kind(path: &Path, kind: &str, at: &str) -> Result<(), String> {
+    let kind = known_account_kind(kind).ok_or_else(|| "Unknown account kind".to_string())?;
+    merge_menubar_flags(
+        path,
+        &[
+            (ACCOUNT_KIND_KEY, Value::String(kind.to_string())),
+            (ACCOUNT_KIND_AT_KEY, Value::String(at.to_string())),
+        ],
+    )
+}
+
+/// The remembered account kind, or None when absent or not one setup writes.
+pub fn read_account_kind(path: &Path) -> Option<&'static str> {
+    account_kind_in(&read_menubar_obj(path))
+}
+
+/// [`read_account_kind`] for a menubar object the caller already read.
+pub fn account_kind_in(menubar: &Map<String, Value>) -> Option<&'static str> {
+    match menubar.get(ACCOUNT_KIND_KEY) {
+        Some(Value::String(kind)) => known_account_kind(kind),
+        _ => None,
+    }
+}
+
+/// Forget the remembered account kind (sign-out). Idempotent.
+pub fn clear_account_kind(path: &Path) -> Result<bool, String> {
+    remove_menubar_keys(path, &[ACCOUNT_KIND_KEY, ACCOUNT_KIND_AT_KEY])
+}
+
 /// A telemetry consent answer we can PROVE the user gave.
 ///
 /// Deliberately not just `telemetryEnabled`. That key is also a settings field:
@@ -1201,5 +1248,67 @@ mod install_attempt_id_tests {
             read_menubar_obj(&path).get(INSTALL_ATTEMPT_ID_KEY),
             Some(&json!("minted-once"))
         );
+    }
+}
+
+#[cfg(test)]
+mod account_kind_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn temp_menubar(contents: Option<&str>) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("menubar.json");
+        if let Some(body) = contents {
+            fs::write(&path, body).expect("write");
+        }
+        (dir, path)
+    }
+
+    #[test]
+    fn stores_only_the_kind_and_time_and_keeps_other_settings() {
+        let (_dir, path) = temp_menubar(Some(r#"{"realtimeSync":false}"#));
+        write_account_kind(&path, "returning", "2026-10-19T10:00:00Z").expect("write");
+        let stored = read_menubar_obj(&path);
+        assert_eq!(stored.get(ACCOUNT_KIND_KEY), Some(&json!("returning")));
+        assert_eq!(stored.get(ACCOUNT_KIND_AT_KEY), Some(&json!("2026-10-19T10:00:00Z")));
+        assert_eq!(stored.get("realtimeSync"), Some(&json!(false)));
+        assert_eq!(stored.len(), 3, "no email or other account detail is stored");
+        assert_eq!(read_account_kind(&path), Some("returning"));
+    }
+
+    #[test]
+    fn refuses_an_unknown_kind() {
+        let (_dir, path) = temp_menubar(None);
+        assert!(write_account_kind(&path, "lookup_failed", "2026-10-19T10:00:00Z").is_err());
+        assert_eq!(read_account_kind(&path), None);
+    }
+
+    #[test]
+    fn ignores_an_unknown_stored_kind() {
+        let (_dir, path) = temp_menubar(Some(r#"{"accountKind":"someone@example.com"}"#));
+        assert_eq!(read_account_kind(&path), None);
+    }
+
+    #[test]
+    fn clear_removes_both_keys_and_is_idempotent() {
+        let (_dir, path) = temp_menubar(Some(
+            r#"{"accountKind":"new","accountKindAt":"2026-10-19T10:00:00Z","dockIcon":true}"#,
+        ));
+        assert!(clear_account_kind(&path).expect("clear"));
+        let stored = read_menubar_obj(&path);
+        assert!(stored.get(ACCOUNT_KIND_KEY).is_none());
+        assert!(stored.get(ACCOUNT_KIND_AT_KEY).is_none());
+        assert_eq!(stored.get("dockIcon"), Some(&json!(true)));
+        assert!(!clear_account_kind(&path).expect("clear again"));
+    }
+
+    #[test]
+    fn reads_the_kind_from_an_object_already_read() {
+        let returning = json!({"accountKind": "returning"});
+        assert_eq!(account_kind_in(returning.as_object().unwrap()), Some("returning"));
+        let unknown = json!({"accountKind": 7});
+        assert_eq!(account_kind_in(unknown.as_object().unwrap()), None);
+        assert_eq!(account_kind_in(&Map::new()), None);
     }
 }

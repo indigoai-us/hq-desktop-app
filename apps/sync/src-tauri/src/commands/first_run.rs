@@ -292,13 +292,15 @@ const FIRST_RUN_HINT_FLAG_TIMEOUT: std::time::Duration = std::time::Duration::fr
 /// The handoff hint queued as the desktop window's pending route, so the shell
 /// knows on its first frame whether it owes the first-run takeover instead of
 /// waiting up to 2 s for its own setup-status and flag reads. `None` flags are
-/// unknown (sent as `null`).
+/// unknown (sent as `null`). `account_kind` is the kind setup recorded at
+/// sign-in (US-023), `null` when none was recorded.
 #[cfg_attr(target_os = "windows", allow(dead_code))]
 pub fn first_run_handoff_hint(
     visual_first_run: Option<bool>,
     found_apps: Option<bool>,
     welcome_setup_owed: bool,
     welcome_tour_shown: bool,
+    account_kind: Option<&str>,
 ) -> String {
     let payload = serde_json::json!({
         "route": Value::Null,
@@ -308,6 +310,7 @@ pub fn first_run_handoff_hint(
         },
         "welcomeSetupOwed": welcome_setup_owed,
         "welcomeTourShown": welcome_tour_shown,
+        "accountKind": account_kind,
     });
     format!("{FIRST_RUN_HANDOFF_PREFIX}{payload}")
 }
@@ -338,6 +341,7 @@ async fn first_run_handoff_hint_now() -> String {
         found_apps,
         status.welcome_setup_owed,
         status.welcome_tour_shown,
+        status.account_kind,
     )
 }
 
@@ -480,6 +484,32 @@ pub fn mark_auto_sync_notice_shown() -> Result<(), String> {
             ("firstRunCompleted", Value::Bool(true)),
         ],
     )
+}
+
+/// Remember whether the signed-in account was new or returning when setup
+/// looked it up (US-023). Only `new` and `returning` are stored, with the time;
+/// the email is never written. `sign_out` forgets it.
+#[tauri::command]
+pub fn set_account_kind(kind: String) -> Result<(), String> {
+    let path = paths::menubar_json_path()?;
+    hq_desktop_core::first_run::write_account_kind(&path, &kind, &chrono::Utc::now().to_rfc3339())
+}
+
+/// The remembered account kind (`new` or `returning`), or None.
+#[tauri::command]
+pub fn get_account_kind() -> Option<String> {
+    let path = paths::menubar_json_path().ok()?;
+    hq_desktop_core::first_run::read_account_kind(&path).map(str::to_string)
+}
+
+/// Forget the remembered account kind. Best effort: sign-out must not fail on it.
+pub fn forget_account_kind() {
+    let Ok(path) = paths::menubar_json_path() else {
+        return;
+    };
+    if let Err(error) = hq_desktop_core::first_run::clear_account_kind(&path) {
+        log("first-run", &format!("account kind could not be cleared: {error}"));
+    }
 }
 
 #[cfg(test)]
@@ -681,7 +711,7 @@ mod first_run_handoff_hint_tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn failed_flag_read_stays_unknown_in_the_handoff_payload() {
-        let hint = first_run_handoff_hint(handoff_flag_value(Err(())), Some(false), true, false);
+        let hint = first_run_handoff_hint(handoff_flag_value(Err(())), Some(false), true, false, None);
         assert_eq!(payload(&hint)["flags"][FIRST_RUN_HINT_FLAGS[0]], Value::Null);
         assert_eq!(handoff_flag_value(Ok(Some(false))), Some(false));
         assert_eq!(handoff_flag_value(Ok(Some(true))), Some(true));
@@ -697,7 +727,7 @@ mod first_run_handoff_hint_tests {
 
     #[test]
     fn hint_carries_route_flags_and_setup_status() {
-        let hint = first_run_handoff_hint(Some(true), Some(false), true, false);
+        let hint = first_run_handoff_hint(Some(true), Some(false), true, false, Some("returning"));
         assert_eq!(
             payload(&hint),
             serde_json::json!({
@@ -708,18 +738,20 @@ mod first_run_handoff_hint_tests {
                 },
                 "welcomeSetupOwed": true,
                 "welcomeTourShown": false,
+                "accountKind": "returning",
             })
         );
     }
 
     #[test]
     fn unanswered_flags_go_out_as_null() {
-        let hint = first_run_handoff_hint(None, None, false, true);
+        let hint = first_run_handoff_hint(None, None, false, true, None);
         let value = payload(&hint);
         assert_eq!(value["flags"]["desktop.visual-first-run"], Value::Null);
         assert_eq!(value["flags"]["desktop.first-run-found-apps-v1"], Value::Null);
         assert_eq!(value["welcomeSetupOwed"], Value::Bool(false));
         assert_eq!(value["welcomeTourShown"], Value::Bool(true));
+        assert_eq!(value["accountKind"], Value::Null);
     }
 
     #[cfg(not(target_os = "windows"))]

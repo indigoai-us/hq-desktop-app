@@ -35,8 +35,16 @@
     onshown?: (runId: string | null) => void;
     /** Opens the coding tool chosen at Continue. Null when this brief has none. */
     openTool?: BriefOpenToolAction | null;
+    /**
+     * The first view's input from the shell (US-023). `returning` is true for
+     * an account setup recognised as returning: the welcome brief greets the
+     * person as returning, names their companies and skips the set-up-company
+     * and name-assistant prompts. The welcome brief reads it; this host only
+     * carries it.
+     */
+    firstView?: { returning: boolean } | null;
   }
-  let { adapter, companies, onlaunch, creator = null, run = null, onopenthread, onopenmeetings, onconnectcompany, actions = null, onshown, openTool = null }: Props = $props();
+  let { adapter, companies, onlaunch, creator = null, run = null, onopenthread, onopenmeetings, onconnectcompany, actions = null, onshown, openTool = null, firstView = null }: Props = $props();
 
   let mod = $state<BriefModule | null>(null);
   let failed = $state(false);
@@ -57,7 +65,7 @@
   });
 </script>
 
-<div class="host" data-testid="brief-host">
+<div class="host" data-testid="brief-host" data-first-view-returning={firstView?.returning ? "true" : undefined}>
   {#if openTool}
     <div class="open">
       <BriefOpenTool label={openTool.label} detail={openTool.detail} busy={openTool.busy} error={openTool.error} onopen={openTool.onopen} />

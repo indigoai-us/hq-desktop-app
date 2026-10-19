@@ -37,6 +37,7 @@ import {
 } from './onboarding-setup';
 import type { WizardStepId } from './onboarding-wizard';
 import type { CompanyNamePrefillStatus } from './company-name-prefill';
+import type { CompanyPullErrorKind } from './company-pull';
 import {
   FIRST_LAUNCH_SIGNIN_REACH_OUTCOMES,
   normalizeFirstLaunchSignInReachOutcome,
@@ -114,7 +115,29 @@ export interface OnboardingStepProperties {
   provisioningStep?: string;
   /** Missing-bucket self-heal during the first sync. */
   selfHeal?: 'triggered' | 'succeeded' | 'failed';
+  /** Account kind read from /membership/me after sign-in (US-023). */
+  accountKind?: AccountKindTelemetry;
+  /** Which server signal made the account returning. */
+  accountSignal?: AccountSignalTelemetry;
+  /** Outcome of pulling one company folder onto this Mac (with companyUid and attemptCount). */
+  companyPull?: 'done' | 'failed';
+  /** Bounded reason a company pull failed. */
+  companyPullError?: CompanyPullErrorKind;
 }
+
+export const ACCOUNT_KIND_VALUES = ['returning', 'new', 'lookup_failed'] as const;
+export type AccountKindTelemetry = (typeof ACCOUNT_KIND_VALUES)[number];
+export const ACCOUNT_SIGNAL_VALUES = ['active_membership', 'company_history'] as const;
+export type AccountSignalTelemetry = (typeof ACCOUNT_SIGNAL_VALUES)[number];
+const COMPANY_PULL_VALUES = ['done', 'failed'] as const;
+const COMPANY_PULL_ERROR_VALUES: readonly CompanyPullErrorKind[] = [
+  'start_failed',
+  'busy',
+  'sync_error',
+  'aborted',
+  'timeout',
+  'provisioning',
+];
 
 export const COMPANY_ROUTE_DECISIONS = [
   'resume_setup',
@@ -503,9 +526,37 @@ export function desktopPropertiesForOnboardingStep(
     properties.selfHeal = event.properties.selfHeal;
   }
   if (
+    event.properties.accountKind !== undefined &&
+    (ACCOUNT_KIND_VALUES as readonly string[]).includes(event.properties.accountKind)
+  ) {
+    properties.accountKind = event.properties.accountKind;
+  }
+  if (
+    event.properties.accountSignal !== undefined &&
+    (ACCOUNT_SIGNAL_VALUES as readonly string[]).includes(event.properties.accountSignal)
+  ) {
+    properties.accountSignal = event.properties.accountSignal;
+  }
+  const companyPull =
+    event.properties.companyPull !== undefined &&
+    (COMPANY_PULL_VALUES as readonly string[]).includes(event.properties.companyPull)
+      ? event.properties.companyPull
+      : undefined;
+  if (companyPull !== undefined) {
+    properties.companyPull = companyPull;
+    if (
+      companyPull === 'failed' &&
+      event.properties.companyPullError !== undefined &&
+      COMPANY_PULL_ERROR_VALUES.includes(event.properties.companyPullError)
+    ) {
+      properties.companyPullError = event.properties.companyPullError;
+    }
+  }
+  if (
     (event.properties.step === 'invite-teammate' ||
       event.properties.step === 'setup' ||
-      event.properties.selfHeal !== undefined) &&
+      event.properties.selfHeal !== undefined ||
+      companyPull !== undefined) &&
     typeof event.properties.companyUid === 'string' &&
     event.properties.companyUid.startsWith('cmp_')
   ) {

@@ -36,6 +36,8 @@ export interface MembershipCompany {
   /** Explicit server provisioning status when present, else null (unknown). */
   provisioning: 'pending' | 'ready' | 'failed' | null;
   provisioningFailedStep: string | null;
+  /** Epoch ms the person joined (`acceptedAt`, else `createdAt`), when the row says. */
+  lastActiveAt?: number;
 }
 
 /** A company the website visitor made while signed in as a different person. */
@@ -88,9 +90,16 @@ export function activeMembershipCompanies(payload: unknown): MembershipCompany[]
       bucketName: str(row, 'bucketName'),
       provisioning: provisioningField(row),
       provisioningFailedStep: str(row, 'provisioningFailedStep', 'provisioningStep'),
+      ...joinedAtField(row),
     });
   }
   return out;
+}
+
+function joinedAtField(row: Record<string, unknown>): { lastActiveAt?: number } {
+  const raw = str(row, 'acceptedAt', 'createdAt');
+  const at = raw === null ? Number.NaN : Date.parse(raw);
+  return Number.isFinite(at) ? { lastActiveAt: at } : {};
 }
 
 function provisioningField(row: Record<string, unknown>): MembershipCompany['provisioning'] {
@@ -309,6 +318,73 @@ export function decideCompanyRoute(input: {
   }
   if (expired.length > 0) return { kind: 'join', decision: 'invite_expired', invites: expired, signedInEmail };
   return { kind: 'create', decision: 'create' };
+}
+
+/**
+ * Companies the account was ever a member of (active or revoked), from
+ * `GET /membership/me?includeHistoricalCompanyIdentities=true`. Null when the
+ * payload does not carry the field, so "no history" is never guessed.
+ */
+export function historicalCompanyUids(payload: unknown): string[] | null {
+  if (!isRecord(payload)) return null;
+  const history = payload.historicalCompanyIdentities;
+  if (!isRecord(history)) return null;
+  return Object.keys(history).filter((uid) => uid.startsWith('cmp_'));
+}
+
+/**
+ * The company a returning account opens on: a paid one first, then the one
+ * joined most recently, then the first in server order.
+ */
+export function pickPrimaryCompany(companies: readonly MembershipCompany[]): MembershipCompany | null {
+  if (companies.length === 0) return null;
+  const pool = companies.some((company) => company.paid)
+    ? companies.filter((company) => company.paid)
+    : companies;
+  let best = pool[0]!;
+  for (const company of pool) {
+    if ((company.lastActiveAt ?? -Infinity) > (best.lastActiveAt ?? -Infinity)) best = company;
+  }
+  return best;
+}
+
+/**
+ * Why setup decided an account is returning:
+ * - `active_membership`: at least one active company membership.
+ * - `company_history`: no active membership now, but the server lists a
+ *   company the account was a member of before (a revoked membership).
+ */
+export type ReturningSignal = 'active_membership' | 'company_history';
+
+export type AccountKind =
+  | {
+      kind: 'returning';
+      signal: ReturningSignal;
+      companies: MembershipCompany[];
+      primary: MembershipCompany | null;
+    }
+  | { kind: 'new' }
+  | { kind: 'lookup_failed' };
+
+/**
+ * New or returning, from one `/membership/me` read made with
+ * `includeHistoricalCompanyIdentities=true`.
+ *
+ * The server has no "finished first run" record, so a returning account with
+ * no company today is recognised only through its company history. A payload
+ * that does not say (no memberships array, or no history field when there is
+ * no active membership) is a failed lookup, never a new account.
+ */
+export function decideAccountKind(payload: unknown): AccountKind {
+  const companies = activeMembershipCompanies(payload);
+  if (companies === null) return { kind: 'lookup_failed' };
+  if (companies.length > 0) {
+    return { kind: 'returning', signal: 'active_membership', companies, primary: pickPrimaryCompany(companies) };
+  }
+  const history = historicalCompanyUids(payload);
+  if (history === null) return { kind: 'lookup_failed' };
+  if (history.length > 0) return { kind: 'returning', signal: 'company_history', companies: [], primary: null };
+  return { kind: 'new' };
 }
 
 export type ProvisioningState =

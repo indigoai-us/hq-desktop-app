@@ -6,6 +6,7 @@
   let {
     onaction,
     ready = true,
+    returning = false,
   }: {
     onaction: (action: HeadsUpAction) => void | Promise<void>;
     /**
@@ -13,6 +14,8 @@
      * The card stays transparent until then, so the screen does not flash.
      */
     ready?: boolean;
+    /** This Mac remembers a returning account (US-023): the title says welcome back. */
+    returning?: boolean;
   } = $props();
 
   let busy = $state(false);
@@ -45,7 +48,7 @@
     <svg class="mark" viewBox="0 0 280 161" aria-hidden="true" data-tauri-drag-region>
       <path d={HQ_MARK_H} /><path fill-rule="evenodd" d={HQ_MARK_Q} />
     </svg>
-    <h1 class="h title" data-tauri-drag-region>{HEADS_UP_COPY.title}</h1>
+    <h1 class="h title" data-tauri-drag-region>{returning ? HEADS_UP_COPY.returningTitle : HEADS_UP_COPY.title}</h1>
     <ul class="body points">
       {#each HEADS_UP_COPY.points as point (point)}
         <li>{point}</li>

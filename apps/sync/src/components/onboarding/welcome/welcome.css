@@ -1516,6 +1516,29 @@
 .hq-welcome .completion-mark {
   display: inline-flex;
 }
+/* A returning account's companies, pulled one at a time (US-023). */
+.hq-welcome .company-pull-label {
+  color: #fff;
+}
+.hq-welcome .company-pull-rows {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.hq-welcome .company-pull-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.hq-welcome .company-pull-name {
+  color: #fff;
+}
+.hq-welcome .company-pull-state {
+  margin-left: auto;
+}
 
 /* The ready screen's nav row. It holds no buttons (the screen finishes by
    itself), but the ready engine measures it, so it stays in the layout. */

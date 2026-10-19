@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { FIRST_RUN_HANDOFF_PREFIX, parseFirstRunHandoffHint } from "./first-run-handoff.js";
 
-// The exact string `first_run_handoff_hint(Some(true), None, true, false)`
+// The exact string `first_run_handoff_hint(Some(true), None, true, false, None)`
 // produces in `apps/sync/src-tauri/src/commands/first_run.rs`.
 const RUST_HINT =
-  'first-run-handoff:{"flags":{"desktop.first-run-found-apps-v1":null,"desktop.visual-first-run":true},"route":null,"welcomeSetupOwed":true,"welcomeTourShown":false}';
+  'first-run-handoff:{"accountKind":null,"flags":{"desktop.first-run-found-apps-v1":null,"desktop.visual-first-run":true},"route":null,"welcomeSetupOwed":true,"welcomeTourShown":false}';
 
 describe("parseFirstRunHandoffHint", () => {
   it("reads the hint Rust queues on the pending route", () => {
@@ -15,8 +15,22 @@ describe("parseFirstRunHandoffHint", () => {
         flags: { visualFirstRun: true, foundApps: null },
         welcomeSetupOwed: true,
         welcomeTourShown: false,
+        accountKind: null,
       },
     });
+  });
+
+  it("carries a recorded returning account kind and drops anything else", () => {
+    const returning = parseFirstRunHandoffHint(
+      `${FIRST_RUN_HANDOFF_PREFIX}{"flags":{},"welcomeSetupOwed":true,"welcomeTourShown":false,"accountKind":"returning"}`,
+    );
+    expect(returning.hint?.accountKind).toBe("returning");
+    const older = parseFirstRunHandoffHint(`${FIRST_RUN_HANDOFF_PREFIX}{"flags":{},"welcomeSetupOwed":true,"welcomeTourShown":false}`);
+    expect(older.hint?.accountKind).toBeNull();
+    const unknown = parseFirstRunHandoffHint(
+      `${FIRST_RUN_HANDOFF_PREFIX}{"flags":{},"welcomeSetupOwed":true,"welcomeTourShown":false,"accountKind":"someone@example.com"}`,
+    );
+    expect(unknown.hint?.accountKind).toBeNull();
   });
 
   it("keeps a plain pending route as a route with no hint", () => {

@@ -7,6 +7,7 @@ import {
   HEADS_UP_REMIND_AT_KEY,
   HEADS_UP_REMINDER_DELAY_MS,
   MANUAL_SETUP_URL,
+  remembersReturningAccount,
   runHeadsUpAction,
   startSessionScan,
   type HeadsUpActionDeps,
@@ -191,5 +192,34 @@ describe('heads-up copy (source contract)', () => {
     expect(component).toContain('HEADS_UP_COPY.title');
     expect(component).toContain('HEADS_UP_COPY.points');
     expect(component).not.toContain(HEADS_UP_COPY.title);
+  });
+
+  it('says welcome back only when this Mac remembers a returning account (US-023)', () => {
+    expect(HEADS_UP_COPY.returningTitle).toBe('Welcome back. Setting HQ up on this Mac.');
+    expect(HEADS_UP_COPY.returningTitle).not.toMatch(/[–—]/);
+    expect(component).toContain('returning ? HEADS_UP_COPY.returningTitle : HEADS_UP_COPY.title');
+    expect(component).toMatch(/returning = false,/);
+  });
+});
+
+describe('remembersReturningAccount (US-023)', () => {
+  it('is true only when the remembered kind is returning', async () => {
+    const returning = vi.fn(async () => 'returning');
+    await expect(remembersReturningAccount(returning as never)).resolves.toBe(true);
+    expect(returning).toHaveBeenCalledWith('get_account_kind');
+    await expect(remembersReturningAccount(vi.fn(async () => 'new') as never)).resolves.toBe(false);
+  });
+
+  it('keeps the first-ever title when nothing is remembered', async () => {
+    await expect(remembersReturningAccount(vi.fn(async () => null) as never)).resolves.toBe(false);
+  });
+
+  it('keeps the first-ever title when the read fails or there is no host', async () => {
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(
+      remembersReturningAccount(vi.fn(async () => Promise.reject(new Error('missing'))) as never),
+    ).resolves.toBe(false);
+    expect(warned).toHaveBeenCalled();
+    await expect(remembersReturningAccount(undefined)).resolves.toBe(false);
   });
 });

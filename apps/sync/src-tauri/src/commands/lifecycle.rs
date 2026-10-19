@@ -662,6 +662,10 @@ pub struct SetupStatus {
     /// The desktop window's first-run guided tour was already shown here.
     /// See `hq_desktop_core::lifecycle::welcome_tour_shown`.
     pub welcome_tour_shown: bool,
+    /// The account kind setup recorded at sign-in ("returning" or "new"), or
+    /// None before setup recorded one or after sign-out. Never the email.
+    /// See `hq_desktop_core::first_run::account_kind_in`.
+    pub account_kind: Option<&'static str>,
 }
 
 #[tauri::command]
@@ -696,6 +700,7 @@ pub fn get_setup_status() -> SetupStatus {
         hq_folder_path: hq_root.to_string_lossy().to_string(),
         welcome_setup_owed: welcome_setup_owed_here(settings_unavailable, &menubar, root_valid),
         welcome_tour_shown: hq_desktop_core::lifecycle::welcome_tour_shown(&menubar),
+        account_kind: hq_desktop_core::first_run::account_kind_in(&menubar),
     }
 }
 
@@ -1054,6 +1059,28 @@ mod tests {
     /// A fresh menubar on a valid root: a person is owed the welcome setup.
     fn fresh_menubar() -> Map<String, Value> {
         Map::new()
+    }
+
+    /// US-023: the desktop window reads the recorded account kind as
+    /// `accountKind`, null when setup recorded none.
+    #[test]
+    fn setup_status_carries_the_recorded_account_kind() {
+        let status = |menubar: &Map<String, Value>| {
+            serde_json::to_value(SetupStatus {
+                hq_root_valid: true,
+                configured: true,
+                hq_folder_path: "/tmp/hq".to_string(),
+                welcome_setup_owed: true,
+                welcome_tour_shown: false,
+                account_kind: hq_desktop_core::first_run::account_kind_in(menubar),
+            })
+            .expect("serialize")
+        };
+        let returning = serde_json::json!({ "accountKind": "returning", "accountKindAt": "2026-10-19T10:00:00Z" });
+        assert_eq!(status(returning.as_object().unwrap())["accountKind"], "returning");
+        assert_eq!(status(&fresh_menubar())["accountKind"], Value::Null);
+        let email = serde_json::json!({ "accountKind": "someone@example.com" });
+        assert_eq!(status(email.as_object().unwrap())["accountKind"], Value::Null);
     }
 
     #[test]

@@ -84,6 +84,12 @@ function stubInvoke(overrides: Record<string, Handler> = {}): void {
         return { present: false, count: 0, outcome: 'none', inspectedSources: 'unknown' };
       case 'ensure_person_entity':
         return true;
+      case 'hq_pro_fetch':
+        // A brand-new account: no memberships and no past companies (US-023).
+        if (typeof args?.url === 'string' && args.url.startsWith('/membership/me')) {
+          return { status: 200, body: JSON.stringify({ memberships: [], historicalCompanyIdentities: {} }) };
+        }
+        return undefined;
       default:
         return undefined;
     }
@@ -795,14 +801,15 @@ describe('welcome flow: the install runs in the background', () => {
   });
 
   // (c) A post-ready step that is still to come holds the finish. The
-  // blocking phase finishes while the post-setup lookup (which names the company the
+  // blocking phase finishes while the account lookup (which names the company the
   // connector import offers itself for) is still out, so the ready screen is
   // on show with the install done and the post-ready steps not yet known.
   it('does not finish while a post-ready step is pending, and finishes after it hands back', async () => {
-    const activeCompany = deferred<string | null>();
+    const membership = deferred<unknown>();
     const connectors = deferred<unknown>();
     stubInvoke({
-      get_desktop_active_company: () => activeCompany.promise,
+      hq_pro_fetch: (args) =>
+        typeof args?.url === 'string' && args.url.startsWith('/membership/me') ? membership.promise : undefined,
       detect_claude_desktop_connectors: () => connectors.promise,
     });
     const onfinish = mountAt(2);
@@ -810,8 +817,8 @@ describe('welcome flow: the install runs in the background', () => {
     byId('welcome-skip')!.click();
     await flushUntil(() => scene() === 'ready', 'the ready screen');
     await flushUntil(
-      () => commands().includes('get_desktop_active_company'),
-      'the post-setup lookup',
+      () => calls.some((call) => call.command === 'hq_pro_fetch' && String(call.args?.url).startsWith('/membership/me')),
+      'the account lookup',
     );
     await new Promise((resolve) => setTimeout(resolve, 50));
     await flush();
@@ -820,9 +827,16 @@ describe('welcome flow: the install runs in the background', () => {
     expect(onfinish).not.toHaveBeenCalled();
     expect(commands()).not.toContain('open_desktop_alt_window');
 
-    // The lookup names a company: the connector import opens and holds the
-    // finish while it looks.
-    activeCompany.resolve('placeholder-co');
+    // The lookup names a company the person is already in (one with no local
+    // folder name, so there is nothing to pull): the connector import opens
+    // and holds the finish while it looks.
+    membership.resolve({
+      status: 200,
+      body: JSON.stringify({
+        memberships: [{ companyUid: 'cmp_placeholder', companyName: 'Placeholder Co', role: 'member', status: 'active' }],
+        historicalCompanyIdentities: {},
+      }),
+    });
     await flushUntil(
       () => commands().includes('detect_claude_desktop_connectors'),
       'the connector import',

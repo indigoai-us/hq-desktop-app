@@ -30,6 +30,8 @@ export const HEADS_UP_REMIND_AT_KEY = 'hq.firstRun.headsUpRemindAt';
 
 export const HEADS_UP_COPY = {
   title: 'You are about to set up HQ',
+  /** US-023: the title when this Mac remembers a returning account. */
+  returningTitle: 'Welcome back. Setting HQ up on this Mac.',
   points: [
     'Setup takes a few minutes. HQ installs the tools it needs and gets your workspace ready.',
     'You will sign in with a Google or Microsoft account. If you were invited, sign in with the email the invite was sent to.',
@@ -41,6 +43,22 @@ export const HEADS_UP_COPY = {
   reminderTitle: 'Ready to set up HQ?',
   reminderBody: 'Setup takes a few minutes. Open HQ from the menu bar to start.',
 } as const;
+
+/**
+ * Whether this Mac remembers a returning account from an earlier setup
+ * (US-023). The heads-up shows before sign-in, so this is the only signal it
+ * has: a first-ever launch has nothing remembered and keeps today's title.
+ * Any failure counts as not remembered.
+ */
+export async function remembersReturningAccount(invoke: Invoke | undefined): Promise<boolean> {
+  if (typeof invoke !== 'function') return false;
+  try {
+    return (await invoke<unknown>('get_account_kind')) === 'returning';
+  } catch (error) {
+    console.warn('heads-up: could not read the remembered account kind', error);
+    return false;
+  }
+}
 
 export type Invoke = <T = unknown>(command: string, args?: Record<string, unknown>) => Promise<T>;
 

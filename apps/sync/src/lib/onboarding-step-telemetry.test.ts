@@ -1041,6 +1041,67 @@ describe('invite-teammate failure telemetry', () => {
     expect(JSON.stringify(properties)).not.toContain('example.com');
   });
 
+  it('carries account kind and per-company pull outcomes, bounded', () => {
+    const base = {
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-19T10:00:00.000Z',
+    };
+    const kind = desktopPropertiesForOnboardingStep({
+      ...base,
+      properties: {
+        step: 'setup',
+        action: 'completed',
+        accountKind: 'returning',
+        accountSignal: 'company_history',
+        existingCompanies: 0,
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(kind).toMatchObject({ accountKind: 'returning', accountSignal: 'company_history', existingCompanies: 0 });
+
+    const pull = desktopPropertiesForOnboardingStep({
+      ...base,
+      properties: {
+        step: 'ready',
+        action: 'failed',
+        companyPull: 'failed',
+        companyPullError: 'provisioning',
+        companyUid: 'cmp_acme',
+        attemptCount: 2,
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(pull).toMatchObject({
+      companyPull: 'failed',
+      companyPullError: 'provisioning',
+      companyUid: 'cmp_acme',
+      attemptCount: 2,
+    });
+
+    const odd = desktopPropertiesForOnboardingStep({
+      ...base,
+      properties: {
+        step: 'ready',
+        action: 'completed',
+        accountKind: 'jacob@example.com' as never,
+        accountSignal: 'guess' as never,
+        companyPull: 'done',
+        companyPullError: 'sync_error',
+        companyUid: 'acme-slug',
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(odd.accountKind).toBeUndefined();
+    expect(odd.accountSignal).toBeUndefined();
+    expect(odd.companyPull).toBe('done');
+    expect(odd.companyPullError).toBeUndefined();
+    expect(odd.companyUid).toBeUndefined();
+    expect(JSON.stringify(odd)).not.toContain('example.com');
+  });
+
   it('carries the company route decision, provisioning step and self-heal, bounded', () => {
     const route = desktopPropertiesForOnboardingStep({
       sessionId: '11111111-1111-4111-8111-111111111111',

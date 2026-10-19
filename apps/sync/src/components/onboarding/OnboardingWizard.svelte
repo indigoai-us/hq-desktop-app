@@ -176,15 +176,29 @@
   import ConnectorImportStep from './ConnectorImportStep.svelte';
   import {
     companyUidFromMissingBucket,
+    decideCompanyRoute,
     isMissingBucketMessage,
+    summarizeRoute,
     type CompanyRouteSummary,
   } from '../../lib/onboarding-company-route';
   import {
+    MEMBERSHIP_ME_WITH_HISTORY_URL,
     requestCompanyProvisioning,
+    resolveAccountKind,
     resolveFirstRunCompanyRoute,
     waitForProvisioning,
     type FirstRunCompanyPath,
   } from '../../lib/first-run-company';
+  import type { AccountKind } from '../../lib/onboarding-company-route';
+  import {
+    initialPullRows,
+    pullFailures,
+    pullSettled,
+    pullSucceeded,
+    runCompanyPull,
+    type CompanyPullRow,
+    type CompanyPullRunResult,
+  } from '../../lib/company-pull';
   import {
     createSyncPlatformAdapter,
     getHqAnywherePersonSetting,
@@ -1121,16 +1135,20 @@
         });
     }
 
-    subscribeTauriEvent<{ errors?: unknown }>(
-      'sync:all-complete',
-      handleFirstFolderSyncComplete,
-    );
+    subscribeTauriEvent<{ errors?: unknown }>('sync:all-complete', (payload) => {
+      handleCompanyPullAllComplete(payload);
+      handleFirstFolderSyncComplete(payload);
+    });
     subscribeTauriEvent<{ aborted?: unknown }>('sync:complete', (payload) => {
+      if (companyPullWaiter && payload.aborted === true) companyPullWaiter.aborted = true;
       if (firstFolderSyncAwaitingCompletion && payload.aborted === true) {
         firstFolderSyncObservedFailure = true;
       }
     });
     subscribeTauriEvent<{ message?: unknown }>('sync:error', (payload) => {
+      if (companyPullWaiter && typeof payload?.message === 'string') {
+        companyPullWaiter.errors.push({ message: payload.message });
+      }
       if (!firstFolderSyncAwaitingCompletion) return;
       const uid = companyUidFromMissingBucket(payload?.message);
       if (uid) firstFolderMissingBucketUids.add(uid);
@@ -1687,7 +1705,10 @@
   let membershipMeRead: Promise<Record<string, unknown>> | null = null;
   function readMembershipMe(): Promise<Record<string, unknown>> {
     if (!membershipMeRead) {
-      membershipMeRead = onboardingHqProJson('GET', '/membership/me');
+      // US-023: the history flag adds the account's past companies, which is
+      // how a returning account with no active company is told apart from a
+      // brand-new one. The membership list is the same either way.
+      membershipMeRead = onboardingHqProJson('GET', MEMBERSHIP_ME_WITH_HISTORY_URL);
       // A failed read is not cached; the next caller asks again.
       membershipMeRead.catch(() => (membershipMeRead = null));
     }
@@ -1851,6 +1872,7 @@
     connectorImportCompany = null;
     // The cached membership read belongs to the previous account as well.
     membershipMeRead = null;
+    resetAccountKind();
     await selectCompany(null, true);
     existingSessionEmail = null;
     existingSessionOutpost = null;
@@ -1867,7 +1889,9 @@
     url: string,
     body?: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    if (method === 'GET' && url === '/membership/me') return readMembershipMe();
+    if (method === 'GET' && (url === '/membership/me' || url === MEMBERSHIP_ME_WITH_HISTORY_URL)) {
+      return readMembershipMe();
+    }
     return onboardingHqProJson(method, url, body);
   }
 
@@ -3218,6 +3242,253 @@
     }
   }
 
+  /**
+   * US-023: whether the signed-in account is new or returning, read once from
+   * `/membership/me` (with company history) after sign-in. A returning
+   * account skips the new-person steps and has its companies pulled onto
+   * this Mac before Ready. A lookup that keeps failing after the person
+   * entity exists shows an error with Try again on the Ready screen; it never
+   * falls back to the new-person steps.
+   */
+  let accountKind = $state<AccountKind | null>(null);
+  let accountLookupFailed = $state(false);
+  let accountLookupRetrying = $state(false);
+  let accountKindResolution: Promise<AccountKind> | null = null;
+  let accountKindGeneration = 0;
+  let accountKindRecorded = false;
+  const returningAccount = $derived(accountKind?.kind === 'returning');
+  const returningCompanyNames = $derived(
+    accountKind?.kind === 'returning' ? listCompanyNames(accountKind.companies.map((company) => company.name)) : '',
+  );
+
+  /** The Ready heading for a returning account, or null for the usual one. */
+  const returningReadyHeading = $derived.by(() => {
+    if (accountKind?.kind !== 'returning' || accountLookupFailed) return null;
+    const pulling = companyPullRows.length > 0 && !companyPullClear;
+    if (pulling && returningCompanyNames) return `Welcome back. Bringing ${returningCompanyNames} to this Mac.`;
+    const here = companyPullRows.filter((row) => row.status === 'done').map((row) => row.name);
+    if (here.length === 0) return 'Welcome back. HQ is ready.';
+    return `Welcome back. ${listCompanyNames(here)} ${here.length === 1 ? 'is' : 'are'} on this Mac.`;
+  });
+
+  function companyPullRowLabel(row: CompanyPullRow): string {
+    if (row.status === 'queued') return 'Waiting';
+    if (row.status === 'pulling') return 'Pulling';
+    if (row.status === 'done') return 'Ready';
+    return `Couldn't pull ${row.name}`;
+  }
+
+  /** "Acme", "Acme and Globex", "Acme, Globex and Initech". */
+  function listCompanyNames(names: readonly string[]): string {
+    const clean = names.map((name) => name.trim()).filter(Boolean);
+    if (clean.length <= 1) return clean[0] ?? '';
+    return `${clean.slice(0, -1).join(', ')} and ${clean[clean.length - 1]}`;
+  }
+
+  function resetAccountKind(): void {
+    accountKindGeneration += 1;
+    accountKind = null;
+    accountLookupFailed = false;
+    accountLookupRetrying = false;
+    accountKindResolution = null;
+    accountKindRecorded = false;
+    companyPullGeneration += 1;
+    companyPullRows = [];
+    companyPullStarted = false;
+    companyPullRunning = false;
+    companyPullContinued = false;
+  }
+
+  /** One shared account-kind lookup; a failed one is forgotten so the next caller asks again. */
+  function ensureAccountKind(): Promise<AccountKind> {
+    if (accountKindResolution) return accountKindResolution;
+    const generation = accountKindGeneration;
+    const resolution = resolveAccountKind({
+      readMembershipMe,
+      invalidateMembershipMeRead: () => {
+        membershipMeRead = null;
+      },
+    }).then((result) => {
+      if (generation !== accountKindGeneration) return result;
+      if (result.kind === 'lookup_failed') {
+        if (accountKindResolution === resolution) accountKindResolution = null;
+        return result;
+      }
+      accountKind = result;
+      accountLookupFailed = false;
+      if (!accountKindRecorded) {
+        accountKindRecorded = true;
+        recordStep(SETUP_STEP_INDEX, 'started', {
+          accountKind: result.kind,
+          ...(result.kind === 'returning' ? { accountSignal: result.signal } : {}),
+        });
+      }
+      void invokeCommand('set_account_kind', { kind: result.kind }).catch((error) => {
+        console.warn('onboarding: account kind could not be remembered', error);
+      });
+      return result;
+    });
+    accountKindResolution = resolution;
+    return resolution;
+  }
+
+  /** Try again on the lookup error: ask the server again, then route as usual. */
+  async function retryAccountLookup(): Promise<void> {
+    if (accountLookupRetrying) return;
+    accountLookupRetrying = true;
+    membershipMeRead = null;
+    accountKindResolution = null;
+    resetCompanyRoute();
+    try {
+      await resolveCompanyStep();
+      if (returningAccount) startReturningCompanyPull();
+    } finally {
+      accountLookupRetrying = false;
+    }
+  }
+
+  /** The returning account's companies, being pulled onto this Mac. */
+  let companyPullRows = $state<CompanyPullRow[]>([]);
+  let companyPullRunning = $state(false);
+  /** The person chose Continue past a failed pull; HQ's auto-pull keeps trying. */
+  let companyPullContinued = $state(false);
+  let companyPullStarted = false;
+  let companyPullGeneration = 0;
+  /** About the native runner's own 10-minute hard timeout, plus a margin. */
+  const COMPANY_PULL_SYNC_TIMEOUT_MS = 11 * 60_000;
+  let companyPullWaiter: {
+    aborted: boolean;
+    errors: Array<{ company?: string; message: string }>;
+    finish: (result: CompanyPullRunResult) => void;
+  } | null = null;
+  const companyPullFailedRows = $derived(pullFailures(companyPullRows));
+  const companyPullSettled = $derived(pullSettled(companyPullRows) && !companyPullRunning);
+  /** Ready may finish: every company is here, or the person chose Continue after a failure. */
+  const companyPullClear = $derived(
+    accountKind?.kind !== 'returning' ||
+      (companyPullRows.length === 0 && !accountKind.companies.some((company) => company.slug)) ||
+      (companyPullRows.length > 0 &&
+        companyPullSettled && (pullSucceeded(companyPullRows) || companyPullContinued)),
+  );
+
+  function syncErrorEntries(errors: unknown): Array<{ company?: string; message: string }> {
+    if (!Array.isArray(errors)) return [];
+    return errors.map((entry) => {
+      if (isRecord(entry)) {
+        return {
+          ...(typeof entry.company === 'string' ? { company: entry.company } : {}),
+          message: typeof entry.message === 'string' ? entry.message : 'sync error',
+        };
+      }
+      return { message: typeof entry === 'string' ? entry : 'sync error' };
+    });
+  }
+
+  /**
+   * Start one scoped sync and resolve with what it reported. The waiter is in
+   * place before the sync starts, so a fast `sync:all-complete` is not missed.
+   */
+  function runCompanyPullSync(slug: string): Promise<CompanyPullRunResult> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const timer = window.setTimeout(() => finish({ errors: [], aborted: false, timedOut: true }), COMPANY_PULL_SYNC_TIMEOUT_MS);
+      const waiter = {
+        aborted: false,
+        errors: [] as Array<{ company?: string; message: string }>,
+        finish: (result: CompanyPullRunResult) => finish(result),
+      };
+      function release(): void {
+        settled = true;
+        window.clearTimeout(timer);
+        if (companyPullWaiter === waiter) companyPullWaiter = null;
+      }
+      function finish(result: CompanyPullRunResult): void {
+        if (settled) return;
+        release();
+        resolve(result);
+      }
+      function fail(error: unknown): void {
+        if (settled) return;
+        release();
+        reject(error);
+      }
+      companyPullWaiter = waiter;
+      onboardingFeatureFlags.sync.startSync(slug).then(
+        (started) => {
+          if (!started.ok) fail(new Error(started.message));
+        },
+        fail,
+      );
+    });
+  }
+
+  function handleCompanyPullAllComplete(payload: unknown): void {
+    const waiter = companyPullWaiter;
+    if (!waiter) return;
+    const result = payload as { errors?: unknown } | null;
+    waiter.finish({
+      errors: [...waiter.errors, ...syncErrorEntries(result?.errors)],
+      aborted: waiter.aborted,
+    });
+  }
+
+  /** Pull the returning account's companies (all of them, or only the ones named on Try again). */
+  async function runReturningCompanyPull(only?: string[]): Promise<void> {
+    if (companyPullRunning) return;
+    const generation = companyPullGeneration;
+    const current = () => mounted && generation === companyPullGeneration;
+    companyPullRunning = true;
+    if (only) companyPullContinued = false;
+    try {
+      await runCompanyPull({
+        rows: companyPullRows,
+        only,
+        deps: {
+          runSync: runCompanyPullSync,
+          provision: async (companyUid) => {
+            const state = await requestCompanyProvisioning(invokeCommand, companyUid);
+            if (state.status !== 'pending') return state;
+            return waitForProvisioning({
+              invoke: invokeCommand,
+              companyUid,
+              timeoutMs: firstFolderSelfHealTimeoutMs,
+              intervalMs: firstFolderSelfHealIntervalMs,
+              cancelled: () => !current(),
+            });
+          },
+          cancelled: () => !current(),
+        },
+        onRows: (rows) => {
+          if (current()) companyPullRows = rows;
+        },
+        onOutcome: (outcome) => {
+          if (!current()) return;
+          recordStep(FIRST_FOLDER_SYNC_STEP_INDEX, outcome.outcome === 'done' ? 'completed' : 'failed', {
+            companyUid: outcome.companyUid,
+            companyPull: outcome.outcome,
+            attemptCount: outcome.attempt,
+            ...(outcome.errorKind ? { companyPullError: outcome.errorKind } : {}),
+            ...(outcome.selfHealed ? { selfHeal: outcome.outcome === 'done' ? 'succeeded' : 'failed' } : {}),
+          });
+        },
+      });
+    } finally {
+      if (current()) companyPullRunning = false;
+    }
+  }
+
+  /** Start the pull once, after the person entity exists and the account is known to be returning. */
+  function startReturningCompanyPull(): void {
+    if (companyPullStarted || accountKind?.kind !== 'returning' || !blockingPhaseDone) return;
+    companyPullStarted = true;
+    companyPullRows = initialPullRows(
+      accountKind.companies
+        .filter((company) => company.slug)
+        .map((company) => ({ companyUid: company.companyUid, slug: company.slug!, name: company.name })),
+    );
+    void runReturningCompanyPull();
+  }
+
   /** Forget the company lookup (account switch): the next call looks again. */
   function resetCompanyRoute(): void {
     companyRouteGeneration += 1;
@@ -3256,6 +3527,64 @@
       showInviteTeammateStep = false;
       connectorImportCompany = active;
       companyRouteResolved = true;
+      return;
+    }
+    const account = await ensureAccountKind();
+    if (!stillCurrent()) return;
+    if (account.kind === 'lookup_failed') {
+      // Never fall back to the new-person steps, and never offer the
+      // create-company recovery, on a lookup that failed.
+      companyPath = null;
+      inviteTeammateContext = null;
+      showInviteTeammateStep = false;
+      if (afterPersonEntity) {
+        accountLookupFailed = true;
+        recordCompanyRouteLookupFailed();
+        companyRouteResolved = true;
+      } else {
+        // Too early (before the person entity); the post-setup lookup looks again.
+        companyRouteResolution = null;
+      }
+      return;
+    }
+    if (account.kind === 'returning') {
+      // A returning account is not asked to create or join a company: its
+      // primary company becomes the app's active one, and the Ready screen
+      // pulls every company onto this Mac. The teammate invite and the
+      // connector import stay as they are for a person already in a company.
+      companyPath = null;
+      if (account.primary) {
+        // Record the route the new-person flow would have taken, as skipped,
+        // so company-route telemetry stays comparable across both kinds.
+        const route = decideCompanyRoute({ companies: account.companies, invites: [], signedInEmail: null });
+        const summary = summarizeRoute(route, account.companies, []);
+        recordStep(SETUP_STEP_INDEX, 'skipped', {
+          outcome: `route_${route.decision}`,
+          decision: route.decision,
+          existingCompanies: summary.existingCompanies,
+          paidCompany: summary.paidCompany,
+          pendingInvites: summary.pendingInvites,
+          companyUid: account.primary.companyUid,
+        });
+        companyStepCompanyUid = account.primary.companyUid;
+        recordWorkspaceSelected(account.primary.companyUid);
+        await selectCompany(account.primary.slug);
+        if (!stillCurrent()) return;
+      }
+      const inviteResolution = account.primary ? await resolveInviteTeammateContext() : null;
+      if (!stillCurrent()) return;
+      inviteTeammateContext = inviteResolution?.context ?? null;
+      showInviteTeammateStep = inviteTeammateContext !== null;
+      if (inviteResolution && inviteResolution.context === null && !inviteStepHiddenTelemetryRecorded) {
+        inviteStepHiddenTelemetryRecorded = true;
+        recordStep(INVITE_TEAMMATE_STEP_INDEX, 'skipped', {
+          outcome: inviteResolution.hiddenReason,
+          companyUid: account.primary!.companyUid,
+        });
+      }
+      connectorImportCompany = account.primary ? (account.primary.slug ?? account.primary.companyUid) : null;
+      companyRouteResolved = true;
+      startReturningCompanyPull();
       return;
     }
     const retryCompanyLookup = resolveCompanyRouteLookupRetryFlag();
@@ -3348,8 +3677,12 @@
       }),
     ]);
     if (!stillCurrent()) return;
-    showFirstFolderSyncStep = firstFolderEnabled;
+    // A returning account with companies gets the company pull in place of
+    // the first folder sync: it brings every company folder, not just one.
+    const pullingCompanies = accountKind?.kind === 'returning' && accountKind.companies.some((company) => company.slug);
+    showFirstFolderSyncStep = firstFolderEnabled && !pullingCompanies;
     postSetupStepsResolved = true;
+    startReturningCompanyPull();
   }
 
   /**
@@ -4294,6 +4627,9 @@
       connectorImportVisited = true;
       return;
     }
+    // US-023: a returning account imports into a company only once its
+    // pull is over (or the person chose Continue), so the folder exists.
+    if (!companyPullClear) return;
     advanceTo(CONNECTOR_IMPORT_STEP_INDEX, null);
   });
 
@@ -4332,6 +4668,10 @@
       if (showFirstFolderSyncStep && !firstFolderSyncVisited) return;
       if (showInviteTeammateStep && inviteTeammateContext && !inviteTeammateVisited) return;
       if (!connectorImportVisited && connectorImportCompany) return;
+      // US-023: hold Ready while the account lookup failed, and while a
+      // returning account's companies are still coming (or one failed and
+      // the person has not chosen Continue).
+      if (accountLookupFailed || !companyPullClear) return;
     }
     autoFinishAttempted = true;
     void finishWithRecovery().then((finished) => {
@@ -5032,8 +5372,10 @@
       <div class="copy" bind:this={refs.readyCopy}>
         <h2 class="h h-lg" id="onboarding-title-ready" tabindex="-1" data-scene-heading>
           {installPending || blockingRetryRunning
-            ? 'Almost ready.'
-            : requiredFailureHeading ?? 'HQ is ready.'}
+            ? returningAccount && returningCompanyNames
+              ? `Welcome back. Bringing ${returningCompanyNames} to this Mac.`
+              : 'Almost ready.'
+            : requiredFailureHeading ?? (accountLookupFailed ? 'Almost ready.' : returningReadyHeading ?? 'HQ is ready.')}
         </h2>
         <!-- The menu-bar sentence says setup is done, so it waits for Try again. -->
         {#if !requiredFailureHeading}
@@ -5092,6 +5434,59 @@
           </div>
         {/if}
         <div class="ready-notes">
+          {#if accountLookupFailed}
+            <div class="note account-lookup-error" role="alert" data-testid="account-lookup-error">
+              <p>We couldn't check your account. Check your connection and try again.</p>
+              <div class="note-actions">
+                <button
+                  class="btn btn-secondary"
+                  type="button"
+                  data-testid="account-lookup-retry"
+                  disabled={accountLookupRetrying}
+                  aria-busy={accountLookupRetrying}
+                  onclick={() => void retryAccountLookup()}
+                >Try again</button>
+              </div>
+            </div>
+          {/if}
+          {#if returningAccount && companyPullRows.length > 0}
+            <div class="note company-pull" role="status" aria-live="polite" data-testid="company-pull">
+              <p class="company-pull-label">Bringing your companies to this Mac</p>
+              <ul class="company-pull-rows">
+                {#each companyPullRows as row (row.companyUid)}
+                  <li class="company-pull-row" data-testid="company-pull-row" data-company={row.slug} data-status={row.status}>
+                    {#if row.status === 'failed'}
+                      {#if companyPullContinued}
+                        <span>Couldn't bring {row.name} yet. HQ keeps trying.</span>
+                      {:else}
+                        <span>{companyPullRowLabel(row)}</span>
+                        <button
+                          class="btn btn-secondary"
+                          type="button"
+                          data-testid="company-pull-retry"
+                          disabled={companyPullRunning}
+                          onclick={() => void runReturningCompanyPull([row.companyUid])}
+                        >Try again</button>
+                      {/if}
+                    {:else}
+                      <span class="company-pull-name">{row.name}</span>
+                      <span class="company-pull-state">{companyPullRowLabel(row)}</span>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+              {#if companyPullSettled && companyPullFailedRows.length > 0 && !companyPullContinued}
+                <div class="note-actions">
+                  <button
+                    class="btn btn-secondary"
+                    type="button"
+                    data-testid="company-pull-continue"
+                    onclick={() => (companyPullContinued = true)}
+                  >Continue</button>
+                </div>
+              {/if}
+            </div>
+          {/if}
           {#if (finishError || readyWatchdogFired) && !blockingRetryRunning}
             <div class="note finish-action" role="status" data-testid="launcher-finish-error">
               <p>Finish HQ setup here when you’re ready.</p>
