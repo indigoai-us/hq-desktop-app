@@ -152,7 +152,6 @@ export const WELCOME_HARNESS_NAME: Record<WelcomeHarnessId, string> = {
   cursor: "Cursor",
 };
 
-/** The 16.0.30 next-step labels. Same words as the old welcome block and the onboarding copy. */
 /** Core's labels for the 16.0.30 next steps, the same words Core writes for these actions (hq-core-staging c7b8a026). */
 export const WELCOME_CONNECT_COMPANY_LABEL = "Create or join a company";
 export const WELCOME_IMPORT_LABEL = "Bring in your past work";
