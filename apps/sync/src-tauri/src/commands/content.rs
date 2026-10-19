@@ -93,6 +93,18 @@ struct ReleaseInfo {
     draft: bool,
 }
 
+impl crate::demo_build::CoreRelease for ReleaseInfo {
+    fn tag(&self) -> &str {
+        &self.tag_name
+    }
+    fn prerelease(&self) -> bool {
+        self.prerelease
+    }
+    fn draft(&self) -> bool {
+        self.draft
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ContentProgressPayload {
@@ -686,10 +698,18 @@ async fn latest_release(
         // very first stage with 403 — the headed install matrix hit exactly
         // this on 2026-09-03. The web redirect + codeload archive are not
         // subject to the API limit, so fall back to them.
+        //
+        // The redirect only ever names the latest stable. A demo build
+        // (HQ_CORE_PRERELEASE) still uses it, but only when that stable meets
+        // the demo minimum, so it can never install a stable below it.
         if matches!(resp.status().as_u16(), 403 | 429) {
             match latest_release_via_redirect(repo, failure_scope).await {
-                Ok(Some(release)) => return Ok(Some(release)),
-                Ok(None) => {}
+                Ok(Some(release))
+                    if redirect_release_usable(crate::demo_build::core_prerelease(), &release) =>
+                {
+                    return Ok(Some(release))
+                }
+                Ok(_) => {}
                 Err(e) => return Err(format!("{api_err}; API-free fallback also failed: {e}")),
             }
         }
@@ -708,7 +728,22 @@ async fn latest_release(
         }
         format!("failed to parse releases response: {error}")
     })?;
-    Ok(releases.into_iter().find(|r| !r.prerelease && !r.draft))
+    Ok(crate::demo_build::select_core_release(
+        releases,
+        crate::demo_build::core_prerelease(),
+    ))
+}
+
+/// Whether the stable release named by the API-free redirect may be used.
+/// Off: always (the shipped behaviour). On: only at or above
+/// `demo_build::MIN_CORE_VERSION`.
+fn redirect_release_usable(allow_prerelease: bool, release: &ReleaseInfo) -> bool {
+    crate::demo_build::accepts(
+        allow_prerelease,
+        &release.tag_name,
+        release.prerelease,
+        release.draft,
+    )
 }
 
 /// Resolve the latest stable release WITHOUT the REST API:
@@ -2037,10 +2072,18 @@ pub(crate) async fn install_template_into(
                     OnboardingErrorCategory::NotFound,
                     ContentErrorKind::ReleaseUnavailable,
                 );
-                format!(
-                    "no stable release found for {}; cannot install HQ template",
-                    source.repo
-                )
+                if crate::demo_build::core_prerelease() {
+                    format!(
+                        "no release at or above {} found for {}; cannot install HQ template",
+                        crate::demo_build::MIN_CORE_VERSION,
+                        source.repo
+                    )
+                } else {
+                    format!(
+                        "no stable release found for {}; cannot install HQ template",
+                        source.repo
+                    )
+                }
             })?;
             (release.tag_name, release.tarball_url)
         }
@@ -2803,6 +2846,65 @@ mod windows_symlink_fallback_selection_tests {
 #[cfg(test)]
 mod api_free_release_fallback_tests {
     use super::*;
+
+    #[test]
+    fn template_release_selection_follows_the_prerelease_switch() {
+        let body = r#"[
+            {"tag_name":"v16.0.32","tarball_url":"d","prerelease":false,"draft":true},
+            {"tag_name":"v16.0.31-beta.7","tarball_url":"b7","prerelease":true,"draft":false},
+            {"tag_name":"v16.0.31-beta.6","tarball_url":"b6","prerelease":true,"draft":false},
+            {"tag_name":"v16.0.30","tarball_url":"s","prerelease":false,"draft":false}
+        ]"#;
+        let releases = || serde_json::from_str::<Vec<ReleaseInfo>>(body).unwrap();
+        let off = crate::demo_build::select_core_release(releases(), false).unwrap();
+        assert_eq!(
+            (off.tag_name.as_str(), off.tarball_url.as_str()),
+            ("v16.0.30", "s")
+        );
+        let on = crate::demo_build::select_core_release(releases(), true).unwrap();
+        assert_eq!(
+            (on.tag_name.as_str(), on.tarball_url.as_str()),
+            ("v16.0.31-beta.7", "b7")
+        );
+
+        // A lower accepted entry listed first must not win.
+        for (body, tag) in [
+            (
+                r#"[
+                    {"tag_name":"v16.0.31","tarball_url":"s","prerelease":false,"draft":false},
+                    {"tag_name":"v16.0.32-beta.1","tarball_url":"b","prerelease":true,"draft":false}
+                ]"#,
+                "v16.0.32-beta.1",
+            ),
+            (
+                r#"[
+                    {"tag_name":"v16.0.31-beta.6","tarball_url":"b6","prerelease":true,"draft":false},
+                    {"tag_name":"v16.0.31-beta.10","tarball_url":"b10","prerelease":true,"draft":false}
+                ]"#,
+                "v16.0.31-beta.10",
+            ),
+        ] {
+            let list = serde_json::from_str::<Vec<ReleaseInfo>>(body).unwrap();
+            let on = crate::demo_build::select_core_release(list, true).unwrap();
+            assert_eq!(on.tag_name, tag);
+        }
+    }
+
+    #[test]
+    fn redirect_fallback_stays_stable_and_respects_the_demo_minimum() {
+        let redirected = |tag: &str| ReleaseInfo {
+            tag_name: tag.to_string(),
+            tarball_url: codeload_tarball_url(DEFAULT_TEMPLATE_REPO, tag),
+            prerelease: false,
+            draft: false,
+        };
+        // Shipped builds take whatever stable the redirect names.
+        assert!(redirect_release_usable(false, &redirected("v16.0.30")));
+        assert!(redirect_release_usable(false, &redirected("v15.0.0")));
+        // Demo builds refuse a stable below the minimum and take one above it.
+        assert!(!redirect_release_usable(true, &redirected("v16.0.30")));
+        assert!(redirect_release_usable(true, &redirected("v16.0.31")));
+    }
 
     #[test]
     fn parses_tag_from_release_redirect() {
