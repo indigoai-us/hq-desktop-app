@@ -66,10 +66,23 @@ pub(crate) trait CloudSwitchEffects {
     fn stop_background_sync(&mut self) -> Result<(), String>;
     /// Pause the HQ CLI daemon's sync service even when the desktop's legacy
     /// host owns sync. Best effort: a machine without the CLI has no daemon.
-    fn pause_cli_daemon_sync(&mut self) -> Result<(), String>;
+    /// `Ok(true)` when this call paused it, `Ok(false)` when there was
+    /// nothing for it to do (the daemon host already paused it).
+    fn pause_cli_daemon_sync(&mut self) -> Result<bool, String>;
+    /// Resume the HQ CLI daemon's sync service that the switch paused.
+    fn resume_cli_daemon_sync(&mut self) -> Result<(), String>;
+    /// Whether the switch paused the CLI daemon's sync (a saved marker, so the
+    /// resume survives an app restart while sync is off).
+    fn cli_daemon_paused_by_switch(&self) -> bool;
+    fn remember_cli_daemon_paused_by_switch(&mut self, paused: bool) -> Result<(), String>;
     fn auto_sync_enabled(&self) -> bool;
     fn start_background_sync(&mut self) -> Result<(), String>;
 }
+
+/// Settings key recording that "Turn off all cloud sync" paused the HQ CLI
+/// daemon's sync on the legacy host, so turning sync back on resumes it. A
+/// daemon the person paused some other way is left alone.
+pub(crate) const CLI_DAEMON_PAUSED_BY_SWITCH_KEY: &str = "cloudSwitchPausedCliDaemonSync";
 
 pub(crate) const STOP_NOTICE: &str =
     "Cloud is off. Background sync is still stopping; it will not start again.";
@@ -86,6 +99,28 @@ pub(crate) fn apply_cloud_switch(
     if enabled {
         effects.persist(false)?;
         let mut notice = None;
+        // Undo the CLI daemon pause this switch made when it went off (legacy
+        // host). Without this the daemon stayed paused after sync came back.
+        if effects.cli_daemon_paused_by_switch() {
+            match effects.resume_cli_daemon_sync() {
+                Ok(()) => {
+                    if let Err(error) = effects.remember_cli_daemon_paused_by_switch(false) {
+                        crate::util::logfile::log(
+                            LOG_TAG,
+                            &format!("could not clear the CLI daemon pause marker: {error}"),
+                        );
+                    }
+                }
+                Err(error) => {
+                    // Keep the marker so the next switch-on retries.
+                    crate::util::logfile::log(
+                        LOG_TAG,
+                        &format!("HQ CLI daemon sync did not resume after Cloud on: {error}"),
+                    );
+                    notice = Some(START_NOTICE.to_string());
+                }
+            }
+        }
         if effects.auto_sync_enabled() {
             if let Err(error) = effects.start_background_sync() {
                 crate::util::logfile::log(
@@ -111,12 +146,23 @@ pub(crate) fn apply_cloud_switch(
         );
         notice = Some(STOP_NOTICE.to_string());
     }
-    if let Err(error) = effects.pause_cli_daemon_sync() {
-        // No CLI or no CLI daemon on this machine is the common case here.
-        crate::util::logfile::log(
-            LOG_TAG,
-            &format!("HQ CLI daemon sync pause skipped: {error}"),
-        );
+    match effects.pause_cli_daemon_sync() {
+        Ok(true) => {
+            if let Err(error) = effects.remember_cli_daemon_paused_by_switch(true) {
+                crate::util::logfile::log(
+                    LOG_TAG,
+                    &format!("could not save the CLI daemon pause marker: {error}"),
+                );
+            }
+        }
+        Ok(false) => {}
+        Err(error) => {
+            // No CLI or no CLI daemon on this machine is the common case here.
+            crate::util::logfile::log(
+                LOG_TAG,
+                &format!("HQ CLI daemon sync pause skipped: {error}"),
+            );
+        }
     }
     Ok(CloudSwitchOutcome {
         cloud_enabled: false,
@@ -129,6 +175,35 @@ pub(crate) fn persist_cloud_paused_at(path: &Path, cloud_paused: bool) -> Result
     let mut prefs: MenubarPrefs = crate::commands::settings::get_settings_at(path)?;
     prefs.cloud_paused = Some(cloud_paused);
     crate::commands::settings::save_settings_at(path, &prefs)
+}
+
+/// Read the CLI daemon pause marker. Missing or unreadable means not paused.
+pub(crate) fn cli_daemon_paused_marker_at(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|value| {
+            value
+                .get(CLI_DAEMON_PAUSED_BY_SWITCH_KEY)
+                .and_then(|v| v.as_bool())
+        })
+        .unwrap_or(false)
+}
+
+/// Save or clear the CLI daemon pause marker, keeping every other key.
+pub(crate) fn write_cli_daemon_paused_marker_at(path: &Path, paused: bool) -> Result<(), String> {
+    if paused {
+        hq_desktop_core::first_run::merge_menubar_flags(
+            path,
+            &[(
+                CLI_DAEMON_PAUSED_BY_SWITCH_KEY,
+                serde_json::Value::Bool(true),
+            )],
+        )
+    } else {
+        hq_desktop_core::first_run::remove_menubar_keys(path, &[CLI_DAEMON_PAUSED_BY_SWITCH_KEY])
+            .map(|_| ())
+    }
 }
 
 struct LiveEffects<R: Runtime> {
@@ -149,13 +224,29 @@ impl<R: Runtime> CloudSwitchEffects for LiveEffects<R> {
         crate::commands::daemon::stop_daemon().map(|_| ())
     }
 
-    fn pause_cli_daemon_sync(&mut self) -> Result<(), String> {
+    fn pause_cli_daemon_sync(&mut self) -> Result<bool, String> {
         use crate::commands::hq_daemon_host::{current_phase, HostPhase};
-        // In daemon mode `stop_background_sync` already ran this pause.
+        // In daemon mode `stop_background_sync` already ran this pause, and
+        // `start_background_sync` resumes it.
         if current_phase() == HostPhase::Daemon {
-            return Ok(());
+            return Ok(false);
         }
-        crate::commands::hq_daemon_host::set_daemon_sync(false)
+        crate::commands::hq_daemon_host::set_daemon_sync(false).map(|()| true)
+    }
+
+    fn resume_cli_daemon_sync(&mut self) -> Result<(), String> {
+        crate::commands::hq_daemon_host::set_daemon_sync(true)
+    }
+
+    fn cli_daemon_paused_by_switch(&self) -> bool {
+        paths::menubar_json_path()
+            .map(|path| cli_daemon_paused_marker_at(&path))
+            .unwrap_or(false)
+    }
+
+    fn remember_cli_daemon_paused_by_switch(&mut self, paused: bool) -> Result<(), String> {
+        let path = paths::menubar_json_path()?;
+        write_cli_daemon_paused_marker_at(&path, paused)
     }
 
     fn auto_sync_enabled(&self) -> bool {
@@ -564,6 +655,21 @@ mod tests {
                 &SyncVault::Company("acme".into())
             ))
         );
+        // `./` and `//` spellings of the same path are refused too.
+        for spelled in ["./companies/acme/notes.md", "//companies/acme/notes.md"] {
+            let resolve =
+                tauri::async_runtime::block_on(crate::commands::conflicts::resolve_conflict(
+                    spelled.to_string(),
+                    "keep-local".to_string(),
+                ));
+            assert_eq!(
+                resolve.err(),
+                Some(hq_desktop_core::vault_sync::vault_off_message(
+                    &SyncVault::Company("acme".into())
+                )),
+                "{spelled}"
+            );
+        }
         // Another company is not refused by the vault gate (it fails later for
         // an unrelated reason in this sandbox, never with the off message).
         let other = tauri::async_runtime::block_on(crate::commands::conflicts::resolve_conflict(
@@ -615,6 +721,10 @@ mod tests {
         stop_fails: bool,
         start_fails: bool,
         cli_fails: bool,
+        /// The CLI daemon owns sync (daemon host): the stop already paused it.
+        daemon_host: bool,
+        resume_fails: bool,
+        cli_marker: bool,
     }
 
     impl CloudSwitchEffects for Recorder {
@@ -637,13 +747,29 @@ mod tests {
                 Ok(())
             }
         }
-        fn pause_cli_daemon_sync(&mut self) -> Result<(), String> {
+        fn pause_cli_daemon_sync(&mut self) -> Result<bool, String> {
             self.calls.push("cli-pause".to_string());
             if self.cli_fails {
                 Err("HQ CLI missing".to_string())
             } else {
+                Ok(!self.daemon_host)
+            }
+        }
+        fn resume_cli_daemon_sync(&mut self) -> Result<(), String> {
+            self.calls.push("cli-resume".to_string());
+            if self.resume_fails {
+                Err("daemon busy".to_string())
+            } else {
                 Ok(())
             }
+        }
+        fn cli_daemon_paused_by_switch(&self) -> bool {
+            self.cli_marker
+        }
+        fn remember_cli_daemon_paused_by_switch(&mut self, paused: bool) -> Result<(), String> {
+            self.calls.push(format!("cli-marker:{paused}"));
+            self.cli_marker = paused;
+            Ok(())
         }
         fn auto_sync_enabled(&self) -> bool {
             self.auto_sync
@@ -664,7 +790,13 @@ mod tests {
         let outcome = apply_cloud_switch(false, &mut effects).unwrap();
         assert_eq!(
             effects.calls,
-            vec!["persist:true", "cancel", "stop", "cli-pause"]
+            vec![
+                "persist:true",
+                "cancel",
+                "stop",
+                "cli-pause",
+                "cli-marker:true"
+            ]
         );
         assert_eq!(
             outcome,
@@ -700,6 +832,95 @@ mod tests {
             effects.calls,
             vec!["persist:true", "cancel", "stop", "cli-pause"]
         );
+    }
+
+    /// Legacy host: off pauses the HQ CLI daemon's sync, so on must resume
+    /// it (review H2). Auto-sync off: only the daemon resume runs.
+    #[test]
+    fn off_then_on_resumes_the_cli_daemon_sync_the_switch_paused() {
+        let mut effects = Recorder::default();
+        apply_cloud_switch(false, &mut effects).unwrap();
+        assert!(effects.cli_marker);
+        effects.calls.clear();
+
+        let outcome = apply_cloud_switch(true, &mut effects).unwrap();
+        assert_eq!(
+            effects.calls,
+            vec!["persist:false", "cli-resume", "cli-marker:false"]
+        );
+        assert!(outcome.cloud_enabled);
+        assert_eq!(outcome.notice, None);
+        assert!(!effects.cli_marker);
+
+        // A second "on" does not resume a daemon the switch did not pause.
+        effects.calls.clear();
+        apply_cloud_switch(true, &mut effects).unwrap();
+        assert_eq!(effects.calls, vec!["persist:false"]);
+    }
+
+    #[test]
+    fn off_then_on_with_auto_sync_resumes_the_daemon_then_restarts_sync() {
+        let mut effects = Recorder {
+            auto_sync: true,
+            ..Recorder::default()
+        };
+        apply_cloud_switch(false, &mut effects).unwrap();
+        effects.calls.clear();
+        apply_cloud_switch(true, &mut effects).unwrap();
+        assert_eq!(
+            effects.calls,
+            vec!["persist:false", "cli-resume", "cli-marker:false", "start"]
+        );
+    }
+
+    #[test]
+    fn a_failed_cli_daemon_resume_keeps_the_marker_and_reports_a_notice() {
+        let mut effects = Recorder {
+            resume_fails: true,
+            ..Recorder::default()
+        };
+        apply_cloud_switch(false, &mut effects).unwrap();
+        let outcome = apply_cloud_switch(true, &mut effects).unwrap();
+        assert!(outcome.cloud_enabled);
+        assert_eq!(outcome.notice.as_deref(), Some(START_NOTICE));
+        // Still marked, so the next switch-on tries again.
+        assert!(effects.cli_marker);
+    }
+
+    /// Daemon host: the stop already paused the daemon and the start resumes
+    /// it, so the switch records no marker and runs no extra resume.
+    #[test]
+    fn on_the_daemon_host_the_switch_records_no_cli_pause() {
+        let mut effects = Recorder {
+            daemon_host: true,
+            auto_sync: true,
+            ..Recorder::default()
+        };
+        apply_cloud_switch(false, &mut effects).unwrap();
+        assert!(!effects.cli_marker);
+        effects.calls.clear();
+        apply_cloud_switch(true, &mut effects).unwrap();
+        assert_eq!(effects.calls, vec!["persist:false", "start"]);
+    }
+
+    /// The marker lives in menubar.json, survives a restart, and leaves the
+    /// other keys alone.
+    #[test]
+    fn the_cli_daemon_pause_marker_persists_and_clears() {
+        let dir = temp_config("cli-marker");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("menubar.json");
+        std::fs::write(&path, r#"{"cloudPaused":true,"machineId":"m-1"}"#).unwrap();
+        assert!(!cli_daemon_paused_marker_at(&path));
+        write_cli_daemon_paused_marker_at(&path, true).unwrap();
+        assert!(cli_daemon_paused_marker_at(&path));
+        write_cli_daemon_paused_marker_at(&path, false).unwrap();
+        assert!(!cli_daemon_paused_marker_at(&path));
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["machineId"], serde_json::json!("m-1"));
+        assert_eq!(raw["cloudPaused"], serde_json::json!(true));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

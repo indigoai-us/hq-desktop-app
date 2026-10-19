@@ -105,15 +105,32 @@ pub fn ensure_vault_sync_allowed(vault: &SyncVault) -> Result<(), String> {
 
 /// The vault an HQ-relative path belongs to: `companies/<slug>/…` is that
 /// company's vault; anything else is the personal vault.
+///
+/// The path is normalized lexically first, so `./companies/acme`,
+/// `//companies/acme`, `companies//acme`, `x/../companies/acme` and Windows
+/// separators all name the acme vault. `companies` matches case-insensitively
+/// because the default macOS and Windows file systems do. A path whose `..`
+/// climbs above the HQ root belongs to no vault inside it; callers validate
+/// and reject such paths separately, and here it maps to the personal vault.
 pub fn vault_for_hq_relative_path(relative: &str) -> SyncVault {
-    let normalized = relative.trim_start_matches(['/', '\\']).replace('\\', "/");
-    let mut parts = normalized.split('/');
-    if parts.next() == Some("companies") {
-        if let Some(slug) = parts.next().filter(|s| !s.is_empty()) {
-            return SyncVault::Company(slug.to_string());
+    let mut parts: Vec<&str> = Vec::new();
+    for part in relative.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if parts.pop().is_none() {
+                    return SyncVault::Personal;
+                }
+            }
+            other => parts.push(other),
         }
     }
-    SyncVault::Personal
+    match parts.as_slice() {
+        [root, slug, ..] if root.eq_ignore_ascii_case("companies") => {
+            SyncVault::Company((*slug).to_string())
+        }
+        _ => SyncVault::Personal,
+    }
 }
 
 #[cfg(test)]
@@ -183,6 +200,38 @@ mod tests {
         );
         assert_eq!(
             vault_for_hq_relative_path("companies/"),
+            SyncVault::Personal
+        );
+    }
+
+    /// Review finding: `./` and `//` prefixes used to skip the company check.
+    #[test]
+    fn dot_double_slash_and_parent_segments_still_name_the_company_vault() {
+        let acme = SyncVault::Company("acme".into());
+        for path in [
+            "./companies/acme/notes.md",
+            "//companies/acme/notes.md",
+            ".//companies/acme/notes.md",
+            "companies//acme/notes.md",
+            "companies/./acme/notes.md",
+            "knowledge/../companies/acme/notes.md",
+            "companies/zeta/../acme/notes.md",
+            ".\\companies\\acme\\notes.md",
+            "Companies/acme/notes.md",
+        ] {
+            assert_eq!(vault_for_hq_relative_path(path), acme, "{path}");
+        }
+        assert_eq!(
+            vault_for_hq_relative_path("companies/acme/../../knowledge/a.md"),
+            SyncVault::Personal
+        );
+        // `..` above the HQ root is not inside any vault.
+        assert_eq!(
+            vault_for_hq_relative_path("../companies/acme/notes.md"),
+            SyncVault::Personal
+        );
+        assert_eq!(
+            vault_for_hq_relative_path("./knowledge/a.md"),
             SyncVault::Personal
         );
     }

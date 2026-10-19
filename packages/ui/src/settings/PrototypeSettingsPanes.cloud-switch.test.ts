@@ -177,6 +177,10 @@ describe("Settings Cloud switch (US-016)", () => {
     // Off by default: all cloud sync is on.
     expect(q("settings-cloud-toggle")?.getAttribute("aria-checked")).toBe("false");
     expect(q("settings-cloud-off")).toBeNull();
+    const allOff = q("settings-cloud-row")?.textContent ?? "";
+    expect(allOff).toContain("its syncs stop counting toward your bill");
+    expect(allOff).toContain("Storage and vault fees still apply");
+    expect(allOff).not.toMatch(/no more sync charges/i);
   });
 
   it("turning all cloud sync off calls the host once, shows the off state and how to turn it back on", async () => {
@@ -321,11 +325,16 @@ describe("Settings vault switches (US-016)", () => {
       "settings-vault-row-zeta",
     ]);
     const acme = q("settings-vault-row-acme")?.textContent ?? "";
-    expect(acme).toContain("no more sync charges for this vault");
+    expect(acme).toContain("this computer stops syncing this vault");
+    expect(acme).toContain("its syncs stop counting toward your bill");
+    // Accurate about what keeps costing money (review H1).
+    expect(acme).toContain("Storage and the vault fee still apply");
+    expect(acme).toContain("teammates who sync still add usage");
+    expect(acme).not.toMatch(/no more sync charges|avoid .*fees/i);
     expect(acme).toContain("Files stay on this computer");
-    expect(acme).toContain("Teammates stop getting this computer's changes");
+    expect(acme).toContain("teammates stop getting this computer's changes");
     expect(q("settings-vault-row-personal")?.textContent).toContain(
-      "no more sync charges for this vault",
+      "this computer stops syncing your personal vault",
     );
     expect(q("settings-vault-sync")?.textContent).toContain(
       "This only changes this computer. Teammates keep syncing.",

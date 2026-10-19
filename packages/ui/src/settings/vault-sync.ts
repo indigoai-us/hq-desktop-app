@@ -20,16 +20,16 @@ export const VAULT_SYNC_COPY = {
     "Choose which vaults sync with HQ cloud from this computer. This only changes this computer. Teammates keep syncing.",
   allOffLabel: "Turn off all cloud sync",
   allOffDescription:
-    "Turns sync off for every vault below. No more sync charges from this computer. Files stay on this computer. Teammates stop getting this computer's changes.",
+    "This computer stops syncing every vault below, and its syncs stop counting toward your bill. Storage and vault fees still apply, and teammates who sync still add usage. Files stay on this computer.",
   allOffTitle: "Cloud sync is off for every vault",
   allOffBody:
     "Nothing uploads or downloads on this computer. Sign-in, messages, deploys and local HQ keep working.",
   allOffHint: "To sync again, switch off Turn off all cloud sync.",
   personalName: "Personal vault",
   companyOffDescription:
-    "Turn off: no more sync charges for this vault. Files stay on this computer. Teammates stop getting this computer's changes.",
+    "Turn off: this computer stops syncing this vault, and its syncs stop counting toward your bill. Storage and the vault fee still apply, and teammates who sync still add usage. Files stay on this computer, and teammates stop getting this computer's changes.",
   personalOffDescription:
-    "Turn off: no more sync charges for this vault. Files stay on this computer. Your other computers stop getting this computer's changes.",
+    "Turn off: this computer stops syncing your personal vault, and its syncs stop counting toward your bill. Storage and the vault fee still apply. Files stay on this computer, and your other computers stop getting this computer's changes.",
   vaultOffHint: "To sync it again, turn its switch back on.",
   heldByAllOff: "Off while all cloud sync is off.",
   noCompanies: "You are not in any company with a cloud vault yet.",
