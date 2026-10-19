@@ -20,6 +20,7 @@ import WelcomeReport, {
 } from "./WelcomeReport.svelte";
 import ReportWithBrief from "./WelcomeReportBriefHarness.test-support.svelte";
 import { octoberEightBrief } from "./brief-fixture.js";
+import { riseFrame, riseRevealAt, welcomeRiseSources } from "./brief-rise.js";
 import { WELCOME_RISE_FINDING_CLAUDE, welcomeRiseBriefInput } from "./welcome-rise-run.js";
 import type { YourAppsHost, YourAppsLoad, YourAppsResult } from "../chat/first-run/your-apps-host.js";
 
@@ -483,6 +484,46 @@ describe("WelcomeReport", () => {
     expect(prompt.startsWith(`${WELCOME_RISE_FINDING_CLAUDE} Repo or source: northstar/desktop.`)).toBe(true);
     expect(q('[data-card="decision"] [data-testid="welcome-edition-note"]')).not.toBeNull();
     expect(q('[data-card="decision"] [data-testid="welcome-edition-action"]')).toBeNull();
+  });
+
+  it("carries the count the reveal ended on into the welcome edition, and the real session count when there was no reveal", async () => {
+    const companies = [
+      { id: "northstar", name: "Northstar" },
+      { id: "fieldwork", name: "Fieldwork" },
+    ];
+    const sources = welcomeRiseSources(companies);
+    const ended = riseFrame(riseRevealAt(sources.length - 1), sources).countText;
+    expect(ended).toMatch(/sessions? read/);
+    const input = { ...welcomeRiseBriefInput(), runStats: null };
+    const report = { aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: false } }, companies };
+
+    const props = $state({ ready: false });
+    target = document.createElement("div");
+    document.body.appendChild(target);
+    component = mount(ReportWithBrief, {
+      target,
+      props: {
+        input,
+        report,
+        get ready() {
+          return props.ready;
+        },
+      },
+    });
+    await settle();
+    expect(q('[data-testid="brief-rise"]')).not.toBeNull();
+    props.ready = true;
+    await settle();
+    expect(q('[data-testid="welcome-edition-run"]')?.textContent).toBe(`${ended} · Calendar could not be read.`);
+    await unmount(component);
+    target.remove();
+
+    // Ready on arrival: no reveal ran, so the line counts the run's own sessions.
+    target = document.createElement("div");
+    document.body.appendChild(target);
+    component = mount(ReportWithBrief, { target, props: { input, report, ready: true } });
+    await settle();
+    expect(q('[data-testid="welcome-edition-run"]')?.textContent).toBe("412 sessions read · Calendar could not be read.");
   });
 
   it("review mode (Shift+A) swaps the welcome edition back to the full catalogue", async () => {

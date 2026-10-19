@@ -141,6 +141,28 @@ describe("welcomeEdition", () => {
     expect(looksLikePath("Use either and/or here")).toBe(false);
   });
 
+  it("reads library names, dates, quarters, and slashed words as prose", () => {
+    for (const t of ["Node.js", "Next.js migration", "Upgrade to Vue.js 3", "10/18/2026", "Due 10/18/2026", "Q1/Q2/Q3 roadmap", "Q3/Q4", "and/or", "24/7 support", "Ask the client/agency team"]) {
+      expect(looksLikePath(t), t).toBe(false);
+    }
+  });
+
+  it("catches filenames and code folders the first pass missed", () => {
+    for (const t of ["schema.sql", "App.vue", "notes.txt", "Fix the bug in src/brief", "Update packages/ui", "Next.js config in next.config.mjs"]) {
+      expect(looksLikePath(t), t).toBe(true);
+    }
+  });
+
+  it("names a fourth company on the agenda card when its item is on a card", () => {
+    const input = welcomeRiseBriefInput();
+    input.companies = [...input.companies, "harbor"];
+    const last = input.decisions[input.decisions.length - 1]!;
+    input.decisions[input.decisions.length - 1] = { ...last, origin: { ...last.origin, companyUid: "harbor" } };
+    const e = welcomeEdition(input);
+    expect(e.cards.find((c) => c.id === "work")!.kicker).toBe("Pick up your work · Harbor");
+    expect(e.cards.find((c) => c.id === "day")!.lines[0]).toContain("Harbor");
+  });
+
   it("puts the next event still ahead on the day card with up to two attendees", () => {
     const base = welcomeRiseBriefInput(at(9));
     const day = welcomeEdition(withEvent(base, at(10, 30))).cards.find((c) => c.id === "day")!;
@@ -186,8 +208,13 @@ describe("welcomeEdition", () => {
 
   it("never shows a count that differs from the items on the page", () => {
     const e = welcomeEdition(welcomeRiseBriefInput());
-    const onPage = e.cards.filter((c) => c.action?.kind === "launch").length + e.sections.filter((s) => !/^(On the cards above|Nothing new)/.test(s.lines[0] ?? "")).length;
-    expect(e.cards.find((c) => c.id === "day")!.title).toBe(`${onPage} things for you today.`);
+    // Two linked cards and three company sections, each a different decision from the fixture.
+    const titles = [...e.cards.filter((c) => c.action?.kind === "launch").map((c) => c.title), ...e.sections.map((s) => s.lines[0]!)];
+    expect(titles).toHaveLength(5);
+    expect(new Set(titles).size).toBe(5);
+    expect(titles).not.toContain("On the cards above.");
+    expect(titles).not.toContain("Nothing new for you today.");
+    expect(e.cards.find((c) => c.id === "day")!.title).toBe("5 things for you today.");
     const all = [...e.cards.flatMap((c) => [c.title, ...c.lines]), ...e.sections.flatMap((s) => s.lines)];
     expect(all.some((s) => /open items? for you/.test(s))).toBe(false);
   });

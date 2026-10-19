@@ -45,6 +45,8 @@ export interface WelcomeAiApps {
   suggest?: WelcomeSuggest | null;
   /** The owner's connect session: the scan, the runs and the memory, kept across remounts. */
   session?: WelcomeConnectSession | null;
+  /** The count line the report's sunrise reveal ends on, carried into the welcome edition. */
+  runStats?: string | null;
 }
 
 /**

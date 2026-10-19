@@ -27,7 +27,7 @@
   import BriefOpenTool from "./BriefOpenTool.svelte";
   import BriefRise from "./BriefRise.svelte";
   import type { BriefOpenToolAction } from "./brief-open-tool.js";
-  import { welcomeRiseSources, type RiseCompany } from "./brief-rise.js";
+  import { riseFrame, riseRevealAt, welcomeRiseSources, type RiseCompany } from "./brief-rise.js";
   import { setWelcomeAiApps, type WelcomeAiApps } from "./welcome-ai-apps.js";
   import { WelcomeConnectSession } from "./welcome-connect-session.svelte.js";
   import { assistantNameInSentence } from "./brief-action-cards.js";
@@ -117,6 +117,10 @@
     }
   }
 
+  const riseSources = $derived(welcomeRiseSources(companies));
+  /** The count the reveal ends on, so the brief after it says the same thing. Only when the reveal ran here. */
+  let revealed = $state(false);
+  const runStats = $derived(revealed ? riseFrame(riseRevealAt(riseSources.length - 1), riseSources).countText || null : null);
   /** The connect section's inputs: one scan for the AI apps and the suggested integrations. */
   const connectApps = $derived.by((): WelcomeAiApps | null => {
     if (!aiApps && !connect) return null;
@@ -134,6 +138,7 @@
           }
         : null,
       session,
+      runStats,
     };
   });
   setWelcomeAiApps({
@@ -144,12 +149,13 @@
 
   const pct = $derived(progress == null ? null : Math.round(Math.min(1, Math.max(0, progress)) * 100));
   const rising = $derived(!ready && !onsetup && !blocked);
-  const riseSources = $derived(welcomeRiseSources(companies));
+
   /** Keeps the sunrise up for the cross-fade after the report is ready. The loading test id is gone at once. */
   let holdRise = $state(false);
   $effect(() => {
     if (rising) {
       holdRise = true;
+      revealed = true;
       return;
     }
     if (!holdRise) return;

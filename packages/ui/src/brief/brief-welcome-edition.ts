@@ -44,15 +44,25 @@ export interface WelcomeEdition {
   note: string | null;
 }
 
-const FILE = /\b[\w.-]+\.(?:svelte|tsx?|jsx?|mjs|cjs|json|md|rs|py|css|scss|html|ya?ml|toml|sh|go|rb|swift|kt)\b/i;
-const BARE_PATH = /^\s*[\w.@~-]+(?:\/[\w.@-]+)+\/?\s*$/;
-const DEEP_PATH = /[\w.@~-]+\/[\w.@-]+\/[\w.@-]+/;
+const FILE = /\b[\w.-]+\.(?:svelte|tsx?|jsx?|mjs|cjs|vue|astro|json|mdx?|txt|csv|sql|lock|rs|py|java|php|cpp|css|scss|html|ya?ml|toml|sh|go|rb|swift|kt)\b/i;
+/** Library names that read like a filename ("Node.js", "Next.js") and are not one. */
+const LIBRARY = /\b(?:node|next|nuxt|vue|react|express|three|d3|chart|alpine|ember|angular|deno|nest|solid|p5)\.js\b/gi;
+/** A path segment has a lowercase letter, so dates, "24/7", and "Q3/Q4" are not paths. */
+const SEG = "[\\w.@-]*[a-z][\\w.@-]*";
+const BARE_PATH = new RegExp(`^\\s*~?${SEG}(?:/${SEG})+/?\\s*$`);
+const DEEP_PATH = new RegExp(`${SEG}/${SEG}/${SEG}`);
+/** A one-slash path inside a sentence, named by a code folder ("Fix the bug in src/brief"). */
+const CODE_DIR = /(?:^|[\s(])(?:src|apps?|packages|libs?|components|scripts|tests?|docs|crates|repos|companies|workspace)\/[\w.@-]+/;
+/** Slashed words that are prose, not a path. */
+const PROSE = new Set(["and/or", "either/or", "he/she", "his/her", "him/her", "s/he", "w/o", "n/a"]);
 
 /** True when text shows a filename or a repo path ("WelcomeReport.svelte", "northstar/desktop"). */
 export function looksLikePath(text: string, repo?: string | null): boolean {
   const t = text.trim();
   if (!t) return false;
-  if (FILE.test(t) || BARE_PATH.test(t) || DEEP_PATH.test(t)) return true;
+  const named = t.replace(LIBRARY, "");
+  if (FILE.test(named) || DEEP_PATH.test(t) || CODE_DIR.test(t)) return true;
+  if (BARE_PATH.test(t) && !PROSE.has(t.toLowerCase())) return true;
   const r = repo?.trim();
   return !!r && r.includes("/") && t.toLowerCase().includes(r.toLowerCase());
 }
@@ -243,7 +253,7 @@ export function welcomeEdition(
     });
   }
   // The agenda card counts exactly the items on this page, by the companies they belong to.
-  const shownNames = names.filter((name) => input.decisions.some((d) => shown.has(d.id) && owner(d) === name));
+  const shownNames = [...new Set(input.decisions.filter((d) => shown.has(d.id)).map(owner))];
   cards.push(dayCard(input, now, shown.size, shownNames));
   if (work) {
     cards.push({

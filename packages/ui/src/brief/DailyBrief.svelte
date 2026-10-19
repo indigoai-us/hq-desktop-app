@@ -294,7 +294,7 @@
   /** Inside the welcome report, outside review mode: the round 11b welcome edition replaces the grid. */
   const edition = $derived(
     welcomeAiApps && !allCards && !sectionOnly && !summaryOnly
-      ? welcomeEdition(input, plan.prompts, new Map(companies.flatMap((c) => [[c.uid.toLowerCase(), c.label] as [string, string], ...(c.slug ? [[c.slug.toLowerCase(), c.label] as [string, string]] : [])])))
+      ? welcomeEdition(input.runStats ? input : { ...input, runStats: welcomeAiApps.current?.runStats ?? null }, plan.prompts, new Map(companies.flatMap((c) => [[c.uid.toLowerCase(), c.label] as [string, string], ...(c.slug ? [[c.slug.toLowerCase(), c.label] as [string, string]] : [])])))
       : null,
   );
 </script>
