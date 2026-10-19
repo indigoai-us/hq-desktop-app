@@ -17,7 +17,8 @@ import { emit } from './mocks/event';
  * this Mac" pull on the ready screen. Each scoped `start_sync` reports
  * `sync:all-complete` after a short delay and is recorded on
  * `window.__hqStartSyncSlugs`. `&pullFail=<slug>` makes that company's first
- * pull report an error, so Try again can be previewed.
+ * pull report an error, so Try again can be previewed. A company's folder is
+ * present (`company_folder_present`) once one of its pulls has succeeded.
  */
 const CREATE_COMPANY_CARD = {
   v: 1,
@@ -59,6 +60,7 @@ const RETURNING_MEMBERSHIPS = [
 ];
 
 const pullFailures = new Set<string>();
+const pulledFolders = new Set<string>();
 
 /** A scoped pull: report `sync:all-complete` for it a moment later, as the runner does. */
 function answerStartSync(args?: Record<string, unknown>): null {
@@ -68,6 +70,7 @@ function answerStartSync(args?: Record<string, unknown>): null {
   const fails = slug !== null && slug === failSlug && !pullFailures.has(slug);
   if (fails) pullFailures.add(slug);
   setTimeout(() => {
+    if (slug !== null && !fails) pulledFolders.add(slug);
     void emit('sync:all-complete', {
       errors: fails ? [{ company: slug, message: 'network unreachable' }] : [],
     });
@@ -116,6 +119,9 @@ export async function companyFlowAnswer(cmd: string, args?: Record<string, unkno
     case 'start_sync':
       if (!returningAccount()) return NOT_HANDLED;
       return answerStartSync(args);
+    case 'company_folder_present':
+      if (!returningAccount()) return NOT_HANDLED;
+      return typeof args?.slug === 'string' && pulledFolders.has(args.slug);
     case 'detect_claude_desktop_connectors':
       if (!connectorSwitch()) return NOT_HANDLED;
       return { present: true, count: 2, outcome: 'servers_detected', inspectedSources: 'claude_desktop_config' };
