@@ -208,7 +208,8 @@
     font-weight: 400;
   }
   /* The mockup's brief head: the title left, one quiet run line right, set on the
-     bottom of the title row so it keeps clear of the horizon rows above it. */
+     bottom of the title row and nudged 4 px lower so it keeps about 16 px clear of
+     the horizon rows above it, still well above the cards. */
   .head {
     display: flex;
     justify-content: space-between;
@@ -220,6 +221,8 @@
     font: 400 23px var(--serif);
   }
   .run {
+    position: relative;
+    top: 4px;
     font-size: 12px;
     color: var(--ink-2);
     text-align: right;
