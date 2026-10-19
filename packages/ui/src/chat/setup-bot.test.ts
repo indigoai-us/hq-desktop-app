@@ -79,19 +79,19 @@ describe("copy", () => {
   it("labels the one action by whether the bot exists yet", () => {
     // The bot starts by itself, so both states open the same waiting
     // conversation; the label says so either way.
-    expect(setupBotActionLabel({ existing: false })).toBe("Open Setup Agent");
-    expect(setupBotActionLabel({ existing: true })).toBe("Open Setup Agent");
-    expect(setupBotActionLabel(null)).toBe("Open Setup Agent");
+    expect(setupBotActionLabel({ existing: false })).toBe("Open your assistant");
+    expect(setupBotActionLabel({ existing: true })).toBe("Open your assistant");
+    expect(setupBotActionLabel(null)).toBe("Open your assistant");
   });
 
-  it("says 'setup bot' everywhere except the button, which is named Setup Agent", () => {
-    const label = "Open Setup Agent";
+  it("calls it 'your assistant' everywhere, never 'setup bot' or an agent", () => {
+    const label = "Open your assistant";
     expect(SETUP_BOT_COPY.run).toBe(label);
     expect(SETUP_BOT_COPY.open).toBe(label);
-    // Everything else is prose about the bot, and never calls it an agent.
-    const prose = [...Object.values(SETUP_BOT_COPY).filter((line) => line !== label), SETUP_BOT_INTRO].join(" ");
+    const prose = [...Object.values(SETUP_BOT_COPY), SETUP_BOT_INTRO].join(" ");
     expect(prose.toLowerCase()).not.toContain("agent");
-    expect(prose).toContain("setup bot");
+    expect(prose.toLowerCase()).not.toContain("setup bot");
+    expect(prose).toContain("Your assistant");
   });
 
   it("points people who prefer Claude Code or Codex at the Launch button", () => {

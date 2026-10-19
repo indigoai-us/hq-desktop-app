@@ -381,7 +381,7 @@ describe("the setup bot this account already owns is adopted, never re-created",
     expect(shown).not.toContain("slug=");
     expect(shown).not.toMatch(/\b\d{3}\b/);
     // It says the true thing instead.
-    expect(q('[data-testid="setup-bot-error"]')?.textContent).toContain("already has a setup bot");
+    expect(q('[data-testid="setup-bot-error"]')?.textContent).toContain("already has an assistant");
     // The whole document, not just the reason nodes.
     expect(host.textContent ?? "").not.toContain("HQ API");
   });

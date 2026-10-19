@@ -313,7 +313,7 @@ describe("#welcome Run Setup creates the setup bot", () => {
     dm.push({
       eventId: "evt_offer",
       body:
-        "Hi, I'm Pickles, your setup bot.\n\nLooks like you use the Claude app. Want to continue setup there?\n\n" +
+        "Hi, I'm Pickles, your HQ assistant.\n\nLooks like you use the Claude app. Want to continue setup there?\n\n" +
         "```hq-block\n" +
         '{"v":1,"blocks":[{"kind":"continueInTool","tool":"claude"},{"kind":"suggestions","items":["Keep going here"]}]}' +
         "\n```",
@@ -358,7 +358,7 @@ describe("#welcome Run Setup creates the setup bot", () => {
 
     const run = q<HTMLButtonElement>('[data-testid="setup-run"]')!;
     await vi.waitFor(() => expect(q('[data-testid="setup-run"]')?.textContent).toContain(SETUP_BOT_COPY.open));
-    expect(q('[data-testid="setup-channel-intro"]')?.textContent).toContain("Your setup bot is in your messages");
+    expect(q('[data-testid="setup-channel-intro"]')?.textContent).toContain("Your assistant is in your messages");
     run.click();
     await settle();
 
@@ -435,7 +435,7 @@ describe("#welcome Run Setup creates the setup bot", () => {
     const run = q<HTMLButtonElement>('[data-testid="setup-run"]')!;
     await vi.waitFor(() => expect(run.textContent).toContain(SETUP_BOT_COPY.autoStarting));
     expect(run.disabled).toBe(true);
-    expect(q('[data-testid="setup-channel-intro"]')?.textContent).toContain("Your setup bot is starting");
+    expect(q('[data-testid="setup-channel-intro"]')?.textContent).toContain("Your assistant is starting");
     finish();
     const chosen = (create.mock.calls as unknown as Array<[{ displayName: string }]>)[0]![0].displayName;
     await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain(chosen));

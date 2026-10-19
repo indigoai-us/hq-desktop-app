@@ -35,7 +35,7 @@ describe("GuidedTour", () => {
     const card = q("guided-tour-card");
     expect(card?.getAttribute("role")).toBe("dialog");
     const titleId = card?.getAttribute("aria-labelledby");
-    expect(titleId && document.getElementById(titleId)?.textContent).toBe("Talk to your setup bot");
+    expect(titleId && document.getElementById(titleId)?.textContent).toBe("Talk to your assistant");
     expect(q("guided-tour-progress")?.textContent?.trim()).toBe("1 of 8");
     expect(q("guided-tour-skip")).toBeTruthy();
     expect(q("guided-tour-back")).toBeNull();
