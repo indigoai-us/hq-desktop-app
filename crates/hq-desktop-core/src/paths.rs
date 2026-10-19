@@ -4772,6 +4772,7 @@ mod tests {
             .map(|value| value.to_string_lossy().into_owned())
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn developer_tools_detection_reads_the_filesystem_only() {
         let tmp = tempfile::TempDir::new().unwrap();
