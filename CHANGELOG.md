@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.11.14] — 2026-10-19
+
 - Setup: when HQ installs Claude Code, qmd, the HQ command line tool and its other npm tools, the install log now prints a "still installing" line every 15 seconds, so a slow install no longer looks stuck. npm also gives up on a stalled download after 60 seconds instead of 5 minutes and tries 4 more times instead of 2. HQ now names the setup scripts these tools need, such as the one that downloads Claude Code, on every platform. npm 11.16 and later 11.x versions still run the setup scripts of packages that are not named and only warn, but npm 12 blocks them, so without the names a tool could install without the parts it downloads. The bundled HQ command line tool is also allowed by its file path, which is how npm matches a local package. If HQ cannot read the npm version, it names the scripts anyway, because older npm only warns about the option. The npm version check now stops a hung npm after 30 seconds and runs once per setup instead of once per attempt. If npm reports a setup script that HQ did not name, the install log shows a warning for it.
 - Windows: the last first-run screen now opens Claude Code in your HQ folder. Before, it could open the wrong folder or no folder at all. If the folder HQ had saved is not an HQ folder, HQ now uses an HQ folder it finds on the computer, such as `C:\hq` or your home `hq` folder. During first-run setup the folder you picked still wins. A fresh install now uses an HQ folder that already exists instead of making a second, empty one. The ready screen shows Windows folders as full paths, such as `C:\Users\you\hq`, instead of `~\hq`.
 - Setup on a Mac: first-run setup no longer asks macOS to install Apple's developer tools. On a Mac without them, setup used to open Apple's install prompt, which could ask for a 19 GB download and stop setup until it finished. HQ now uses only the git and Node it installs itself, and never runs the macOS stand-ins for git, python3, make or clang that open that prompt. The "Installing Apple's developer tools" screen is gone. If HQ cannot install its own tools, setup handles the failure the same way it did before.
@@ -28,10 +30,13 @@ The release moves it under the version it ships in.
 - Daily Brief: Create brief stays available beside a sign-in or start fix, so a fix made elsewhere is checked again.
 - Badges: the holographic light on the back of a badge card now looks like the foil on its front: fine etched lines in a pearl rainbow that follow the pointer. Before, it showed as a flat green-grey haze with plain rings that spread over the story and made the smaller text hard to read. The light is now softer behind the words, so the story stays easy to read while it shines.
 - Badges: clicking a badge on the Badges page opens its details again, with its levels and a "View card" button, instead of jumping straight to the holographic card. Back returns to the Badges page.
+- Badges: a new honor, Ecom Rat, for HQ's honorary rat of ecommerce.
+
+## [0.11.13] — 2026-10-16
+
 - Usage pricing: first-run setup shows one card for a new company: $10 of usage included every month, the per-use rates (sync, gateway call, HQ MCP call, agent run, storage, secret), the $5 vault fee waived during the trial, cloud bot boxes from $100 to $800 a month, and a 30-day trial capped at $500. The rates come from HQ's price list and fall back to the published card when it cannot be read. "Sign up free" continues setup; "Request an enterprise demo" and "Use HQ free, self-hosted or on-prem" open in your browser. Starter and Workforce are no longer offered to new companies, and nothing goes to checkout. Existing companies keep their plans.
 - Company settings: Billing for a usage-priced company shows this month's usage, the credit left of the $10 included, the vault fee and the cloud bot box prices instead of seats, and has no Workforce upgrade. Other companies see seats as before.
 - Cloud bot, Slack bot, external bot, meeting recording and invite messages no longer say you need Starter, Workforce or a seat upgrade. They say the company's plan does not include the feature yet.
-- Badges: a new honor, Ecom Rat, for HQ's honorary rat of ecommerce.
 
 ## [0.11.12] — 2026-10-16
 
