@@ -12,6 +12,7 @@ import { flushSync, mount, tick, unmount } from "svelte";
 import WelcomeRunsHarness from "./WelcomeReportRunsHarness.test-support.svelte";
 import type { BriefSweepSource } from "./brief-data.js";
 import core from "./fixtures/core-1432-welcome.json";
+import { WELCOME_OPENABLE_HARNESSES } from "../chat/first-run/continue-in-tool.js";
 
 const RUN = "brief-20261018-090000";
 const CATCH_UP = "Catch me up on what I worked on recently and suggest what to do next.";
@@ -237,22 +238,48 @@ describe("welcome edition components (US-019)", () => {
     expect(watchTitles()).toEqual(["Connect your AI apps", "Connect GitHub", "Look around your HQ"]);
   });
 
-  it("opens Cursor for a Cursor-primary person when the host can, and shows no button when it cannot", async () => {
-    const openHarness = host(["claude-code", "codex", "cursor"]);
-    await renderWelcome(brief(core.cursor_person), { report: { openHarness } });
+  it("gives a Cursor-primary person an open path: the desktop app opens HQ in Cursor", async () => {
+    const onopen = vi.fn();
+    const openHarness = host([...WELCOME_OPENABLE_HARNESSES]);
+    await renderWelcome(brief(core.cursor_person), {
+      report: { openTool: { label: "Open Claude Code", detail: null, busy: false, error: null, onopen }, openHarness },
+    });
     expect(watchTitles()).toContain("Open HQ in Cursor");
     button("open-hq-in-harness")!.click();
     await settle();
     expect(openHarness.open).toHaveBeenCalledWith("cursor", CATCH_UP);
+    expect(onopen).not.toHaveBeenCalled();
+    expect(id("brief-open-tool")).toBeNull();
     expect(sections().find((s) => s.name === "Where you work")).toEqual({ name: "Where you work", lines: ["Cursor · 14 sessions", "Claude Code · 4 sessions"] });
-    reset();
+  });
 
-    const onlaunch = vi.fn(async () => null);
+  it("keeps the report's open bar and drops the dead row when the host cannot open the named harness", async () => {
+    const onopen = vi.fn();
     const claudeOnly = host();
-    await renderWelcome(brief(core.cursor_person), { report: { openHarness: claudeOnly }, page: { onlaunch } });
-    expect(watchTitles()).toContain("Open HQ in Cursor");
+    await renderWelcome(brief(core.cursor_person), {
+      report: { openTool: { label: "Open Claude Code", detail: null, busy: false, error: null, onopen }, openHarness: claudeOnly },
+      page: { onlaunch: vi.fn(async () => null) },
+    });
+    // No row that names an action the person cannot take.
+    expect(watchTitles()).not.toContain("Open HQ in Cursor");
     expect(button("open-hq-in-harness")).toBeNull();
+    // The person still has a way to open a tool: the report's own bar, after the brief.
+    const bar = id("brief-open-tool");
+    expect(bar).not.toBeNull();
+    expect(beforeEdition()).not.toContain("brief-open-tool");
     expect(claudeOnly.open).not.toHaveBeenCalled();
+  });
+
+  it("never shows a lead card without an action", async () => {
+    for (const json of [core.cursor_person, core.codex_company, core.claude_person, core.showcase_personal, core.showcase_company]) {
+      for (const harnesses of [[...WELCOME_OPENABLE_HARNESSES], ["claude-code"]]) {
+        await renderWelcome(brief(json), { report: { openHarness: host(harnesses) }, page: { onlaunch: vi.fn(async () => null) } });
+        for (const lead of target.querySelectorAll<HTMLElement>('[data-testid="welcome-edition-card"].lead')) {
+          expect(lead.querySelector('[data-testid="welcome-edition-action"], [data-testid="welcome-edition-note"]')).not.toBeNull();
+        }
+        reset();
+      }
+    }
   });
 
   it("shows the plain line when the harness could not open", async () => {
@@ -346,7 +373,8 @@ describe("welcome edition components (US-019)", () => {
   });
 
   it("renders the 16.0.30 shape without an empty-state line", async () => {
-    await renderWelcome(brief(LEGACY), { page: { onconnectcompany: vi.fn() } });
+    // A host that can open Claude Code, like the desktop app; without one the open row is dropped.
+    await renderWelcome(brief(LEGACY), { report: { openHarness: host() }, page: { onconnectcompany: vi.fn() } });
     const text = flat(target);
     expect(text).not.toMatch(/nothing owed/i);
     expect(text).not.toMatch(/no sessions/i);
