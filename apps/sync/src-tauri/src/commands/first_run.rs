@@ -320,13 +320,15 @@ fn handoff_flag_value(read: Result<Option<bool>, ()>) -> Option<bool> {
 #[cfg(not(target_os = "windows"))]
 async fn first_run_handoff_hint_now() -> String {
     async fn bounded(flag: &str) -> Option<bool> {
-        tokio::time::timeout(
+        // A timeout here skips `feature_flag_read`'s demo default, so apply
+        // it to the timed-out read too (a no-op outside demo builds).
+        let read = tokio::time::timeout(
             FIRST_RUN_HINT_FLAG_TIMEOUT,
             crate::commands::hq_pro::feature_flag_read(flag),
         )
         .await
-        .ok()
-        .and_then(handoff_flag_value)
+        .unwrap_or_else(|_| crate::demo_build::flag_default(flag, Err(())));
+        handoff_flag_value(read)
     }
     let (visual, found_apps) = tokio::join!(
         bounded(FIRST_RUN_HINT_FLAGS[0]),

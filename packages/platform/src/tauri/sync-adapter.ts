@@ -216,6 +216,16 @@ function invokeError(err: unknown): ReturnType<typeof failure> {
   );
 }
 
+/**
+ * The flags `hasFeature` may read as on in a demo build: a mirror of Rust
+ * `demo_build::DEMO_FLAG_DEFAULTS_ON` (`scripts/demo-core-prerelease-contract.test.ts`
+ * pins the two equal). The Rust command decides; this set only keeps every other flag
+ * read free of the extra call.
+ */
+export const DEMO_FLAG_DEFAULT_CANDIDATES: ReadonlySet<string> = new Set([
+  FIRST_RUN_FOUND_APPS_FLAG,
+]);
+
 export function createSyncPlatformAdapter(
   config: SyncPlatformAdapterConfig,
 ): PlatformAdapter {
@@ -237,6 +247,33 @@ export function createSyncPlatformAdapter(
     createClient: config.createFlagClient,
   });
   const flags = flagsFor(null);
+  // Flags a demo build (`HQ_CORE_PRERELEASE`) reads as on when the registry
+  // says false or cannot answer. Read once per session from Rust
+  // `demo_flag_defaults_on`, which is empty in every other build; an error
+  // reading it means an empty list, so the read keeps today's answer. Only
+  // flags in DEMO_FLAG_DEFAULT_CANDIDATES ask, so no other read gains a call.
+  let demoFlagDefaultsOn: Promise<readonly string[]> | null = null;
+  function demoFlagDefaults(): Promise<readonly string[]> {
+    demoFlagDefaultsOn ??= Promise.resolve()
+      .then(() => invokeFn('demo_flag_defaults_on'))
+      .then(
+        (list) =>
+          Array.isArray(list)
+            ? list.filter((flag): flag is string => typeof flag === 'string')
+            : [],
+        () => [],
+      );
+    return demoFlagDefaultsOn;
+  }
+  async function withDemoFlagDefault(
+    flag: string,
+    read: AdapterPromise<boolean>,
+  ): AdapterPromise<boolean> {
+    const result = await read;
+    if (!DEMO_FLAG_DEFAULT_CANDIDATES.has(flag)) return result;
+    if (result.ok && result.value) return result;
+    return (await demoFlagDefaults()).includes(flag) ? ok(true) : result;
+  }
 
   function hasFeatureLegacy(flag: string): AdapterPromise<boolean> {
     if (flag === COMPANY_NAME_PREFILL_FLAG) {
@@ -710,7 +747,10 @@ export function createSyncPlatformAdapter(
         flag === HUMAN_ONLY_CONVERSATIONS_FLAG
           ? // Pinned per release; the registry cannot turn it off.
             Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT))
-          : flagsFor(scope?.companyUid).resolve(flag, () => hasFeatureLegacy(flag)),
+          : withDemoFlagDefault(
+              flag,
+              flagsFor(scope?.companyUid).resolve(flag, () => hasFeatureLegacy(flag)),
+            ),
       hasCompanyFeature: (flag, companyUid) =>
         resolveCompanyFeature(createHqProFlagFetch(invokeFn), flag, companyUid),
       subscribeFeature: (flag, onChange) =>

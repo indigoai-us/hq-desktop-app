@@ -36,6 +36,19 @@ Without the switch, every caller keeps the stable-only rule it had before:
 workflows never set it, and `scripts/demo-core-prerelease-contract.test.ts`
 fails if a workflow, build script, package script or Tauri config starts to.
 
+The same switch makes a demo build read every flag in `DEMO_FLAG_DEFAULTS_ON`
+(also in `demo_build.rs`) as on when hq-flags answers false, has no value for
+it, or cannot be reached. The list holds one flag,
+`desktop.first-run-found-apps-v1`, so a walk shows the "Your apps" first-run
+step without a registry change. Rust reads it through `feature_flag_read`
+(which also covers the first-run handoff hint). The desktop shell's
+`hasFeature` reads it through the `demo_flag_defaults_on` command, once per
+session; if that command fails, the list counts as empty. No other flag
+changes. Without the switch the command returns an empty list and every flag
+read is unchanged. To add a flag, add it to `DEMO_FLAG_DEFAULTS_ON` and to
+`DEMO_FLAG_DEFAULT_CANDIDATES` in `packages/platform/src/tauri/sync-adapter.ts`;
+`scripts/demo-core-prerelease-contract.test.ts` fails until both match.
+
 `HQ_UPDATER_DISABLED=1` (from PR 1504) still works on its own as a run-time
 variable for the updater paths. `HQ_SCRATCH_BUILD` covers more, and it is
 baked into the build.

@@ -347,11 +347,30 @@ pub(crate) async fn feature_flag_value(flag: &str) -> Option<bool> {
 /// Resolve one flag without collapsing an unreadable response into a real
 /// off value. `Ok(None)` means hq-flags answered successfully without this
 /// key; `Err(())` means the request or response could not be trusted.
+///
+/// A build made with `HQ_CORE_PRERELEASE` reads every flag in
+/// `demo_build::DEMO_FLAG_DEFAULTS_ON` as on; any other build returns the
+/// read unchanged.
 pub(crate) async fn feature_flag_read(flag: &str) -> Result<Option<bool>, ()> {
-    feature_flag_read_with_fetch(flag, || {
+    feature_flag_read_for_build(crate::demo_build::core_prerelease(), flag, || {
         hq_pro_fetch("/v1/flags/resolve".to_string(), "GET".to_string(), None, None)
     })
     .await
+}
+
+/// [`feature_flag_read`] with the build's demo switch passed in, so tests
+/// cover both builds without a compile-time env var.
+async fn feature_flag_read_for_build<Fetch, FetchFuture>(
+    demo_on: bool,
+    flag: &str,
+    fetch: Fetch,
+) -> Result<Option<bool>, ()>
+where
+    Fetch: FnOnce() -> FetchFuture,
+    FetchFuture: Future<Output = Result<HqProHttpResponse, String>>,
+{
+    let read = feature_flag_read_with_fetch(flag, fetch).await;
+    crate::demo_build::apply_flag_default(demo_on, flag, read)
 }
 
 async fn feature_flag_read_with_fetch<Fetch, FetchFuture>(
@@ -902,6 +921,69 @@ mod tests {
         })
         .await;
         assert_eq!(off, Ok(Some(false)));
+    }
+
+    fn flag_body(flag: &str, value: bool) -> Result<HqProHttpResponse, String> {
+        Ok(HqProHttpResponse {
+            status: 200,
+            body: format!(r#"{{"version":1,"flags":{{"{flag}":{value}}}}}"#),
+            retry_after: None,
+        })
+    }
+
+    fn no_flags() -> Result<HqProHttpResponse, String> {
+        Ok(HqProHttpResponse {
+            status: 200,
+            body: r#"{"version":1,"flags":{}}"#.to_string(),
+            retry_after: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn demo_build_reads_found_apps_on_when_server_says_false() {
+        let flag = "desktop.first-run-found-apps-v1";
+        let read = feature_flag_read_for_build(true, flag, || async { flag_body(flag, false) }).await;
+        assert_eq!(read, Ok(Some(true)));
+    }
+
+    #[tokio::test]
+    async fn demo_build_reads_found_apps_on_when_server_errors_or_has_no_answer() {
+        let flag = "desktop.first-run-found-apps-v1";
+        let error = feature_flag_read_for_build(true, flag, || async {
+            Err::<HqProHttpResponse, String>("offline".to_string())
+        })
+        .await;
+        assert_eq!(error, Ok(Some(true)));
+        let none = feature_flag_read_for_build(true, flag, || async { no_flags() }).await;
+        assert_eq!(none, Ok(Some(true)));
+    }
+
+    #[tokio::test]
+    async fn non_demo_build_keeps_found_apps_false_and_none() {
+        let flag = "desktop.first-run-found-apps-v1";
+        let off = feature_flag_read_for_build(false, flag, || async { flag_body(flag, false) }).await;
+        assert_eq!(off, Ok(Some(false)));
+        let none = feature_flag_read_for_build(false, flag, || async { no_flags() }).await;
+        assert_eq!(none, Ok(None));
+        let error = feature_flag_read_for_build(false, flag, || async {
+            Err::<HqProHttpResponse, String>("offline".to_string())
+        })
+        .await;
+        assert_eq!(error, Err(()));
+    }
+
+    #[tokio::test]
+    async fn demo_build_never_changes_other_flags() {
+        let flag = "desktop.visual-first-run";
+        let off = feature_flag_read_for_build(true, flag, || async { flag_body(flag, false) }).await;
+        assert_eq!(off, Ok(Some(false)));
+        let none = feature_flag_read_for_build(true, flag, || async { no_flags() }).await;
+        assert_eq!(none, Ok(None));
+        let error = feature_flag_read_for_build(true, flag, || async {
+            Err::<HqProHttpResponse, String>("offline".to_string())
+        })
+        .await;
+        assert_eq!(error, Err(()));
     }
 
     #[test]

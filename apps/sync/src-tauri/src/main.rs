@@ -806,6 +806,7 @@ fn main() {
             commands::auth::get_auth_session,
             commands::hq_pro::hq_pro_fetch,
             commands::hq_pro::hq_pro_api_base,
+            demo_build::demo_flag_defaults_on,
             commands::vault_s3::vault_s3_put,
             commands::vault_s3::vault_s3_get,
             commands::auth::has_stored_token,
