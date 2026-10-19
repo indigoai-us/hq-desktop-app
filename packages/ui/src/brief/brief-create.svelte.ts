@@ -22,7 +22,7 @@ import {
   BRIEF_TRY_AGAIN_WAIT_MS,
   failedMessage,
   isSkillNotFound,
-  slowStartMessage,
+  healMessage,
   isBriefRunId,
   parseBriefStatus,
   runIdTime,
@@ -162,6 +162,8 @@ export class BriefCreateRun {
     if (this.busy) return Promise.resolve();
     // Try again on the slow-start line keeps its name ("welcome brief").
     const healing = this.phase.kind === "failed" && this.phase.heal != null;
+    // Try again on the update line looks once: no automatic retry while the skill is still missing.
+    const skillMissing = this.phase.kind === "failed" && this.phase.heal === "skill-not-found";
     const label = opts.label?.trim() || (healing ? this.label : "brief");
     const unstarted = this.unstartedRun();
     if (unstarted && !opts.force) {
@@ -178,7 +180,7 @@ export class BriefCreateRun {
     this.duplicatePrompt = false;
     this.endWatch();
     this.label = label;
-    this.retried = false;
+    this.retried = skillMissing;
     return this.begin();
   }
 
@@ -236,9 +238,10 @@ export class BriefCreateRun {
   }
 
   /**
-   * A run that never started: show the one slow-start line with Try again.
-   * A missing skill first sends one fresh job by itself (the first run has
-   * already ended). A start timeout sends nothing: a busy bot that handles one
+   * A run that never started: show the line for its cause with Try again.
+   * A missing skill first starts once more by itself (the first run has
+   * already ended), only on the first start; Try again on the update line
+   * does not repeat that. A start timeout sends nothing: a busy bot that handles one
    * job at a time may still build the first one, with its welcome edition, so
    * HQ keeps watching that run and follows it if it starts.
    */
@@ -250,7 +253,7 @@ export class BriefCreateRun {
       this.forget();
       return this.begin();
     }
-    const phase: Finished = { kind: "failed", runId, message: slowStartMessage(this.label), heal: why };
+    const phase: Finished = { kind: "failed", runId, message: healMessage(why, this.label), heal: why };
     if (why === "start-timeout" && runId) {
       const now = this.now().getTime();
       this.phase = phase;

@@ -7,6 +7,7 @@ import {
   BRIEF_STALL_TIMEOUT_MS,
   advanceBriefRun,
   briefJobMessage,
+  briefSkillInstalled,
   failedMessage,
   plainLine,
   stillWorkingLine,
@@ -262,16 +263,16 @@ describe("status polling state machine", () => {
     expect(advanceBriefRun(waiting, written, 5_000)).toEqual({
       kind: "failed",
       runId: RUN,
-      message: "Your brief is taking longer than expected.",
+      message: "Your HQ needs an update before it can build a brief. Update HQ Core in Settings, under Updates, then try again.",
       heal: "skill-not-found",
     });
     // The job asks for exactly this when the skill is missing (state + error).
     expect(advanceBriefRun(waiting, status({ state: "failed", error: "skill_not_found" }), 5_000)).toMatchObject({ heal: "skill-not-found" });
     // `state` wins when both are present, and a bare code is never shown as the message.
     expect(advanceBriefRun(waiting, status({ state: "running", status: "failed", step: "Sweeping" }), 5_000)).toMatchObject({ kind: "running" });
-    expect(failedMessage({ state: "failed", error: "skill_not_found", message: null })).toBe("Your brief is taking longer than expected.");
+    expect(failedMessage({ state: "failed", error: "skill_not_found", message: null })).toBe("Your HQ needs an update before it can build a brief. Update HQ Core in Settings, under Updates, then try again.");
     expect(failedMessage({ state: "failed", error: "skill_not_found", message: "No daily-brief skill is installed in this HQ." })).toBe(
-      "Your brief is taking longer than expected.",
+      "Your HQ needs an update before it can build a brief. Update HQ Core in Settings, under Updates, then try again.",
     );
     expect(failedMessage({ state: "failed", error: "The sweep could not read GitHub.", message: null })).toBe("The brief stopped before it finished.");
   });
@@ -281,11 +282,11 @@ describe("status polling state machine", () => {
       expect(advanceBriefRun(waiting, status({ state: "failed", error }), 5_000)).toEqual({
         kind: "failed",
         runId: RUN,
-        message: "Your brief is taking longer than expected.",
+        message: "Your HQ needs an update before it can build a brief. Update HQ Core in Settings, under Updates, then try again.",
         heal: "skill-not-found",
       });
       expect(failedMessage({ state: "failed", error, message: "No daily-brief skill is installed in this HQ." })).toBe(
-        "Your brief is taking longer than expected.",
+        "Your HQ needs an update before it can build a brief. Update HQ Core in Settings, under Updates, then try again.",
       );
     }
     expect(advanceBriefRun(waiting, status({ state: "failed", error: "skill_not_foundish" }), 5_000)).not.toHaveProperty("heal");
@@ -465,6 +466,64 @@ describe("previousReadyRun", () => {
     expect(plainLine("x".repeat(81), 80)).toBeNull();
     expect(plainLine("see /Users/x/brief-sweep.py", 80)).toBeNull();
     expect(plainLine("GH_TOKEN is missing", 80)).toBeNull();
+  });
+
+  it("plainLine keeps dates and lowercase snake_case words, and still hides env names and paths", () => {
+    expect(plainLine("Next review on 10/18/2026", 80)).toBe("Next review on 10/18/2026");
+    expect(plainLine("Shipped 3 fixes between 10/12 and 10/18/2026", 80)).toBe("Shipped 3 fixes between 10/12 and 10/18/2026");
+    expect(plainLine("Waiting on the follow_up from design", 80)).toBe("Waiting on the follow_up from design");
+    expect(plainLine("Read 4 threads in daily_brief and team_sync", 80)).toBe("Read 4 threads in daily_brief and team_sync");
+    expect(plainLine("HQ_FOLDER is not set", 80)).toBeNull();
+    expect(plainLine("set GITHUB_TOKEN first", 80)).toBeNull();
+    expect(plainLine("read src/brief/index.json", 80)).toBeNull();
+    expect(plainLine("see /Users/x/notes", 80)).toBeNull();
+    expect(plainLine("wrote workspace/brief/2026", 80)).toBeNull();
+  });
+});
+
+describe("briefSkillInstalled", () => {
+  const CORE = ".claude/skills/daily-brief/SKILL.md";
+  const MIRROR = ".claude/skills/personal:daily-brief/SKILL.md";
+  const PERSONAL = "personal/skills/daily-brief/SKILL.md";
+  const reader = (present: string[], why = "not found") => {
+    const asked: string[] = [];
+    const read = async (path: string) => {
+      asked.push(path);
+      return present.includes(path) ? { ok: true as const } : { ok: false as const, why };
+    };
+    return { read, asked };
+  };
+
+  it("finds the skill in the personal overlay when only that copy is present", async () => {
+    const r = reader([PERSONAL]);
+    expect(await briefSkillInstalled(r.read)).toBe(true);
+    expect(r.asked).toEqual([CORE, MIRROR, PERSONAL]);
+  });
+
+  it("finds the skill in the .claude mirror of the personal skill", async () => {
+    expect(await briefSkillInstalled(reader([MIRROR]).read)).toBe(true);
+  });
+
+  it("finds the core skill with one read", async () => {
+    const r = reader([CORE]);
+    expect(await briefSkillInstalled(r.read)).toBe(true);
+    expect(r.asked).toEqual([CORE]);
+  });
+
+  it("is missing only when every location is confirmed absent", async () => {
+    const r = reader([], "No such file or directory (os error 2)");
+    expect(await briefSkillInstalled(r.read)).toBe(false);
+    expect(r.asked).toEqual([CORE, MIRROR, PERSONAL]);
+  });
+
+  it("an HQ folder that does not resolve is the HQ folder case, not a missing skill", async () => {
+    expect(await briefSkillInstalled(reader([], "could not resolve HQ folder: No such file or directory (os error 2)").read)).toBe("hq-folder");
+  });
+
+  it("a read that fails for another reason is unknown, so the job is still sent", async () => {
+    const warned: string[] = [];
+    expect(await briefSkillInstalled(reader([], "permission denied").read, (m) => void warned.push(m))).toBeNull();
+    expect(warned.join("\n")).toMatch(/could not check the skill/);
   });
 });
 

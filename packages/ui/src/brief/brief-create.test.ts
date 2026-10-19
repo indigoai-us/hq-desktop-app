@@ -7,6 +7,10 @@ const BOT = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBo
 const RUN = "brief-20261008-090000";
 // A dispatch deadline shows the same plain slow-start line as a run that never started.
 const DEADLINE = { kind: "failed", runId: null, message: "Your brief is taking longer than expected.", heal: "dispatch-timeout" };
+/** The line for a core older than 16.0.30, which has no daily-brief skill. */
+const UPDATE = "Your HQ needs an update before it can build a brief. Update HQ Core in Settings, under Updates, then try again.";
+/** The line for an HQ folder that could not be read. */
+const FOLDER = "HQ could not open your HQ folder. Choose it again in Settings, under Sync, then try again.";
 
 function harness(over: Partial<BriefCreator> = {}, files: Record<string, string> = {}) {
   let clock = new Date(2026, 9, 8, 9, 0, 0).getTime();
@@ -157,7 +161,7 @@ describe("BriefCreateRun", () => {
     expect(again.creator.notify).not.toHaveBeenCalled();
   });
 
-  it("a missing daily-brief skill skips the send and goes straight to the heal path, with no wait", async () => {
+  it("a missing daily-brief skill (a core older than 16.0.30) skips the send and shows the update line at once, with no wait", async () => {
     const skillInstalled = vi.fn(async () => false);
     const h = harness({ skillInstalled });
     await h.run.start({ label: "welcome brief" });
@@ -167,7 +171,7 @@ describe("BriefCreateRun", () => {
     expect(h.run.phase).toEqual({
       kind: "failed",
       runId: null,
-      message: "Your welcome brief is taking longer than expected.",
+      message: UPDATE,
       heal: "skill-not-found",
     });
     expect(h.timers).toHaveLength(0);
@@ -192,7 +196,7 @@ describe("BriefCreateRun", () => {
     expect(thrown.creator.dispatch).toHaveBeenCalledTimes(1);
   });
 
-  it("a run that reports skill_not_found retries once by itself, then shows the slow-start line", async () => {
+  it("a run that reports skill_not_found retries once by itself, then shows the update line", async () => {
     const h = harness();
     await h.run.start({ label: "welcome brief" });
     const notFound = (id: string) =>
@@ -210,10 +214,62 @@ describe("BriefCreateRun", () => {
     expect(h.run.phase).toEqual({
       kind: "failed",
       runId: retryId,
-      message: "Your welcome brief is taking longer than expected.",
+      message: UPDATE,
       heal: "skill-not-found",
     });
     expect(JSON.stringify(h.run.phase)).not.toContain("No daily-brief skill");
+  });
+
+  it("on a core older than 16.0.30, Try again checks the skill once more and starts no automatic retry", async () => {
+    const skillInstalled = vi.fn(async () => false);
+    const h = harness({ skillInstalled });
+    await h.run.start({ label: "welcome brief" });
+    expect(skillInstalled).toHaveBeenCalledTimes(2);
+    expect(h.run.phase).toEqual({ kind: "failed", runId: null, message: UPDATE, heal: "skill-not-found" });
+    const retries = () => h.logs.filter((m) => m.includes("retrying once")).length;
+    expect(retries()).toBe(1);
+    // Each Try again is one more look, never two, while the file is still missing.
+    await h.run.start();
+    expect(skillInstalled).toHaveBeenCalledTimes(3);
+    expect(h.run.phase).toEqual({ kind: "failed", runId: null, message: UPDATE, heal: "skill-not-found" });
+    await h.run.start();
+    expect(skillInstalled).toHaveBeenCalledTimes(4);
+    expect(retries()).toBe(1);
+    expect(h.creator.dispatch).not.toHaveBeenCalled();
+    expect(h.timers).toHaveLength(0);
+    expect(JSON.stringify(h.run.phase)).not.toMatch(/taking longer/);
+  });
+
+  it("after HQ is updated, Try again on the update line sends the job", async () => {
+    const skillInstalled = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true);
+    const h = harness({ skillInstalled });
+    await h.run.start();
+    expect(h.run.phase).toMatchObject({ message: UPDATE, heal: "skill-not-found" });
+    await h.run.start();
+    expect(skillInstalled).toHaveBeenCalledTimes(3);
+    expect(h.creator.dispatch).toHaveBeenCalledTimes(1);
+    expect(h.run.phase).toMatchObject({ kind: "waiting" });
+  });
+
+  it("Try again after the bot reported skill_not_found sends one job and retries nothing by itself", async () => {
+    const h = harness();
+    await h.run.start();
+    const notFound = (id: string) => JSON.stringify({ run_id: id, state: "failed", error: "skill_not_found" });
+    const sent = () => (h.creator.dispatch as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[2] as string);
+    h.files[`workspace/brief/${RUN}/status.json`] = notFound(RUN);
+    await h.tick();
+    await vi.waitFor(() => expect(sent()).toHaveLength(2));
+    h.files[`workspace/brief/${sent()[1]}/status.json`] = notFound(sent()[1]!);
+    await h.tick();
+    expect(h.run.phase).toMatchObject({ message: UPDATE, heal: "skill-not-found" });
+    h.advance(1_000);
+    await h.run.start();
+    expect(sent()).toHaveLength(3);
+    h.files[`workspace/brief/${sent()[2]}/status.json`] = notFound(sent()[2]!);
+    await h.tick();
+    await Promise.resolve();
+    expect(sent()).toHaveLength(3);
+    expect(h.run.phase).toEqual({ kind: "failed", runId: sent()[2], message: UPDATE, heal: "skill-not-found" });
   });
 
   it("a plain start timeout sends no second job: it shows one plain line and keeps watching the first run", async () => {
@@ -316,7 +372,7 @@ describe("BriefCreateRun", () => {
     expect(h.run.phase).toMatchObject({ kind: "waiting", runId: second });
   });
 
-  it("an HQ folder that cannot be read shows the slow-start line without sending, logged as an HQ folder error", async () => {
+  it("an HQ folder that cannot be read shows the HQ folder line without sending, logged as an HQ folder error", async () => {
     const skillInstalled = vi.fn(async () => "hq-folder" as const);
     const h = harness({ skillInstalled });
     await h.run.start({ label: "welcome brief" });
@@ -326,7 +382,7 @@ describe("BriefCreateRun", () => {
     expect(h.run.phase).toEqual({
       kind: "failed",
       runId: null,
-      message: "Your welcome brief is taking longer than expected.",
+      message: FOLDER,
       heal: "hq-folder",
     });
     expect(h.logs.join("\n")).toMatch(/HQ folder/);
@@ -334,16 +390,21 @@ describe("BriefCreateRun", () => {
   });
 
   it("Try again on the welcome brief's slow-start line keeps calling it the welcome brief", async () => {
-    const skillInstalled = vi.fn(async () => false);
-    const h = harness({ skillInstalled });
-    await h.run.start({ label: "welcome brief" });
+    const h = harness({ check: vi.fn(() => new Promise<never>(() => {})) });
+    const first = h.run.start({ label: "welcome brief" });
+    h.deadlines[0]!();
+    await first;
     expect(h.run.phase).toMatchObject({ message: "Your welcome brief is taking longer than expected." });
     // The Try again button calls start() with no label.
-    await h.run.start();
+    const again = h.run.start();
+    h.deadlines[1]!();
+    await again;
     expect(h.run.phase).toMatchObject({ message: "Your welcome brief is taking longer than expected." });
     // A brief started after dismissing is a plain brief again.
     h.run.dismiss();
-    await h.run.start();
+    const plain = h.run.start();
+    h.deadlines[2]!();
+    await plain;
     expect(h.run.phase).toMatchObject({ message: "Your brief is taking longer than expected." });
   });
 
