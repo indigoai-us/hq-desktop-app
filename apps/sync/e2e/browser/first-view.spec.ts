@@ -214,9 +214,29 @@ test('the count line comes from the import report on disk, read through the app 
   await expect(count).toContainText('402 sessions over 37 days');
   await expect(count).not.toContainText('1 session');
 
-  // The suggested integrations (GitHub, Linear and Slack, found on this Mac) show as Connect rows.
+  // The sunrise line names the report's tools through the approved template.
+  await expect(page.locator('[data-testid="brief-sunrise"] .sub')).toHaveText('HQ read your Claude Code and Codex sessions.');
+
+  // Where you work: one row per report tool with its report count, in report.tools order
+  // (Claude Code 371 first, then Codex 31). The welcome row's single session shows nowhere.
+  const where = page.getByTestId('first-view-where-row');
+  await expect(where).toHaveCount(2);
+  await expect(where.nth(0)).toHaveText(/^\s*Claude Code\s*371\s*$/);
+  await expect(where.nth(1)).toHaveText(/^\s*Codex\s*31\s*$/);
+
+  // The stats: Sessions and Days from the report, Tools counted and named from report.tools.
+  const stat = (key: string) => page.locator(`[data-testid="brief-stat"][data-stat="${key}"]`);
+  await expect(stat('sessions').locator('.num')).toHaveText('402');
+  await expect(stat('sessions').locator('.cap')).toHaveText('in Claude Code and Codex');
+  await expect(stat('days').locator('.num')).toHaveText('37');
+  await expect(stat('tools').locator('.num')).toHaveText('2');
+  await expect(stat('tools').locator('.cap')).toHaveText('Claude Code, Codex');
+  for (const n of await page.getByTestId('brief-stat').locator('.num').allTextContents()) expect(n.trim()).not.toBe('1');
+
+  // The suggested integrations (found on this Mac) show as Connect rows, GitHub, Linear, Slack in that order.
   const rows = page.locator('[data-testid="first-view-connect-row"][data-integration]');
   await expect(rows).toHaveCount(3);
+  await expect(rows.locator('.fv-rt b')).toHaveText(['GitHub', 'Linear', 'Slack']);
   for (const name of ['GitHub', 'Linear', 'Slack']) {
     await expect(page.getByRole('button', { name: `Connect ${name}` })).toBeVisible();
   }

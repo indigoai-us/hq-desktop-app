@@ -10,7 +10,7 @@
   import type { Snippet } from "svelte";
   import type { FirstViewConnect, FirstViewAiApp, FirstViewIntegration } from "./brief-first-view.js";
   import { WELCOME_HARNESS_NAME, type WelcomeHarnessId } from "./brief-welcome-contract.js";
-  import { FV_CONNECTED, FV_CONNECTED_IN_SETTINGS, FV_FOUND, FV_NOT_CONNECTED, aiAppFound } from "./brief-first-view-copy.js";
+  import { FV_CONNECTED, FV_FOUND, FV_NOT_CONNECTED, aiAppFound } from "./brief-first-view-copy.js";
 
   interface Props {
     connect: FirstViewConnect;
@@ -52,7 +52,7 @@
       {@const found = aiAppFound(a, installed)}
       <li class="fv-row" data-testid="first-view-connect-row" data-harness={a.harness} data-found={found} data-connected={a.connected}>
         <span class="fv-mono" aria-hidden="true">{initials(a.name)}</span>
-        <span class="fv-rt"><b>{a.name}</b><span class="fv-note">{a.connected ? FV_CONNECTED_IN_SETTINGS : found ? FV_FOUND : FV_NOT_CONNECTED}</span></span>
+        <span class="fv-rt"><b>{a.name}</b>{#if !a.connected}<span class="fv-note">{found ? FV_FOUND : FV_NOT_CONNECTED}</span>{/if}</span>
         {#if a.connected}
           <span class="fv-chip" data-testid="first-view-connected">{FV_CONNECTED}</span>
         {:else if found && onopen && canOpen(a.harness)}

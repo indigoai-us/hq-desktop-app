@@ -49,7 +49,7 @@
   import { matchFoundApps } from "../chat/first-run/found-apps.js";
   import { yourAppsView } from "../chat/first-run/your-apps.js";
   import { buildFirstView, type FirstViewConnectMode } from "./brief-first-view.js";
-  import { FV_QUIET_LINE, firstViewStats, firstViewSub } from "./brief-first-view-copy.js";
+  import { FV_QUIET_LINE, firstViewOpenFailed, firstViewStats, firstViewSub } from "./brief-first-view-copy.js";
   import { WELCOME_HARNESS_NAME, type WelcomeAction, type WelcomeHarnessId } from "./brief-welcome-contract.js";
   import type { BriefWelcome } from "./brief-welcome.js";
   import type { FirstViewData } from "./brief-first-view-load.js";
@@ -472,7 +472,7 @@
       fvError = await open.open(harness, prompt);
     } catch (err) {
       console.warn("[hq-desktop] first view open threw:", err);
-      fvError = `Couldn't open ${WELCOME_HARNESS_NAME[harness]}.`;
+      fvError = firstViewOpenFailed(WELCOME_HARNESS_NAME[harness]);
     } finally {
       if (fvError) fvRetry = { harness, prompt };
       fvBusy = { ...fvBusy, [harness]: false };

@@ -29,6 +29,7 @@ const TOOLS: FirstViewTool[] = [
 function fv(over: { tools?: FirstViewTool[]; pills?: Partial<FirstView["pills"]>; topProjects?: FirstView["topProjects"] } = {}): FirstView {
   return {
     whereYouWork: { tools: over.tools ?? TOOLS, open: null },
+    tools: (over.tools ?? TOOLS).map((t) => t.name),
     pills: { sessions: 154, days: 21, projects: 38, tools: 3, ...over.pills },
     topProjects: over.topProjects ?? [{ name: "billing", sessions: 40 }],
   } as unknown as FirstView;

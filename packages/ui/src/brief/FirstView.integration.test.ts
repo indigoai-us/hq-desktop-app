@@ -533,7 +533,7 @@ describe("the first view inside the welcome report", () => {
     expect(flat(target)).not.toMatch(/bring in your past work/i);
   });
 
-  // Rows follow the suggestion source's own order (the Settings integrations page's order).
+  // Rows go GitHub, Linear, Slack (frame 1), whatever order the suggestion source gives.
   it("lists GitHub, Linear and Slack from the suggested-integrations source, with no Core connect actions", async () => {
     const apps = appsHost();
     const onopenintegrations = vi.fn();
@@ -547,7 +547,7 @@ describe("the first view inside the welcome report", () => {
     });
     await vi.waitFor(() => expect(integrationRow("slack.com")).not.toBeNull());
     expect(LEGACY.next_steps.some((a) => a.kind === "connect_integration")).toBe(false);
-    expect(qa('[data-testid="first-view-connect-row"][data-integration]').map((r) => r.dataset.integration)).toEqual(["linear.app", "slack.com", "github.com"]);
+    expect(qa('[data-testid="first-view-connect-row"][data-integration]').map((r) => r.dataset.integration)).toEqual(["github.com", "linear.app", "slack.com"]);
     for (const [slug, name] of [["github.com", "GitHub"], ["linear.app", "Linear"], ["slack.com", "Slack"]] as const) {
       expect(flat(integrationRow(slug)?.querySelector("b"))).toBe(name);
       expect(rowButton(integrationRow(slug))?.getAttribute("aria-label")).toBe(`Connect ${name}`);
@@ -586,6 +586,9 @@ describe("the first view inside the welcome report", () => {
     expect(codex?.querySelector('[data-testid="first-view-connected"]')?.textContent).toBe("Connected");
     expect(rowButton(codex)).toBeNull();
     expect(flat(codex)).not.toMatch(/not connected/i);
+    // "Connected" shows once: the chip, with no "Connected to HQ" note beside it (round 4 m2).
+    expect(flat(codex)).toBe("C Codex Connected");
+    expect(flat(codex).match(/connected/gi)).toHaveLength(1);
     // The others are not connected and have no history: Connect, named per row.
     expect(rowButton(connectRow("cursor"))?.getAttribute("aria-label")).toBe("Connect Cursor");
     expect(rowButton(connectRow("claude-code"))?.getAttribute("aria-label")).toBe("Connect Claude Code");
@@ -614,7 +617,7 @@ describe("the first view inside the welcome report", () => {
     await settle();
     const line = id("first-view-error");
     expect(line?.getAttribute("role")).toBe("alert");
-    expect(flat(line)).toBe("Couldn't open Codex. Try again");
+    expect(flat(line)).toBe("Codex could not open. Open your HQ folder in Codex to keep going. Try again");
     expect(flat(line)).not.toMatch(/ENOENT|spawn|usr/);
     expect(whereOpen()?.disabled).toBe(false);
     openHarness.open.mockResolvedValueOnce(null);

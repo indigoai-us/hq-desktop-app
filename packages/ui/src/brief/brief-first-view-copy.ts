@@ -9,7 +9,8 @@ import type { WelcomeAction, WelcomeHarnessId } from "./brief-welcome-contract.j
 export const FV_FOUND = "Found on this Mac";
 export const FV_NOT_CONNECTED = "Not connected yet";
 export const FV_CONNECTED = "Connected";
-export const FV_CONNECTED_IN_SETTINGS = "Connected to HQ";
+/** Copy sheet lines 50/51: the line when a harness throws on open. */
+export const firstViewOpenFailed = (app: string): string => `${app} could not open. Open your HQ folder in ${app} to keep going.`;
 export const FV_QUIET_LINE = "Your HQ is ready. The sun's up.";
 
 /** "A", "A and B", "A, B, and C". */
@@ -39,7 +40,7 @@ export function firstViewStats(fv: FirstView): FirstViewStat[] {
     p.sessions ? { key: "sessions", label: "Sessions", n: p.sessions, caption: tools.length ? `in ${listOf(tools)}` : "found on this Mac" } : null,
     p.days ? { key: "days", label: "Days", n: p.days, caption: "of work found" } : null,
     p.projects ? { key: "projects", label: "Projects", n: p.projects, caption: fv.topProjects.length ? "most active below" : "found on this Mac" } : null,
-    p.tools ? { key: "tools", label: "Tools", n: p.tools, caption: tools.length ? tools.join(", ") : "found on this Mac" } : null,
+    p.tools ? { key: "tools", label: "Tools", n: p.tools, caption: fv.tools.length ? fv.tools.join(", ") : "found on this Mac" } : null,
   ];
   return all.filter((s): s is FirstViewStat => !!s);
 }

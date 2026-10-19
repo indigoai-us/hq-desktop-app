@@ -119,6 +119,18 @@ describe("buildFirstView", () => {
     expect(v.count).toBe(17);
   });
 
+  it("integration rows go GitHub, Linear, Slack, then the rest in source order (round 4 m3)", () => {
+    const v = view(core.codex_company, {
+      suggestedApps: [
+        { slug: "notion.so", name: "Notion" },
+        { slug: "slack.com", name: "Slack" },
+        { slug: "linear.app", name: "Linear" },
+        { slug: "figma.com", name: "Figma" },
+      ],
+    });
+    expect(v.connect.integrations.map((i) => i.name)).toEqual(["GitHub", "Linear", "Slack", "Notion", "Figma"]);
+  });
+
   it("16.0.30 legacy with import null: next_steps, apps and sessions{total, claude, codex, days_seen}", () => {
     const v = view(legacy.welcome);
     expect(v.count).toBe(41);
@@ -143,6 +155,38 @@ describe("buildFirstView", () => {
     expect(v.pills).toEqual({ sessions: 402, days: 37, projects: 3, tools: 2 });
     expect(v.topProjects.map((p) => p.name)).toEqual(["hq", "hq-desktop-app", "billing-api"]);
     expect(pastWork(v)).toEqual([]);
+  });
+
+  it("a desktop report feeds every first-view part: where rows, tools and the count line (round 4 M1)", () => {
+    // The brief says 38/3 and 9 days; the report says 371/31 over 37 days. Every part reads the report.
+    const v = view(legacy.welcome, { importReport: report });
+    expect(v.whereYouWork.tools.map((t) => [t.harness, t.name, t.sessions])).toEqual([
+      ["claude-code", "Claude Code", 371],
+      ["codex", "Codex", 31],
+    ]);
+    expect(v.tools).toEqual(["Claude Code", "Codex"]);
+    expect(v.pills.tools).toBe(2);
+    expect(v.whereYouWork.tools.reduce((n, t) => n + t.sessions, 0)).toBe(402);
+  });
+
+  it("a report with no tools list names the tools that have report sessions (round 4 M1)", () => {
+    const v = view(legacy.welcome, { importReport: { ...report, tools: [] } });
+    expect(v.whereYouWork.tools.map((t) => [t.harness, t.sessions])).toEqual([
+      ["claude-code", 371],
+      ["codex", 31],
+    ]);
+    expect(v.tools).toEqual(["Claude Code", "Codex"]);
+  });
+
+  it("no import report: where rows, tools and the count line fall back to the welcome row (round 4 M1)", () => {
+    const v = view(legacy.welcome, { importReport: null });
+    expect(v.whereYouWork.tools.map((t) => [t.harness, t.sessions])).toEqual([
+      ["claude-code", 38],
+      ["codex", 3],
+    ]);
+    expect(v.tools).toEqual(["Claude Code", "Codex"]);
+    expect(v.pills).toEqual({ sessions: 41, days: 9, projects: null, tools: 2 });
+    expect(v.countLine).toBe("41 sessions over 9 days in Claude Code and Codex.");
   });
 
   it("a report count with no days hides the days, never borrowing the brief's (review m1)", () => {
