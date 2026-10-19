@@ -4,11 +4,24 @@ import { plainWelcomeText, welcomeEdition, welcomeName } from "./brief-welcome-e
 import { welcomeRiseBriefInput } from "./welcome-rise-run.js";
 
 /** Real single-line names and titles the welcome edition must show (owner ask: show that we know about them). */
-const SHOWN = ["EOD: ship X", "ETL: backfill", "HTTP 404 page redesign", "sk-learn-notes", "MONKEY: business", "usage: docs"];
+const SHOWN = [
+  "EOD: ship X",
+  "ETL: backfill",
+  "HTTP 404 page redesign",
+  "sk-learn-notes",
+  "MONKEY: business",
+  "usage: docs",
+];
+/** Round 6: plain words that name a secret but carry no value. plainLine shows these too. */
+const SHOWN_WORDS = ["Token budget review", "API key rotation plan"];
 
 // Built at run time so no secret-shaped literal sits in the source.
 const v = "A1b2C3d4E5f6G7h8J9k0L1m2N3p4Q5r6S7t8U9v0";
 const jwt = `ey${"J"}hbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.${v}`;
+// An Anthropic-format key body whose short first segment holds "_" and "-" (round 6, M2), and a bare 40-character
+// AWS secret-key shape that mixes upper, lower, digits and "/".
+const antBody = `a_${v.slice(0, 6)}-x_${v}-${v}`;
+const awsSecret = `${v.slice(0, 18)}/${v.slice(18, 38)}+`;
 
 /** Text the welcome filter hides: multi-line, stack traces, home paths and high-confidence credential tokens. */
 const HIDDEN = [
@@ -32,6 +45,40 @@ const HIDDEN = [
   `AKI${"A"}${"Z".repeat(16)}`,
   jwt,
   `Authorization: Bearer ${v}`,
+  // Round 6, M1: Windows home and user paths.
+  "Session in C:\\Users\\sam\\code\\harbor",
+  "C:/Users/sam/code/harbor",
+  "Notes in d:\\users\\sam",
+  "e:/Users/sam",
+  "\\\\fileserver\\share\\sam",
+  "Open \\\\nas\\home",
+  "/mnt/c/Users/sam/code",
+  "Notes on /mnt/D/Users/sam",
+  // Round 6, M2: sk- keys with "_" or "-" early, and any sk-ant- or sk-proj- prefix.
+  `s${"k"}-ant-api03-${antBody}`,
+  `s${"k"}-${antBody}`,
+  `s${"k"}-ant-short`,
+  `s${"k"}-proj-short`,
+  // Round 6 minors.
+  `Bearer:${v}`,
+  `Authorization: Bearer "${v}"`,
+  `Authorization: Bearer '${v}'`,
+  `tok${"en"}: ${v.slice(0, 16)}`,
+  `pass${"word"}=${v.slice(0, 20)}`,
+  `api_${"key"}: "${v}"`,
+  `API-${"KEY"}=${v}`,
+  `Sec${"ret"}: ${v.slice(0, 24)}`,
+  `GITHUB_${"TOKEN"}=abc123`,
+  `OPENAI_API_${"KEY"}=x`,
+  `MY_${"SECRET"} = shh`,
+  `https://sam:${"hunter2"}@example.com/repo`,
+  `Clone https://x-access-token:${v}@github.com/o/r`,
+  `ASI${"A"}${"Q".repeat(16)}`,
+  `Rotate ${awsSecret}`,
+  // A line or paragraph separator also makes the text multi-line (round 6, m4).
+  "Fix the login page\u2028and the signup page",
+  "Ship it\u2029now",
+  "Ship it\u0085now",
 ];
 
 describe("welcomeName (US-019 round 5)", () => {
@@ -41,16 +88,34 @@ describe("welcomeName (US-019 round 5)", () => {
       // The activity filter still hides them; the welcome edition no longer runs names through it.
       expect(plainWelcomeText(name), name).toBeNull();
     }
+    for (const name of SHOWN_WORDS) expect(welcomeName(name), name).toBe(name);
   });
 
   it("keeps ordinary names and short relative paths", () => {
-    for (const name of ["Harbor checkout", "my_project", "src/brief", "Read the sk-learn notes", "Bearer of good news", "API KEY rotation plan"]) {
+    for (const name of [
+      "Harbor checkout",
+      "my_project",
+      "src/brief",
+      "Read the sk-learn notes",
+      `s${"k"}-learn-notes-for-the-q4-planning-meeting`,
+      "Bearer of good news",
+      "API KEY rotation plan",
+      "Password reset flow",
+      "Token: budget review",
+      "Secret santa list",
+      "C: drive cleanup",
+      "Users guide",
+      "/mnt/data backup",
+      "MONKEY_KEY rotation",
+      `${"a".repeat(40)} notes`,
+      "AWS rotation 2026",
+    ]) {
       expect(welcomeName(name), name).toBe(name);
     }
   });
 
   it("hides multi-line text, stack traces, home paths and credential tokens", () => {
-    for (const raw of [...HIDDEN, "", "   ", null, undefined]) expect(welcomeName(raw), String(raw)).toBeNull();
+    for (const raw of [...HIDDEN, "", "   ", null, undefined]) expect.soft(welcomeName(raw), String(raw)).toBeNull();
   });
 
   it("hides a name longer than the limit", () => {
@@ -94,7 +159,7 @@ describe("welcome edition names and titles (US-019 round 5)", () => {
 
   for (const [kind, build] of inputs) {
     it(`shows each real title in the headline, projects, repos, recent work and action labels (${kind})`, () => {
-      for (const name of SHOWN) {
+      for (const name of [...SHOWN, ...SHOWN_WORDS]) {
         const t = editionText(build([name]));
         expect(t.headline, name).toBe(name);
         expect(t.labels, name).toEqual([name]);

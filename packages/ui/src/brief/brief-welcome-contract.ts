@@ -160,7 +160,7 @@ const object = (value: unknown): Record<string, unknown> | null =>
   value != null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 const text = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.replace(/\s+/g, " ").trim() : null);
 /** A name, title, label or headline: spaces collapse but line breaks stay, so the edition can hide multi-line text. */
-const nameText = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.replace(/[^\S\r\n]+/g, " ").trim() : null);
+const nameText = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.replace(/[^\S\r\n\u2028\u2029]+/g, " ").trim() : null);
 const count = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0);
 const when = (value: unknown): string | null => {
   const t = text(value);

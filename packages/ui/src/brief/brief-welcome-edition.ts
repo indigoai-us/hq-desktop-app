@@ -114,25 +114,39 @@ export function plainWelcomeText(text: string | null | undefined, max = 140): st
 const STACK = /\b[Tt]raceback \(most recent call last\)|^\s*File "[^"]*", line \d+|^\s*at \S.*\(\S*:\d+(?::\d+)?\)|^\s*[A-Z]\w*(?:Error|Exception): /;
 /** An absolute path into the machine: /Users/, /home/, /Volumes/, file://, or ~/ and ~user/ followed by a path. */
 const HOME_PATH = /(?:^|[^\w.-])(?:\/(?:Users|home|Volumes)\/|~[a-z_][\w.-]*\/|~\/\S)|\bfile:\/\//;
+/** A Windows home or user path: C:\Users\ or C:/Users/ on any drive, a UNC \\server\share path, or WSL's /mnt/c/Users/. */
+const WINDOWS_PATH = /(?:^|[^\w])[a-z]:[\\/]users[\\/]|(?:^|[^\w\\])\\\\[^\s\\]+\\[^\s\\]|\/mnt\/[a-z]\/users\//i;
 /**
- * High-confidence credential tokens: GitHub (ghp_, gho_, github_pat_), OpenAI-style sk- keys with a run of 20 or
- * more letters and digits, Slack xox?- tokens, AWS key ids, JWTs, and Bearer with a long token. "sk-learn-notes"
- * and "Bearer of good news" are names, not tokens.
+ * High-confidence credential tokens, matched without regard to case:
+ * - GitHub (ghp_, gho_, github_pat_), Slack xox?- tokens, AWS key ids (AKIA, ASIA), JWTs, and any sk-ant- or
+ *   sk-proj- key.
+ * - Bearer followed by a colon, quote or space and a long token. "Bearer of good news" is a name.
+ * - token, secret, password or api key followed by ":" or "=" and a value of 16 or more characters. "Token budget
+ *   review" is a name.
+ * - A URL with user:pass@.
  */
 const CREDENTIAL =
-  /\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}|\bsk-(?:[A-Za-z0-9]+-)*[A-Za-z0-9_]{20,}|\bxox[a-z]-[A-Za-z0-9-]{10,}|\bAKIA[0-9A-Z]{16}\b|\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]+|\bbearer\s+[\w.~+/=-]{20,}/i;
+  /\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}|\bxox[a-z]-[A-Za-z0-9-]{10,}|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]+|\bsk-(?:ant|proj)-|\bbearer[:\s"']+[\w.~+/=-]{20,}|\b(?:token|secret|password|api[_-]?key)\s*[:=]\s*["']?[^\s"']{16,}|\b[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s@]+@/i;
+/**
+ * Credential shapes where case matters:
+ * - Other sk- keys: 20 or more of [A-Za-z0-9_-] holding a digit and an upper-case letter. "sk-learn-notes" is a name.
+ * - NAME_KEY=value, NAME_TOKEN=value, NAME_SECRET=value or NAME_PASSWORD=value, with the name in upper case.
+ * - A bare 40-character AWS secret-key shape that mixes upper, lower, digits and "/" or "+".
+ */
+const CREDENTIAL_CASED =
+  /\bsk-(?=[\w-]*\d)(?=[\w-]*[A-Z])[\w-]{20,}|\b[A-Z][A-Z0-9]*_(?:[A-Z0-9]+_)*(?:KEY|TOKEN|SECRET|PASSWORD)\s*=\s*\S|(?<![A-Za-z0-9/+=])(?=[A-Za-z0-9/+]{0,39}[A-Z])(?=[A-Za-z0-9/+]{0,39}[a-z])(?=[A-Za-z0-9/+]{0,39}\d)(?=[A-Za-z0-9/+]{0,39}[/+])[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+=])/;
 
 /**
  * A welcome-edition name or title (a project, repo or integration name, a recent-work title, the headline, an
  * action label) as one line, or null. Unlike plainLine, which guards activity details and errors, it hides only
- * multi-line text, stack traces, home paths and credential tokens, so real titles such as "EOD: ship X" or
- * "HTTP 404 page redesign" show. Core already turns a title that may hold a credential into "Session in <project>".
+ * multi-line text, stack traces, home paths (Windows ones too) and credential tokens, so real titles such as
+ * "EOD: ship X" or "HTTP 404 page redesign" show. Core already turns a title that may hold a credential into "Session in <project>".
  */
 export function welcomeName(text: string | null | undefined, max = 140): string | null {
-  if (!text?.trim() || /[\r\n]/.test(text)) return null;
+  if (!text?.trim() || /[\r\n\u2028\u2029\u0085]/.test(text)) return null;
   const t = text.replace(/\s+/g, " ").trim();
-  if (t.length > max || STACK.test(t) || HOME_PATH.test(t) || CREDENTIAL.test(t)) return null;
-  return t;
+  if (t.length > max || STACK.test(t) || HOME_PATH.test(t) || WINDOWS_PATH.test(t)) return null;
+  return CREDENTIAL.test(t) || CREDENTIAL_CASED.test(t) ? null : t;
 }
 
 /** "Good morning, Alex." by the brief's local hour; no name, no comma. */
