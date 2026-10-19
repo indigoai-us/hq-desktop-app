@@ -3,6 +3,7 @@
 // GitHub itself: the host registers a fetcher (the desktop app routes it to
 // the link_github_summary Tauri command). Results are cached for a minute so a
 // status change shows up on the next hover; misses are cached the same way.
+// The cache keeps the newest MAX_ENTRIES links and drops the oldest past that.
 
 export type GithubLinkState =
   | 'open'
@@ -30,11 +31,23 @@ export interface GithubLinkSummary {
 export type GithubSummaryFetcher = (url: string) => Promise<GithubLinkSummary | null | undefined>;
 
 const TTL_MS = 60_000;
+const MAX_ENTRIES = 500;
 
 let fetcher: GithubSummaryFetcher | null = null;
 const summaries = new Map<string, { at: number; value: GithubLinkSummary | null }>();
 const inflight = new Set<string>();
 const listeners = new Set<() => void>();
+
+function remember(href: string, value: GithubLinkSummary | null): void {
+  // Re-insert so Map order is oldest-written first, then trim from the front.
+  summaries.delete(href);
+  summaries.set(href, { at: Date.now(), value });
+  while (summaries.size > MAX_ENTRIES) {
+    const oldest = summaries.keys().next().value;
+    if (oldest === undefined) break;
+    summaries.delete(oldest);
+  }
+}
 
 export function setGithubSummaryFetcher(next: GithubSummaryFetcher | null): void {
   fetcher = next;
@@ -53,10 +66,10 @@ export function requestGithubSummary(href: string, now = Date.now()): void {
   inflight.add(href);
   fetcher(href)
     .then((value) => {
-      summaries.set(href, { at: Date.now(), value: value && value.title ? value : null });
+      remember(href, value && value.title ? value : null);
     })
     .catch(() => {
-      summaries.set(href, { at: Date.now(), value: null });
+      remember(href, null);
     })
     .finally(() => {
       inflight.delete(href);
@@ -114,7 +127,14 @@ export function relativeAge(iso: string | null | undefined, now = Date.now()): s
   return new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-/** Test seam. */
+/** Test seams. */
+export const GITHUB_SUMMARY_CACHE_LIMIT = MAX_ENTRIES;
+export const GITHUB_SUMMARY_TTL_MS = TTL_MS;
+
+export function githubSummaryCacheSizeForTest(): number {
+  return summaries.size;
+}
+
 export function resetGithubSummariesForTest(): void {
   fetcher = null;
   summaries.clear();
