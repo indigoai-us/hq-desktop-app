@@ -8,7 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- Internal: the automated checks run less often on expensive Mac and Windows machines. Mac Rust tests run only when a change touches Rust or native code, and the Rust cache warm runs once a day instead of after every merge. Every check can later move to our own machines through a repository setting. Nothing changes in the app.
+- Shared with Me window: the add-reaction button on shares and direct messages now opens the same grid of common emoji as the main Messages view, instead of the older list with a search box. Message avatars in that window are drawn the same way as in the main Messages view, so they are slightly larger.
+- Internal: the automated checks run less often on Mac and Windows machines. Mac Rust tests run only when a change touches Rust or native code, and the Rust cache warm runs once a day instead of after every merge. Every check can later move to our own machines through a repository setting. Nothing changes in the app.
 
 ## [0.11.14] — 2026-10-19
 
