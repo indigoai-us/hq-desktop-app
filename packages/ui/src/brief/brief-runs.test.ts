@@ -7,6 +7,7 @@ import {
   BRIEF_STALL_TIMEOUT_MS,
   advanceBriefRun,
   briefJobMessage,
+  BRIEF_SKILL_PATHS,
   briefSkillInstalled,
   failedMessage,
   plainLine,
@@ -27,6 +28,7 @@ import {
   stepRun,
   type BriefCreatePhase,
 } from "./brief-runs.js";
+import { desktopFileReader, desktopPathError } from "../test-support/desktop-file-read.js";
 import { sweepPath } from "./brief-data.js";
 
 describe("run id and folder resolution", () => {
@@ -503,29 +505,113 @@ describe("previousReadyRun", () => {
       expect(plainLine(raw, 200)).toBeNull();
     }
   });
+
+  it("plainLine hides credential shapes and keeps ordinary upper-case names", () => {
+    // Built at run time so no secret-shaped literal sits in the source.
+    const v = "A1b2C3d4E5f6G7h8J9k0L1m2N3p4Q5r6S7t8U9v0";
+    for (const raw of [
+      `gh${"p"}_${v}`,
+      `gh${"o"}_${v}`,
+      `github${"_pat"}_11AB${v}`,
+      `s${"k"}-proj-${v}`,
+      `s${"k"}-${v}`,
+      `xox${"b"}-1234-5678-${v}`,
+      `xox${"p"}-1234-${v}`,
+      `xox${"a"}-2-${v}`,
+      `Using token gh${"p"}_${v}`,
+      `Authorization: Bearer ${v}`,
+      `bearer ${v}`,
+      `token ${v}`,
+      `GITHUB_TOKEN=gh${"p"}_${v}`,
+      `GH_TOKEN=${v}`,
+      "OPENAI_API_KEY=abc123",
+      "AWS_SECRET=xyz",
+      "DB_PASSWORD=hunter2",
+      "SLACK_BOT_TOKEN = abc",
+    ]) {
+      expect(plainLine(raw, 200), raw).toBeNull();
+    }
+    for (const name of [
+      "HQ_TOOLS",
+      "Shipped 3 fixes in HQ_TOOLS",
+      "API_KEYS_PAGE",
+      "Rotated the token for the deploy bot",
+      "Bearer of good news",
+      "Read the sk-learn notes",
+      "task-runner",
+    ]) {
+      expect(plainLine(name, 80), name).toBe(name);
+    }
+  });
+
+  it("plainLine hides home paths in any position, HTTP status errors and JSON blobs", () => {
+    for (const raw of [
+      "path:/Users/stefan/x",
+      "open `/Users/stefan/x`",
+      "[/Users/stefan/x]",
+      "file:///Users/stefan/x",
+      "/Volumes/Data/hq/brief",
+      "saved to /Volumes/Data/hq",
+      "path:/home/stefan/x",
+      "HTTP 401: Bad credentials",
+      "gh: Not Found (HTTP 404)",
+      'HTTP/1.1 500 Internal Server Error',
+      '{"message":"Bad credentials","status":"401"}',
+      '[{"id":1}]',
+      '["a","b"]',
+      "connect ECONNREFUSED 127.0.0.1:443",
+      "npm ERR! code E404",
+    ]) {
+      expect(plainLine(raw, 200), raw).toBeNull();
+    }
+    for (const name of ["src/brief/index", "Run /hq-sync first", "[WIP] Tidy the brief", "Shipped {3} fixes", "10/18/2026"]) {
+      expect(plainLine(name, 80), name).toBe(name);
+    }
+  });
 });
 
 describe("briefSkillInstalled", () => {
   const CORE = ".claude/skills/daily-brief/SKILL.md";
-  const MIRROR = ".claude/skills/personal:daily-brief/SKILL.md";
   const PERSONAL = "personal/skills/daily-brief/SKILL.md";
-  const reader = (present: string[], why = "not found") => {
+  const reader = (present: string[], why = "not found", errors: Record<string, string> = {}) => {
     const asked: string[] = [];
     const read = async (path: string) => {
       asked.push(path);
-      return present.includes(path) ? { ok: true as const } : { ok: false as const, why };
+      if (present.includes(path)) return { ok: true as const };
+      return { ok: false as const, why: errors[path] ?? why };
     };
     return { read, asked };
   };
+  // The renderer's reader in DesktopApp, over the desktop file command.
+  const viaDesktop = (files: Record<string, string>) => {
+    const desktop = desktopFileReader(files);
+    const read = async (path: string) => {
+      const res = await desktop.getFileContent(path);
+      return res.ok ? { ok: true as const } : { ok: false as const, why: res.message };
+    };
+    return { read, desktop };
+  };
 
-  it("finds the skill in the personal overlay when only that copy is present", async () => {
-    const r = reader([PERSONAL]);
-    expect(await briefSkillInstalled(r.read)).toBe(true);
-    expect(r.asked).toEqual([CORE, MIRROR, PERSONAL]);
+  it("checks only paths the desktop file command accepts", () => {
+    expect(BRIEF_SKILL_PATHS).toEqual([CORE, PERSONAL]);
+    for (const path of BRIEF_SKILL_PATHS) expect(desktopPathError(path), path).toBeNull();
+    // The `.claude/skills/personal:daily-brief` mirror is a symlink to the
+    // personal skill and is rejected by the desktop path check.
+    expect(desktopPathError(".claude/skills/personal:daily-brief/SKILL.md")).toBe(
+      'invalid HQ-relative path: ".claude/skills/personal:daily-brief/SKILL.md"',
+    );
   });
 
-  it("finds the skill in the .claude mirror of the personal skill", async () => {
-    expect(await briefSkillInstalled(reader([MIRROR]).read)).toBe(true);
+  it("on an older core with no skill anywhere, the desktop reader reports it missing", async () => {
+    const r = viaDesktop({});
+    expect(await briefSkillInstalled(r.read)).toBe(false);
+    expect(r.desktop.reads).toEqual([CORE, PERSONAL]);
+  });
+
+  it("with only the personal skill, the desktop reader reads personal/skills/daily-brief/SKILL.md and finds it", async () => {
+    const r = viaDesktop({ [PERSONAL]: "---\nname: daily-brief\n---" });
+    expect(await briefSkillInstalled(r.read)).toBe(true);
+    expect(r.desktop.served).toEqual([PERSONAL]);
   });
 
   it("finds the core skill with one read", async () => {
@@ -537,14 +623,26 @@ describe("briefSkillInstalled", () => {
   it("is missing only when every location is confirmed absent", async () => {
     const r = reader([], "No such file or directory (os error 2)");
     expect(await briefSkillInstalled(r.read)).toBe(false);
-    expect(r.asked).toEqual([CORE, MIRROR, PERSONAL]);
+    expect(r.asked).toEqual([CORE, PERSONAL]);
   });
 
   it("an HQ folder that does not resolve is the HQ folder case, not a missing skill", async () => {
     expect(await briefSkillInstalled(reader([], "could not resolve HQ folder: No such file or directory (os error 2)").read)).toBe("hq-folder");
   });
 
-  it("a read that fails for another reason is unknown, so the job is still sent", async () => {
+  it("an unexpected error on one path does not stop the check of the others", async () => {
+    const warned: string[] = [];
+    const found = reader([PERSONAL], "not found", { [CORE]: "permission denied" });
+    expect(await briefSkillInstalled(found.read, (m) => void warned.push(m))).toBe(true);
+    expect(found.asked).toEqual([CORE, PERSONAL]);
+    // Unknown when nothing was found and one path could not be checked: the job is still sent.
+    const unknown = reader([], "No such file or directory (os error 2)", { [CORE]: "permission denied" });
+    expect(await briefSkillInstalled(unknown.read, (m) => void warned.push(m))).toBeNull();
+    expect(unknown.asked).toEqual([CORE, PERSONAL]);
+    expect(warned.join("\n")).toMatch(/could not check the skill/);
+  });
+
+  it("a read that fails for another reason on every path is unknown, so the job is still sent", async () => {
     const warned: string[] = [];
     expect(await briefSkillInstalled(reader([], "permission denied").read, (m) => void warned.push(m))).toBeNull();
     expect(warned.join("\n")).toMatch(/could not check the skill/);

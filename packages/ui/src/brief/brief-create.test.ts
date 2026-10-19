@@ -10,7 +10,7 @@ const DEADLINE = { kind: "failed", runId: null, message: "Your brief is taking l
 /** The line for a core older than 16.0.30, which has no daily-brief skill. */
 const UPDATE = "Your HQ needs an update before it can build a brief. Update HQ Core in Settings, under Updates, then try again.";
 /** The line for an HQ folder that could not be read. */
-const FOLDER = "HQ could not open your HQ folder. Choose it again in Settings, under Sync, then try again.";
+const FOLDER = "HQ could not open your HQ folder. Change it in Settings, under Sync, then try again.";
 
 function harness(over: Partial<BriefCreator> = {}, files: Record<string, string> = {}) {
   let clock = new Date(2026, 9, 8, 9, 0, 0).getTime();

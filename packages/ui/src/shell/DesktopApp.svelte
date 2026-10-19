@@ -6827,7 +6827,7 @@
         async skillInstalled() {
           const files = adapter.files;
           if (!files?.getFileContent) return null;
-          // Core skill, its personal mirror, or the personal overlay: missing only when all three are.
+          // Core skill or the personal overlay: missing only when both are.
           return briefSkillInstalled(
             async (path) => {
               const res = await files.getFileContent(path);

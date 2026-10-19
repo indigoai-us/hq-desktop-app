@@ -521,7 +521,7 @@ describe("BriefRunsPage", () => {
     q("brief-create")!.click();
     await settle();
     expect(creator.dispatch).not.toHaveBeenCalled();
-    expect(q("brief-dawn-step")?.textContent?.trim()).toBe("HQ could not open your HQ folder. Choose it again in Settings, under Sync, then try again.");
+    expect(q("brief-dawn-step")?.textContent?.trim()).toBe("HQ could not open your HQ folder. Change it in Settings, under Sync, then try again.");
     expect(q("brief-retry")?.textContent?.trim()).toBe("Try again");
     expect(q("brief-dawn")?.querySelectorAll("button")).toHaveLength(1);
     expect(document.body.textContent).not.toMatch(/pickles|bot|skill|taking longer/i);
