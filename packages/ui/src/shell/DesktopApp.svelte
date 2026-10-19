@@ -6806,6 +6806,11 @@
           const res = await adapter.files.getFileContent(".claude/skills/daily-brief/SKILL.md");
           if (res.ok) return true;
           const why = res.message ?? res.reason;
+          // The HQ folder itself did not resolve: not a missing skill.
+          if (/could not resolve HQ folder/i.test(why)) {
+            console.warn("[daily-brief] could not read the HQ folder", why);
+            return "hq-folder";
+          }
           if (/no such file|not found|os error 2/i.test(why)) return false;
           console.warn("[daily-brief] could not check the skill", why);
           return null;

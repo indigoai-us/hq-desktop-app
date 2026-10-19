@@ -1308,6 +1308,31 @@ describe("welcome report (US-009)", () => {
     expect(report.textContent ?? "").not.toMatch(/bot|skill|check that|is running/i);
   }, 15_000);
 
+  it("an HQ folder that cannot be read is not called a missing skill: no job, the slow-start line, an HQ folder log", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: null });
+    (platform as unknown as { files: { getFileContent: (path: string) => Promise<unknown> } }).files.getFileContent = async () => ({
+      ok: false as const,
+      reason: "read failed",
+      message: "could not resolve HQ folder: No such file or directory (os error 2)",
+    });
+    await boot(platform, DesktopApp, mount, { companies: [], rosterStatus: "ready" });
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"] [data-testid="brief-retry"]')).toBeTruthy(), {
+      timeout: 10_000,
+    });
+    expect(briefJobs(sendDm)).toHaveLength(0);
+    expect(q('[data-testid="welcome-report"] [data-testid="brief-dawn-step"]')?.textContent?.trim()).toBe(
+      "Your welcome brief is taking longer than expected.",
+    );
+    const logged = warn.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(logged).toMatch(/could not read the HQ folder/);
+    expect(logged).not.toMatch(/could not check the skill/);
+    warn.mockRestore();
+  }, 15_000);
+
   it("a brief made by hand with no company goes out across personal scope without a company toast", async () => {
     localStorage.setItem("hq.welcome-report.sent", SETUP_BOT_UID);
     const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: null });

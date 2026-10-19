@@ -342,8 +342,13 @@ export type BriefCreatePhase =
       message: string;
       /** A stall verdict, not the bot's: HQ keeps watching the run and flips to ready if it finishes. */
       stalled?: true;
-      /** The run never started (no status in time, or no daily-brief skill): HQ retries once, then shows the slow-start line. */
-      heal?: "start-timeout" | "skill-not-found";
+      /**
+       * The run never started, shown as the slow-start line with Try again.
+       * start-timeout: no status in time; HQ keeps watching the same run and sends no second job.
+       * skill-not-found: no daily-brief skill; HQ sends one fresh job by itself first.
+       * hq-folder: the HQ folder could not be read, so nothing was sent.
+       */
+      heal?: "start-timeout" | "skill-not-found" | "hq-folder";
     };
 
 /**
@@ -354,6 +359,11 @@ export type BriefCreatePhase =
  * skill, which the 3-minute limit called a failure one minute early).
  */
 export const BRIEF_START_TIMEOUT_MS = 5 * 60_000;
+/**
+ * Try again on a run that never started waits this much longer on the same
+ * run before it sends a new job: a busy bot may still pick the first one up.
+ */
+export const BRIEF_TRY_AGAIN_WAIT_MS = 2 * 60_000;
 /**
  * Nothing in the run folder has changed this long: a soft "stalled" verdict.
  * Older skills write status.json only at start and end, and a full sweep can

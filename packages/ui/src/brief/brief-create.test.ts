@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { LocalBotRow } from "@hq/platform";
 import { ACTIVE_RUN_KEY, BriefCreateRun, type BriefCreator } from "./brief-create.svelte.js";
-import { BRIEF_POLL_MS, BRIEF_START_TIMEOUT_MS } from "./brief-runs.js";
+import { BRIEF_POLL_MS, BRIEF_START_TIMEOUT_MS, BRIEF_TRY_AGAIN_WAIT_MS, BRIEF_WATCH_POLL_MS } from "./brief-runs.js";
 
 const BOT = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
 const RUN = "brief-20261008-090000";
@@ -9,6 +9,9 @@ const RUN = "brief-20261008-090000";
 function harness(over: Partial<BriefCreator> = {}, files: Record<string, string> = {}) {
   let clock = new Date(2026, 9, 8, 9, 0, 0).getTime();
   const timers: (() => void)[] = [];
+  // The quiet watch on a run that has not started yet polls on its own, slower timer.
+  const watchTimers: (() => void)[] = [];
+  const logs: string[] = [];
   const creator: BriefCreator = {
     company: () => "indigo",
     check: vi.fn(async () => ({ ok: true as const, bot: BOT })),
@@ -35,12 +38,12 @@ function harness(over: Partial<BriefCreator> = {}, files: Record<string, string>
     onfinish,
     now: () => new Date(clock),
     setTimer: (fn, ms) => {
-      expect(ms).toBe(BRIEF_POLL_MS);
-      timers.push(fn);
-      return timers.length;
+      expect([BRIEF_POLL_MS, BRIEF_WATCH_POLL_MS]).toContain(ms);
+      (ms === BRIEF_POLL_MS ? timers : watchTimers).push(fn);
+      return timers.length + watchTimers.length;
     },
     clearTimer: () => {},
-    log: () => {},
+    log: (m) => void logs.push(m),
   });
   return {
     run,
@@ -51,7 +54,10 @@ function harness(over: Partial<BriefCreator> = {}, files: Record<string, string>
     store,
     storage,
     setClock: (ms: number) => (clock = ms),
+    advance: (ms: number) => (clock += ms),
     timers,
+    watchTimers,
+    logs,
     tick: async (ms = BRIEF_POLL_MS) => {
       clock += ms;
       const fn = timers.shift();
@@ -198,19 +204,121 @@ describe("BriefCreateRun", () => {
     expect(JSON.stringify(h.run.phase)).not.toContain("No daily-brief skill");
   });
 
-  it("a start timeout retries once by itself, then shows one plain line and nothing about the bot", async () => {
+  it("a plain start timeout sends no second job: it shows one plain line and keeps watching the first run", async () => {
+    const h = harness();
+    await h.run.start({ label: "welcome brief" });
+    await h.tick(BRIEF_START_TIMEOUT_MS + 1);
+    expect(h.creator.dispatch).toHaveBeenCalledTimes(1);
+    expect(h.run.phase).toEqual({
+      kind: "failed",
+      runId: RUN,
+      message: "Your welcome brief is taking longer than expected.",
+      heal: "start-timeout",
+    });
+    expect(JSON.stringify(h.run.phase)).not.toMatch(/pickles|bot|check that it is running/i);
+    // The first run is still followed, quietly.
+    expect(h.watchTimers).toHaveLength(1);
+    expect(h.store.get(ACTIVE_RUN_KEY)).toBe(RUN);
+    h.advance(BRIEF_WATCH_POLL_MS);
+    await h.run.pollWatch();
+    expect(h.creator.dispatch).toHaveBeenCalledTimes(1);
+    expect(h.run.phase).toMatchObject({ kind: "failed", heal: "start-timeout" });
+  });
+
+  it("a late start of the first run after the timeout still lands, with no second job", async () => {
+    const h = harness();
+    await h.run.start({ label: "welcome brief" });
+    await h.tick(BRIEF_START_TIMEOUT_MS + 1);
+    expect(h.run.phase).toMatchObject({ kind: "failed", heal: "start-timeout" });
+    // A busy bot picks the first job up after the start window.
+    const path = `workspace/brief/${RUN}/status.json`;
+    h.files[path] = JSON.stringify({ run_id: RUN, state: "running", step: "Sweeping your day", progress: 0.2 });
+    h.advance(BRIEF_WATCH_POLL_MS);
+    await h.run.pollWatch();
+    expect(h.run.phase).toMatchObject({ kind: "running", runId: RUN, step: "Sweeping your day" });
+    h.files[path] = JSON.stringify({ run_id: RUN, state: "ready", progress: 1 });
+    await h.tick();
+    expect(h.run.phase).toEqual({ kind: "ready", runId: RUN });
+    expect(h.creator.notify).toHaveBeenCalledTimes(1);
+    expect(h.creator.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("a first run that lands ready straight after the timeout is the brief, with no second job", async () => {
     const h = harness();
     await h.run.start();
     await h.tick(BRIEF_START_TIMEOUT_MS + 1);
-    await vi.waitFor(() => expect(h.run.phase.kind).toBe("waiting"));
-    expect(h.creator.dispatch).toHaveBeenCalledTimes(2);
+    h.files[`workspace/brief/${RUN}/status.json`] = JSON.stringify({ run_id: RUN, state: "ready", progress: 1 });
+    h.advance(BRIEF_WATCH_POLL_MS);
+    await h.run.pollWatch();
+    expect(h.run.phase).toEqual({ kind: "ready", runId: RUN });
+    expect(h.creator.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("Try again after a start timeout follows the first run when it has started, and sends nothing", async () => {
+    const h = harness();
+    await h.run.start({ label: "welcome brief" });
+    await h.tick(BRIEF_START_TIMEOUT_MS + 1);
+    h.files[`workspace/brief/${RUN}/status.json`] = JSON.stringify({ run_id: RUN, state: "running", step: "Sweeping your day", progress: 0.2 });
+    await h.run.start();
+    expect(h.run.phase).toMatchObject({ kind: "running", runId: RUN, step: "Sweeping your day" });
+    expect(h.creator.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("Try again after a start timeout waits a further window on the first run, then sends one new job", async () => {
+    const h = harness();
+    await h.run.start({ label: "welcome brief" });
+    await h.tick(BRIEF_START_TIMEOUT_MS + 1);
+    await h.run.start();
+    // Re-checked the same run: still nothing, so it waits on that run.
+    expect(h.run.phase).toMatchObject({ kind: "waiting", runId: RUN });
+    expect(h.creator.dispatch).toHaveBeenCalledTimes(1);
+    await h.tick();
+    expect(h.run.phase).toMatchObject({ kind: "waiting", runId: RUN });
+    expect(h.creator.dispatch).toHaveBeenCalledTimes(1);
+    // The further window ends with no start: one new job.
+    await h.tick(BRIEF_TRY_AGAIN_WAIT_MS);
+    await vi.waitFor(() => expect(h.creator.dispatch).toHaveBeenCalledTimes(2));
+    const second = (h.creator.dispatch as ReturnType<typeof vi.fn>).mock.calls[1]![2] as string;
+    expect(second).not.toBe(RUN);
+    expect(h.run.phase).toMatchObject({ kind: "waiting", runId: second });
+    // That job's own start timeout shows the line again, with no third job.
     await h.tick(BRIEF_START_TIMEOUT_MS + 1);
     expect(h.creator.dispatch).toHaveBeenCalledTimes(2);
-    expect(h.run.phase).toMatchObject({ kind: "failed", message: "Your brief is taking longer than expected.", heal: "start-timeout" });
-    expect(JSON.stringify(h.run.phase)).not.toMatch(/pickles|bot|check that it is running/i);
-    // Try again is a fresh start with its own automatic retry.
+    expect(h.run.phase).toEqual({
+      kind: "failed",
+      runId: second,
+      message: "Your welcome brief is taking longer than expected.",
+      heal: "start-timeout",
+    });
+  });
+
+  it("Try again after a start timeout sends a new job at once when the first run has failed", async () => {
+    const h = harness();
     await h.run.start();
-    expect(h.creator.dispatch).toHaveBeenCalledTimes(3);
+    await h.tick(BRIEF_START_TIMEOUT_MS + 1);
+    h.files[`workspace/brief/${RUN}/status.json`] = JSON.stringify({ run_id: RUN, state: "failed", error: "The sweep could not read GitHub." });
+    await h.run.start();
+    await vi.waitFor(() => expect(h.creator.dispatch).toHaveBeenCalledTimes(2));
+    const second = (h.creator.dispatch as ReturnType<typeof vi.fn>).mock.calls[1]![2] as string;
+    expect(second).not.toBe(RUN);
+    expect(h.run.phase).toMatchObject({ kind: "waiting", runId: second });
+  });
+
+  it("an HQ folder that cannot be read shows the slow-start line without sending, logged as an HQ folder error", async () => {
+    const skillInstalled = vi.fn(async () => "hq-folder" as const);
+    const h = harness({ skillInstalled });
+    await h.run.start({ label: "welcome brief" });
+    expect(h.creator.dispatch).not.toHaveBeenCalled();
+    // No automatic retry: the folder will not read on a second look either.
+    expect(skillInstalled).toHaveBeenCalledTimes(1);
+    expect(h.run.phase).toEqual({
+      kind: "failed",
+      runId: null,
+      message: "Your welcome brief is taking longer than expected.",
+      heal: "hq-folder",
+    });
+    expect(h.logs.join("\n")).toMatch(/HQ folder/);
+    expect(h.logs.join("\n")).not.toMatch(/skill-not-found/);
   });
 
   it("Try again on the welcome brief's slow-start line keeps calling it the welcome brief", async () => {

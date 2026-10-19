@@ -17,7 +17,9 @@ import {
   type BriefRunFiles,
   BRIEF_STALL_TIMEOUT_MS,
   BRIEF_START_TIMEOUT_MS,
+  BRIEF_TRY_AGAIN_WAIT_MS,
   failedMessage,
+  isSkillNotFound,
   slowStartMessage,
   isBriefRunId,
   parseBriefStatus,
@@ -45,10 +47,11 @@ export interface BriefCreator {
   hasCompanies?(): boolean | null | Promise<boolean | null>;
   /**
    * Whether this HQ has the daily-brief skill: false skips the send and goes
-   * straight to the slow-start path; null (could not tell) sends anyway and
-   * lets the bot report `skill_not_found`.
+   * straight to the slow-start path; "hq-folder" (the HQ folder itself could
+   * not be read) shows the slow-start line without sending; null (could not
+   * tell) sends anyway and lets the bot report `skill_not_found`.
    */
-  skillInstalled?(): Promise<boolean | null>;
+  skillInstalled?(): Promise<boolean | "hq-folder" | null>;
   /** Send the job to the bot. Resolves to a plain error sentence, or null when sent. */
   dispatch(bot: LocalBotRow, body: string, idempotencyKey: string): Promise<string | null>;
   /** Run the fix for a blocked check. Resolves to a plain error sentence, or null. */
@@ -96,13 +99,18 @@ export class BriefCreateRun {
   /** When a folder probe last saw the run folder change. */
   private folderChangeAt: { runId: string; at: number } | null = null;
   private lastPrint: { runId: string; print: string } | null = null;
-  /** A run failed by the stall rule that HQ keeps watching until `until`. */
-  private watch: { runId: string; sentAt: number; until: number; phase: Finished } | null = null;
+  /**
+   * A run HQ keeps watching until `until`: one failed by the stall rule, or
+   * (`start`) one that had not started when its start window ended.
+   */
+  private watch: { runId: string; sentAt: number; until: number; phase: Finished; kind: "stall" | "start" } | null = null;
+  /** Try again on a run that never started: wait on that run until `until`, then send a new job. */
+  private recheck: { runId: string; until: number } | null = null;
   private watchTimer: unknown = null;
   private blockedBot: LocalBotRow | null = null;
   /** The noun in the slow-start line, set by `start`. */
   private label = "brief";
-  /** The automatic retry after a run that never started has been used. */
+  /** The automatic retry after a missing skill has been used. */
   private retried = false;
   private timer: unknown = null;
   private stopped = false;
@@ -135,6 +143,15 @@ export class BriefCreateRun {
    */
   start(opts: { force?: boolean; label?: string } = {}): Promise<void> {
     if (this.busy) return Promise.resolve();
+    // Try again on the slow-start line keeps its name ("welcome brief").
+    const healing = this.phase.kind === "failed" && this.phase.heal != null;
+    const label = opts.label?.trim() || (healing ? this.label : "brief");
+    const unstarted = this.unstartedRun();
+    if (unstarted && !opts.force) {
+      // The first job may still be picked up: look at that run before sending another.
+      this.label = label;
+      return this.recheckRun(unstarted.runId, unstarted.sentAt);
+    }
     if (this.watching && !opts.force) {
       // The last run may still finish: ask before sending a duplicate.
       this.phase = this.watch!.phase;
@@ -143,32 +160,69 @@ export class BriefCreateRun {
     }
     this.duplicatePrompt = false;
     this.endWatch();
-    // Try again on the slow-start line keeps its name ("welcome brief").
-    const healing = this.phase.kind === "failed" && this.phase.heal != null;
-    this.label = opts.label?.trim() || (healing ? this.label : "brief");
+    this.label = label;
     this.retried = false;
     return this.begin();
   }
 
+  /** The sent run that had not started when its start window ended, if HQ still follows it. */
+  private unstartedRun(): { runId: string; sentAt: number } | null {
+    if (this.watch?.kind === "start" && this.watching) return { runId: this.watch.runId, sentAt: this.watch.sentAt };
+    const p = this.phase;
+    if (p.kind === "failed" && p.heal === "start-timeout" && p.runId) {
+      return { runId: p.runId, sentAt: runIdTime(p.runId)?.getTime() ?? this.now().getTime() };
+    }
+    return null;
+  }
+
+  /**
+   * Try again on a run that never started: poll that run at once and keep
+   * waiting on it for `BRIEF_TRY_AGAIN_WAIT_MS`. A new job goes out only when
+   * the run failed or still has not started by then (see `poll`).
+   */
+  private recheckRun(runId: string, sentAt: number): Promise<void> {
+    this.duplicatePrompt = false;
+    this.endWatch();
+    this.stopped = false;
+    this.recheck = { runId, until: this.now().getTime() + BRIEF_TRY_AGAIN_WAIT_MS };
+    this.remember(runId);
+    this.phase = { kind: "waiting", runId, sentAt };
+    return this.poll();
+  }
+
   private begin(): Promise<void> {
     this.stopped = false;
+    this.recheck = null;
     const runId = briefRunId(this.now());
     this.phase = { kind: "dispatching", runId };
     return this.dispatch(runId);
   }
 
   /**
-   * A run that never started (start timeout, missing skill): send a fresh
-   * job once by itself, then show the one slow-start line with Try again.
+   * A run that never started: show the one slow-start line with Try again.
+   * A missing skill first sends one fresh job by itself (the first run has
+   * already ended). A start timeout sends nothing: a busy bot that handles one
+   * job at a time may still build the first one, with its welcome edition, so
+   * HQ keeps watching that run and follows it if it starts.
    */
-  private heal(runId: string | null, why: NonNullable<Extract<BriefCreatePhase, { kind: "failed" }>["heal"]>): Promise<void> {
-    this.log(`brief did not start (${why})${this.retried ? "" : ", retrying once"}`);
-    if (!this.retried) {
+  private heal(runId: string | null, why: NonNullable<Extract<BriefCreatePhase, { kind: "failed" }>["heal"]>, sentAt?: number): Promise<void> {
+    const retry = why === "skill-not-found" && !this.retried;
+    this.log(`brief did not start (${why})${retry ? ", retrying once" : ""}`);
+    if (retry) {
       this.retried = true;
       this.forget();
       return this.begin();
     }
-    this.finish({ kind: "failed", runId, message: slowStartMessage(this.label), heal: why });
+    const phase: Finished = { kind: "failed", runId, message: slowStartMessage(this.label), heal: why };
+    if (why === "start-timeout" && runId) {
+      const now = this.now().getTime();
+      this.phase = phase;
+      this.startWatch(runId, sentAt ?? now, phase, now + BRIEF_STALL_GRACE_MS, "start");
+      this.deps.onfinish?.(phase);
+      for (const fn of this.listeners) fn(phase);
+      return Promise.resolve();
+    }
+    this.finish(phase);
     return Promise.resolve();
   }
 
@@ -188,13 +242,19 @@ export class BriefCreateRun {
       this.phase = { kind: "blocked", message: check.message, fix: check.fix };
       return;
     }
-    let installed: boolean | null = null;
+    let installed: boolean | "hq-folder" | null = null;
     try {
       installed = (await creator.skillInstalled?.()) ?? null;
     } catch (err) {
       this.log("skill check failed", err instanceof Error ? err.message : err);
     }
     if (this.stopped) return;
+    if (installed === "hq-folder") {
+      // Not a missing skill: the status reads would fail too, so nothing is sent.
+      this.log("could not read the HQ folder, so the brief job was not sent");
+      await this.heal(null, "hq-folder");
+      return;
+    }
     if (installed === false) {
       await this.heal(null, "skill-not-found");
       return;
@@ -267,7 +327,7 @@ export class BriefCreateRun {
               now,
             ) as Finished;
             this.phase = phase;
-            this.startWatch(runId, runIdTime(runId)?.getTime() ?? now, phase, updated + BRIEF_STALL_TIMEOUT_MS + BRIEF_STALL_GRACE_MS);
+            this.startWatch(runId, runIdTime(runId)?.getTime() ?? now, phase, updated + BRIEF_STALL_TIMEOUT_MS + BRIEF_STALL_GRACE_MS, "stall");
             return true;
           }
           if (runId === stored) this.forget();
@@ -380,9 +440,9 @@ export class BriefCreateRun {
     this.schedule();
   }
 
-  private startWatch(runId: string, sentAt: number, phase: Finished, until: number): void {
+  private startWatch(runId: string, sentAt: number, phase: Finished, until: number, kind: "stall" | "start"): void {
     this.endWatch();
-    this.watch = { runId, sentAt, until, phase };
+    this.watch = { runId, sentAt, until, phase, kind };
     this.scheduleWatch();
   }
 
@@ -425,8 +485,19 @@ export class BriefCreateRun {
     }
     if (status && status.runId === w.runId && (status.state === "failed" || status.state === "cancelled")) {
       this.endWatch();
-      if (!this.busy) this.finish({ kind: "failed", runId: w.runId, message: failedMessage(status) });
-      else this.forget();
+      if (this.busy) this.forget();
+      else if (w.kind === "start" && isSkillNotFound(status)) await this.heal(w.runId, "skill-not-found");
+      else this.finish({ kind: "failed", runId: w.runId, message: failedMessage(status) });
+      return;
+    }
+    if (status && status.runId === w.runId && w.kind === "start") {
+      // The first job started after its start window: follow it.
+      this.endWatch();
+      if (this.busy) return;
+      this.stopped = false;
+      this.remember(w.runId);
+      this.phase = advanceBriefRun({ kind: "waiting", runId: w.runId, sentAt: w.sentAt }, { text }, now);
+      this.schedule();
       return;
     }
     // The folder changed since the stall verdict: the bot is still writing.
@@ -487,6 +558,20 @@ export class BriefCreateRun {
     const fc = this.folderChangeAt;
     const seen = phase.kind === "running" && fc && fc.runId === phase.runId && fc.at > phase.lastChangeAt ? { ...phase, lastChangeAt: fc.at } : phase;
     const next = advanceBriefRun(seen, reading, nowMs);
+    const recheck = this.recheck?.runId === phase.runId ? this.recheck : null;
+    if (recheck && next.kind === "failed" && !next.stalled) {
+      if (next.heal === "start-timeout" && nowMs < recheck.until) {
+        // Try again is still waiting on the first run.
+        this.schedule();
+        return;
+      }
+      // That run failed, or still had not started: send one new job.
+      this.log(`brief did not start after Try again (${next.heal ?? "failed"}), sending a new job`);
+      this.recheck = null;
+      this.forget();
+      await this.begin();
+      return;
+    }
     if (next.kind === "running" && nowMs - next.lastChangeAt >= BRIEF_QUIET_MS && nowMs - this.lastProbe >= 15_000) {
       this.lastProbe = nowMs;
       void this.probeFolder(next.runId);
@@ -494,13 +579,13 @@ export class BriefCreateRun {
     if (next.kind === "failed" && next.stalled && next.runId) {
       // Soft verdict: show it, but keep watching in case the run finishes.
       this.phase = next;
-      this.startWatch(next.runId, phase.sentAt, next, nowMs + BRIEF_STALL_GRACE_MS);
+      this.startWatch(next.runId, phase.sentAt, next, nowMs + BRIEF_STALL_GRACE_MS, "stall");
       this.deps.onfinish?.(next);
       for (const fn of this.listeners) fn(next);
       return;
     }
     if (next.kind === "failed" && next.heal) {
-      await this.heal(next.runId, next.heal);
+      await this.heal(next.runId, next.heal, phase.sentAt);
       return;
     }
     if (next.kind === "ready" || next.kind === "failed") {
