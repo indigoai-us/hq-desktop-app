@@ -216,7 +216,8 @@ describe("BriefActivity rendering", () => {
     const items = [...target.querySelectorAll<HTMLElement>('[data-testid="brief-activity-item"]')];
     expect(items.map((i) => i.dataset.state)).toEqual(["done", "done", "skipped", "failed", "running"]);
     expect(items[1]!.textContent).toContain("Read 42 work sessions · Oct 4–9");
-    expect(items[3]!.textContent).toContain("GitHub rate limit");
+    // A failed row shows its label alone.
+    expect(items[3]!.textContent).not.toContain("GitHub rate limit");
     expect(items[4]!.querySelector(".pulse")).not.toBeNull();
     expect(Number(items[0]!.style.opacity)).toBeLessThan(Number(items[4]!.style.opacity));
     expect(target.querySelector('[data-testid="brief-elapsed"]')?.textContent).toBe("2m 14s · usually ~12 min");
@@ -250,5 +251,46 @@ describe("BriefActivity rendering", () => {
     expect(target.querySelectorAll('[data-testid="brief-activity-item"]')).toHaveLength(0);
     expect(target.querySelector('[data-testid="brief-elapsed"]')?.textContent).toBe("45s");
     expect(target.querySelector('[data-testid="brief-still-working"]')).toBeNull();
+  });
+
+  it("never shows raw gh or traceback text in an activity detail: failed rows show the label alone, other rows only one short plain line", async () => {
+    const LIVE_GH = "To get started with GitHub CLI, please run:  gh auth login\nAlternatively, popula";
+    const TRACEBACK = 'Traceback (most recent call last):\n  File "/Users/x/brief-sweep.py", line 1668, in main\nKeyError: \'total\'';
+    const RAW = /gh auth|GitHub CLI|Alternatively|popula|Traceback|brief-sweep|KeyError|line 1668/;
+    target = document.createElement("div");
+    document.body.appendChild(target);
+    const activity = [
+      { at: "1", label: "Looking at your PRs", state: "failed", detail: LIVE_GH },
+      { at: "2", label: "Main CI on 6 repos", state: "failed", detail: TRACEBACK },
+      { at: "3", label: "Read your calendar", state: "done", detail: TRACEBACK },
+      { at: "4", label: "Housekeeping", state: "done", detail: `failed: ${LIVE_GH}` },
+      { at: "5", label: "Read 42 work sessions", state: "done", detail: "Oct 4–9" },
+      { at: "6", label: "Checking GitHub PRs", state: "running", detail: "To get started with GitHub CLI, please run:  gh auth login" },
+      { at: "7", label: "Linear", state: "skipped", detail: "KeyError: 'total'" },
+    ] as Item[];
+    app = mount(BriefActivity, { target, props: { activity, visible: 7 } });
+    flushSync();
+    await tick();
+    const items = [...target.querySelectorAll<HTMLElement>('[data-testid="brief-activity-item"]')];
+    expect(items.map((i) => i.querySelector(".lbl")!.textContent!.trim())).toEqual([
+      "Looking at your PRs",
+      "Main CI on 6 repos",
+      "Read your calendar",
+      "Housekeeping",
+      "Read 42 work sessions · Oct 4–9",
+      "Checking GitHub PRs",
+      "Linear",
+    ]);
+    expect(target.textContent).not.toMatch(RAW);
+    expect(target.textContent).not.toContain("failed:");
+  });
+
+  it("a failed row never shows its detail, even a short plain one", async () => {
+    target = document.createElement("div");
+    document.body.appendChild(target);
+    app = mount(BriefActivity, { target, props: { activity: [{ at: "1", label: "Main CI on 6 repos", state: "failed", detail: "GitHub rate limit" }] as Item[] } });
+    flushSync();
+    await tick();
+    expect(target.querySelector('[data-testid="brief-activity-item"] .lbl')!.textContent!.trim()).toBe("Main CI on 6 repos");
   });
 });

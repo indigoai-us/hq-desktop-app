@@ -78,7 +78,7 @@
   import { welcomeMadeBy } from "../brief/welcome-made-by.js";
   import { briefActionsFor } from "../brief/brief-action-cards.js";
   import type { WelcomeConnectMemory } from "../chat/first-run/WelcomeConnectCard.svelte";
-  import { BRIEF_CLAUDE_PERMISSION_MODE, BRIEF_FIX_LABEL, briefBotLabel, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
+  import { BRIEF_CLAUDE_PERMISSION_MODE, BRIEF_FIX_LABEL, BRIEF_STARTING_STEP, briefBotLabel, briefSkillInstalled, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
   import { BriefCreateRun, type BriefCreator } from "../brief/brief-create.svelte.js";
   import { briefBotFailure } from "../brief/brief-bot-failure.js";
   import {
@@ -4586,6 +4586,8 @@
   let welcomeReportOwed = $state(false);
   /** The assistant the welcome report's brief job reached (one job per assistant). */
   const WELCOME_REPORT_SENT_KEY = "hq.welcome-report.sent";
+  /** The welcome report's name in the brief's slow-start line. The job itself is a plain brief: the skill picks the welcome edition. */
+  const WELCOME_BRIEF_LABEL = "welcome brief";
   function welcomeReportSentTo(uid: string): boolean {
     try {
       return window.localStorage.getItem(WELCOME_REPORT_SENT_KEY) === uid;
@@ -4636,12 +4638,12 @@
         if (welcomeReportBlockedOn === null) welcomeReportBlockedOn = botState;
         else if (welcomeReportBlockedOn !== botState) {
           welcomeReportBlockedOn = botState;
-          void run.start({ welcome: true });
+          void run.start({ label: WELCOME_BRIEF_LABEL });
         }
         return;
       }
       welcomeReportBlockedOn = null;
-      void run.start({ welcome: true });
+      void run.start({ label: WELCOME_BRIEF_LABEL });
     });
   });
   // A job held back on the assistant (a terminal or browser sign-in, the
@@ -4655,7 +4657,7 @@
     if (!welcomeReportUnsent(uid)) return;
     const onBack = (): void => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-      if (run.phase.kind === "blocked") void run.start({ welcome: true });
+      if (run.phase.kind === "blocked") void run.start({ label: WELCOME_BRIEF_LABEL });
     };
     window.addEventListener("focus", onBack);
     document.addEventListener("visibilitychange", onBack);
@@ -6815,11 +6817,30 @@
           await loadLocalBotRuntimeReady(true);
           return checkBriefBot(localBots, localBotRuntimeReady);
         },
+        // Null until the roster has loaded (the shell starts it as an empty list):
+        // only a loaded roster with no company sends the personal brief.
+        hasCompanies: () => {
+          if (memberCompanies(companies).length > 0 || localCompanies.length > 0) return true;
+          if (companies == null || (rosterStatus != null && rosterStatus !== "ready")) return null;
+          return false;
+        },
+        async skillInstalled() {
+          const files = adapter.files;
+          if (!files?.getFileContent) return null;
+          // Core skill or the personal overlay: missing only when both are.
+          return briefSkillInstalled(
+            async (path) => {
+              const res = await files.getFileContent(path);
+              return res.ok ? { ok: true } : { ok: false, why: res.message ?? res.reason };
+            },
+            (msg, why) => console.warn(msg, why),
+          );
+        },
         async dispatch(bot, body, idempotencyKey) {
           const res = await adapter.messaging.sendDm(bot.agentUid, body, { audience: "agent", idempotencyKey });
           if (res.ok) return null;
           console.warn("[daily-brief] job send failed", res.reason, res.code ?? "", res.message ?? "");
-          return `Could not send the brief job to ${bot.displayName?.trim() || bot.name}. Try again in a moment.`;
+          return "Could not start your brief. Try again in a moment.";
         },
         async fix(fix, bot) {
           if (fix === "create-bot") {
@@ -6909,7 +6930,7 @@
   const briefRailRun = $derived.by(() => {
     const p = briefRun?.phase;
     if (!p) return null;
-    if (p.kind === "dispatching") return { progress: 0, step: "Waking your bot…" };
+    if (p.kind === "dispatching") return { progress: 0, step: `${BRIEF_STARTING_STEP}…` };
     if (p.kind === "waiting") return { progress: 0, step: waitingStep(p.bot) };
     if (p.kind === "running") {
       const latest = p.activity?.at(-1)?.label;

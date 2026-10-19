@@ -3,7 +3,8 @@
    * The run's activity on the sunrise field: proof of life and what the bot
    * found. Each row leads with one pixel cell, as the strip under it: lit for
    * done, beating for the running item, faint for skipped, the page's one
-   * accent for failed (with its reason). New items slide in; the
+   * accent for failed, with the label alone. A detail shows only on other
+   * rows, and only as one short plain line (`shownDetail`). New items slide in; the
    * last few stay visible and older ones fade. Below: elapsed time, the usual
    * duration once there are two past runs, and a calm "Still working on …"
    * line when status.json has been quiet for 90 seconds. After 20 seconds
@@ -12,7 +13,7 @@
    * height so the elapsed line never jumps.
    */
   import { fly } from "svelte/transition";
-  import type { BriefActivity } from "./brief-runs.js";
+  import { shownDetail, type BriefActivity } from "./brief-runs.js";
 
   interface Props {
     activity: readonly BriefActivity[];
@@ -35,6 +36,7 @@
     <ul>
       {#each shown as a, i (`${a.at}|${a.label}`)}
         {@const idleHere = !!idle && i === shown.length - 1}
+        {@const detail = shownDetail(a)}
         <li
           class={a.state}
           style:opacity={Math.max(0.35, 1 - (shown.length - 1 - i) * 0.16)}
@@ -45,7 +47,7 @@
           <span class="mark" aria-hidden="true">
             {#if (a.state === "done" && !idleHere) || a.state === "failed" || a.state === "skipped"}<span class="cell"></span>{:else}<span class="cell pulse"></span>{/if}
           </span>
-          <span class="lbl">{a.label}{#if a.detail}{" "}<span class="det">· {a.detail}</span>{/if}{#if idleHere}{" "}<span class="det idle" data-testid="brief-activity-idle">· still working… {idle}</span>{/if}</span>
+          <span class="lbl">{a.label}{#if detail}{" "}<span class="det">· {detail}</span>{/if}{#if idleHere}{" "}<span class="det idle" data-testid="brief-activity-idle">· still working… {idle}</span>{/if}</span>
         </li>
       {/each}
     </ul>

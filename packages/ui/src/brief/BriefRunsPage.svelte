@@ -21,7 +21,7 @@
   import BriefFindings from "./BriefFindings.svelte";
   import { parseFindings, parseSamples } from "./brief-findings.js";
   import { parseActivity } from "./brief-runs.js";
-  import { BRIEF_IDLE_MS, elapsedLabel, estimateLabel, stillWorkingLine, waitingStep } from "./brief-runs.js";
+  import { BRIEF_IDLE_MS, BRIEF_STARTING_STEP, elapsedLabel, estimateLabel, stillWorkingLine, waitingStep } from "./brief-runs.js";
   import { briefDemoFromUrl } from "./brief-demo.js";
   import { createBriefLogger } from "./brief-log.js";
   import type { BriefItemEvent } from "./brief-context.svelte.js";
@@ -217,7 +217,7 @@
     }
     switch (cp.kind) {
       case "dispatching":
-        return { phase: "running", progress: 0, step: "Waking your bot…" };
+        return { phase: "running", progress: 0, step: `${BRIEF_STARTING_STEP}…` };
       case "waiting":
         return { phase: "running", progress: 0, step: waitingStep(cp.bot) };
       case "running":
@@ -381,7 +381,10 @@
     <RailButton icon="play" variant="ghost" onclick={() => { bloomDone = false; void run?.start({ force: true }); }} data-testid="brief-start-new">Start a new one</RailButton>
   {:else}
     <RailButton icon="refresh" variant="primary" onclick={createBrief} data-testid="brief-retry">Try again</RailButton>
-    <RailButton icon="x" variant="ghost" onclick={() => run?.dismiss()} data-testid="brief-dismiss">Dismiss</RailButton>
+    <!-- A run that never started (already retried once) offers one action only. -->
+    {#if !(cp.kind === "failed" && cp.heal)}
+      <RailButton icon="x" variant="ghost" onclick={() => run?.dismiss()} data-testid="brief-dismiss">Dismiss</RailButton>
+    {/if}
   {/if}
 {/snippet}
 
