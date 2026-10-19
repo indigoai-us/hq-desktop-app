@@ -314,7 +314,7 @@
     width: 630px;
     max-width: 100%;
     min-height: 278px;
-    padding-top: 46px;
+    padding: 46px 0 30px;
   }
   .lede {
     margin: 0 0 16px;
@@ -330,7 +330,8 @@
   }
   .sub {
     margin: 20px 0 0;
-    max-width: 430px;
+    max-width: 480px;
+    text-wrap: pretty;
     font-size: 15px;
     line-height: 1.7;
     color: var(--ink-2);

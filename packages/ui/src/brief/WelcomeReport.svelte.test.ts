@@ -379,6 +379,8 @@ describe("WelcomeReport", () => {
     // US-019: nothing sits above the sunrise; the bar follows it.
     const bar = q('[data-testid="brief-open-tool"]')!;
     expect(loading!.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // It sits in the inset slot under the rise, not flush against the window edge.
+    expect(q('[data-testid="welcome-report-open-tool"]')?.contains(bar)).toBe(true);
     button!.click();
     expect(onopen).toHaveBeenCalledTimes(1);
   });

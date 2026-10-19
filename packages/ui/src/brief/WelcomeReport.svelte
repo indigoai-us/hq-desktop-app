@@ -212,7 +212,9 @@
   {/if}
   {#if !ready}
     {#if openTool}
-      <BriefOpenTool label={openTool.label} detail={openTool.detail} busy={openTool.busy} error={openTool.error} onopen={openTool.onopen} />
+      <div class="after-rise" data-testid="welcome-report-open-tool">
+        <BriefOpenTool label={openTool.label} detail={openTool.detail} busy={openTool.busy} error={openTool.error} onopen={openTool.onopen} />
+      </div>
     {/if}
     {#if onsetup}
       <section class="card loading" data-testid="welcome-report-setup">
@@ -258,8 +260,13 @@
     color: var(--b-t1, rgba(255, 255, 255, 0.95));
   }
   .welcome[data-theme="light"] {
+    --open-tool-detail: rgba(42, 28, 22, 0.72);
     background: #f6f1ea;
     color: #2a1c16;
+  }
+  /* The open action under the sunrise keeps the rise's 52 px inset. */
+  .after-rise {
+    padding: 20px 52px 28px;
   }
   .welcome.rising {
     position: relative;

@@ -28,11 +28,11 @@
     fixture === 'company' ? core.showcase_company : fixture === 'seeded' ? seeded.welcome : core.showcase_personal;
   const brief = { items: seeded.items, welcome };
 
-  const RUN = 'brief-20261008-090000';
+  const RUN = 'brief-20261018-090000';
   const files: Record<string, string> = {
     'workspace/brief/index.jsonl': JSON.stringify({
       run_id: RUN,
-      created_at: '2026-10-08T16:00:00Z',
+      created_at: '2026-10-18T16:00:00Z',
       state: 'ready',
       catch_up: false,
       lead: 'decisions',
