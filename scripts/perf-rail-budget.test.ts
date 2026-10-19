@@ -129,4 +129,18 @@ describe("console rail budget", () => {
     expect(run(2_486_977 + 150 * 1024)?.pass).toBe(true);
     expect(run(2_486_977 + 150 * 1024 + 1)?.pass).toBe(false);
   });
+
+  it("fails the palette line when there is no palette sample", () => {
+    const check = judgeRail(
+      {
+        "coldLoad.shellReadyMs": { median: 146, p95: 150 },
+        "coldLoad.firstContentfulPaintMs": { median: 154, p95: 156 },
+        "idle.busyMs": { median: 0, p95: 0 },
+      },
+      reference,
+      { companySwitch: { skipped: true, todo: "US-004" }, sidepaneSwitch: { skipped: true, todo: "US-006" } },
+    ).checks.find((c) => c.name === "commandPaletteMs");
+    expect(check?.pass).toBe(false);
+    expect(check?.skipped).toBeUndefined();
+  });
 });

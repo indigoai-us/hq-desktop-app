@@ -689,16 +689,20 @@ describe("hq-shared holds the boot path only", () => {
       dynamicImporters: ["/repo/packages/core/src/mesh/client.ts"],
     },
   };
+  // Rollup creates one info object per module per build; mirror that.
+  const infos = new Map(
+    Object.entries(graph).map(([id, m]) => [
+      id,
+      {
+        isEntry: m.isEntry ?? false,
+        importedIds: m.importedIds ?? [],
+        dynamicImporters: m.dynamicImporters ?? [],
+      },
+    ]),
+  );
   const meta = {
-    getModuleIds: () => Object.keys(graph)[Symbol.iterator](),
-    getModuleInfo: (id: string) =>
-      graph[id]
-        ? {
-            isEntry: graph[id].isEntry ?? false,
-            importedIds: graph[id].importedIds ?? [],
-            dynamicImporters: graph[id].dynamicImporters ?? [],
-          }
-        : null,
+    getModuleIds: () => infos.keys(),
+    getModuleInfo: (id: string) => infos.get(id) ?? null,
   };
 
   it("puts the boot graph in hq-shared and leaves door bodies in their own chunks", async () => {
@@ -722,6 +726,50 @@ describe("hq-shared holds the boot path only", () => {
     expect(
       chunk("/repo/node_modules/.pnpm/mqtt@5.0.0/node_modules/mqtt/dist/mqtt.esm.js", meta),
     ).toBeUndefined();
+  });
+});
+
+describe("hq-shared boot graph cache", () => {
+  type Info = { isEntry: boolean; importedIds: string[]; dynamicImporters: string[] };
+  const UI = "/repo/packages/ui/src";
+  const build = (doorImporter: string) => {
+    const infos = new Map<string, Info>();
+    infos.set("/repo/apps/sync/src/main.ts", {
+      isEntry: true,
+      importedIds: [`${UI}/Shell.svelte`],
+      dynamicImporters: [],
+    });
+    infos.set(`${UI}/Shell.svelte`, { isEntry: false, importedIds: [], dynamicImporters: [] });
+    infos.set(`${UI}/Door.svelte`, { isEntry: false, importedIds: [], dynamicImporters: [doorImporter] });
+    for (let i = 0; i < 50; i++) {
+      infos.set(`${UI}/m${i}.ts`, { isEntry: false, importedIds: [], dynamicImporters: [] });
+    }
+    return infos;
+  };
+
+  it("computes the graph once per build even when each call gets a new getModuleInfo", async () => {
+    const { createHqSharedChunks } = await import("../apps/sync/vite.chunks.mjs");
+    let graphReads = 0;
+    // A fresh meta object and fresh functions on every call.
+    const metaFor = (infos: Map<string, Info>) => ({
+      getModuleIds: () => {
+        graphReads++;
+        return infos.keys();
+      },
+      getModuleInfo: (id: string) => infos.get(id) ?? null,
+    });
+    const chunk = createHqSharedChunks();
+    const first = build(`${UI}/Shell.svelte`);
+    for (const id of first.keys()) chunk(id, metaFor(first));
+    // One graph build reads the id list twice (roots, then the verdict table).
+    expect(graphReads).toBe(2);
+    expect(chunk(`${UI}/Door.svelte`, metaFor(first))).toBeUndefined();
+    expect(chunk(`${UI}/Shell.svelte`, metaFor(first))).toBe("hq-shared");
+
+    // A new build where app code loads the door at boot is recomputed.
+    const second = build("/repo/apps/sync/src/boot.ts");
+    expect(chunk(`${UI}/Door.svelte`, metaFor(second))).toBe("hq-shared");
+    expect(graphReads).toBe(4);
   });
 });
 
@@ -1102,15 +1150,18 @@ describe("command palette metric times the painted palette", () => {
     const fn = /async function timeToPalettePainted\(page\) \{[\s\S]*?\n\}\n/.exec(run)?.[0];
     expect(fn, "timeToPalettePainted is missing").toBeDefined();
     expect(run).toMatch(/interaction\.commandPalette"\] = await timeToPalettePainted\(page\)/);
+    expect(fn).toMatch(/page\.evaluate\(palettePaintedProbe, PALETTE_ROW_SELECTOR\)/);
+    const probe = await readFile(resolve(rootDir, "scripts/perf/palette-probe.mjs"), "utf8");
     // Start: the event's own timestamp.
-    expect(fn).toMatch(/t0 = event\.timeStamp/);
+    expect(probe).toMatch(/t0 = event\.timeStamp/);
     // Ready needs the input AND a result row.
     expect(run).toMatch(/PALETTE_ROW_SELECTOR = '\[data-testid="command-palette"\] \[role="option"\]'/);
-    expect(fn).toMatch(/visible\(document\.querySelector\(rowSelector\)\)/);
+    expect(probe).toMatch(/visible\(document\.querySelector\(rowSelector\)\)/);
     // End: a task posted from the ready frame's rAF runs after its paint.
-    expect(fn).toMatch(/requestAnimationFrame\(frame\)/);
-    expect(fn).toMatch(/new MessageChannel\(\)/);
-    // Not the old microtask stop.
-    expect(fn).not.toMatch(/queueMicrotask/);
+    expect(probe).toMatch(/requestAnimationFrame\(frame\)/);
+    expect(probe).toMatch(/new MessageChannel\(\)/);
+    // Not the old microtask stop, and a timeout is never a dropped sample.
+    expect(probe).not.toMatch(/queueMicrotask/);
+    expect(probe).not.toMatch(/finish\(null\)/);
   });
 });

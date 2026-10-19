@@ -112,7 +112,15 @@ export function judgeRail(summaries, reference, rail) {
   }
 
   const palette = summaries["interaction.commandPalette"];
-  if (palette) {
+  if (!palette) {
+    // The palette is always on the shell. No sample means the probe could
+    // not run or the palette never opened, which is a failure, not a skip.
+    checks.push({
+      name: "commandPaletteMs",
+      pass: false,
+      detail: "not measured: no palette sample (the palette did not open or paint)",
+    });
+  } else {
     const recorded = reference["interaction.commandPalette"]?.p95;
     const limit = Math.max(20, Number.isFinite(recorded) ? recorded : 20);
     checks.push({

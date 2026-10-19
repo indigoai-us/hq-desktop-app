@@ -79,13 +79,15 @@ export function bootGraph({ getModuleIds, getModuleInfo }) {
 
 /**
  * Returns a Rollup `manualChunks` function. The boot graph is computed once
- * per build and cached.
+ * per build. The cache is keyed on Rollup's module info objects, which Rollup
+ * creates once per module per build, not on the identity of the
+ * `getModuleInfo` function: a host that passes a new function on every call
+ * still computes the graph once, and a new build (new module objects)
+ * recomputes it.
  */
 export function createHqSharedChunks() {
-  /** @type {unknown} */
-  let cachedFor = null;
-  /** @type {Set<string>} */
-  let boot = new Set();
+  /** @type {WeakMap<object, boolean>} */
+  let onBootPath = new WeakMap();
   /**
    * @param {string} id
    * @param {ChunkMeta} meta
@@ -94,10 +96,16 @@ export function createHqSharedChunks() {
   return function manualChunks(id, meta) {
     if (!SHARED.test(id) || ALWAYS_LAZY.test(id)) return undefined;
     if (STYLE.test(id)) return "hq-shared";
-    if (cachedFor !== meta.getModuleInfo) {
-      boot = bootGraph(meta);
-      cachedFor = meta.getModuleInfo;
+    const info = meta.getModuleInfo(id);
+    if (!info) return undefined;
+    if (!onBootPath.has(info)) {
+      const boot = bootGraph(meta);
+      onBootPath = new WeakMap();
+      for (const moduleId of meta.getModuleIds()) {
+        const moduleInfo = meta.getModuleInfo(moduleId);
+        if (moduleInfo) onBootPath.set(moduleInfo, boot.has(moduleId));
+      }
     }
-    return boot.has(id) ? "hq-shared" : undefined;
+    return onBootPath.get(info) ? "hq-shared" : undefined;
   };
 }

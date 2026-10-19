@@ -19,8 +19,10 @@ import { installUiHotUpdates, reportUiBootFailure, signalUiBoot } from '../lib/u
 import { emitTo, listen } from '@tauri-apps/api/event';
 import { POST_READY_ACTION_EVENT } from '../lib/post-ready-action-telemetry';
 import { registerDesktopAltReturnNudgeBridge } from '../lib/return-nudge-event-bridge';
+import { installLazyLoadSentryReporter } from '../lib/lazy-load-sentry';
 
 const windowLabel = getCurrentWindow().label;
+installLazyLoadSentryReporter(windowLabel);
 if (windowLabel === 'desktop-alt') {
   const unlistenReturnNudge = registerDesktopAltReturnNudgeBridge((eventName, payload) =>
     emitTo('main', eventName, payload),

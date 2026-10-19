@@ -42,6 +42,7 @@ import { fileURLToPath } from "node:url";
 import { FRAME_BUDGET_MS, INIT_SCRIPT, SHELL_READY_SELECTORS, frameStats, longTaskBusyMs } from "./perf/collectors.mjs";
 import { HARNESS_ENTRY, HARNESS_OUT_DIR, buildHarness } from "./perf/harness-build.mjs";
 import { inspectLazyChunks } from "./perf/lazy-chunks.mjs";
+import { palettePaintedProbe } from "./perf/palette-probe.mjs";
 import { machineContext } from "./perf/machine.mjs";
 import { RAIL_REFERENCE, RAIL_SCENARIO_TODO, judgeRail, renderRailVerdict } from "./perf/rail-budget.mjs";
 import { compareMetric, renderTable, summarise } from "./perf/stats.mjs";
@@ -380,83 +381,17 @@ async function timeToNextPaint(page, act) {
 
 /**
  * Palette budget: Cmd-K keydown to the end of the frame that paints the
- * palette with its result rows.
- *
- * - Start: the keydown's own `event.timeStamp`, so time the event waited in
- *   the page's queue counts.
- * - Ready: the palette input is visible (has a box, not under `[hidden]`)
- *   and at least one result row (`[role="option"]`) has a box.
- * - End: from the first animation frame in which the palette is ready, a
- *   message posted on a MessageChannel. Its task runs after that frame's
- *   style, layout and paint, so the sample includes the paint and the wait
- *   for the frame. It does not include compositor and display latency after
- *   the paint, which the page cannot observe.
+ * palette with its result rows. The probe is scripts/perf/palette-probe.mjs.
+ * A palette that never paints yields the timeout duration (1000 ms or more),
+ * which fails the 20 ms gate instead of dropping the sample.
  *
  * An earlier definition stopped on the microtask after the keydown handler.
- * That only timed the handler's state change and read 0.0 ms; it did not
- * include rendering or the frame. The predicate lives inside the page
- * callback; Node has no document.
+ * That only timed the handler's state change and read 0.0 ms.
  */
 const PALETTE_ROW_SELECTOR = '[data-testid="command-palette"] [role="option"]';
 
 async function timeToPalettePainted(page) {
-  const pending = page.evaluate(
-    (rowSelector) =>
-      new Promise((res) => {
-        const armed = performance.now();
-        let t0 = 0;
-        let settled = false;
-        const visible = (el) => {
-          if (!el || el.closest("[hidden]")) return false;
-          const style = getComputedStyle(el);
-          if (style.display === "none" || style.visibility === "hidden") {
-            return false;
-          }
-          const box = el.getBoundingClientRect();
-          return box.width > 0 && box.height > 0;
-        };
-        const ready = () =>
-          visible(
-            document.querySelector('[data-testid="command-palette"] input'),
-          ) && visible(document.querySelector(rowSelector));
-        const finish = (value) => {
-          if (settled) return;
-          settled = true;
-          window.removeEventListener("keydown", onKey, true);
-          res(value);
-        };
-        const afterPaint = () => {
-          const channel = new MessageChannel();
-          channel.port1.onmessage = () => finish(performance.now() - t0);
-          channel.port2.postMessage(0);
-        };
-        const frame = () => {
-          if (settled) return;
-          if (ready()) {
-            afterPaint();
-            return;
-          }
-          if (performance.now() - t0 >= 1000) {
-            finish(null);
-            return;
-          }
-          requestAnimationFrame(frame);
-        };
-        const onKey = (event) => {
-          if (t0) return;
-          if (event.key.toLowerCase() !== "k") return;
-          if (!event.metaKey && !event.ctrlKey) return;
-          t0 = event.timeStamp;
-          requestAnimationFrame(frame);
-        };
-        // Capture on window runs before the shell's own handler.
-        window.addEventListener("keydown", onKey, true);
-        setTimeout(() => {
-          if (!t0) finish(null);
-        }, 2000 + (performance.now() - armed));
-      }),
-    PALETTE_ROW_SELECTOR,
-  );
+  const pending = page.evaluate(palettePaintedProbe, PALETTE_ROW_SELECTOR);
   await page.keyboard.press("Meta+k");
   return pending;
 }

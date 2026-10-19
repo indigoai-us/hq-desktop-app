@@ -367,18 +367,32 @@ of main growth.
 
 | measurement | main `a176d88a3` | this branch | change |
 |---|---|---|---|
-| Shipped desktop window boot JS (`desktop-alt.html` + `HqWorkWorkShell` static graph, real `apps/sync` build) | 4,644,459 B | 2,857,119 B | **−1,787,340 B (−38%)** |
-| Shipped `main` window entry JS | 5,069,946 B | 3,282,606 B | −1,787,340 B |
-| Harness initial JS (the gated number) | 4,558,599 B | 4,053,542 B | **−505,057 B** |
+| Shipped desktop window boot JS (`desktop-alt.html` + `HqWorkWorkShell` static graph, real `apps/sync` build) | 4,644,754 B | 2,858,947 B | **−1,785,807 B (−38%)** |
+| Shipped `main` window entry JS | 5,070,113 B | 3,284,851 B | −1,785,262 B |
+| Harness initial JS (the gated number) | 4,558,599 B | 4,054,560 B | **−504,039 B** |
 | Shipped `hq-shared` CSS | 1,027.95 kB | 1,027.95 kB | identical |
 | Dynamic chunks in the shipped build | 4 | 42 | |
+
+The shipped rows come from `pnpm perf:boot-js` (`scripts/perf/shipped-boot-js.mjs`),
+which builds `apps/sync` with its real `vite.config.ts` into a temporary
+directory and sums the JS in each window's static import graph. The main
+column is the same script run in a worktree at `a176d88a3`. The harness row
+comes from the `initialJsBytes` line of `pnpm perf:rail`. The branch figures
+include the lazy-door retry and Sentry reporter added after review (about
+1.8 KB over the first measurement).
+
+Because the doors now load from separate files in the shipped app, a chunk
+can fail to load (for example while an app update replaces the bundle). A
+door retries twice (250 ms, then 1 s), then reports the failure to Sentry
+tagged with the window and the door, and shows a short failed line with Try
+again in place of its loading frame.
 
 The harness number falls by less than the shipped number because the harness
 already split the lazy doors; its gain is mqtt.js and the badge art. The
 harness entry also carries dev-harness preview views (onboarding wizard,
 meetings window, desktop-alt shell, fixtures) that the app does not ship.
 
-**Gate verdict for Initial JS: still FAIL (4,053,542 vs 2,790,581).** The
+**Gate verdict for Initial JS: still FAIL (4,054,560 vs 2,790,581).** The
 limit and the reference were not changed. Re-measuring the reference at main
 gives a higher number, and the reference may only move down, so it stays.
 

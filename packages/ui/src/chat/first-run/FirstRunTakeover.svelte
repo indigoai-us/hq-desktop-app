@@ -1125,6 +1125,7 @@
           {#key importDoorKey}
           <LazyDoor
             door={firstRunImportDoor}
+            keepLoadingOnFailure
             props={{
               name: shownName,
               stepNumber: firstRunStepNumber("context", shownSteps),
