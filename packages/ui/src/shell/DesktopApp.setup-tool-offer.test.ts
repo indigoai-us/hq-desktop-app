@@ -25,7 +25,7 @@ import { SETUP_CONTINUE_IN_TOOL_PROMPT } from "../chat/setup-bot.js";
 
 const SETUP_UID = "agt_setup_offer";
 const offerFor = (tool: "claude" | "codex") =>
-  "Hi, I'm Pickles, your setup bot.\n\n" +
+  "Hi, I'm Pickles, your HQ assistant.\n\n" +
   `Looks like you use the ${tool === "claude" ? "Claude" : "Codex"} app. Want to continue setup there?\n\n` +
   "```hq-block\n" +
   `{"v":1,"blocks":[{"kind":"continueInTool","tool":"${tool}"},{"kind":"suggestions","items":["Keep going here"]}]}` +

@@ -7404,7 +7404,7 @@
       : inSetupChannelWithAgent && setupAgent.listening
       ? setupAgent.state?.question?.kind === "choice"
         ? "Type your answer…"
-        : "Reply to Setup bot…"
+        : `Reply to ${SETUP_AGENT_NAME}…`
       : agentSetupPending
         ? agentComposerPlaceholder(provisioning.agentName || headerTitle)
         : composerPlaceholderFor(selectedRow, headerTitle),

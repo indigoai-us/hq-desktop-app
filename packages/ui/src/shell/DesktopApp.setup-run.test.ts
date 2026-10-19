@@ -172,10 +172,10 @@ describe("DesktopApp native setup run wiring", () => {
     const messages = Array.from(host.querySelectorAll('[data-testid="conversation-message"]'));
     const agentMessage = messages.find((el) => el.textContent?.includes("Checking what's already in place"));
     expect(agentMessage).toBeTruthy();
-    expect(agentMessage?.textContent).toContain("Setup bot");
+    expect(agentMessage?.textContent).toContain("HQ setup");
     expect(agentMessage?.textContent).not.toContain("[hq-setup]");
     // Working shows as the same thinking row any agent gets, not a box.
-    expect(host.querySelector('[data-testid="agent-thinking-row"]')?.textContent).toContain("Setup bot");
+    expect(host.querySelector('[data-testid="agent-thinking-row"]')?.textContent).toContain("HQ setup");
     expect(host.querySelector('[data-testid="setup-agent-prompt"] [data-testid="setup-run-question"]')).toBeNull();
 
     // A structured question shows as the prompt under the messages.

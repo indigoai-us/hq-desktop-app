@@ -49,7 +49,7 @@ describe("setup bot names", () => {
   it("puts the name in the hello and keeps it under the CLI's 500 characters", () => {
     const longest = [...SETUP_BOT_NAMES].sort((a, b) => b.length - a.length)[0]!;
     const intro = setupBotIntro({ displayName: longest });
-    expect(intro.startsWith(`Hi, I'm ${longest}, your setup bot`)).toBe(true);
+    expect(intro.startsWith(`Hi, I'm ${longest}, your HQ assistant`)).toBe(true);
     expect(intro.length).toBeLessThanOrEqual(500);
     expect(setupBotIntro({ displayName: null })).toBe(SETUP_BOT_INTRO);
     expect(setupBotIntro()).toBe(SETUP_BOT_INTRO);
@@ -76,6 +76,6 @@ describe("setup finish Slack offer", () => {
 
   it("names the bot in the button and in the message it sends", () => {
     expect(setupSlackOfferText("Pickles")).toBe("Put Pickles in Slack");
-    expect(setupSlackOfferText(null)).toBe("Put my setup bot in Slack");
+    expect(setupSlackOfferText(null)).toBe("Put my assistant in Slack");
   });
 });
