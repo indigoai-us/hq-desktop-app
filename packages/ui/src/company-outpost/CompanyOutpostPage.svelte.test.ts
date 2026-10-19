@@ -1,10 +1,10 @@
 // @vitest-environment happy-dom
-import { flushSync, mount, unmount } from "svelte";
+import { createRawSnippet, flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import CompanyOutpostPage from "./CompanyOutpostPage.svelte";
 import { COMPANY_OUTPOST_SCREENS, companyOutpostPreview, FIXTURE_BOXES, FIXTURE_NOW, successOutpost } from "./company-outpost.fixture.js";
 import { createCompanyOutpostStub } from "./company-outpost-stub.js";
-import { blockedNote, failureCopy, UNAVAILABLE_COPY } from "./company-outpost-model.js";
+import { blockedNote, failureCopy, outpostJobsDestination, UNAVAILABLE_COPY } from "./company-outpost-model.js";
 import type { CompanyOutpostRole } from "./company-outpost-model.js";
 
 const BILLING_TEXT = /billing|billed|\bbill\b|charge|payment|payer|\bpays?\b|price|pricing|invoice|subscription|USD|\$\s?\d|a month|per month/i;
@@ -16,7 +16,22 @@ describe("Company Outpost page", () => {
     if (component) await unmount(component);
     component = null;
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
+
+  async function settle() {
+    for (let i = 0; i < 6; i += 1) {
+      await Promise.resolve();
+      flushSync();
+    }
+  }
+
+  async function addOutpost(target: HTMLElement) {
+    click(target, target.querySelector("[data-testid='add-outpost']") ? "add-outpost" : "add-outpost-empty");
+    click(target, "add-continue");
+    click(target, "create-outpost");
+    await settle();
+  }
 
   async function show(role: CompanyOutpostRole, options: Parameters<typeof createCompanyOutpostStub>[0] = {}, props: Record<string, unknown> = {}) {
     const client = createCompanyOutpostStub({
@@ -207,32 +222,142 @@ describe("Company Outpost page", () => {
     expect(client.readItems().map((item) => item.id)).toEqual(["demo-new"]);
   });
 
-  it("shows the blocked note and a job stub on the stable route", async () => {
-    const open = vi.fn();
+  it("opens a job on the outpost-jobs route, and keeps the stub when the app cannot open it yet", async () => {
+    const open = vi.fn(() => false);
     vi.spyOn(window, "open").mockImplementation(() => null);
     const { target } = await show("admin", {}, { onOpenJob: open });
     click(target, "open-demo-4");
-    await Promise.resolve();
-    flushSync();
+    await settle();
     expect(target.querySelector("[data-testid='blocked-note']")?.textContent).toBe(blockedNote("admin"));
     click(target, "job-inbox-check");
+    await settle();
+    expect(open).toHaveBeenCalledWith(outpostJobsDestination("cmp_1", "demo-4"));
+    expect(outpostJobsDestination("cmp_1", "demo-4")).toEqual({
+      kind: "extra",
+      page: "outpost-jobs",
+      companyUid: "cmp_1",
+      param: "outpostId=demo-4&company=cmp_1",
+    });
     expect(target.querySelector("[data-testid='outpost-jobs-stub']")?.getAttribute("data-route")).toBe("outpost-jobs");
-    expect(open).toHaveBeenCalledWith(expect.objectContaining({ route: "outpost-jobs", jobId: "inbox-check" }));
     expect(window.open).not.toHaveBeenCalled();
   });
 
-  it("asks for sign-in again without opening a page", async () => {
+  it("leaves the stub closed when the app opens the outpost-jobs route", async () => {
+    const open = vi.fn(async () => true);
+    const { target } = await show("admin", {}, { onOpenJob: open });
+    click(target, "open-demo-4");
+    await settle();
+    click(target, "job-inbox-check");
+    await settle();
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(target.querySelector("[data-testid='outpost-jobs-stub']")).toBeNull();
+    expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-screen")).toBe("detail");
+  });
+
+  it("has no sign in again that only asks for a new link, and mounts the sign-in card slot", async () => {
     vi.spyOn(window, "open").mockImplementation(() => null);
-    const { target, client } = await show("admin");
+    const signInCard = createRawSnippet((args: () => { companyUid: string; outpostId: string }) => ({
+      render: () => `<span data-testid="signin-probe">${args().companyUid}/${args().outpostId}</span>`,
+    }));
+    const { target } = await show("admin", {}, { signInCard });
     click(target, "open-demo-1");
-    await Promise.resolve();
-    flushSync();
-    click(target, "sign-in-again");
-    await Promise.resolve();
-    flushSync();
-    expect(target.textContent).toContain("This screen does not open a sign-in page.");
-    expect(client.signInCount()).toBe(1);
+    await settle();
+    expect(target.querySelector("[data-testid='sign-in-again']")).toBeNull();
+    expect(target.textContent).not.toContain("This screen does not open a sign-in page.");
+    expect(target.querySelector("[data-testid='company-outpost-signin-slot'] [data-testid='signin-probe']")?.textContent).toBe("cmp_1/demo-1");
+    click(target, "back-list");
+    click(target, "open-demo-4");
+    await settle();
+    expect(target.querySelector("[data-testid='company-outpost-signin-slot']")).toBeNull();
     expect(window.open).not.toHaveBeenCalled();
+    await unmount(component!);
+    component = null;
+    const member = await show("member", {}, { signInCard });
+    click(member.target, "open-demo-1");
+    await settle();
+    expect(member.target.querySelector("[data-testid='company-outpost-signin-slot']")).toBeNull();
+  });
+
+  it("opens the existing Outpost when provision answers already exists", async () => {
+    const { target } = await show("admin", { items: [FIXTURE_BOXES[0]!], plan: [{ status: "already_exists", outpostId: "demo-1" }] });
+    await addOutpost(target);
+    expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-screen")).toBe("detail");
+    expect(target.querySelector("h1")?.textContent).toBe("main");
+    expect(target.querySelector("[data-testid='detail-notice']")?.textContent).toBe("An Outpost already exists for this company.");
+  });
+
+  it("opens the listed Outpost when already exists names no id", async () => {
+    const { target } = await show("admin", { items: [FIXTURE_BOXES[0]!], plan: [{ status: "already_exists" }] });
+    await addOutpost(target);
+    expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-screen")).toBe("detail");
+    expect(target.querySelector("h1")?.textContent).toBe("main");
+  });
+
+  it("keeps checking after an outcome-unknown provision, and Check now re-reads", async () => {
+    const { target, client } = await show("admin", {
+      items: [],
+      plan: [{ status: "pending", attemptId: "" }, { status: "checking", signIn: false }, successOutpost()],
+    });
+    await addOutpost(target);
+    expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-screen")).toBe("preparing");
+    const lists = client.listCount();
+    click(target, "check-now");
+    await settle();
+    expect(client.pollArgs()).toEqual([""]);
+    expect(client.listCount()).toBeGreaterThan(lists);
+    expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-screen")).toBe("preparing");
+    click(target, "check-now");
+    await settle();
+    expect(client.pollArgs()).toEqual(["", ""]);
+    expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-screen")).toBe("detail");
+  });
+
+  it("does not open an older Outpost while an add with no id is still checking", async () => {
+    const { target, client } = await show("admin", {
+      items: [FIXTURE_BOXES[0]!],
+      plan: [{ status: "pending", attemptId: "" }, { status: "success", outpost: { ...FIXTURE_BOXES[0]!, jobHealth: { ...FIXTURE_BOXES[0]!.jobHealth } } }],
+    });
+    await addOutpost(target);
+    click(target, "check-now");
+    await settle();
+    expect(client.pollArgs()).toEqual([""]);
+    expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-screen")).toBe("preparing");
+  });
+
+  it("polls on its own while preparing, even with no attempt id", async () => {
+    vi.useFakeTimers();
+    const { target, client } = await show("admin", {
+      items: [],
+      plan: [{ status: "pending", attemptId: "" }, successOutpost()],
+    }, { pollMs: 1000 });
+    await addOutpost(target);
+    expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-screen")).toBe("preparing");
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(client.pollArgs()).toEqual([""]);
+    expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-screen")).toBe("detail");
+  });
+
+  it("stays on Preparing with a neutral note when the status read fails, and offers HQ sign-in when it expired", async () => {
+    const onSignIn = vi.fn();
+    const { target } = await show("admin", {
+      items: [],
+      plan: [{ status: "pending", attemptId: "op_1" }, { status: "checking", signIn: false }, { status: "checking", signIn: true }],
+    }, { onSignIn });
+    await addOutpost(target);
+    click(target, "check-now");
+    await settle();
+    expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-screen")).toBe("preparing");
+    expect(target.textContent).not.toContain(failureCopy());
+    expect(target.querySelector("[data-testid='check-now']")).not.toBeNull();
+    expect(target.querySelector("[data-testid='prep-signin']")).toBeNull();
+    click(target, "check-now");
+    await settle();
+    expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-screen")).toBe("preparing");
+    expect(target.textContent).not.toContain(failureCopy());
+    expect(target.querySelector("[data-testid='prep-signin']")?.textContent).toContain("Sign in to HQ again to continue.");
+    click(target, "prep-signin-action");
+    expect(onSignIn).toHaveBeenCalledTimes(1);
   });
 
   it("refuses a rename that breaks the name rule and a remove until the name matches", async () => {

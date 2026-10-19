@@ -18,7 +18,8 @@ import type { CompanyOutpostClient, ListResult, ManageResult } from "./company-o
 
 export interface CompanyOutpostStub extends CompanyOutpostClient {
   readItems(): CompanyOutpostListItem[];
-  signInCount(): number;
+  pollArgs(): string[];
+  listCount(): number;
 }
 
 function cloneDetail(detail: CompanyOutpostDetail): CompanyOutpostDetail {
@@ -53,7 +54,8 @@ export function createCompanyOutpostStub(options: {
   const canManage = options.canManage ?? canManageRole(options.role ?? "admin");
   const cap = options.cap ?? COMPANY_OUTPOST_CAP;
   let rows = (options.items ?? []).map(cloneDetail);
-  let signIns = 0;
+  const polls: string[] = [];
+  let lists = 0;
   let planIndex = 0;
   const refusal: ManageResult = { ok: false, message: "Only company owners and admins can manage Outposts." };
 
@@ -79,8 +81,10 @@ export function createCompanyOutpostStub(options: {
 
   return {
     readItems: () => rows.map(toItem),
-    signInCount: () => signIns,
+    pollArgs: () => [...polls],
+    listCount: () => lists,
     async list() {
+      lists += 1;
       if (options.listError) return options.listError;
       return { ok: true, items: rows.map(toItem), cap };
     },
@@ -96,8 +100,9 @@ export function createCompanyOutpostStub(options: {
       if (!canManage) return { status: "forbidden" };
       return consume();
     },
-    async pollProvision() {
+    async pollProvision(attemptId) {
       if (!canManage) return { status: "forbidden" };
+      polls.push(attemptId);
       return consume();
     },
     async rename(outpostId, name) {
@@ -115,12 +120,6 @@ export function createCompanyOutpostStub(options: {
       rows = rows.filter((item) => item.id !== outpostId);
       if (rows.length === before) return { ok: false, message: "Could not remove this Outpost." };
       return { ok: true, message: "Outpost removed." };
-    },
-    async signInAgain(outpostId) {
-      if (!canManage) return refusal;
-      if (!rows.some((item) => item.id === outpostId)) return { ok: false, message: "Could not start sign-in again." };
-      signIns += 1;
-      return { ok: true, message: "Sign-in again was requested for this Outpost. This screen does not open a sign-in page." };
     },
   };
 }

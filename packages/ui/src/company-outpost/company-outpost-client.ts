@@ -35,7 +35,6 @@ export interface CompanyOutpostApi {
   provisionCompanyOutpost?(companyUid: string): Promise<AdapterResult<Json>>;
   renameCompanyOutpost?(companyUid: string, outpostId: string, name: string): Promise<AdapterResult<Json>>;
   removeCompanyOutpost?(companyUid: string, outpostId: string): Promise<AdapterResult<Json>>;
-  signInCompanyOutpostAgain?(companyUid: string, outpostId: string): Promise<AdapterResult<Json>>;
   pollCompanyOutpostProvision?(companyUid: string, attemptId: string): Promise<AdapterResult<Json>>;
 }
 
@@ -56,7 +55,6 @@ export interface CompanyOutpostClient {
   pollProvision(attemptId: string): Promise<ProvisionResult>;
   rename(outpostId: string, name: string): Promise<ManageResult>;
   remove(outpostId: string): Promise<ManageResult>;
-  signInAgain(outpostId: string): Promise<ManageResult>;
 }
 
 const MANAGE_REFUSAL = "Only company owners and admins can manage Outposts.";
@@ -219,7 +217,9 @@ export function parseProvision(result: AdapterResult<Json>): ProvisionResult {
       code.includes("timeout") ||
       code.includes("503") ||
       code.includes("500") ||
-      code.includes("504")
+      code.includes("502") ||
+      code.includes("504") ||
+      (result.status ?? 0) >= 500
     ) {
       return { status: "pending", attemptId: "" };
     }
@@ -248,6 +248,29 @@ export function parseProvision(result: AdapterResult<Json>): ProvisionResult {
   }
   if (asString(body.attemptId) || asString(body.operationId)) return { status: "pending", attemptId };
   return { status: "failure", message: failureCopy() };
+}
+
+/**
+ * Reads a provision status poll. Only a clear answer ends the wait: a failure
+ * body, a 404, or 403. A read that fails for any other reason (network, 5xx,
+ * an expired sign-in) keeps checking, because the add may still be running.
+ */
+export function parseProvisionStatus(result: AdapterResult<Json>): ProvisionResult {
+  if (!result.ok) {
+    const code = codeOf(result);
+    if (result.status === 404 || code.includes("not_found")) return { status: "failure", message: failureCopy() };
+    if (result.status === 401 || code.includes("401") || code.includes("unauthorized")) return { status: "checking", signIn: true };
+    if (result.status === 403 || code.includes("403") || code.includes("forbidden") || code.includes("admin_required")) {
+      return { status: "forbidden" };
+    }
+    return { status: "checking", signIn: false };
+  }
+  const body = rec(result.value) ?? {};
+  const status = asString(body.status).toLowerCase().replace(/-/g, "_");
+  const explicitFailure = status === "failure" || status === "error" || body.error === true;
+  const parsed = parseProvision(result);
+  if (parsed.status === "failure" && !explicitFailure) return { status: "checking", signIn: false };
+  return parsed;
 }
 
 function loadError(result: AdapterResult<Json>): Extract<ListResult, { ok: false }> {
@@ -331,7 +354,7 @@ export function createCompanyOutpostClient(options: {
     async pollProvision(attemptId) {
       if (!canManage) return refuse();
       if (!api?.pollCompanyOutpostProvision) return { status: "failure", message: failureCopy() };
-      return parseProvision(await api.pollCompanyOutpostProvision(companyUid, attemptId));
+      return parseProvisionStatus(await api.pollCompanyOutpostProvision(companyUid, attemptId));
     },
     async rename(outpostId, name) {
       if (!canManage) return { ok: false, message: MANAGE_REFUSAL };
@@ -346,13 +369,6 @@ export function createCompanyOutpostClient(options: {
       const result = await api.removeCompanyOutpost(companyUid, outpostId);
       if (!result.ok) return { ok: false, message: "Could not remove this Outpost." };
       return { ok: true, message: "Outpost removed." };
-    },
-    async signInAgain(outpostId) {
-      if (!canManage) return { ok: false, message: MANAGE_REFUSAL };
-      if (!api?.signInCompanyOutpostAgain) return { ok: false, message: "Could not start sign-in again." };
-      const result = await api.signInCompanyOutpostAgain(companyUid, outpostId);
-      if (!result.ok) return { ok: false, message: "Could not start sign-in again." };
-      return { ok: true, message: "Sign-in again was requested for this Outpost. This screen does not open a sign-in page." };
     },
   };
 }

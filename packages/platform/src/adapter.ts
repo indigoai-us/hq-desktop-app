@@ -52,9 +52,11 @@ export interface AdapterFailure {
    */
   instanceId?: string;
   /**
-   * The HTTP status of the refused request. Set only by the two Slack channel
+   * The HTTP status of the refused request. Set by the two Slack channel
    * calls (`AgentsApi.attachSlack`, `AgentsApi.submitSlackAppToken`), whose
-   * callers tell a 403 or 404 from a refusal that carries a server code.
+   * callers tell a 403 or 404 from a refusal that carries a server code, and
+   * by the Company Outpost detail, provision, and provision-poll calls, whose
+   * callers keep checking on a 5xx or an expired sign-in.
    * Absent on every other failure, and on a request that never got an answer.
    */
   status?: number;

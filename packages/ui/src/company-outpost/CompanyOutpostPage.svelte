@@ -2,10 +2,11 @@
   /**
    * Company Outpost list, detail, and add flow.
    * Owners and admins manage. Members see the same list and detail, read only.
-   * Jobs link to the stable route outpost-jobs. That screen is a stub until
-   * the jobs lane lands. Sign-in again never opens a browser.
+   * Jobs open the outpost-jobs route through onOpenJob. When the app cannot
+   * open that route yet, the job shows a stub that names it. Claude sign-in
+   * for an Outpost renders through the signInCard slot.
    */
-  import { onMount } from "svelte";
+  import { onMount, type Snippet } from "svelte";
   import RailButton from "../common/button/RailButton.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import {
@@ -17,6 +18,7 @@
     jobHealthSummary,
     lastSeenLabel,
     listAfterProvision,
+    outpostJobsDestination,
     UNAVAILABLE_COPY,
     needsAttentionNote,
     renameError,
@@ -29,6 +31,7 @@
     type ProvisionResult,
   } from "./company-outpost-model.js";
   import type { CompanyOutpostClient } from "./company-outpost-client.js";
+  import type { NavigationDestination } from "../shell/navigation-history.js";
 
   interface Props {
     companyUid: string;
@@ -40,7 +43,12 @@
     initialOutpostId?: string;
     initialJobId?: string;
     initialNotice?: string;
-    onOpenJob?: (target: { route: typeof OUTPOST_JOBS_ROUTE; companyUid: string; outpostId: string; jobId: string }) => void;
+    /** Opens the outpost-jobs route. Returns false when the app cannot open it yet. */
+    onOpenJob?: (destination: NavigationDestination) => boolean | Promise<boolean>;
+    /** Claude sign-in card for one Outpost, shown to owners and admins. */
+    signInCard?: Snippet<[{ companyUid: string; outpostId: string }]>;
+    /** Starts the HQ sign-in flow after an expired sign-in. */
+    onSignIn?: () => void | Promise<void>;
   }
 
   let {
@@ -54,6 +62,8 @@
     initialJobId = "",
     initialNotice = "",
     onOpenJob,
+    signInCard,
+    onSignIn,
   }: Props = $props();
 
   const manage = $derived(canManageRole(role));
@@ -80,6 +90,11 @@
   let busy = $state(false);
   let attemptId = $state("");
   let prepStep = $state(0);
+  // Outpost ids listed before the add. An add with no attempt id must not
+  // adopt one of these as the new Outpost.
+  let knownIds = $state<string[]>([]);
+  let signInNeeded = $state(false);
+  let polling = false;
 
   const atCap = $derived(manage && items.length >= cap);
   const selected = $derived(items.find((item) => item.id === selectedId) ?? null);
@@ -111,10 +126,16 @@
   }
 
   function applyProvision(result: ProvisionResult) {
+    if (result.status === "checking") {
+      signInNeeded = result.signIn;
+      return;
+    }
+    signInNeeded = false;
+    if (result.status === "success" && screen === "preparing" && !attemptId && knownIds.includes(result.outpost.id)) return;
     items = listAfterProvision(items, result);
     if (result.status === "pending") {
       attemptId = result.attemptId;
-      prepStep = 0;
+      if (screen !== "preparing") prepStep = 0;
       screen = "preparing";
       notice = "";
       return;
@@ -127,7 +148,11 @@
     }
     if (result.status === "already_exists") {
       notice = "An Outpost already exists for this company.";
-      screen = "confirm";
+      void refresh().then(() => {
+        const id = result.outpostId || items[0]?.id || "";
+        if (id) return openDetail(id);
+        screen = "list";
+      });
       return;
     }
     if (result.status === "unavailable") {
@@ -160,6 +185,7 @@
   async function createOutpost() {
     if (!manage || busy) return;
     busy = true;
+    knownIds = items.map((item) => item.id);
     try {
       applyProvision(await client.provision());
     } finally {
@@ -167,13 +193,28 @@
     }
   }
 
+  // Check now and the poll timer both land here. Each call reads again.
   async function checkNow() {
-    if (attemptId) {
-      if (prepStep < PREP_STEPS.length - 1) prepStep += 1;
-      applyProvision(await client.pollProvision(attemptId));
-      return;
+    if (polling) return;
+    polling = true;
+    try {
+      if (screen === "preparing") {
+        if (prepStep < PREP_STEPS.length - 1) prepStep += 1;
+        if (!attemptId) {
+          await refresh();
+          const added = items.find((item) => !knownIds.includes(item.id));
+          if (added) attemptId = added.id;
+        }
+        applyProvision(await client.pollProvision(attemptId));
+        return;
+      }
+      if (selectedId) {
+        await refresh();
+        await openDetail(selectedId);
+      }
+    } finally {
+      polling = false;
     }
-    if (selectedId) await openDetail(selectedId);
   }
 
   async function saveName() {
@@ -206,16 +247,16 @@
     }
   }
 
-  async function signInAgain() {
-    if (!selectedId || !manage) return;
-    const result = await client.signInAgain(selectedId);
-    notice = result.message;
-  }
-
-  function openJob(job: CompanyOutpostJob) {
+  async function openJob(job: CompanyOutpostJob) {
     selectedJob = job;
+    if (selectedId && onOpenJob) {
+      try {
+        if (await onOpenJob(outpostJobsDestination(companyUid, selectedId))) return;
+      } catch (err) {
+        console.error("company outpost: could not open outpost-jobs", err);
+      }
+    }
     screen = "job";
-    if (selectedId) onOpenJob?.({ route: OUTPOST_JOBS_ROUTE, companyUid, outpostId: selectedId, jobId: job.id });
   }
 
   onMount(() => {
@@ -245,7 +286,9 @@
   });
 
   $effect(() => {
-    if (pollMs == null || screen !== "preparing" || !attemptId) return;
+    if (pollMs == null) return;
+    const preparingDetail = screen === "detail" && (detail?.state ?? selected?.state) === "preparing";
+    if (!(screen === "preparing" && manage) && !preparingDetail) return;
     const timer = setInterval(() => {
       void checkNow();
     }, pollMs);
@@ -274,9 +317,7 @@
     <header class="co-head">
       <div>
         <h1>Outposts</h1>
-        <p>{manage
-          ? "Always-on machines that run your company's scheduled jobs. Open an Outpost to sign in again, or to see its jobs and recent runs."
-          : "Always-on machines that run your company's scheduled jobs."}</p>
+        <p>Always-on machines that run your company's scheduled jobs.</p>
       </div>
       {#if manage && items.length > 0 && !atCap}
         <RailButton icon="plus" variant="primary" data-testid="add-outpost" onclick={beginAdd}>Add an Outpost</RailButton>
@@ -394,6 +435,14 @@
       <p>Preparing this Outpost. This can take up to about 7 minutes. This page updates on its own. You can leave and come back.</p>
       <p data-testid="prep-step">{PREP_STEPS[prepStep]}</p>
     </div>
+    {#if signInNeeded}
+      <div class="co-note" role="alert" data-testid="prep-signin">
+        <p>Sign in to HQ again to continue.</p>
+        {#if onSignIn}
+          <RailButton icon="key" data-testid="prep-signin-action" onclick={() => void onSignIn?.()}>Sign in again</RailButton>
+        {/if}
+      </div>
+    {/if}
     {#if manage}
       <RailButton icon="refresh" data-testid="check-now" onclick={() => void checkNow()}>Check now</RailButton>
     {/if}
@@ -469,7 +518,7 @@
             {#each box.jobs as job (job.id)}
               <tr>
                 <td>
-                  <button type="button" class="co-link" data-testid="job-{job.id}" data-route={OUTPOST_JOBS_ROUTE} onclick={() => openJob(job)}>{job.name}</button>
+                  <button type="button" class="co-link" data-testid="job-{job.id}" data-route={OUTPOST_JOBS_ROUTE} onclick={() => void openJob(job)}>{job.name}</button>
                 </td>
                 <td>{whenLabel(job.lastRunAt, now)}</td>
                 <td>{healthLabel(job.health)}</td>
@@ -508,11 +557,11 @@
       </dl>
       <div class="co-row" data-testid="manage-actions">
         <RailButton icon="pencil" data-testid="rename" onclick={() => { renaming = true; renameName = box.name; renameMessage = ""; }}>Rename</RailButton>
-        {#if state === "running" || state === "needs_attention"}
-          <RailButton icon="key" data-testid="sign-in-again" onclick={() => void signInAgain()}>Sign in again</RailButton>
-        {/if}
         <RailButton icon="trash" variant="danger" data-testid="remove" onclick={() => { removeTyped = ""; screen = "remove"; }}>Remove</RailButton>
       </div>
+      {#if signInCard && (state === "running" || state === "needs_attention")}
+        <div data-testid="company-outpost-signin-slot">{@render signInCard({ companyUid, outpostId: box.id })}</div>
+      {/if}
     {:else if box}
       <dl class="co-card" data-testid="member-created">
         <div><dt>Created</dt><dd>{box.machine.createdAt || "Not reported"}</dd></div>

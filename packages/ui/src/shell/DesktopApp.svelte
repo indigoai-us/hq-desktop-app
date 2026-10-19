@@ -11660,6 +11660,22 @@
     return navigation.navigate(destination, mode);
   }
 
+  // Company Outpost job links. The page keeps its own stub when this app has
+  // no outpost-jobs page yet, so an unknown route never shows a nav error.
+  async function openOutpostJobs(
+    destination: NavigationDestination,
+  ): Promise<boolean> {
+    if (destination.kind !== "extra") return false;
+    const known =
+      railPlaceholderForPage(destination.page) ||
+      accountPlaceholderForPage(destination.page) ||
+      companyPagePlaceholderForPage(destination.page) ||
+      extraPages?.[destination.page];
+    if (!known) return false;
+    const result = await navigate(destination);
+    return result.committed;
+  }
+
   function resolveDestination(
     destination: NavigationDestination,
     generation?: number,
@@ -15086,6 +15102,8 @@
             companyUid={companyPaneCompany.uid}
             role={companyPaneRole === "Owner" ? "owner" : companyPaneRole === "Admin" ? "admin" : companyPaneRole === "Guest" ? "guest" : "member"}
             api={adapter.agents ?? null}
+            onOpenJob={openOutpostJobs}
+            onsignin={onsignin ? startReauth : undefined}
           />
         {:else if railPlaceholder}
           <section

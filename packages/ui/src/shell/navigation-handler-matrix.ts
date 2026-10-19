@@ -152,6 +152,8 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   toggleNotifications: "push",
   openSettings: "push",
   openExtraPage: "push",
+  // Company Outpost job links: pushes outpost-jobs only when the app can open it.
+  openOutpostJobs: "push",
   openDmRequests: "push",
   handleDmRequestResolved: "push",
   // Patches the in-memory roster / notifies the host so chrome resolves

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { AGENT_PATHS, COMPANY_OUTPOST_PATHS, OUTPOST_PATHS, companyOutpostListPath } from "../adapter.js";
+import { AGENT_PATHS, COMPANY_OUTPOST_PATHS, OUTPOST_PATHS, companyOutpostDetailPath, companyOutpostListPath } from "../adapter.js";
 import { TauriPlatformAdapter } from "./index.js";
 import { CLAUDE_LOGIN_CODE_TIMEOUT_SECS, createSyncPlatformAdapter } from "./sync-adapter.js";
 
@@ -310,6 +310,34 @@ describe("createSyncPlatformAdapter company Outpost", () => {
         },
       },
     ]);
+  });
+
+  it("sends provision once when the server answers 503, and keeps the status", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        return { status: 503, body: JSON.stringify({ error: true, code: "unavailable", message: "busy" }) };
+      },
+      requestPolicy: { sleep: async () => {}, random: () => 0 },
+    });
+    const res = await adapter.agents.provisionCompanyOutpost?.("cmp_1");
+    expect(calls).toHaveLength(1);
+    expect(res).toMatchObject({ ok: false, status: 503 });
+  });
+
+  it("keeps the HTTP status on a failed detail read, and reads detail without an id", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        return { status: 401, body: JSON.stringify({ error: true, message: "expired" }) };
+      },
+      requestPolicy: { throttle: null },
+    });
+    await expect(adapter.agents.getCompanyOutpost?.("cmp_1", "op_1")).resolves.toMatchObject({ ok: false, status: 401 });
+    await expect(adapter.agents.pollCompanyOutpostProvision?.("cmp_1", "")).resolves.toMatchObject({ ok: false, status: 401 });
+    expect(calls[1]?.args?.url).toBe(companyOutpostDetailPath("cmp_1"));
   });
 });
 

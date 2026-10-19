@@ -576,6 +576,23 @@ export function createSyncPlatformAdapter(
   }
 
   /**
+   * One request with no retry, with the HTTP status on a failure. For a
+   * create that is not safe to repeat: a 503 may come after the server
+   * already started the work, so the caller reads status instead.
+   */
+  async function hqProOnceWithStatus<T>(
+    method: 'POST',
+    path: string,
+    body?: unknown,
+  ): AdapterPromise<T> {
+    const attempted = await hqProAttempt<T>(method, path, body);
+    if (!attempted.result.ok && attempted.result.code === 'network') {
+      return attempted.result;
+    }
+    return withHttpStatus(attempted.result, attempted.status);
+  }
+
+  /**
    * Prototype settings handlers fire these writes without awaiting them, so
    * persist through the process-wide queue to preserve concurrent patches from
    * every settings surface. The native apply commands re-read menubar.json, so
@@ -1352,13 +1369,14 @@ export function createSyncPlatformAdapter(
       getMyOutpostStatus: () => hqProJson('POST', OUTPOST_PATHS.status, {}),
       listMyOutpostJobs: () => hqProJson('GET', OUTPOST_PATHS.jobsStatus),
       listCompanyOutposts: (companyUid) => hqProJson('GET', companyOutpostListPath(companyUid)),
-      getCompanyOutpost: (companyUid, outpostId) => hqProJson('GET', companyOutpostDetailPath(companyUid, outpostId)),
+      getCompanyOutpost: (companyUid, outpostId) => hqProRequestWithStatus('GET', companyOutpostDetailPath(companyUid, outpostId)),
       listCompanyOutpostJobs: (companyUid, outpostId) =>
         hqProJson('POST', COMPANY_OUTPOST_PATHS.jobs, { companyUid, ownerKind: 'company', action: 'list', outpostId }),
       getCompanyOutpostJobHealth: (companyUid, outpostId) =>
         hqProJson('GET', companyOutpostJobsStatusPath(companyUid, outpostId)),
+      // Provision is never retried: the client reads status after a 503.
       provisionCompanyOutpost: (companyUid) =>
-        hqProJson('POST', COMPANY_OUTPOST_PATHS.provision, { companyUid, ownerKind: 'company', action: 'create' }),
+        hqProOnceWithStatus('POST', COMPANY_OUTPOST_PATHS.provision, { companyUid, ownerKind: 'company', action: 'create' }),
       renameCompanyOutpost: (companyUid, outpostId, name) =>
         hqProJson('POST', COMPANY_OUTPOST_PATHS.status, { companyUid, ownerKind: 'company', action: 'rename', outpostId, name }),
       removeCompanyOutpost: (companyUid, outpostId) =>
@@ -1366,7 +1384,7 @@ export function createSyncPlatformAdapter(
       signInCompanyOutpostAgain: (companyUid, outpostId) =>
         hqProJson('POST', COMPANY_OUTPOST_PATHS.signIn, { companyUid, action: 'regenerate', outpostId }),
       pollCompanyOutpostProvision: (companyUid, attemptId) =>
-        hqProJson('GET', companyOutpostDetailPath(companyUid, attemptId)),
+        hqProRequestWithStatus('GET', companyOutpostDetailPath(companyUid, attemptId)),
       listMyGoogleAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.googleAccounts),
       listMySlackAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.slackAccounts),
     },

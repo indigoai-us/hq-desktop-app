@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createCompanyOutpostClient, parseCompanyOutpostDetail, parseCompanyOutpostList, parseProvision } from "./company-outpost-client.js";
+import {
+  createCompanyOutpostClient,
+  parseCompanyOutpostDetail,
+  parseCompanyOutpostList,
+  parseProvision,
+  parseProvisionStatus,
+} from "./company-outpost-client.js";
 import { failureCopy, listAfterProvision, emptyHealth } from "./company-outpost-model.js";
 import type { AdapterResult, Json } from "@hq/platform";
 
@@ -67,7 +73,6 @@ describe("company outpost client", () => {
     const provision = vi.fn(async () => ok({ status: "success", outpostId: "nope", name: "nope", state: "ready" }));
     const rename = vi.fn(async () => ok({}));
     const remove = vi.fn(async () => ok({}));
-    const signIn = vi.fn(async () => ok({}));
     const client = createCompanyOutpostClient({
       companyUid: "cmp_1",
       canManage: false,
@@ -76,17 +81,14 @@ describe("company outpost client", () => {
         provisionCompanyOutpost: provision,
         renameCompanyOutpost: rename,
         removeCompanyOutpost: remove,
-        signInCompanyOutpostAgain: signIn,
       },
     });
     expect(await client.provision()).toEqual({ status: "forbidden" });
     expect(await client.rename("demo-1", "quiet-pine")).toMatchObject({ ok: false });
     expect(await client.remove("demo-1")).toMatchObject({ ok: false });
-    expect(await client.signInAgain("demo-1")).toMatchObject({ ok: false });
     expect(provision).not.toHaveBeenCalled();
     expect(rename).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
-    expect(signIn).not.toHaveBeenCalled();
   });
 
   it("lets an admin provision through the company call", async () => {
@@ -134,5 +136,46 @@ describe("company outpost client", () => {
       outposts: [{ outpostId: "opc_1", lifecycle: "ready", signIn: { signedIn: false, state: "awaiting_sign_in" } }],
     });
     expect(parsed?.items[0]).toMatchObject({ name: "main", state: "needs_attention" });
+  });
+
+  it("keeps a 502 or an unknown 5xx provision answer pending", () => {
+    expect(parseProvision({ ok: false, reason: "error", code: "http-502", message: "bad gateway" })).toEqual({ status: "pending", attemptId: "" });
+    expect(parseProvision({ ok: false, reason: "error", code: "error", message: "x", status: 502 })).toEqual({ status: "pending", attemptId: "" });
+  });
+
+  it("does not say the Outpost was not added when the status read fails", () => {
+    const checking = { status: "checking", signIn: false };
+    expect(parseProvisionStatus({ ok: false, reason: "error", code: "network", message: "offline" })).toEqual(checking);
+    expect(parseProvisionStatus({ ok: false, reason: "error", code: "error", message: "x", status: 503 })).toEqual(checking);
+    expect(parseProvisionStatus({ ok: false, reason: "error", code: "unavailable", message: "x", status: 503 })).toEqual(checking);
+    expect(parseProvisionStatus({ ok: false, reason: "error", code: "http-502", message: "x" })).toEqual(checking);
+    expect(parseProvisionStatus({ ok: true, value: { surprise: true } })).toEqual(checking);
+    expect(parseProvisionStatus({ ok: false, reason: "error", code: "unauthorized", message: "token expired", status: 401 }))
+      .toEqual({ status: "checking", signIn: true });
+    expect(parseProvisionStatus({ ok: false, reason: "error", code: "forbidden", message: "x", status: 403 })).toEqual({ status: "forbidden" });
+  });
+
+  it("still reports a real failure from the status read", () => {
+    expect(parseProvisionStatus({ ok: false, reason: "error", code: "not_found", message: "x", status: 404 }))
+      .toEqual({ status: "failure", message: failureCopy() });
+    expect(parseProvisionStatus(ok({ status: "failure", outpostId: "half" }))).toEqual({ status: "failure", message: failureCopy() });
+    expect(parseProvisionStatus(ok({ outpost: { outpostId: "opc_1", lifecycle: "provisioning" } })))
+      .toEqual({ status: "pending", attemptId: "opc_1" });
+  });
+
+  it("polls status with the status-read rules", async () => {
+    const poll = vi.fn(async () => ({ ok: false as const, reason: "error" as const, code: "unauthorized", message: "x", status: 401 }));
+    const client = createCompanyOutpostClient({
+      companyUid: "cmp_1",
+      canManage: true,
+      api: { pollCompanyOutpostProvision: poll },
+    });
+    expect(await client.pollProvision("")).toEqual({ status: "checking", signIn: true });
+    expect(poll).toHaveBeenCalledWith("cmp_1", "");
+  });
+
+  it("does not offer a sign-in that only asks for a new link", () => {
+    const client = createCompanyOutpostClient({ companyUid: "cmp_1", canManage: true, api: {} });
+    expect("signInAgain" in client).toBe(false);
   });
 });

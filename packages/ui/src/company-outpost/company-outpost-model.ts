@@ -7,7 +7,23 @@
  * with no exclamation marks.
  */
 
+import type { NavigationDestination } from "../shell/navigation-history.js";
+
 export const OUTPOST_JOBS_ROUTE = "outpost-jobs";
+
+/** The outpost-jobs screen for one company Outpost. Same shape as the jobs lane. */
+export function outpostJobsDestination(companyUid: string, outpostId?: string | null): NavigationDestination {
+  const params = new URLSearchParams();
+  if (outpostId) params.set("outpostId", outpostId);
+  if (companyUid) params.set("company", companyUid);
+  const param = params.toString();
+  return {
+    kind: "extra",
+    page: OUTPOST_JOBS_ROUTE,
+    companyUid,
+    ...(param ? { param } : {}),
+  };
+}
 
 export const COMPANY_OUTPOST_CAP = 5;
 
@@ -77,7 +93,10 @@ export type ProvisionResult =
   | { status: "already_exists"; outpostId?: string }
   | { status: "unavailable" }
   | { status: "failure"; message: string }
-  | { status: "forbidden" };
+  | { status: "forbidden" }
+  // A status read failed. The add may still be in progress, so the screen
+  // keeps checking. signIn is set when the HQ sign-in expired.
+  | { status: "checking"; signIn: boolean };
 
 export function canManageRole(role: CompanyOutpostRole): boolean {
   return role === "owner" || role === "admin";
