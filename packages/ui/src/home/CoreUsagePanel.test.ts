@@ -453,40 +453,18 @@ describe("CoreUsagePanel", () => {
 
     it("defaults to the personal account when that is the default, reading the person routes", async () => {
       const src = multiSource();
-      await render(src, vi.fn(), { account: ACCOUNTS[2], accounts: ACCOUNTS, layout: "switcher" });
+      await render(src, vi.fn(), { account: ACCOUNTS[2], accounts: ACCOUNTS });
       expect(q("core-usage")?.dataset.state).toBe("ready");
       expect(q("core-usage-company")?.textContent).toBe("Personal");
       expect(q("core-usage-used")?.textContent).toBe("$3.40 of $10.00 free");
+      // The meter and the Personal row share one read.
       expect(src.getPersonalBillingSummary).toHaveBeenCalledTimes(1);
-      expect(src.getBillingSummary).not.toHaveBeenCalled();
-    });
-
-    it("Option A (switcher): lists every owner/admin company and the personal account with this month's total, and switches", async () => {
-      const src = multiSource();
-      await render(src, vi.fn(), { account: ACCOUNTS[1], accounts: ACCOUNTS, layout: "switcher" });
-      expect(q("core-usage-company")?.textContent).toContain("Northwind");
-      q("core-usage-switch")!.click();
-      flushSync();
-      for (let i = 0; i < 5; i += 1) await tick();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      flushSync();
-      const rows = [...host.querySelectorAll('[data-testid="core-usage-account"]')].map((r) => r.textContent?.replace(/\s+/g, " ").trim());
-      expect(rows).toEqual(["Amass Admin Owner only", "Northwind Owner $8.00", "Personal Your account $3.40"]);
-      // An admin's company is never read with the owner-gated routes.
+      // The admin company is never read with the owner-gated routes.
       expect(src.getBillingSummary).not.toHaveBeenCalledWith("cmp_amass");
-      (host.querySelector('[data-key="personal"]') as HTMLElement).click();
-      flushSync();
-      for (let i = 0; i < 5; i += 1) await tick();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      flushSync();
-      expect(q("core-usage-company")?.textContent).toBe("Personal");
-      expect(q("core-usage-used")?.textContent).toBe("$3.40 of $10.00 free");
-      expect(q("core-usage-accounts")).toBeNull();
     });
 
-    it("a single account shows no switcher and no top list", async () => {
+    it("a single account shows no account list", async () => {
       await render(source(), vi.fn(), { account: ACCOUNTS[1], accounts: [ACCOUNTS[1]] });
-      expect(q("core-usage-switch")).toBeNull();
       expect(q("core-usage-accounts")).toBeNull();
       expect(q("core-usage-top-label")).toBeNull();
     });
@@ -525,7 +503,7 @@ describe("CoreUsagePanel", () => {
       setPreferredUsageAccount(null);
     });
 
-    describe("Option B: Personal plus the top 5 companies by usage", () => {
+    describe("Personal plus the top 5 companies by usage", () => {
       // Seven owner companies plus one admin company, so the cutoff shows.
       const TOTALS: Record<string, number> = {
         cmp_a: 120, cmp_b: 4500, cmp_c: 800, cmp_d: 2600, cmp_e: 30, cmp_f: 990, cmp_g: 1500,
@@ -556,9 +534,8 @@ describe("CoreUsagePanel", () => {
 
       it("lists Personal first, then the five companies with the most usage, highest first", async () => {
         const src = manySource();
-        await render(src, vi.fn(), { account: MANY[2], accounts: MANY, layout: "top", onopenusage: vi.fn() });
+        await render(src, vi.fn(), { account: MANY[2], accounts: MANY, onopenusage: vi.fn() });
         await settle();
-        expect(q("core-usage-switch")).toBeNull();
         expect(q("core-usage-top-label")?.textContent).toBe("Top 5 by usage this month");
         // The admin company is never read with the owner-gated routes.
         expect(src.getBillingSummary).not.toHaveBeenCalledWith("cmp_admin");
@@ -575,7 +552,7 @@ describe("CoreUsagePanel", () => {
 
       it("companies without a readable total go after the ranked ones", async () => {
         const few = [MANY[0], MANY[1], MANY[2], ACCOUNTS[2]];
-        await render(manySource(), vi.fn(), { account: MANY[2], accounts: few, layout: "top" });
+        await render(manySource(), vi.fn(), { account: MANY[2], accounts: few });
         await settle();
         expect(rowsText()).toEqual([
           "Personal Your account $3.40",
@@ -586,7 +563,7 @@ describe("CoreUsagePanel", () => {
       });
 
       it("a row switches the meter in place and the list stays", async () => {
-        await render(manySource(), vi.fn(), { account: MANY[2], accounts: MANY, layout: "top" });
+        await render(manySource(), vi.fn(), { account: MANY[2], accounts: MANY });
         await settle();
         (host.querySelector('[data-key="personal"]') as HTMLElement).click();
         await settle();
@@ -600,7 +577,7 @@ describe("CoreUsagePanel", () => {
         const { preferredUsageAccount, setPreferredUsageAccount } = await import("./core-usage-model");
         setPreferredUsageAccount(null);
         const onopenusage = vi.fn();
-        await render(manySource(), vi.fn(), { account: MANY[2], accounts: MANY, layout: "top", onopenusage });
+        await render(manySource(), vi.fn(), { account: MANY[2], accounts: MANY, onopenusage });
         await settle();
         expect(q("core-usage-all")?.textContent).toBe("All usage in Settings (3 more)");
         q("core-usage-all")!.click();
@@ -620,7 +597,7 @@ describe("CoreUsagePanel", () => {
             }),
           }),
           vi.fn(),
-          { account: MANY[2], accounts: MANY, layout: "top" },
+          { account: MANY[2], accounts: MANY },
         );
         await settle();
         expect(q("core-usage-accounts")?.dataset.ranked).toBe("false");

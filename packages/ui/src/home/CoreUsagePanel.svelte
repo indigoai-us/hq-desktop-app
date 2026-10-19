@@ -14,7 +14,6 @@
   import type { AdapterResult } from "@hq/platform";
   import RailIcon from "../common/button/RailIcon.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
-  import Caret from "../common/Caret.svelte";
   import {
     approvedCheckoutUrl,
     billingPortalHint,
@@ -29,9 +28,7 @@
     PERSONAL_ACCOUNT_KEY,
     accountTotalText,
     TOP_USAGE_COMPANIES,
-    USAGE_MENU_LAYOUT,
     topUsageAccounts,
-    type UsageMenuLayout,
     readAccountUsage,
     setPreferredUsageAccount,
     usageAccountKey,
@@ -77,8 +74,6 @@
     onopenusage?: () => void;
     /** Open the Sync section of Settings (repointed to US-016's per-vault section when it lands). */
     onopensync?: () => void;
-    /** "switcher" (Option A) or "top" (Option B: Personal plus the top companies, always listed). */
-    layout?: UsageMenuLayout;
     /** Test seam: waits between automatic retries. */
     retryDelays?: readonly number[];
     /** Test seam: the refresh interval while the menu is open. */
@@ -95,7 +90,6 @@
     onopenurl,
     onopenusage,
     onopensync,
-    layout = USAGE_MENU_LAYOUT,
     retryDelays,
     refreshMs = USAGE_REFRESH_MS,
   }: Props = $props();
@@ -129,17 +123,16 @@
   const companyName = $derived(current.name);
   const role = $derived(current.role);
   const roleKind = $derived(isPersonal ? "owner" : billingRole(role));
-  const switchable = $derived(accounts.length > 1);
-  let listOpen = $state(false);
-  /** Switcher row views, keyed by account; read when the list opens. */
+  /** More than one account: the menu lists Personal and the top companies. */
+  const listed = $derived(accounts.length > 1);
+  /** Account row views, keyed by account; read when the menu opens. */
   let rowViews = $state<Record<string, CoreUsageView>>({});
-  const topLayout = $derived(layout === "top" && switchable);
   const top = $derived(topUsageAccounts(accounts, rowViews, TOP_USAGE_COMPANIES));
 
-  // The "top" layout lists the accounts as soon as the menu opens, so their
-  // totals are read on mount (cached reads paint at once).
+  // The list shows as soon as the menu opens, so the row totals are read on
+  // mount (cached reads paint at once).
   $effect(() => {
-    if (!topLayout) return;
+    if (!listed) return;
     untrack(() => loadRows());
   });
 
@@ -251,13 +244,6 @@
   function pick(next: UsageAccount): void {
     pickedKey = usageAccountKey(next);
     pickedFor = defaultKey;
-    listOpen = false;
-  }
-
-  function toggleList(): void {
-    listOpen = !listOpen;
-    if (!listOpen) return;
-    loadRows();
   }
 
   /** Read each account's total once per open; cached reads paint at once. */
@@ -345,32 +331,16 @@
   aria-label="Usage this month"
 >
   <div class="core-usage-head">
-    {#if switchable && !topLayout}
-      <button
-        type="button"
-        class="core-usage-switch"
-        data-testid="core-usage-switch"
-        aria-expanded={listOpen}
-        aria-haspopup="listbox"
-        onclick={toggleList}
-      >
-        <span class="core-usage-company" data-testid="core-usage-company">{#if isPersonal}{companyName}{:else}<CompanyLabel name={companyName} {companyUid} />{/if}</span>
-        <span class="core-usage-caret" aria-hidden="true"><Caret tone="var(--t3)" /></span>
-      </button>
-    {:else}
-      <span class="core-usage-company" data-testid="core-usage-company">{#if isPersonal}{companyName}{:else}<CompanyLabel name={companyName} {companyUid} />{/if}</span>
-    {/if}
+    <span class="core-usage-company" data-testid="core-usage-company">{#if isPersonal}{companyName}{:else}<CompanyLabel name={companyName} {companyUid} />{/if}</span>
     {#if view.kind === "ready" && view.planLabel}
       <span class="core-usage-plan" data-testid="core-usage-plan">{view.planLabel}</span>
     {/if}
   </div>
 
-  {#if topLayout}
+  {#if listed}
     <p class="core-usage-top-label" data-testid="core-usage-top-label">Top {TOP_USAGE_COMPANIES} by usage this month</p>
-  {/if}
-  {#if listOpen || topLayout}
-    <ul class="core-usage-accounts" class:top={topLayout} role="listbox" aria-label="Accounts" data-testid="core-usage-accounts" data-ranked={topLayout ? String(top.ranked) : undefined}>
-      {#each topLayout ? top.rows : accounts as acct (usageAccountKey(acct))}
+    <ul class="core-usage-accounts" role="listbox" aria-label="Accounts" data-testid="core-usage-accounts" data-ranked={String(top.ranked)}>
+      {#each top.rows as acct (usageAccountKey(acct))}
         {@const key = usageAccountKey(acct)}
         <li>
           <button
@@ -390,7 +360,7 @@
         </li>
       {/each}
     </ul>
-    {#if topLayout && onopenusage}
+    {#if onopenusage}
       <button
         type="button"
         class="core-usage-link core-usage-all"
@@ -565,25 +535,6 @@
 
   .core-usage-plan {
     flex: none;
-  }
-
-  .core-usage-switch {
-    appearance: none;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    min-width: 0;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    cursor: pointer;
-  }
-
-  .core-usage-caret {
-    display: inline-flex;
-    align-items: center;
   }
 
   .core-usage-top-label {

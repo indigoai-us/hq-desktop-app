@@ -768,14 +768,10 @@ export async function readAccountUsage(
 
 /** The switcher row total for an account's view: "$8.00", "At least $8.00", or a word. */
 /**
- * How the Core menu offers other accounts. "switcher": the account name opens
- * a list of every account (Option A). "top": the menu always lists Personal and
- * the five companies with the most usage this month, with a link to
- * Settings > Usage for the rest (Option B, owner review 2026-10-19).
+ * How many companies the Core menu lists. The menu always shows Personal and
+ * the companies with the most usage this month, with a link to
+ * Settings > Usage for the rest (owner pick, Corey, 2026-10-19).
  */
-export type UsageMenuLayout = "switcher" | "top";
-export const USAGE_MENU_LAYOUT: UsageMenuLayout = "top";
-/** How many companies the "top" layout lists. */
 export const TOP_USAGE_COMPANIES = 5;
 
 /** This month's total in cents, or null when the view has no readable total. */
@@ -785,7 +781,7 @@ export function accountTotalCents(view: CoreUsageView | null | undefined): numbe
 }
 
 /**
- * The rows the "top" layout lists: Personal first, then up to `limit`
+ * The rows the Core menu lists: Personal first, then up to `limit`
  * companies. Companies with a readable total come first, most usage first
  * (ties by name); companies without one ("Owner only", no usage, unavailable)
  * follow in their given order. Until every company row has finished loading
