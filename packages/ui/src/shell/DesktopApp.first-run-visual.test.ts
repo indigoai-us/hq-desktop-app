@@ -16,6 +16,7 @@ import { mount, tick, unmount } from "svelte";
 import { failure, FIRST_RUN_FOUND_APPS_FLAG, HQ_ANYWHERE_RUNTIME_FLAG, ok, VISUAL_FIRST_RUN_FLAG, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
+import core from "../brief/fixtures/core-1432-welcome.json";
 import { clearToasts } from "./toast-stack.svelte.js";
 import ExtraPageProbe from "./ExtraPageProbe.test.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
@@ -2910,6 +2911,60 @@ describe("visual first run, the detected tool's sign-in", () => {
     expect(launchClaudeCode).not.toHaveBeenCalled();
     expect(launchCliInTerminal).not.toHaveBeenCalled();
   }, 20_000);
+
+  it("Open HQ in Codex on a Codex-primary welcome brief opens Codex, even after Continue in Claude Code (US-019)", async () => {
+    const tool = signsInThroughBrowser("claude");
+    tool.state.connect = true;
+    const launchClaudeCode = vi.fn(async () => ok(undefined));
+    const openClaudeCodeLink = vi.fn(async () => ok(undefined));
+    const launchCodexWorkspace = vi.fn(async () => ok(undefined));
+    const launchCliInTerminal = vi.fn(async () => ok(undefined));
+    const { platform, sendDm } = adapter({
+      flag: true,
+      bots: [runningSetupBot],
+      activeCompany: "indigo",
+      preflightImpl: tool.preflightImpl,
+      loginStart: tool.loginStart,
+      loginStatus: tool.loginStatus,
+      shell: {
+        detectAiTools: async () => ok({ claude_cli: true, claude_desktop: false, codex_cli: false, codex_desktop: true, grok_cli: false, any: true }),
+        launchClaudeCode,
+        openClaudeCodeLink,
+        launchCodexWorkspace,
+        launchCliInTerminal,
+      },
+    });
+    scanFinds(platform, "claude-code");
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    // The welcome report's job goes out; its run writes a Codex-primary brief.
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
+    const run = /--run-id (\S+)/.exec(briefJobs(sendDm)[0]![1])![1]!;
+    const files: Record<string, string> = {
+      [DAILY_BRIEF_SKILL]: "# daily-brief",
+      "workspace/brief/index.jsonl": JSON.stringify({ run_id: run, created_at: "2026-10-18T16:00:00Z", state: "ready", counts: {} }),
+      [`workspace/brief/${run}/status.json`]: JSON.stringify({ run_id: run, state: "ready" }),
+      [`workspace/brief/${run}/brief.json`]: JSON.stringify({ items: { decisions: [] }, welcome: core.codex_company }),
+      [`workspace/brief/${run}/brief-data.json`]: "{}",
+    };
+    (platform as unknown as { files: { getFileContent: (path: string) => Promise<unknown> } }).files.getFileContent = async (path: string) => {
+      const key = Object.keys(files).find((k) => path.endsWith(k));
+      return key ? ok(files[key]) : { ok: false as const, reason: "not found" };
+    };
+    await vi.waitFor(() => expect(q('[data-testid="welcome-edition"]')).toBeTruthy(), { timeout: 15_000 });
+    const open = () =>
+      [...document.querySelectorAll<HTMLButtonElement>('[data-testid="welcome-edition-action"]')].find((b) => b.dataset.action === "open-hq-in-harness");
+    await vi.waitFor(() => expect(open()?.textContent?.trim()).toBe("Open HQ in Codex"));
+    // The brief owns the open action: no Open Claude Code bar anywhere.
+    expect(q('[data-testid="brief-open-tool"]')).toBeNull();
+    open()!.click();
+    await vi.waitFor(() =>
+      expect(launchCodexWorkspace).toHaveBeenCalledWith("/tmp/HQ", "Catch me up on what I worked on recently and suggest what to do next."),
+    );
+    expect(launchClaudeCode).not.toHaveBeenCalled();
+    expect(openClaudeCodeLink).not.toHaveBeenCalled();
+  }, 30_000);
 
   it("Open can be pressed again after it fails, without signing in or making the assistant again", async () => {
     const tool = signsInThroughBrowser("claude");

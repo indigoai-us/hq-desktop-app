@@ -1,44 +1,179 @@
 {
-  "items": { "decisions": [] },
+  "_source": "Seeded welcome for the 38-project preview. Labels, reasons, prompts and order are Core's welcome_block strings at hq-core-staging c7b8a026.",
+  "items": {
+    "decisions": []
+  },
   "welcome": {
     "first_run": true,
-    "import": { "conversations": 0, "skills": 0 },
-    "sessions": { "total": 214, "claude": 198, "codex": 16, "days_seen": 41, "local": 214, "imported": 0 },
+    "import": {
+      "conversations": 0,
+      "skills": 0
+    },
+    "sessions": {
+      "total": 214,
+      "claude": 198,
+      "codex": 16,
+      "days_seen": 41,
+      "local": 214,
+      "imported": 0
+    },
     "repos": [],
-    "apps": [],
-    "next_steps": [
-      { "id": "connect-company", "kind": "connect_company", "reason": "Share your projects with your team." },
-      { "id": "import-history", "kind": "import", "reason": "Bring your past sessions into HQ." }
+    "apps": [
+      "Claude Code",
+      "Codex"
     ],
-    "headline": "38 projects, most of them in Claude Code.",
+    "next_steps": [
+      {
+        "id": "connect-company",
+        "kind": "connect_company",
+        "reason": "Meetings, meeting signals, agents and integrations need a company."
+      },
+      {
+        "id": "import",
+        "kind": "import",
+        "reason": "No import report yet. Importing past Claude Code and Codex work fills in the history."
+      }
+    ],
+    "headline": "HQ found 214 past sessions across 38 projects on this Mac, most of them in Claude Code.",
     "top_projects": [
-      { "name": "Harbor checkout", "path": "/Users/sam/code/harbor-checkout", "sessions": 46, "last_active_at": "2026-10-07T21:10:00Z", "harness": "claude-code" },
-      { "name": "Field notes", "path": "/Users/sam/code/field-notes", "sessions": 31, "last_active_at": "2026-10-07T16:42:00Z", "harness": "claude-code" },
-      { "name": "Pricing site", "path": "/Users/sam/code/pricing-site", "sessions": 24, "last_active_at": "2026-10-06T19:05:00Z", "harness": "codex" },
-      { "name": "Ops scripts", "path": "/Users/sam/code/ops-scripts", "sessions": 18, "last_active_at": "2026-10-05T14:30:00Z", "harness": "claude-code" },
-      { "name": "Recipe app", "path": "/Users/sam/code/recipe-app", "sessions": 12, "last_active_at": "2026-10-03T11:20:00Z", "harness": "claude-code" }
+      {
+        "name": "Harbor checkout",
+        "path": "~/code/harbor-checkout",
+        "sessions": 46,
+        "last_active_at": "2026-10-07T21:10:00Z",
+        "harness": "claude-code"
+      },
+      {
+        "name": "Field notes",
+        "path": "~/code/field-notes",
+        "sessions": 31,
+        "last_active_at": "2026-10-07T16:42:00Z",
+        "harness": "claude-code"
+      },
+      {
+        "name": "Pricing site",
+        "path": "~/code/pricing-site",
+        "sessions": 24,
+        "last_active_at": "2026-10-06T19:05:00Z",
+        "harness": "codex"
+      },
+      {
+        "name": "Ops scripts",
+        "path": "~/code/ops-scripts",
+        "sessions": 18,
+        "last_active_at": "2026-10-05T14:30:00Z",
+        "harness": "claude-code"
+      },
+      {
+        "name": "Recipe app",
+        "path": "~/code/recipe-app",
+        "sessions": 12,
+        "last_active_at": "2026-10-03T11:20:00Z",
+        "harness": "claude-code"
+      }
     ],
     "top_repos": [
-      { "name": "harbor-checkout", "path": "/Users/sam/code/harbor-checkout", "sessions": 46, "last_commit_at": "2026-10-07T21:02:00Z" },
-      { "name": "field-notes", "path": "/Users/sam/code/field-notes", "sessions": 31, "last_commit_at": "2026-10-07T16:30:00Z" },
-      { "name": "pricing-site", "path": "/Users/sam/code/pricing-site", "sessions": 24, "last_commit_at": "2026-10-06T18:55:00Z" }
+      {
+        "name": "harbor-checkout",
+        "path": "~/code/harbor-checkout",
+        "sessions": 46,
+        "last_commit_at": "2026-10-07T21:02:00Z"
+      },
+      {
+        "name": "field-notes",
+        "path": "~/code/field-notes",
+        "sessions": 31,
+        "last_commit_at": "2026-10-07T16:30:00Z"
+      },
+      {
+        "name": "pricing-site",
+        "path": "~/code/pricing-site",
+        "sessions": 24,
+        "last_commit_at": "2026-10-06T18:55:00Z"
+      }
     ],
     "recent_work": [
-      { "title": "Fixed the coupon rounding at checkout", "project": "Harbor checkout", "at": "2026-10-07T21:10:00Z", "harness": "claude-code" },
-      { "title": "Drafted the October field notes", "project": "Field notes", "at": "2026-10-07T16:42:00Z", "harness": "claude-code" },
-      { "title": "Moved the pricing table to the new layout", "project": "Pricing site", "at": "2026-10-06T19:05:00Z", "harness": "codex" }
+      {
+        "title": "Fixed the coupon rounding at checkout",
+        "project": "Harbor checkout",
+        "at": "2026-10-07T21:10:00Z",
+        "harness": "claude-code"
+      },
+      {
+        "title": "Drafted the October field notes",
+        "project": "Field notes",
+        "at": "2026-10-07T16:42:00Z",
+        "harness": "claude-code"
+      },
+      {
+        "title": "Moved the pricing table to the new layout",
+        "project": "Pricing site",
+        "at": "2026-10-06T19:05:00Z",
+        "harness": "codex"
+      }
     ],
     "harness": {
       "primary": "claude-code",
-      "counts": { "claude_code": 198, "codex": 16, "cursor": 0 },
-      "action": { "id": "open-hq-in-harness", "kind": "open_harness", "harness": "claude-code", "label": "Open HQ in Claude Code", "launch_prompt": "Open HQ and show me what it can do with my projects." }
+      "counts": {
+        "claude_code": 198,
+        "codex": 16,
+        "cursor": 0
+      },
+      "action": {
+        "id": "open-hq-in-harness",
+        "kind": "open_harness",
+        "harness": "claude-code",
+        "label": "Open HQ in Claude Code",
+        "launch_prompt": "Catch me up on what I worked on recently and suggest what to do next."
+      }
     },
     "actions": [
-      { "id": "connect-ai-apps", "kind": "connect_ai_apps", "label": "Connect your AI apps", "reason": "Your brief gets richer with your Claude and ChatGPT work in it.", "launch_prompt": "", "primary": true },
-      { "id": "open-hq-in-harness", "kind": "open_harness", "label": "Open HQ in Claude Code", "reason": "198 of your 214 sessions ran there.", "launch_prompt": "Open HQ and show me what it can do with my projects.", "primary": false },
-      { "id": "connect-company", "kind": "connect_company", "label": "Start or join a company", "reason": "Share your projects with your team.", "launch_prompt": "", "primary": false },
-      { "id": "import-history", "kind": "import_history", "label": "Import your past work", "reason": "Bring 214 past sessions into HQ.", "launch_prompt": "Import my past Claude Code and Codex sessions into HQ.", "primary": false }
+      {
+        "id": "open-hq-in-harness",
+        "kind": "open_harness",
+        "harness": "claude-code",
+        "label": "Open HQ in Claude Code",
+        "reason": "Pick up where you left off, with your HQ context loaded.",
+        "launch_prompt": "Catch me up on what I worked on recently and suggest what to do next.",
+        "primary": false
+      },
+      {
+        "id": "connect-ai-apps",
+        "kind": "connect_ai_apps",
+        "label": "Connect your AI apps",
+        "reason": "HQ already sees your Claude Code and Codex work. Connect Cursor too, so the brief covers everything.",
+        "launch_prompt": "Help me connect Claude Code, Codex and Cursor to HQ.",
+        "primary": false
+      },
+      {
+        "id": "import-history",
+        "kind": "import_history",
+        "label": "Bring in your past work",
+        "reason": "214 past sessions on this Mac can add your plans, skills and history to HQ.",
+        "launch_prompt": "/import-context",
+        "primary": true
+      },
+      {
+        "id": "connect-company",
+        "kind": "connect_company",
+        "label": "Create or join a company",
+        "reason": "Meetings, team context and agents live in a company.",
+        "launch_prompt": "/onboard",
+        "primary": false
+      },
+      {
+        "id": "open-tree",
+        "kind": "open_tree",
+        "label": "Look around your HQ",
+        "reason": "0 companies, 38 projects and 212 knowledge files so far.",
+        "launch_prompt": "Give me a short tour of my HQ: companies, projects and knowledge.",
+        "primary": false
+      }
     ],
-    "tree": { "companies": 0, "projects": 38, "knowledge_files": 212 }
+    "tree": {
+      "companies": 0,
+      "projects": 38,
+      "knowledge_files": 212
+    }
   }
 }

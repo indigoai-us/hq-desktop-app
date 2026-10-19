@@ -18,6 +18,6 @@
   let { source, companies, report, page = {} }: Props = $props();
 </script>
 
-<WelcomeReport ready {...report}>
+<WelcomeReport {...{ ready: true, ...report }}>
   <BriefRunsPage adapter={{}} {source} {companies} {...page} />
 </WelcomeReport>

@@ -374,7 +374,11 @@ describe("WelcomeReport", () => {
     expect(q('[data-testid="brief-open-tool-detail"]')?.textContent).toBe(
       "Claude Code is set up with HQ. Open it to keep working there.",
     );
-    expect(q('[data-testid="welcome-report-loading"]')).not.toBeNull();
+    const loading = q('[data-testid="welcome-report-loading"]');
+    expect(loading).not.toBeNull();
+    // US-019: nothing sits above the sunrise; the bar follows it.
+    const bar = q('[data-testid="brief-open-tool"]')!;
+    expect(loading!.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     button!.click();
     expect(onopen).toHaveBeenCalledTimes(1);
   });
