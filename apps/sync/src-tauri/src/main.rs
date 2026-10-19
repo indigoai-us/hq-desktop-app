@@ -64,6 +64,7 @@ mod ui_protocol;
 mod tray_helper;
 mod updater;
 mod scratch_build;
+mod demo_build;
 mod toolchain;
 mod updater_outcome;
 mod util;
