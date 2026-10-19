@@ -2848,7 +2848,8 @@ fn run_streaming_with_npm_cache_blocking<R: tauri::Runtime>(
                     Ok(line) => {
                         if let Some(warning) = unlisted_scripts.observe(&line) {
                             log("npm-install-scripts", &warning);
-                            let _ = app.emit(
+                            let _ = app.emit_to(
+                                "main",
                                 "install:progress",
                                 InstallProgress {
                                     setup_run_id: setup_run_id.clone(),
@@ -6027,7 +6028,8 @@ fn run_streaming_with_npm_cache_blocking<R: tauri::Runtime>(
                     Ok(line) => {
                         if let Some(warning) = unlisted_scripts.observe(&line) {
                             log("npm-install-scripts", &warning);
-                            let _ = app.emit(
+                            let _ = app.emit_to(
+                                "main",
                                 "install:progress",
                                 InstallProgress {
                                     setup_run_id: setup_run_id.clone(),
