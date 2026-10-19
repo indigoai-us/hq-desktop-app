@@ -8,6 +8,7 @@
    *   ?fixture=personal|company|seeded   personal (default) has no company.
    *   ?rise=<seconds>                    the sunrise frozen mid-rise instead.
    *   ?theme=dark|light
+   *   ?chrome=app                        inside the app's rail, as the app shows it.
    */
   import WelcomeReport from '../../../packages/ui/src/brief/WelcomeReport.svelte';
   import BriefRunsPage from '../../../packages/ui/src/brief/BriefRunsPage.svelte';
@@ -15,6 +16,8 @@
   import seeded from '../../../packages/ui/src/brief/fixtures/welcome-38-projects.json';
   import core from '../../../packages/ui/src/brief/fixtures/core-1432-welcome.json';
   import { configureBriefSeed } from '../../../packages/ui/src/brief/brief-seed';
+  import AppRail from '../../../packages/ui/src/shell/AppRail.svelte';
+  import { railItems } from '../../../packages/ui/src/shell/app-rail';
 
   // The harness seeds every brief with the October 8 fixture. The welcome
   // edition reads only the served brief.json, so turn the seed off here.
@@ -24,6 +27,9 @@
   const fixture = params.get('fixture') ?? 'personal';
   const theme = params.get('theme') === 'light' ? 'light' : 'dark';
   const rise = params.has('rise') ? Number(params.get('rise')) : null;
+  const chrome = params.get('chrome') === 'app';
+  // The company edition shows one company tile on the rail; the personal one has none.
+  const rail = railItems(fixture === 'company' ? [{ uid: 'cmp_preview', label: 'Your company', iconUrl: null }] : [], 'You');
   const welcome =
     fixture === 'company' ? core.showcase_company : fixture === 'seeded' ? seeded.welcome : core.showcase_personal;
   const brief = { items: seeded.items, welcome };
@@ -46,7 +52,7 @@
   const never = <T,>() => new Promise<T>(() => undefined);
 </script>
 
-<div style="min-height:100vh">
+{#snippet edition()}
   <WelcomeReport
     ready={rise === null}
     elapsed={rise}
@@ -57,4 +63,17 @@
   >
     <BriefRunsPage adapter={{} as never} companies={[]} {source} onconnectcompany={() => undefined} onlaunch={async () => never()} />
   </WelcomeReport>
-</div>
+{/snippet}
+
+{#if chrome}
+  <!-- The app's own rail beside the edition, as DesktopApp lays them out:
+       the rail is one window tall and the edition scrolls beside it. -->
+  <div style="display:flex;height:100vh;overflow:hidden">
+    <div style="flex:none;display:flex">
+      <AppRail items={rail} activeId="brief" youInitials="SJ" onselect={() => undefined} />
+    </div>
+    <div style="flex:1 1 auto;min-width:0;overflow:auto">{@render edition()}</div>
+  </div>
+{:else}
+  <div style="min-height:100vh">{@render edition()}</div>
+{/if}
