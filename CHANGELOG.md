@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Internal test builds: walk and demo builds made with `HQ_CORE_PRERELEASE=1` can now install and offer the HQ Core beta (16.0.31-beta.6 or newer) during first run and in the HQ Core update check. Released builds never set this, and nothing changes for people using the released app.
 - First run: the app now saves a short summary of the past-work import — session counts, the days and dates those sessions span, which AI tools were used and up to ten project names — so the welcome report can later show "N sessions over N days". It holds no conversation text, file paths or credentials. Nothing on screen changes yet.
 - Welcome report: after the sunrise, the brief is now the welcome edition from the design instead of the purple sunrise card and ticker. It keeps the risen sky and sun, greets you by name, and shows "Your day, ready to read." with three cards: your first decision, your day (the next meeting, or a plain line when the calendar is clear or could not be read) and the work to pick up. One short section per company follows, up to three. Review the decision and Pick it up hand that item to your assistant, and the card then shows the note in place of the link. With no company yet, the page shows the getting-started version. Review mode (Shift+A) still shows every card.
 - Welcome report: the sunrise finding appears beside its count when an icon clears the horizon, each icon is the full mark on a pixel halo, and Connect your AI apps is one Connect action. The brief after that sunrise uses the same run, including in the light theme.
@@ -92,6 +93,7 @@ The release moves it under the version it ships in.
 - Company settings: Billing for a usage-priced company shows this month's usage, the credit left of the $10 included, the vault fee and the cloud bot box prices instead of seats, and has no Workforce upgrade. Other companies see seats as before.
 - Cloud bot, Slack bot, external bot, meeting recording and invite messages no longer say you need Starter, Workforce or a seat upgrade. They say the company's plan does not include the feature yet.
 - Badges: a new honor, Ecom Rat, for HQ's honorary rat of ecommerce.
+- Setup on a Mac: first-run setup no longer asks macOS to install Apple's developer tools. On a Mac without them, setup used to open Apple's install prompt, which could ask for a 19 GB download and stop setup until it finished. HQ now uses only the git and Node it installs itself, and never runs the macOS stand-ins for git, python3, make or clang that open that prompt. HQ installs its own git before it sets up the HQ folder's history. The "Installing Apple's developer tools" screen is gone. If HQ cannot install its own tools, setup handles the failure the same way it did before.
 
 ## [0.11.12] — 2026-10-16
 
