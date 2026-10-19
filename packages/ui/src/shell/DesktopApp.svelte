@@ -80,7 +80,7 @@
   import { briefActionsFor } from "../brief/brief-action-cards.js";
   import { welcomeAppsCompanyFor } from "../brief/welcome-ai-apps.js";
   import { WelcomeConnectSession } from "../brief/welcome-connect-session.svelte.js";
-  import { BRIEF_CLAUDE_PERMISSION_MODE, BRIEF_FIX_LABEL, BRIEF_STARTING_STEP, briefBotLabel, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
+  import { BRIEF_CLAUDE_PERMISSION_MODE, BRIEF_FIX_LABEL, BRIEF_STARTING_STEP, briefBotLabel, briefSkillInstalled, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
   import { BriefCreateRun, type BriefCreator } from "../brief/brief-create.svelte.js";
   import { briefBotFailure } from "../brief/brief-bot-failure.js";
   import {
@@ -6911,18 +6911,16 @@
           return false;
         },
         async skillInstalled() {
-          if (!adapter.files?.getFileContent) return null;
-          const res = await adapter.files.getFileContent(".claude/skills/daily-brief/SKILL.md");
-          if (res.ok) return true;
-          const why = res.message ?? res.reason;
-          // The HQ folder itself did not resolve: not a missing skill.
-          if (/could not resolve HQ folder/i.test(why)) {
-            console.warn("[daily-brief] could not read the HQ folder", why);
-            return "hq-folder";
-          }
-          if (/no such file|not found|os error 2/i.test(why)) return false;
-          console.warn("[daily-brief] could not check the skill", why);
-          return null;
+          const files = adapter.files;
+          if (!files?.getFileContent) return null;
+          // Core skill or the personal overlay: missing only when both are.
+          return briefSkillInstalled(
+            async (path) => {
+              const res = await files.getFileContent(path);
+              return res.ok ? { ok: true } : { ok: false, why: res.message ?? res.reason };
+            },
+            (msg, why) => console.warn(msg, why),
+          );
         },
         async dispatch(bot, body, idempotencyKey) {
           const res = await adapter.messaging.sendDm(bot.agentUid, body, { audience: "agent", idempotencyKey });

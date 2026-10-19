@@ -10,7 +10,6 @@ import {
   briefBotLabel,
   BRIEF_LIVENESS_FILES,
   BRIEF_BOT_FAILURE_POLL_MS,
-  BRIEF_DISPATCH_TIMEOUT_MESSAGE,
   BRIEF_DISPATCH_TIMEOUT_MS,
   BRIEF_POLL_MS,
   BRIEF_QUIET_MS,
@@ -23,7 +22,7 @@ import {
   BRIEF_TRY_AGAIN_WAIT_MS,
   failedMessage,
   isSkillNotFound,
-  slowStartMessage,
+  healMessage,
   isBriefRunId,
   parseBriefStatus,
   runIdTime,
@@ -163,6 +162,8 @@ export class BriefCreateRun {
     if (this.busy) return Promise.resolve();
     // Try again on the slow-start line keeps its name ("welcome brief").
     const healing = this.phase.kind === "failed" && this.phase.heal != null;
+    // Try again on the update line looks once: no automatic retry while the skill is still missing.
+    const skillMissing = this.phase.kind === "failed" && this.phase.heal === "skill-not-found";
     const label = opts.label?.trim() || (healing ? this.label : "brief");
     const unstarted = this.unstartedRun();
     if (unstarted && !opts.force) {
@@ -179,13 +180,14 @@ export class BriefCreateRun {
     this.duplicatePrompt = false;
     this.endWatch();
     this.label = label;
-    this.retried = false;
+    this.retried = skillMissing;
     return this.begin();
   }
 
   /**
    * `dispatch`, bounded: a bot check or send that never answers ends the run
-   * with a plain message instead of leaving the starting line up for good.
+   * with the slow-start line and Try again instead of leaving the starting
+   * line up for good.
    */
   private async dispatchWithin(runId: string): Promise<void> {
     let timer: unknown = null;
@@ -196,7 +198,7 @@ export class BriefCreateRun {
     if (timer != null) (this.deps.clearDeadline ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>)))(timer);
     if (outcome === "timeout" && !this.stopped && this.phase.kind === "dispatching" && this.phase.runId === runId) {
       this.log("bot check or send did not answer", `${BRIEF_DISPATCH_TIMEOUT_MS} ms`);
-      this.finish({ kind: "failed", runId: null, message: BRIEF_DISPATCH_TIMEOUT_MESSAGE });
+      await this.heal(null, "dispatch-timeout");
     }
   }
 
@@ -236,9 +238,10 @@ export class BriefCreateRun {
   }
 
   /**
-   * A run that never started: show the one slow-start line with Try again.
-   * A missing skill first sends one fresh job by itself (the first run has
-   * already ended). A start timeout sends nothing: a busy bot that handles one
+   * A run that never started: show the line for its cause with Try again.
+   * A missing skill first starts once more by itself (the first run has
+   * already ended), only on the first start; Try again on the update line
+   * does not repeat that. A start timeout sends nothing: a busy bot that handles one
    * job at a time may still build the first one, with its welcome edition, so
    * HQ keeps watching that run and follows it if it starts.
    */
@@ -250,7 +253,7 @@ export class BriefCreateRun {
       this.forget();
       return this.begin();
     }
-    const phase: Finished = { kind: "failed", runId, message: slowStartMessage(this.label), heal: why };
+    const phase: Finished = { kind: "failed", runId, message: healMessage(why, this.label), heal: why };
     if (why === "start-timeout" && runId) {
       const now = this.now().getTime();
       this.phase = phase;

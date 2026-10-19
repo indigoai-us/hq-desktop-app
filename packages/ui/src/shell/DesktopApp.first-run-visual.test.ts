@@ -12,6 +12,7 @@
  * means it never opens again.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { desktopFileReader, desktopPathError } from "../test-support/desktop-file-read.js";
 import { mount, tick, unmount } from "svelte";
 import { failure, FIRST_RUN_FOUND_APPS_FLAG, HQ_ANYWHERE_RUNTIME_FLAG, ok, VISUAL_FIRST_RUN_FLAG, type PlatformAdapter } from "@hq/platform";
 
@@ -1304,12 +1305,11 @@ describe("welcome report (US-009)", () => {
     expect(body).not.toContain("--personal");
   }, 15_000);
 
-  it("with no daily-brief skill in the person's HQ the welcome report's job is never sent and the slow-start line shows at once", async () => {
+  it("with no daily-brief skill in the person's HQ (a core older than 16.0.30) the welcome report's job is never sent and the update line shows at once", async () => {
     const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: null });
-    (platform as unknown as { files: { getFileContent: (path: string) => Promise<unknown> } }).files.getFileContent = async () => ({
-      ok: false as const,
-      reason: "not found",
-    });
+    // The desktop file command's own path check and missing-file error.
+    const desktop = desktopFileReader({});
+    (platform as unknown as { files: { getFileContent: (path: string) => Promise<unknown> } }).files.getFileContent = desktop.getFileContent;
     await boot(platform, DesktopApp, mount, { companies: [], rosterStatus: "ready" });
     await decisionShown();
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
@@ -1320,13 +1320,37 @@ describe("welcome report (US-009)", () => {
     expect(briefJobs(sendDm)).toHaveLength(0);
     const report = q('[data-testid="welcome-report"]')!;
     expect(report.querySelector('[data-testid="brief-dawn-step"]')?.textContent?.trim()).toBe(
-      "Your welcome brief is taking longer than expected.",
+      "Your HQ needs an update before it can build a brief. Update HQ Core in Settings, under Updates, then try again.",
     );
     expect(report.querySelector('[data-testid="brief-retry"]')?.textContent?.trim()).toBe("Try again");
-    expect(report.textContent ?? "").not.toMatch(/bot|skill|check that|is running/i);
+    expect(report.textContent ?? "").not.toMatch(/bot|skill|check that|is running|taking longer/i);
+    // Every place the bot can find the skill was looked at, each a path the desktop accepts.
+    // The report also reads its own brief files; only the skill reads are listed here.
+    expect([...new Set(desktop.reads.filter((path) => path.endsWith("/SKILL.md")))]).toEqual([
+      ".claude/skills/daily-brief/SKILL.md",
+      "personal/skills/daily-brief/SKILL.md",
+    ]);
+    expect(desktop.reads.filter((path) => desktopPathError(path) != null)).toEqual([]);
   }, 15_000);
 
-  it("an HQ folder that cannot be read is not called a missing skill: no job, the slow-start line, an HQ folder log", async () => {
+  it("with only the personal daily-brief skill the welcome report's job is sent after reading personal/skills/daily-brief/SKILL.md", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: null });
+    const desktop = desktopFileReader({ "personal/skills/daily-brief/SKILL.md": "---\nname: daily-brief\n---" });
+    (platform as unknown as { files: { getFileContent: (path: string) => Promise<unknown> } }).files.getFileContent = desktop.getFileContent;
+    await boot(platform, DesktopApp, mount, { companies: [], rosterStatus: "ready" });
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
+    expect(desktop.served).toContain("personal/skills/daily-brief/SKILL.md");
+    expect(desktop.reads.filter((path) => desktopPathError(path) != null)).toEqual([]);
+    expect(warn.mock.calls.map((c) => c.join(" ")).join("\n")).not.toMatch(/could not check the skill/);
+    expect(q('[data-testid="welcome-report"] [data-testid="brief-dawn-step"]')?.textContent ?? "").not.toMatch(/needs an update|taking longer/);
+    warn.mockRestore();
+  }, 15_000);
+
+  it("an HQ folder that cannot be read is not called a missing skill: no job, the HQ folder line, an HQ folder log", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: null });
     (platform as unknown as { files: { getFileContent: (path: string) => Promise<unknown> } }).files.getFileContent = async () => ({
@@ -1343,7 +1367,7 @@ describe("welcome report (US-009)", () => {
     });
     expect(briefJobs(sendDm)).toHaveLength(0);
     expect(q('[data-testid="welcome-report"] [data-testid="brief-dawn-step"]')?.textContent?.trim()).toBe(
-      "Your welcome brief is taking longer than expected.",
+      "HQ could not open your HQ folder. Change it in Settings, under Sync, then try again.",
     );
     const logged = warn.mock.calls.map((c) => c.join(" ")).join("\n");
     expect(logged).toMatch(/could not read the HQ folder/);

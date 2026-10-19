@@ -209,12 +209,38 @@ export function parseActivity(raw: unknown): BriefActivity[] {
 }
 
 /**
- * CLI and exception markers: gh commands, tracebacks, `Error:` lines, exit
- * codes, flags, file and registry paths, env var names. Text carrying any of
- * these is tool output, not a sentence for the person.
+ * Error-shaped markers: gh commands and CLI help text, tracebacks, `Error:`,
+ * `fatal:` and `usage:` lines, exit codes, flags, Windows and registry paths.
+ * Text carrying any of these is tool output, not a sentence for the person.
+ * Single identifiers (HQ_TOOLS, my_project) and short relative paths
+ * (src/brief/index) are ordinary names and are not markers.
  */
 const RAW_MARKERS =
-  /\bgh (?:auth|api|pr|repo|run|issue)\b|github cli|traceback|error:|\berrno\b|\bexit (?:code|status)\b|exception|\bhk(?:cu|lm)\b|failed:|\brun:|(?:^|\s)--?[a-z]|\\|\b[a-z]:[\\/]|\/[\w.-]+\/[\w.-]+|\.(?:py|ts|js|sh)\b|\bstd(?:err|out)\b|\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b|populate the/i;
+  /\bgh (?:auth|api|pr|repo|run|issue)\b|github cli|traceback|error:|fatal:|usage:|\berrno\b|\bexit (?:code|status)\b|exception|\bhk(?:cu|lm)\b|failed:|\brun:|(?:^|\s)--?[a-z]|\\|\b[a-z]:[\\/]|\bstd(?:err|out)\b|populate the/i;
+
+/**
+ * The case-sensitive markers: errno codes followed by a colon (ENOENT:,
+ * EACCES:) and the network errno codes, `npm ERR!`, HTTP status errors
+ * (HTTP 401, HTTP/1.1 500), and absolute paths into the machine (/Users/…,
+ * /Volumes/…, ~/…, file://) in any position, including after `path:`, a
+ * backtick or a bracket. A date like 10/18/2026, a command like /hq-sync or
+ * a relative path like src/brief/index is none of these.
+ */
+const RAW_MARKERS_CASED =
+  /\bE[A-Z]{2,}:|\bE(?:CONNREFUSED|CONNRESET|CONNABORTED|TIMEDOUT|NOTFOUND|HOSTUNREACH|NETUNREACH|ADDRINUSE|PIPE|AI_AGAIN)\b|\bERR!|\bHTTP(?:\/\d(?:\.\d)?)? \d{3}\b|\bfile:\/\/|(?:^|[^\w.-])(?:~|\/(?:Users|home|Volumes|private|var|tmp|opt|etc|usr))\//;
+
+/**
+ * Credential shapes: GitHub, OpenAI and Slack tokens, AWS key ids, JWTs, a
+ * Bearer or token word followed by a value with a digit, and NAME=value where
+ * NAME ends in TOKEN, KEY, SECRET or PASSWORD. Upper-case names on their own
+ * (HQ_TOOLS, API_KEYS_PAGE) are not credentials.
+ */
+const SECRET_MARKERS =
+  /\b(?:gh[pousr]_|github_pat_)\w{8,}|\bsk-[\w-]{8,}|\bxox[abpr]-[\w-]{6,}|\bAKIA[0-9A-Z]{16}\b|\beyJ[\w-]{10,}\.|\b[A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD)\s*[=:]\s*\S/;
+const SECRET_MARKERS_ANY_CASE = /\b(?:bearer|token)[\s:=]+["']?(?=[\w.~+/-]*\d)[\w.~+/-]{12,}/i;
+
+/** A JSON object or array of objects or strings: tool output, not a sentence. */
+const JSON_MARKERS = /\{\s*"[^"]*"\s*:|^\s*\[\s*(?:\{|"[^"]*"\s*[,\]])/;
 
 /**
  * `text` as one short plain line, or null when it is long, spans lines, or
@@ -223,7 +249,10 @@ const RAW_MARKERS =
  */
 export function plainLine(text: string | null | undefined, max: number): string | null {
   const t = text?.trim();
-  if (!t || t.length > max || /[\r\n]/.test(t) || RAW_MARKERS.test(t)) return null;
+  if (!t || t.length > max || /[\r\n]/.test(t)) return null;
+  for (const marker of [RAW_MARKERS, RAW_MARKERS_CASED, SECRET_MARKERS, SECRET_MARKERS_ANY_CASE, JSON_MARKERS]) {
+    if (marker.test(t)) return null;
+  }
   return t;
 }
 
@@ -320,7 +349,7 @@ const CANCELLED_MESSAGE = "You cancelled this brief.";
  */
 export function failedMessage(status: Pick<BriefRunStatus, "state" | "error" | "message">): string {
   // The bot's own words about a missing skill are operator text.
-  if (isSkillNotFound(status)) return slowStartMessage();
+  if (isSkillNotFound(status)) return BRIEF_SKILL_MISSING_MESSAGE;
   // `error` is the skill's raw reason and stays in status.json; only a plain message shows.
   const said = plainLine(status.message, 160);
   if (status.state === "cancelled") return said ?? CANCELLED_MESSAGE;
@@ -338,12 +367,64 @@ export function waitingStep(_bot?: string | null): string {
 }
 
 /**
- * The one line shown when a run never started (start timeout or a missing
- * skill) after the automatic retry. `label` names the brief: "brief" or
- * "welcome brief".
+ * The one line shown when a run did not start in time (start timeout or
+ * dispatch timeout). `label` names the brief: "brief" or "welcome brief".
  */
 export function slowStartMessage(label = "brief"): string {
   return `Your ${label} is taking longer than expected.`;
+}
+
+/**
+ * The person's HQ has no daily-brief skill (a core older than 16.0.30). It
+ * names the existing HQ Core update in Settings > Updates; no new button.
+ */
+export const BRIEF_SKILL_MISSING_MESSAGE =
+  "Your HQ needs an update before it can build a brief. Update HQ Core in Settings, under Updates, then try again.";
+
+/** The HQ folder could not be read. It names the existing folder row in Settings > Sync. */
+export const BRIEF_HQ_FOLDER_MESSAGE = "HQ could not open your HQ folder. Change it in Settings, under Sync, then try again.";
+
+/** The line for a run that never started, by cause. */
+export function healMessage(why: "start-timeout" | "skill-not-found" | "hq-folder" | "dispatch-timeout", label = "brief"): string {
+  if (why === "skill-not-found") return BRIEF_SKILL_MISSING_MESSAGE;
+  if (why === "hq-folder") return BRIEF_HQ_FOLDER_MESSAGE;
+  return slowStartMessage(label);
+}
+
+/**
+ * Every place the bot can resolve the daily-brief skill from: the core skill
+ * and the personal overlay. The `.claude/skills/personal:daily-brief` mirror
+ * is a symlink to the personal skill, and the desktop file command rejects
+ * any path segment with a colon, so the personal path covers it.
+ */
+export const BRIEF_SKILL_PATHS = [".claude/skills/daily-brief/SKILL.md", "personal/skills/daily-brief/SKILL.md"] as const;
+
+/**
+ * Whether the person's HQ has the daily-brief skill. True when any location
+ * has it; "hq-folder" when the HQ folder did not resolve; false only when
+ * every location is confirmed absent; null when nothing was found and a read
+ * failed for another reason (the job is sent and the bot reports
+ * skill_not_found if it cannot find the skill). An unexpected error on one
+ * path never stops the check of the others.
+ */
+export async function briefSkillInstalled(
+  read: (path: string) => Promise<{ ok: true } | { ok: false; why: string }>,
+  warn: (msg: string, why: string) => void = () => {},
+): Promise<boolean | "hq-folder" | null> {
+  let unknown = false;
+  for (const path of BRIEF_SKILL_PATHS) {
+    const res = await read(path);
+    if (res.ok) return true;
+    // The HQ folder itself did not resolve: not a missing skill.
+    if (/could not resolve HQ folder/i.test(res.why)) {
+      warn("[daily-brief] could not read the HQ folder", res.why);
+      return "hq-folder";
+    }
+    if (/no such file|not found|os error 2/i.test(res.why)) continue;
+    warn("[daily-brief] could not check the skill", res.why);
+    unknown = true;
+  }
+  return unknown ? null : false;
 }
 
 /**
@@ -381,12 +462,18 @@ export type BriefCreatePhase =
       /** A stall verdict, not the bot's: HQ keeps watching the run and flips to ready if it finishes. */
       stalled?: true;
       /**
-       * The run never started, shown as the slow-start line with Try again.
-       * start-timeout: no status in time; HQ keeps watching the same run and sends no second job.
-       * skill-not-found: no daily-brief skill; HQ sends one fresh job by itself first.
-       * hq-folder: the HQ folder could not be read, so nothing was sent.
+       * The run never started, shown with Try again (healMessage gives the line).
+       * start-timeout: no status in time; the slow-start line. HQ keeps watching
+       * the same run and sends no second job.
+       * skill-not-found: no daily-brief skill (a core older than 16.0.30); the
+       * update line. HQ checks once more by itself on the first start only.
+       * hq-folder: the HQ folder could not be read, so nothing was sent; the
+       * HQ folder line.
+       * dispatch-timeout: the bot check or send did not answer within
+       * BRIEF_DISPATCH_TIMEOUT_MS; the slow-start line. Nothing more is sent
+       * until Try again.
        */
-      heal?: "start-timeout" | "skill-not-found" | "hq-folder";
+      heal?: "start-timeout" | "skill-not-found" | "hq-folder" | "dispatch-timeout";
     };
 
 /**
@@ -417,11 +504,11 @@ const STALL_MESSAGE = "Your brief has not reported progress in a while. HQ is st
 export const BRIEF_POLL_MS = 2_000;
 /**
  * Checking the bot and sending the job must finish within this. A bot list
- * or send that never answers otherwise leaves "Waking your bot…" on screen
- * for good (owner report, 2026-10-16).
+ * or send that never answers otherwise leaves the starting line on screen
+ * for good (owner report, 2026-10-16). The person sees the slow-start line;
+ * the detail goes to the log only.
  */
 export const BRIEF_DISPATCH_TIMEOUT_MS = 60_000;
-export const BRIEF_DISPATCH_TIMEOUT_MESSAGE = "Your bot did not answer. Check that it is running, then try again.";
 /** How often a sent run asks the bot's conversation whether its turn failed. */
 export const BRIEF_BOT_FAILURE_POLL_MS = 10_000;
 
@@ -441,7 +528,7 @@ export function advanceBriefRun(phase: BriefCreatePhase, reading: BriefPollReadi
   if (status && status.runId === runId) {
     if (status.state === "ready") return { kind: "ready", runId };
     if (isSkillNotFound(status)) {
-      return { kind: "failed", runId, message: slowStartMessage(), heal: "skill-not-found" };
+      return { kind: "failed", runId, message: BRIEF_SKILL_MISSING_MESSAGE, heal: "skill-not-found" };
     }
     if (status.state === "failed" || status.state === "cancelled") {
       return { kind: "failed", runId, message: failedMessage(status) };

@@ -7,6 +7,8 @@ import {
   BRIEF_STALL_TIMEOUT_MS,
   advanceBriefRun,
   briefJobMessage,
+  BRIEF_SKILL_PATHS,
+  briefSkillInstalled,
   failedMessage,
   plainLine,
   stillWorkingLine,
@@ -26,6 +28,7 @@ import {
   stepRun,
   type BriefCreatePhase,
 } from "./brief-runs.js";
+import { desktopFileReader, desktopPathError } from "../test-support/desktop-file-read.js";
 import { sweepPath } from "./brief-data.js";
 
 describe("run id and folder resolution", () => {
@@ -262,16 +265,16 @@ describe("status polling state machine", () => {
     expect(advanceBriefRun(waiting, written, 5_000)).toEqual({
       kind: "failed",
       runId: RUN,
-      message: "Your brief is taking longer than expected.",
+      message: "Your HQ needs an update before it can build a brief. Update HQ Core in Settings, under Updates, then try again.",
       heal: "skill-not-found",
     });
     // The job asks for exactly this when the skill is missing (state + error).
     expect(advanceBriefRun(waiting, status({ state: "failed", error: "skill_not_found" }), 5_000)).toMatchObject({ heal: "skill-not-found" });
     // `state` wins when both are present, and a bare code is never shown as the message.
     expect(advanceBriefRun(waiting, status({ state: "running", status: "failed", step: "Sweeping" }), 5_000)).toMatchObject({ kind: "running" });
-    expect(failedMessage({ state: "failed", error: "skill_not_found", message: null })).toBe("Your brief is taking longer than expected.");
+    expect(failedMessage({ state: "failed", error: "skill_not_found", message: null })).toBe("Your HQ needs an update before it can build a brief. Update HQ Core in Settings, under Updates, then try again.");
     expect(failedMessage({ state: "failed", error: "skill_not_found", message: "No daily-brief skill is installed in this HQ." })).toBe(
-      "Your brief is taking longer than expected.",
+      "Your HQ needs an update before it can build a brief. Update HQ Core in Settings, under Updates, then try again.",
     );
     expect(failedMessage({ state: "failed", error: "The sweep could not read GitHub.", message: null })).toBe("The brief stopped before it finished.");
   });
@@ -281,11 +284,11 @@ describe("status polling state machine", () => {
       expect(advanceBriefRun(waiting, status({ state: "failed", error }), 5_000)).toEqual({
         kind: "failed",
         runId: RUN,
-        message: "Your brief is taking longer than expected.",
+        message: "Your HQ needs an update before it can build a brief. Update HQ Core in Settings, under Updates, then try again.",
         heal: "skill-not-found",
       });
       expect(failedMessage({ state: "failed", error, message: "No daily-brief skill is installed in this HQ." })).toBe(
-        "Your brief is taking longer than expected.",
+        "Your HQ needs an update before it can build a brief. Update HQ Core in Settings, under Updates, then try again.",
       );
     }
     expect(advanceBriefRun(waiting, status({ state: "failed", error: "skill_not_foundish" }), 5_000)).not.toHaveProperty("heal");
@@ -464,7 +467,185 @@ describe("previousReadyRun", () => {
     expect(plainLine(`failed: ${LIVE_GH}`, 80)).toBeNull();
     expect(plainLine("x".repeat(81), 80)).toBeNull();
     expect(plainLine("see /Users/x/brief-sweep.py", 80)).toBeNull();
-    expect(plainLine("GH_TOKEN is missing", 80)).toBeNull();
+    expect(plainLine("ENOENT: no such file or directory", 80)).toBeNull();
+  });
+
+  it("plainLine keeps ordinary names, dates and short relative paths, and hides error-shaped text", () => {
+    // Project names, repo names and work titles (the welcome edition runs them through plainLine).
+    for (const name of [
+      "HQ_TOOLS",
+      "Shipped 3 fixes in HQ_TOOLS",
+      "my_project",
+      "Waiting on the follow_up from design",
+      "Read 4 threads in daily_brief and team_sync",
+      "src/brief/index",
+      "Tidy src/brief/index and src/brief/index.ts",
+      "10/18/2026",
+      "Next review on 10/18/2026",
+      "Shipped 3 fixes between 10/12 and 10/18/2026",
+      "Run /hq-sync first",
+    ]) {
+      expect(plainLine(name, 80)).toBe(name);
+    }
+    const LIVE_GH = "To get started with GitHub CLI, please run:  gh auth login\nAlternatively, populate the GH_TOKEN environment variable";
+    const TRACEBACK = 'Traceback (most recent call last):\n  File "/Users/x/brief-sweep.py", line 1668, in main\nKeyError: \'total\'';
+    for (const raw of [
+      LIVE_GH,
+      LIVE_GH.split("\n")[0],
+      TRACEBACK,
+      TRACEBACK.split("\n")[0],
+      "KeyError: 'total'",
+      "Error: gh exited with exit code 4",
+      "fatal: not a git repository",
+      "ENOENT: no such file or directory, open 'status.json'",
+      "EACCES: permission denied",
+      "usage: hq sync [--all] [--personal]",
+      "see /Users/x/notes",
+    ]) {
+      expect(plainLine(raw, 200)).toBeNull();
+    }
+  });
+
+  it("plainLine hides credential shapes and keeps ordinary upper-case names", () => {
+    // Built at run time so no secret-shaped literal sits in the source.
+    const v = "A1b2C3d4E5f6G7h8J9k0L1m2N3p4Q5r6S7t8U9v0";
+    for (const raw of [
+      `gh${"p"}_${v}`,
+      `gh${"o"}_${v}`,
+      `github${"_pat"}_11AB${v}`,
+      `s${"k"}-proj-${v}`,
+      `s${"k"}-${v}`,
+      `xox${"b"}-1234-5678-${v}`,
+      `xox${"p"}-1234-${v}`,
+      `xox${"a"}-2-${v}`,
+      `Using token gh${"p"}_${v}`,
+      `Authorization: Bearer ${v}`,
+      `bearer ${v}`,
+      `token ${v}`,
+      `GITHUB_TOKEN=gh${"p"}_${v}`,
+      `GH_TOKEN=${v}`,
+      "OPENAI_API_KEY=abc123",
+      "AWS_SECRET=xyz",
+      "DB_PASSWORD=hunter2",
+      "SLACK_BOT_TOKEN = abc",
+    ]) {
+      expect(plainLine(raw, 200), raw).toBeNull();
+    }
+    for (const name of [
+      "HQ_TOOLS",
+      "Shipped 3 fixes in HQ_TOOLS",
+      "API_KEYS_PAGE",
+      "Rotated the token for the deploy bot",
+      "Bearer of good news",
+      "Read the sk-learn notes",
+      "task-runner",
+    ]) {
+      expect(plainLine(name, 80), name).toBe(name);
+    }
+  });
+
+  it("plainLine hides home paths in any position, HTTP status errors and JSON blobs", () => {
+    for (const raw of [
+      "path:/Users/stefan/x",
+      "open `/Users/stefan/x`",
+      "[/Users/stefan/x]",
+      "file:///Users/stefan/x",
+      "/Volumes/Data/hq/brief",
+      "saved to /Volumes/Data/hq",
+      "path:/home/stefan/x",
+      "HTTP 401: Bad credentials",
+      "gh: Not Found (HTTP 404)",
+      'HTTP/1.1 500 Internal Server Error',
+      '{"message":"Bad credentials","status":"401"}',
+      '[{"id":1}]',
+      '["a","b"]',
+      "connect ECONNREFUSED 127.0.0.1:443",
+      "npm ERR! code E404",
+    ]) {
+      expect(plainLine(raw, 200), raw).toBeNull();
+    }
+    for (const name of ["src/brief/index", "Run /hq-sync first", "[WIP] Tidy the brief", "Shipped {3} fixes", "10/18/2026"]) {
+      expect(plainLine(name, 80), name).toBe(name);
+    }
+  });
+});
+
+describe("briefSkillInstalled", () => {
+  const CORE = ".claude/skills/daily-brief/SKILL.md";
+  const PERSONAL = "personal/skills/daily-brief/SKILL.md";
+  const reader = (present: string[], why = "not found", errors: Record<string, string> = {}) => {
+    const asked: string[] = [];
+    const read = async (path: string) => {
+      asked.push(path);
+      if (present.includes(path)) return { ok: true as const };
+      return { ok: false as const, why: errors[path] ?? why };
+    };
+    return { read, asked };
+  };
+  // The renderer's reader in DesktopApp, over the desktop file command.
+  const viaDesktop = (files: Record<string, string>) => {
+    const desktop = desktopFileReader(files);
+    const read = async (path: string) => {
+      const res = await desktop.getFileContent(path);
+      return res.ok ? { ok: true as const } : { ok: false as const, why: res.message };
+    };
+    return { read, desktop };
+  };
+
+  it("checks only paths the desktop file command accepts", () => {
+    expect(BRIEF_SKILL_PATHS).toEqual([CORE, PERSONAL]);
+    for (const path of BRIEF_SKILL_PATHS) expect(desktopPathError(path), path).toBeNull();
+    // The `.claude/skills/personal:daily-brief` mirror is a symlink to the
+    // personal skill and is rejected by the desktop path check.
+    expect(desktopPathError(".claude/skills/personal:daily-brief/SKILL.md")).toBe(
+      'invalid HQ-relative path: ".claude/skills/personal:daily-brief/SKILL.md"',
+    );
+  });
+
+  it("on an older core with no skill anywhere, the desktop reader reports it missing", async () => {
+    const r = viaDesktop({});
+    expect(await briefSkillInstalled(r.read)).toBe(false);
+    expect(r.desktop.reads).toEqual([CORE, PERSONAL]);
+  });
+
+  it("with only the personal skill, the desktop reader reads personal/skills/daily-brief/SKILL.md and finds it", async () => {
+    const r = viaDesktop({ [PERSONAL]: "---\nname: daily-brief\n---" });
+    expect(await briefSkillInstalled(r.read)).toBe(true);
+    expect(r.desktop.served).toEqual([PERSONAL]);
+  });
+
+  it("finds the core skill with one read", async () => {
+    const r = reader([CORE]);
+    expect(await briefSkillInstalled(r.read)).toBe(true);
+    expect(r.asked).toEqual([CORE]);
+  });
+
+  it("is missing only when every location is confirmed absent", async () => {
+    const r = reader([], "No such file or directory (os error 2)");
+    expect(await briefSkillInstalled(r.read)).toBe(false);
+    expect(r.asked).toEqual([CORE, PERSONAL]);
+  });
+
+  it("an HQ folder that does not resolve is the HQ folder case, not a missing skill", async () => {
+    expect(await briefSkillInstalled(reader([], "could not resolve HQ folder: No such file or directory (os error 2)").read)).toBe("hq-folder");
+  });
+
+  it("an unexpected error on one path does not stop the check of the others", async () => {
+    const warned: string[] = [];
+    const found = reader([PERSONAL], "not found", { [CORE]: "permission denied" });
+    expect(await briefSkillInstalled(found.read, (m) => void warned.push(m))).toBe(true);
+    expect(found.asked).toEqual([CORE, PERSONAL]);
+    // Unknown when nothing was found and one path could not be checked: the job is still sent.
+    const unknown = reader([], "No such file or directory (os error 2)", { [CORE]: "permission denied" });
+    expect(await briefSkillInstalled(unknown.read, (m) => void warned.push(m))).toBeNull();
+    expect(unknown.asked).toEqual([CORE, PERSONAL]);
+    expect(warned.join("\n")).toMatch(/could not check the skill/);
+  });
+
+  it("a read that fails for another reason on every path is unknown, so the job is still sent", async () => {
+    const warned: string[] = [];
+    expect(await briefSkillInstalled(reader([], "permission denied").read, (m) => void warned.push(m))).toBeNull();
+    expect(warned.join("\n")).toMatch(/could not check the skill/);
   });
 });
 

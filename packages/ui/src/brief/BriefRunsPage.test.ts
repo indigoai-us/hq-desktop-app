@@ -474,7 +474,7 @@ describe("BriefRunsPage", () => {
     }
     expect(creator.dispatch).toHaveBeenCalledTimes(2);
     expect(q("brief-dawn")?.getAttribute("data-phase")).toBe("failed");
-    expect(q("brief-dawn-step")?.textContent?.trim()).toBe("Your brief is taking longer than expected.");
+    expect(q("brief-dawn-step")?.textContent?.trim()).toBe("Your HQ needs an update before it can build a brief. Update HQ Core in Settings, under Updates, then try again.");
     expect(q("brief-retry")?.textContent?.trim()).toBe("Try again");
     expect(q("brief-dawn")?.querySelectorAll("button")).toHaveLength(1);
     const text = document.body.textContent ?? "";
@@ -482,12 +482,51 @@ describe("BriefRunsPage", () => {
     shared.stop();
   });
 
-  it("a missing daily-brief skill never sends the job and shows the same line at once", async () => {
+  it("a bot check that never answers shows the plain slow-start line and Try again after the deadline, never bot text", async () => {
+    const creator: BriefCreator = {
+      company: () => "indigo",
+      check: () => new Promise<never>(() => {}),
+      dispatch: vi.fn(async () => null),
+      fix: vi.fn(async () => null),
+      notify: vi.fn(),
+    };
+    const deadlines: (() => void)[] = [];
+    const logs: string[] = [];
+    const shared = new BriefCreateRun({
+      creator,
+      read: async () => null,
+      storage: null,
+      now: () => new Date(2026, 9, 8, 9, 0, 0),
+      setTimer: () => 0,
+      clearTimer: () => {},
+      setDeadline: (fn) => (deadlines.push(fn), deadlines.length),
+      clearDeadline: () => {},
+      log: (m) => void logs.push(m),
+    });
+    render({}, { creator, run: shared });
+    await settle();
+    q("brief-create")!.click();
+    await settle();
+    expect(deadlines).toHaveLength(1);
+    deadlines[0]!();
+    await settle();
+    expect(creator.dispatch).not.toHaveBeenCalled();
+    expect(q("brief-dawn")?.getAttribute("data-phase")).toBe("failed");
+    expect(q("brief-dawn-step")?.textContent?.trim()).toBe("Your brief is taking longer than expected.");
+    expect(q("brief-retry")?.textContent?.trim()).toBe("Try again");
+    expect(q("brief-dawn")?.querySelectorAll("button")).toHaveLength(1);
+    expect(document.body.textContent ?? "").not.toMatch(/bot|is running|check that/i);
+    expect(logs.some((m) => m.includes("did not answer"))).toBe(true);
+    shared.stop();
+  });
+
+  it("a missing daily-brief skill (a core older than 16.0.30) never sends the job and shows the update line at once", async () => {
     const bot = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
+    const skillInstalled = vi.fn(async () => false);
     const creator: BriefCreator = {
       company: () => "indigo",
       check: async () => ({ ok: true, bot }),
-      skillInstalled: async () => false,
+      skillInstalled,
       dispatch: vi.fn(async () => null),
       fix: vi.fn(async () => null),
       notify: vi.fn(),
@@ -497,10 +536,39 @@ describe("BriefRunsPage", () => {
     q("brief-create")!.click();
     await settle();
     expect(creator.dispatch).not.toHaveBeenCalled();
-    expect(q("brief-dawn-step")?.textContent?.trim()).toBe("Your brief is taking longer than expected.");
+    expect(skillInstalled).toHaveBeenCalledTimes(2);
+    expect(q("brief-dawn-step")?.textContent?.trim()).toBe("Your HQ needs an update before it can build a brief. Update HQ Core in Settings, under Updates, then try again.");
     expect(q("brief-retry")?.textContent?.trim()).toBe("Try again");
     expect(q("brief-dawn")?.querySelectorAll("button")).toHaveLength(1);
-    expect(document.body.textContent).not.toMatch(/pickles|bot|skill/i);
+    expect(document.body.textContent).not.toMatch(/pickles|bot|skill|taking longer/i);
+    // Try again while the file is still missing: one more look, the same line, no automatic retry.
+    q("brief-retry")!.click();
+    await settle();
+    expect(skillInstalled).toHaveBeenCalledTimes(3);
+    expect(creator.dispatch).not.toHaveBeenCalled();
+    expect(q("brief-dawn-step")?.textContent?.trim()).toBe("Your HQ needs an update before it can build a brief. Update HQ Core in Settings, under Updates, then try again.");
+    expect(q("brief-retry")?.textContent?.trim()).toBe("Try again");
+  });
+
+  it("an HQ folder that cannot be read shows the HQ folder line with Try again, never the slow-start line", async () => {
+    const bot = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
+    const creator: BriefCreator = {
+      company: () => "indigo",
+      check: async () => ({ ok: true, bot }),
+      skillInstalled: async () => "hq-folder" as const,
+      dispatch: vi.fn(async () => null),
+      fix: vi.fn(async () => null),
+      notify: vi.fn(),
+    };
+    render(files(), { creator });
+    await settle();
+    q("brief-create")!.click();
+    await settle();
+    expect(creator.dispatch).not.toHaveBeenCalled();
+    expect(q("brief-dawn-step")?.textContent?.trim()).toBe("HQ could not open your HQ folder. Change it in Settings, under Sync, then try again.");
+    expect(q("brief-retry")?.textContent?.trim()).toBe("Try again");
+    expect(q("brief-dawn")?.querySelectorAll("button")).toHaveLength(1);
+    expect(document.body.textContent).not.toMatch(/pickles|bot|skill|taking longer/i);
   });
 
   describe("raw gh or exception text never reaches the page", () => {
