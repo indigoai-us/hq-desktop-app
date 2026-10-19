@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { dirname, relative, resolve, sep } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
@@ -34,6 +34,7 @@ describe("macOS Rust gate path scope", () => {
       "scripts/macos-check-relevant.mjs",
       "imports/hq-sync-win/scripts/replace-rescue.sh",
       "apps/sync/package.json",
+      "packages/ui/src/settings/__fixtures__/storage/status.json",
     ]) {
       expect(isMacosRelevant([path]), path).toBe(true);
     }
@@ -100,6 +101,74 @@ describe("macOS Rust gate path scope", () => {
     }
   });
 
+  it("runs for every tracked file a Rust source reads through a literal CARGO_MANIFEST_DIR path", () => {
+    // Rust tests also read files at run time through paths built from
+    // env!("CARGO_MANIFEST_DIR"). Two literal forms are resolved here:
+    //   concat!(env!("CARGO_MANIFEST_DIR"), "/lit")
+    //   Path::new(env!("CARGO_MANIFEST_DIR")).join("a").join("b")
+    //     (also PathBuf::from(...)), stopping at the first non-literal join
+    // Each resolves against the crate dir (nearest ancestor with Cargo.toml).
+    // A directory target is expanded to the tracked files under it.
+    // Forms that cannot be resolved statically are skipped, currently:
+    //   compat.rs manifest_dir().join(...) helper (reads capabilities/*.json
+    //     and src/main.rs inside src-tauri, already covered)
+    //   join(name) / format!("{FIXTURES}{name}") tails with a runtime argument
+    //     (the literal prefix before them is still checked)
+    //   build.rs std::env::var("CARGO_MANIFEST_DIR") (runtime env, and
+    //     build.rs plus its inputs are covered separately)
+    // Targets with no tracked files (for example apps/sync/dist) are ignored.
+    const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+    const git = (args: string[]) =>
+      execFileSync("git", args, { cwd: root, encoding: "utf8" })
+        .split("\n")
+        .filter(Boolean);
+    const sources = git(["ls-files", "--", "*.rs"]);
+    const crateDir = (source: string) => {
+      let dir = posix.dirname(source);
+      while (dir !== "." && !existsSync(resolve(root, dir, "Cargo.toml"))) {
+        dir = posix.dirname(dir);
+      }
+      return dir;
+    };
+    const MANIFEST = String.raw`env!\(\s*"CARGO_MANIFEST_DIR"\s*\)`;
+    const concatForm = new RegExp(
+      String.raw`concat!\(\s*${MANIFEST}\s*,\s*"([^"]*)"\s*,?\s*\)`,
+      "g",
+    );
+    const joinForm = new RegExp(
+      String.raw`(?:Path::new|PathBuf::from)\(\s*${MANIFEST}\s*\)((?:\s*\.join\(\s*"[^"]*"\s*\))*)`,
+      "g",
+    );
+    const resolved = new Map<string, string>();
+
+    for (const source of sources) {
+      const text = readFileSync(resolve(root, source), "utf8");
+      const crate = crateDir(source);
+      const add = (suffix: string) => {
+        const target = posix.normalize(posix.join(crate, suffix));
+        if (!target.startsWith("..")) {
+          resolved.set(target.replace(/\/$/, ""), source);
+        }
+      };
+      for (const match of text.matchAll(concatForm)) add(match[1]);
+      for (const match of text.matchAll(joinForm)) {
+        const parts = [...match[1].matchAll(/"([^"]*)"/g)].map((m) => m[1]);
+        add(parts.join("/"));
+      }
+    }
+
+    expect(resolved.get("packages/ui/src/settings/__fixtures__/storage")).toBe(
+      "apps/sync/src-tauri/src/commands/storage.rs",
+    );
+    for (const [target, source] of resolved) {
+      for (const file of git(["ls-files", "--", target])) {
+        expect(isMacosRelevant([file]), `${file} (read by ${source})`).toBe(
+          true,
+        );
+      }
+    }
+  });
+
   it("pins the pattern list", () => {
     expect(MACOS_RELEVANT_PATTERNS).toEqual([
       "**/src-tauri/**",
@@ -121,6 +190,7 @@ describe("macOS Rust gate path scope", () => {
       "scripts/macos-check-relevant.mjs",
       "imports/**",
       "apps/sync/package.json",
+      "packages/ui/src/settings/__fixtures__/storage/**",
     ]);
   });
 });

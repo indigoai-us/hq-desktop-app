@@ -46,6 +46,19 @@ An empty value also means "hosted default", because `''` is falsy in the
 expression. Do not set a variable to a label set that has no online runner:
 jobs then queue until they time out, and required checks stay pending.
 
+### Before setting any `HQ_DESKTOP_RUNNER_*` variable
+
+Every `pull_request` job that reads one of these variables must refuse a
+self-hosted runner when the pull request comes from a fork. hq-desktop-app is
+public, so anyone can open a fork PR, and without the guard that PR's code runs
+on a persistent machine that keeps state, caches, and credentials between jobs.
+The guard keeps fork PRs on the hosted default, for example by only reading
+the variable when
+`github.event.pull_request.head.repo.full_name == github.repository`.
+The workflows do not have this guard yet. Add it to every affected job, and
+review it, before any variable in the table above is set. This holds for every
+platform, not only Linux.
+
 ### Before setting `HQ_DESKTOP_RUNNER_LINUX`
 
 1. hq-desktop-app has to be added to `ORG_POOL_REPOSITORIES_DEFAULT` in
