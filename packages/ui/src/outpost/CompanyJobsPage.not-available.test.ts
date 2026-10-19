@@ -32,15 +32,16 @@ type Fixture = {
 
 async function seedRows(store: CompanyJobStore): Promise<void> {
   const admin = store.client({ uid: "prs_seed", role: "admin" });
-  const health = ["ok", "missed", "blocked", "stale", "unknown"] as const;
+  const health = ["ok", "missed", "blocked", "stale", "unknown", "pending"] as const;
   for (const value of health) {
     const created = await admin.submit({ companyUid: "cmp_1", action: "create", outpostId: "opc_1", definition: definition(`${value} job`) });
     if (!created.ok || !created.job) throw new Error("seed failed");
     store.setHealth(created.job.jobId, {
       health: value,
-      lastRunAt: value === "unknown" ? null : "2026-10-18T14:00:00.000Z",
+      lastRunAt: value === "unknown" || value === "pending" ? null : "2026-10-18T14:00:00.000Z",
       nextRunAt: "2026-10-18T16:00:00.000Z",
-      message: value === "ok" ? "" : "The last run needs a look.",
+      // Server text with billing words. The page must never render it.
+      message: "Billing required. Add a payment method to keep running.",
     });
   }
 }

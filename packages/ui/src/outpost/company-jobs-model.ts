@@ -29,7 +29,7 @@ export const ALERT_AUDIENCE_LABEL = "Every company owner and admin";
 export type CompanyJobRole = "owner" | "admin" | "member" | "unknown";
 export type JobRunMode = "prompt" | "skill";
 export type SchedulePresetId = "hourly" | "daily" | "weekdays" | "weekly" | "twice-daily" | "custom";
-export type JobHealth = "ok" | "missed" | "blocked" | "stale" | "unknown";
+export type JobHealth = "pending" | "ok" | "missed" | "blocked" | "stale" | "unknown";
 export type JobDisplay = JobHealth | "paused";
 export type Acceptance = "accepted" | "pending";
 
@@ -89,8 +89,6 @@ export interface ParsedJobHealth {
   status: JobHealth;
   lastRunAt: string | null;
   nextRunAt: string | null;
-  message: string;
-  nextStep: string;
 }
 
 export interface ListedCompanyJob extends ParsedCompanyJob {
@@ -100,8 +98,6 @@ export interface ListedCompanyJob extends ParsedCompanyJob {
   scheduleLabel: string;
   lastRunAt: string | null;
   nextRunAt: string | null;
-  message: string;
-  nextStep: string;
 }
 
 const WEEKDAY_NAME = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -331,7 +327,7 @@ export function isRunnableJob(job: { accepted: boolean; paused: boolean; deleted
 }
 
 export function healthFromUnknown(value: unknown): JobHealth {
-  if (value === "ok" || value === "missed" || value === "blocked" || value === "stale" || value === "unknown") return value;
+  if (value === "pending" || value === "ok" || value === "missed" || value === "blocked" || value === "stale" || value === "unknown") return value;
   return "unknown";
 }
 
@@ -342,6 +338,7 @@ export function displayStatus(paused: boolean, health: JobHealth): JobDisplay {
 }
 
 export function displayLabel(status: JobDisplay): string {
+  if (status === "pending") return "Waiting for first run";
   if (status === "ok") return "Ran on time";
   if (status === "missed") return "Missed";
   if (status === "blocked") return "Blocked";
@@ -387,8 +384,6 @@ export function parseJobHealth(row: unknown): ParsedJobHealth | null {
     status: healthFromUnknown(rec.status),
     lastRunAt: typeof rec.lastRunAt === "string" ? rec.lastRunAt : null,
     nextRunAt: typeof rec.nextRunAt === "string" ? rec.nextRunAt : null,
-    message: typeof rec.message === "string" ? rec.message : "",
-    nextStep: typeof rec.nextStep === "string" ? rec.nextStep : "",
   };
 }
 
@@ -406,8 +401,6 @@ export function mergeJobHealth(jobs: readonly ParsedCompanyJob[], health: readon
       scheduleLabel: schedulePlainWords(job.cron) || "Custom schedule",
       lastRunAt: row?.lastRunAt ?? null,
       nextRunAt: job.paused ? null : row?.nextRunAt ?? null,
-      message: row?.message ?? "",
-      nextStep: row?.nextStep ?? "",
     };
   });
 }
@@ -435,14 +428,13 @@ export function jobsFromHealthOnly(health: readonly ParsedJobHealth[]): ListedCo
       scheduleLabel: "Custom schedule",
       lastRunAt: row.lastRunAt,
       nextRunAt: row.nextRunAt,
-      message: row.message,
-      nextStep: row.nextStep,
     };
   });
 }
 
+/** Plain copy for the Log panel. A server `message` is never shown (contract rule 17). */
 export function logSummary(job: ListedCompanyJob): string {
-  if (job.message) return job.message;
+  if (job.display === "pending") return "The job has not run yet.";
   if (job.display === "missed") return "The job missed its expected completion time.";
   if (job.display === "stale") return "The job completed but its data did not advance.";
   if (job.display === "blocked") return "The last run was blocked.";

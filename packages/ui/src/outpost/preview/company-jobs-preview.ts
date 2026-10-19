@@ -41,13 +41,14 @@ async function seed(): Promise<void> {
     await admin.submit({ companyUid: "cmp_1", action: "create", outpostId: "opc_1", definition: definition("Pending note", "Wait for an admin.") });
     return;
   }
-  const rows: Array<{ name: string; health: "ok" | "missed" | "blocked" | "stale" | "unknown"; message?: string }> = shot === "list" || shot === "log" || shot === "member"
+  const rows: Array<{ name: string; health: "pending" | "ok" | "missed" | "blocked" | "stale" | "unknown"; message?: string }> = shot === "list" || shot === "log" || shot === "member"
     ? [
         { name: "Weekday note", health: "ok" },
         { name: "Missed refresh", health: "missed", message: "No completion arrived." },
         { name: "Blocked publish", health: "blocked", message: "The last run was blocked." },
         { name: "Stale ledger", health: "stale", message: "The job completed but its data did not advance." },
         { name: "Unknown check", health: "unknown" },
+        { name: "New watchdog", health: "pending", message: "Waiting for its first run." },
       ]
     : [{ name: "Weekday note", health: "ok" }];
   for (const row of rows) {
@@ -60,7 +61,7 @@ async function seed(): Promise<void> {
     if (!created.ok || !created.job) continue;
     store.setHealth(created.job.jobId, {
       health: row.health,
-      lastRunAt: row.health === "unknown" ? null : "2026-10-18T14:00:00.000Z",
+      lastRunAt: row.health === "unknown" || row.health === "pending" ? null : "2026-10-18T14:00:00.000Z",
       nextRunAt: "2026-10-18T16:00:00.000Z",
       message: row.message ?? "",
     });

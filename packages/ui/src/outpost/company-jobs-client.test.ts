@@ -193,6 +193,9 @@ describe("US-006 company job health reads", () => {
     expect(listed.ok).toBe(false);
     expect(health.ok).toBe(true);
     if (!health.ok) return;
-    expect(health.jobs[0]).toMatchObject({ status: "missed", message: "No completion." });
+    expect(health.jobs[0]).toMatchObject({ status: "missed" });
+    // Server message text is dropped at the parse boundary so no screen can render it.
+    expect(health.jobs[0]).not.toHaveProperty("message");
+    expect(health.jobs[0]).not.toHaveProperty("nextStep");
   });
 });

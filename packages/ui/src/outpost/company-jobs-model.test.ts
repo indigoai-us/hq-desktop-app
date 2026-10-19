@@ -160,6 +160,10 @@ describe("US-006 job health words", () => {
     expect(displayStatus(false, "blocked")).toBe("blocked");
     expect(displayLabel("unknown")).toBe("Unknown");
     expect(displayLabel(displayStatus(false, healthFromUnknown("fine")))).toBe("Unknown");
+    expect(healthFromUnknown("pending")).toBe("pending");
+    expect(displayStatus(false, "pending")).toBe("pending");
+    expect(displayLabel("pending")).toBe("Waiting for first run");
+    expect(displayStatus(true, "pending")).toBe("paused");
     const job = parseCompanyJob({
       jobId: "job_1",
       prompt: "Check",
@@ -173,7 +177,7 @@ describe("US-006 job health words", () => {
     expect(job?.accepted).toBe(true);
     const [listed] = mergeJobHealth(
       [job!],
-      [{ jobId: "job_1", status: "ok", lastRunAt: null, nextRunAt: "2026-10-19T13:00:00.000Z", message: "", nextStep: "" }],
+      [{ jobId: "job_1", status: "ok", lastRunAt: null, nextRunAt: "2026-10-19T13:00:00.000Z" }],
     );
     expect(listed.displayLabel).toBe("Paused");
     expect(listed.nextRunAt).toBeNull();

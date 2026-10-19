@@ -341,10 +341,52 @@ describe("US-006 company job health on the screen", () => {
 
     (row("Missed job")?.querySelector("[data-testid='company-jobs-log']") as HTMLButtonElement).click();
     flushSync();
-    expect(target.querySelector("[data-testid='company-jobs-log-panel']")?.textContent).toContain("No completion arrived.");
+    const missedLog = target.querySelector("[data-testid='company-jobs-log-panel']")?.textContent ?? "";
+    expect(missedLog).toContain("The job missed its expected completion time.");
+    expect(missedLog).not.toContain("No completion arrived.");
     (target.querySelector("[data-testid='company-jobs-log-close']") as HTMLButtonElement).click();
     flushSync();
     expect(target.querySelector("[data-testid='company-jobs-log-panel']")).toBeNull();
+
+    (row("Paused job")?.querySelector("[data-testid='company-jobs-log']") as HTMLButtonElement).click();
+    flushSync();
+    const pausedLog = target.querySelector("[data-testid='company-jobs-log-panel']")?.textContent ?? "";
+    expect(pausedLog).toContain("The job is paused.");
+    expect(pausedLog).not.toContain("Paused on purpose.");
+  });
+
+  it("shows a never-run job as waiting for its first run, with its next run, and never the server message", async () => {
+    const store = createCompanyJobStore();
+    const admin = store.client({ uid: "prs_a", role: "admin" });
+    const created = await admin.submit({
+      companyUid: "cmp_1",
+      action: "create",
+      outpostId: "opc_1",
+      definition: definition("Fresh watchdog"),
+    });
+    if (!created.ok || !created.job) throw new Error("create failed");
+    store.setHealth(created.job.jobId, {
+      health: "pending",
+      lastRunAt: null,
+      nextRunAt: "2026-10-18T16:00:00.000Z",
+      message: "Waiting for its first run.",
+    });
+    const target = mountPage({ companyUid: "cmp_1", role: "admin", client: admin });
+    await ready(target);
+    const row = target.querySelector("[data-testid='company-jobs-row']");
+    expect(row?.getAttribute("data-health")).toBe("pending");
+    const health = row?.querySelector("[data-testid='company-jobs-health']")?.textContent ?? "";
+    expect(health).toContain("Waiting for first run");
+    expect(health).not.toContain("Unknown");
+    expect(health).not.toContain("Ran on time");
+    expect(row?.querySelector("[data-testid='company-jobs-last']")?.textContent).toBe("Never");
+    expect(row?.querySelector("[data-testid='company-jobs-next']")?.textContent).toBe("in 1h");
+
+    (row?.querySelector("[data-testid='company-jobs-log']") as HTMLButtonElement).click();
+    flushSync();
+    const log = target.querySelector("[data-testid='company-jobs-log-panel']")?.textContent ?? "";
+    expect(log).toContain("The job has not run yet.");
+    expect(log).not.toContain("Waiting for its first run.");
   });
 
   it("keeps the list when health fails and shows a load error only when the list fails too", async () => {
