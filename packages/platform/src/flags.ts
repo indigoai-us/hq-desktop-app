@@ -8,10 +8,13 @@
  * omitted from GET /v1/flags/resolve — treat that as unregistered so this
  * path keeps falling through to the legacy behaviour.
  *
- * Legacy `hasFeature` truth table (the fallback this module must not invert)
- * -------------------------------------------------------------------------
+ * Names that never consult the registry
+ * -------------------------------------
  *
- * Caller-visible flag `meetings` (registry key `desktop.meetings`):
+ * Caller-visible flag `meetings`:
+ *   NOT mapped. The `desktop.meetings` registry key was retired: Meetings is
+ *   GA and the key had been `defaultValue: true` with no overrides since it
+ *   was created. `hasFeature("meetings")` answers from the adapter only:
  *
  *   Sync adapter — invoke `meetings_feature_enabled`
  *     → Rust `desktop_features_enabled()` (GA):
@@ -22,21 +25,19 @@
  *     byte-for-byte unchanged. This repo does not implement that command,
  *     so a miss stays an AdapterResult error, not a boolean.
  *
- *   Web adapter — GET /v1/identity/features/meetings
- *     that route does not exist on hq-pro (404). The Settings UI already
- *     treats `!ok` as false (`meetingsEnabled = res.ok ? res.value : false`).
- *     The web fallback is therefore a deliberate `ok(false)`: same
- *     user-visible answer, no 404 AdapterResult, no unhandled rejection.
+ *   Web adapter — a deliberate `ok(false)`. GET /v1/identity/features/meetings
+ *     does not exist on hq-pro, and the Settings UI already treats `!ok` as
+ *     false.
  *
  * Caller-visible flag `is_indigo_user`:
  *   NOT mapped. Email-domain predicate (`email` ends in `@getindigo.ai`) is
  *   not expressible in the registry (person/company overrides only). Sync
  *   keeps `is_indigo_user`; Tauri keeps `has_feature`. Do not route it here.
  *
- * Any other flag: unmapped → existing path unchanged.
+ * Any other unmapped flag: existing path unchanged.
  *
- * Registry-first rule (must agree with the table on every input)
- * --------------------------------------------------------------
+ * Registry-first rule for a mapped flag
+ * -------------------------------------
  *   snapshot === null (never loaded: offline, auth failure, service down)
  *     → legacy. Matches today when the registry is unreachable.
  *     The first resolve consumes `ready()` (one load). A later resolve
@@ -46,23 +47,16 @@
  *     timeouts still fall through.
  *   snapshot loaded but `flags[key]` is not a boolean (key omitted)
  *     → legacy. Matches auto-discovery: an unconfigured row must not
- *       evaluate as false, which would invert meetings GA (true when
- *       signed in) fleet-wide until an operator sets defaultValue.
+ *       evaluate as false, which would invert a default-on fallback
+ *       fleet-wide until an operator sets defaultValue.
  *   snapshot.flags[key] is a boolean
  *     → `client.isEnabled(key)`. Operator-configured override.
  *   any throw from the registry client
  *     → legacy, and no rejection escapes (`hasFeature` stays total).
  *
- * Proof the new path does not invert the table:
- *   Registry blip / 401 / timeout     → snapshot null → same as today
- *   Auto-discovered unconfigured row  → key absent     → same as today
- *   Operator sets defaultValue: true  → isEnabled true  (matches GA signed-in)
- *   Operator sets defaultValue: false → isEnabled false (intentional override)
- *   `is_indigo_user`                  → never consults the registry
- *
  * Do not call `isEnabled` unless the snapshot contains a configured value.
  * `isEnabled` is total and would return its own fallback (default false)
- * for a missing key — the inverse of meetings GA.
+ * for a missing key — the inverse of any default-on fallback.
  */
 
 import {
@@ -193,7 +187,6 @@ export const RAIL_GATE_EVERYONE_DEFAULT: Readonly<Record<string, boolean>> = {
 
 /** Caller-visible names that may consult the registry. */
 export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
-  meetings: "desktop.meetings",
   "agents.claude-provider": "agents.claude-provider",
   [FIRST_FOLDER_SYNC_STEP_FLAG]: FIRST_FOLDER_SYNC_STEP_FLAG,
   [FIRST_LAUNCH_JOIN_KEY_FLAG]: FIRST_LAUNCH_JOIN_KEY_FLAG,
@@ -227,7 +220,6 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
 
 
 export const MEETINGS_LEGACY_FLAG = "meetings";
-export const MEETINGS_REGISTRY_KEY = "desktop.meetings";
 export const CLAUDE_PROVIDER_FLAG = "agents.claude-provider";
 export const MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG =
   "desktop.mirror-quarantine-move-not-deletion";
@@ -237,8 +229,8 @@ export const MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG =
  *
  * The client default is 10 seconds (`DEFAULT_REFRESH_INTERVAL_MS`), which is
  * far too chatty for a long-lived desktop process — the app stays open for
- * days. Five minutes is the staleness window an operator flipping
- * `desktop.meetings` can live with, without polling `/v1/flags/resolve` on a
+ * days. Five minutes is the staleness window an operator flipping a
+ * kill switch can live with, without polling `/v1/flags/resolve` on a
  * tight loop. A failed first load (pre-auth, offline) also self-heals at most
  * once per this interval so a signed-out renderer cannot hammer the endpoint.
  */
