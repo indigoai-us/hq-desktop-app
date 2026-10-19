@@ -60,7 +60,12 @@ pub const HQ_CLI_PACKAGE_NAME: &str = "@indigoai-us/hq-cli";
 /// Environment applied to desktop-spawned npm/pnpm/Bun installs. node-llama-cpp
 /// supports this flag to skip its optional download/build postinstall work. That
 /// work is not needed to install or run the HQ CLI and must not abort an update.
-pub const NPM_INSTALL_CHILD_ENV: [(&str, &str); 1] = [("NODE_LLAMA_CPP_SKIP_DOWNLOAD", "true")];
+pub const NPM_INSTALL_CHILD_ENV: [(&str, &str); 2] = [
+    ("NODE_LLAMA_CPP_SKIP_DOWNLOAD", "true"),
+    // A package without a prebuilt binary must fail the install, never fall
+    // back to a node-gyp compile that needs python3, make and clang.
+    ("npm_config_build_from_source", "false"),
+];
 
 /// Build the install spec the package manager is asked for. `Some(version)`
 /// pins the EXACT version the app resolved, so the version the app compares
@@ -6821,7 +6826,7 @@ pub fn install_failure_detail_with_environment(
         // command escape hatch ("copied command") so the UI fallback is intact
         // regardless of which cause was diagnosed.
         return match npm_lifecycle_cause(detail) {
-            "toolchain-missing" => "A dependency needs to build a native component, but the build tools are missing. On macOS, install them by running `xcode-select --install`, then run the copied command in a terminal.",
+            "toolchain-missing" => "A dependency needs to build a native component, but this computer has no build tools for it. Run the copied command in a terminal to see the full build output.",
             "prebuild-unavailable" => "Your installed Node.js version has no prebuilt binary for a component hq needs, so npm tried to build it from source and failed. Install the supported Node.js (version 22), then run the copied command in a terminal.",
             "network" => "A prebuilt component could not be downloaded while installing hq. Check your network or proxy, then run the copied command in a terminal to retry.",
             "disk-space" => DISK_FULL_DETAIL,
@@ -9937,6 +9942,16 @@ fn read_installed_version_probe(
 
 #[cfg(test)]
 mod tests {
+    use super::NPM_INSTALL_CHILD_ENV as NPM_CHILD_ENV;
+
+    // npm must not fall back to a node-gyp compile, which needs python3, make
+    // and clang that a Mac without Apple's tools does not have.
+    #[test]
+    fn npm_install_child_env_turns_off_source_builds() {
+        assert!(NPM_CHILD_ENV.contains(&("npm_config_build_from_source", "false")));
+        assert!(NPM_CHILD_ENV.contains(&("NODE_LLAMA_CPP_SKIP_DOWNLOAD", "true")));
+    }
+
     use super::*;
     use std::cmp::Ordering;
 
@@ -15848,7 +15863,9 @@ mod tests {
         };
         let toolchain = base("gyp ERR! stack Error: not found: make");
         let detail = install_failure_detail(Some(1), &toolchain, Some("/usr/local"));
-        assert!(detail.contains("xcode-select --install"), "got: {detail}");
+        // Gate-2 finding: HQ never sends a person to Apple's developer tools.
+        assert!(!detail.contains("xcode-select"), "got: {detail}");
+        assert!(detail.contains("build tools"), "got: {detail}");
         assert!(detail.contains("copied command"), "got: {detail}");
 
         let prebuild = base("prebuild-install warn install No prebuilt binaries found");

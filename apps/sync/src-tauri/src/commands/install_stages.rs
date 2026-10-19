@@ -317,6 +317,15 @@ pub struct GitUser {
 fn git_command(git: &str, path_env: &str) -> Command {
     let mut cmd = Command::new(git);
     paths::no_window(&mut cmd);
+    // The portable Git binary needs GIT_EXEC_PATH and its templates dir when
+    // it is run directly instead of through its wrapper.
+    #[cfg(not(target_os = "windows"))]
+    if let Some(home) = paths::home_dir() {
+        cmd.envs(paths::managed_git_env_for_resolved_bin_in(
+            &home,
+            Path::new(git),
+        ));
+    }
     cmd.env("PATH", path_env);
     cmd
 }
@@ -566,41 +575,29 @@ fn read_global_git_config(
     Ok((!value.is_empty()).then_some(value))
 }
 
-/// True when `git` (as returned by `resolve_bin`) is the macOS `/usr/bin/git`
-/// stub, or a bare `git` that would fall through to it. Decided from the path
-/// alone: running the stub on a Mac without Apple's developer tools opens
-/// Apple's install prompt. The deps stage installs HQ's managed git, which
-/// `resolve_bin` finds ahead of `/usr/bin`, so this only fires when that
-/// install has not happened.
+/// True when first-run must not run `git`: the shared resolver refused every
+/// candidate, or `git` is the macOS `/usr/bin/git` stub (or a bare `git` that
+/// would fall through to it). Decided from the path alone: running the stub on
+/// a Mac without Apple's developer tools opens Apple's install prompt.
 fn git_is_macos_shim(git: &str, is_macos: bool) -> bool {
-    is_macos
-        && (git == "git" || crate::commands::install_deps::is_macos_clt_shim("git", Path::new(git)))
+    git == paths::REFUSED_GIT_PROGRAM
+        || (is_macos
+            && ((git == "git" && paths::apple_tool_stubs_active())
+                || crate::commands::install_deps::is_macos_clt_shim("git", Path::new(git))))
 }
 
-/// The git first-run setup runs. Normally `resolve_bin("git")`, which finds
-/// HQ's managed git ahead of `/usr/bin`. A Claude settings `env.PATH` that
-/// starts with `/usr/bin` resolves the macOS stub instead; HQ's managed git
-/// wrapper wins in that case when the deps stage has installed it.
+/// The git first-run setup runs: HQ's managed wrapper, then the managed
+/// binary, then the first git on the child PATH that is not Apple's stub. A
+/// Claude settings `env.PATH` that starts with `/usr/bin` cannot select the
+/// stub. With no usable git this is [`paths::REFUSED_GIT_PROGRAM`].
 fn first_run_git() -> String {
-    let resolved = paths::resolve_bin("git");
     #[cfg(not(target_os = "windows"))]
-    if let Some(home) = paths::home_dir() {
-        return prefer_managed_git(resolved, &home, cfg!(target_os = "macos"));
+    {
+        let (program, _env) = paths::resolved_git_spawn_parts();
+        program.to_string_lossy().into_owned()
     }
-    resolved
-}
-
-#[cfg(not(target_os = "windows"))]
-fn prefer_managed_git(resolved: String, home: &Path, is_macos: bool) -> String {
-    if !git_is_macos_shim(&resolved, is_macos) {
-        return resolved;
-    }
-    let managed = paths::managed_git_shim_dir_in(home).join("git");
-    if managed.is_file() {
-        managed.display().to_string()
-    } else {
-        resolved
-    }
+    #[cfg(target_os = "windows")]
+    paths::resolve_bin("git")
 }
 
 fn git_init_path(
@@ -1247,6 +1244,8 @@ mod tests {
 
     #[test]
     fn git_shim_check_refuses_the_macos_shim_without_probing_apple_tools() {
+        let _stubs = paths::AppleToolStubsOverride::set(true);
+        assert!(git_is_macos_shim(paths::REFUSED_GIT_PROGRAM, true));
         assert!(git_is_macos_shim("/usr/bin/git", true));
         assert!(git_is_macos_shim("git", true));
         assert!(!git_is_macos_shim(
@@ -1258,6 +1257,15 @@ mod tests {
         assert!(!git_is_macos_shim("git", false));
     }
 
+    // With Apple's developer tools installed, /usr/bin/git is a working git and
+    // git setup uses it when HQ's managed git is absent.
+    #[test]
+    fn git_shim_check_accepts_usr_bin_git_when_apple_tools_are_installed() {
+        let _stubs = paths::AppleToolStubsOverride::set(false);
+        assert!(!git_is_macos_shim("/usr/bin/git", true));
+        assert!(git_is_macos_shim(paths::REFUSED_GIT_PROGRAM, true));
+    }
+
     #[cfg(not(windows))]
     fn write_managed_git_wrapper(home: &Path) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -1266,46 +1274,6 @@ mod tests {
         fs::write(&wrapper, "#!/bin/sh\nexit 0\n").unwrap();
         fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
         wrapper
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn prefer_managed_git_replaces_the_macos_stub_with_the_managed_wrapper() {
-        let _guard = crate::util::test_support::ENV_MUTEX
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let previous_xdg = std::env::var_os("XDG_DATA_HOME");
-        std::env::remove_var("XDG_DATA_HOME");
-        let tmp = tempdir().unwrap();
-        let home = tmp.path().join("home");
-
-        // No managed git yet: keep the resolved path so git_init refuses it.
-        assert_eq!(
-            prefer_managed_git("/usr/bin/git".to_string(), &home, true),
-            "/usr/bin/git"
-        );
-
-        let wrapper = write_managed_git_wrapper(&home);
-        let wrapper = wrapper.display().to_string();
-        assert_eq!(
-            prefer_managed_git("/usr/bin/git".to_string(), &home, true),
-            wrapper
-        );
-        assert_eq!(prefer_managed_git("git".to_string(), &home, true), wrapper);
-        // A real git the settings PATH chose is kept, and nothing changes off macOS.
-        assert_eq!(
-            prefer_managed_git("/opt/homebrew/bin/git".to_string(), &home, true),
-            "/opt/homebrew/bin/git"
-        );
-        assert_eq!(
-            prefer_managed_git("/usr/bin/git".to_string(), &home, false),
-            "/usr/bin/git"
-        );
-
-        match previous_xdg {
-            Some(value) => std::env::set_var("XDG_DATA_HOME", value),
-            None => std::env::remove_var("XDG_DATA_HOME"),
-        }
     }
 
     // Review finding: a Claude settings env.PATH that starts with /usr/bin made
@@ -1353,6 +1321,71 @@ mod tests {
 
         assert_eq!(resolved, "/usr/bin/git", "fixture puts /usr/bin first");
         assert_eq!(chosen, wrapper.display().to_string());
+    }
+
+    /// The archive HQ downloads extracts a git binary to
+    /// `toolchain/git/bin/git`. The fixture binary forwards to the test
+    /// machine's own git so `git init` really runs.
+    #[cfg(not(windows))]
+    fn write_extracted_managed_git(home: &Path) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let real_git =
+            paths::resolve_git_on_path(&std::env::var("PATH").unwrap_or_default(), false, None)
+                .expect("the test machine has a git");
+        let git = paths::managed_git_bin_in(home);
+        fs::create_dir_all(git.parent().unwrap()).unwrap();
+        fs::write(
+            &git,
+            format!(
+                "#!/bin/sh\nunset GIT_EXEC_PATH GIT_TEMPLATE_DIR\nexec '{}' \"$@\"\n",
+                real_git.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).unwrap();
+        git
+    }
+
+    // Gate-2 finding: on a Mac without Apple's tools the managed Git install
+    // left no wrapper, so git-init looked up /usr/bin/git, refused it, and the
+    // HQ folder never got a repository.
+    #[cfg(not(windows))]
+    #[test]
+    fn git_init_succeeds_right_after_the_managed_git_install_on_a_mac_without_apple_tools() {
+        let _guard = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let previous_xdg = std::env::var_os("XDG_DATA_HOME");
+        std::env::remove_var("XDG_DATA_HOME");
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let hq = tmp.path().join("hq");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&hq).unwrap();
+        // The fixture resolves the machine's real git before HOME moves.
+        write_extracted_managed_git(&home);
+        let _home = crate::util::test_support::scoped_home(&home);
+        let _stubs = paths::AppleToolStubsOverride::set(true);
+
+        let finished = crate::commands::install_deps::finish_managed_git_install(&home);
+        let result = git_init(
+            Some(hq.display().to_string()),
+            Some("HQ Test".to_string()),
+            Some("hq@example.invalid".to_string()),
+            None,
+        );
+
+        match previous_xdg {
+            Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
+        assert!(finished.is_ok(), "{finished:?}");
+        assert!(result.is_ok(), "{result:?}");
+        assert!(
+            hq.join(".git").is_dir(),
+            "the HQ folder must become a repository"
+        );
+        assert!(paths::managed_git_shim_dir_in(&home).join("git").is_file());
     }
 
     fn position_of(path: &str, dir: &Path) -> Option<usize> {
@@ -1496,6 +1529,10 @@ mod tests {
 
     #[test]
     fn git_init_path_creates_git_directory() {
+        // The git lookup reads HOME, which other tests here move.
+        let _guard = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let dir = tempdir().unwrap();
 
         git_init_path(dir.path(), None, None).unwrap();
