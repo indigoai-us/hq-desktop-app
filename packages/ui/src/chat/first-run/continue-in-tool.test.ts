@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ensureHqAnywhereGlobalRuntime, HQ_ANYWHERE_RUNTIME_FLAG } from "@hq/platform";
+import { ensureHqAnywhereGlobalRuntime, HQ_ANYWHERE_RUNTIME_FLAG, type ShellApi } from "@hq/platform";
 import { type LaunchShell } from "../../settings/launch-actions";
 import {
   continueInTool,
@@ -344,7 +344,7 @@ describe("openPreparedCodingTool", () => {
 describe("openWelcomeHarness (US-019)", () => {
   const PROMPT = "Catch me up on my HQ.";
   const open = (harness: "claude-code" | "codex" | "cursor", s: ReturnType<typeof setup>) =>
-    openWelcomeHarness({ harness, prompt: PROMPT, settings: s.input("claude").settings, shell: s.shell as LaunchShell });
+    openWelcomeHarness({ harness, prompt: PROMPT, settings: s.input("claude").settings, shell: s.shell as LaunchShell & Pick<ShellApi, "launchCursorWorkspace"> });
 
   it("opens Codex with the action's prompt, whatever was picked at Continue", async () => {
     const s = setup({ tools: { claude_cli: true, codex_cli: false, codex_desktop: true } });

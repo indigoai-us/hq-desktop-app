@@ -559,13 +559,19 @@ fn launch_codex_workspace_impl(path: String, prompt: Option<String>) -> Result<(
 /// message, so no prompt is passed.
 fn cursor_open_command(dir: &str) -> (String, Vec<String>) {
     if cfg!(target_os = "macos") {
-        ("open".into(), vec!["-a".into(), "Cursor".into(), dir.into()])
+        (
+            "open".into(),
+            vec!["-a".into(), "Cursor".into(), dir.into()],
+        )
     } else if cfg!(windows) {
         let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into());
         (comspec, vec!["/C".into(), "cursor".into(), dir.into()])
     } else {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-        (shell, vec!["-lc".into(), format!("cursor {}", sh_single_quote(dir))])
+        (
+            shell,
+            vec!["-lc".into(), format!("cursor {}", sh_single_quote(dir))],
+        )
     }
 }
 
@@ -955,7 +961,13 @@ mod tests {
         } else if cfg!(windows) {
             assert_eq!(args, vec!["/C", "cursor", "/Users/a b/HQ's"]);
         } else {
-            assert_eq!(args, vec!["-lc".to_string(), "cursor '/Users/a b/HQ'\\''s'".to_string()]);
+            assert_eq!(
+                args,
+                vec![
+                    "-lc".to_string(),
+                    "cursor '/Users/a b/HQ'\\''s'".to_string()
+                ]
+            );
         }
     }
 
