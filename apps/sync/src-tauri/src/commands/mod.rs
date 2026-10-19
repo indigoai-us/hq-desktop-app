@@ -111,6 +111,7 @@ pub mod update_gate;
 pub mod uploads_paused;
 pub mod retired_entities;
 pub mod local_sessions;
+pub mod import_report;
 pub mod work_apps;
 pub mod workspaces;
 #[cfg(any(windows, test))]

@@ -15,6 +15,7 @@
   import { getWelcomeAiApps } from "./welcome-ai-apps.js";
   import { readRunWelcome, readRunExclusions, readRunFailedCompanies, type BriefFailedCompany, type BriefExclusion, type BriefWelcome as Welcome } from "./brief-welcome.js";
   import type { BriefActions } from "./brief-action-cards.js";
+  import { readLatestImportReport, readRunWelcomeRow, type FirstViewData } from "./brief-first-view-load.js";
   import BriefRunBar from "./BriefRunBar.svelte";
   import BriefCreateButton from "./BriefCreateButton.svelte";
   import BriefDawn from "./BriefDawn.svelte";
@@ -74,6 +75,8 @@
   let shownRunId = $state<string | null>(null);
   let input = $state<BriefInput | null>(null);
   let welcome = $state<Welcome | null>(null);
+  /** The first view's reads (raw welcome row, newest import report), inside the welcome report only. */
+  let firstViewData = $state<FirstViewData | null>(null);
   let exclusions = $state<BriefExclusion[]>([]);
   let failedCompanies = $state<BriefFailedCompany[]>([]);
   // Inside the welcome report the page is one brief, so the welcome edition
@@ -164,10 +167,13 @@
       if (failures.length) console.warn("[daily-brief] rendered without", failures.join(", "));
       const hk = runId && source ? await readRunHousekeeping(source, runId) : null;
       const gettingStarted = runId && source ? await readRunWelcome(source, runId) : null;
+      const welcomeRow = inWelcome && runId && source ? await readRunWelcomeRow(source, runId) : null;
+      const importReport = inWelcome ? await readLatestImportReport(adapter.importReport) : null;
       const notIncluded = runId && source ? await readRunExclusions(source, runId) : [];
       const companyFailures = runId && source ? await readRunFailedCompanies(source, runId) : [];
       if (!alive || mine !== seq) return;
       welcome = gettingStarted;
+      firstViewData = inWelcome ? { welcome: welcomeRow, importReport } : null;
       exclusions = notIncluded;
       failedCompanies = companyFailures;
       input = day;
@@ -455,7 +461,7 @@
       {/each}
     </div>
   {:else}
-    <DailyBrief dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {housekeeping} {actions} {welcome} {onconnectcompany} onlog={logItem} header={entries.length || run || dawn ? briefHeader : undefined} tools={run ? createTool : undefined} />
+    <DailyBrief dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {housekeeping} {actions} {welcome} {firstViewData} {onconnectcompany} onlog={logItem} header={entries.length || run || dawn ? briefHeader : undefined} tools={run ? createTool : undefined} />
   {/if}
   </div>
 {:else if failed}
