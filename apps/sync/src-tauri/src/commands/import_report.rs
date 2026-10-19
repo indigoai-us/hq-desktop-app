@@ -17,7 +17,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{DateTime, NaiveDateTime, SecondsFormat, Utc};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
@@ -232,31 +232,28 @@ fn has_shape(name: &[u8], shape: &[u8]) -> bool {
         })
 }
 
-/// The sort key for an import folder: its stamp as `YYYY-MM-DDTHH-MM-SS`, then
-/// the `-N` suffix as a number. Takes the desktop's `YYYY-MM-DDTHH-MM-SS[-N]`
-/// and /import-context's `YYYYMMDDTHHMMSSZ`, so both order by time. None for
-/// any other name.
-fn import_folder_key(name: &str) -> Option<(String, u32)> {
+/// The UTC time of a stamp in `format`, or None when it is not a real time.
+fn stamp_time(stamp: &str, format: &str) -> Option<DateTime<Utc>> {
+    NaiveDateTime::parse_from_str(stamp, format)
+        .ok()
+        .map(|t| t.and_utc())
+}
+
+/// The sort key for an import folder, per the contract's reading order: the
+/// stamp's UTC time, then the `-N` suffix as a number (so `-10` beats `-2`).
+/// Takes the desktop's dashed `YYYY-MM-DDTHH-MM-SS[-N]` and /import-context's
+/// compact `YYYYMMDDTHHMMSSZ[-N]`. None for a name that matches neither format,
+/// including one with the right shape but no real time.
+fn import_folder_key(name: &str) -> Option<(DateTime<Utc>, u32)> {
     let b = name.as_bytes();
-    if has_shape(b, b"ddddddddTddddddZ") {
-        let (d, t) = (&name[..8], &name[9..15]);
-        return Some((
-            format!(
-                "{}-{}-{}T{}-{}-{}",
-                &d[..4],
-                &d[4..6],
-                &d[6..],
-                &t[..2],
-                &t[2..4],
-                &t[4..]
-            ),
-            1,
-        ));
-    }
-    if b.len() < 19 || !has_shape(&b[..19], b"dddd-dd-ddTdd-dd-dd") {
+    let (time, rest) = if b.len() >= 16 && has_shape(&b[..16], b"ddddddddTddddddZ") {
+        (stamp_time(&name[..16], "%Y%m%dT%H%M%SZ")?, &name[16..])
+    } else if b.len() >= 19 && has_shape(&b[..19], b"dddd-dd-ddTdd-dd-dd") {
+        (stamp_time(&name[..19], "%Y-%m-%dT%H-%M-%S")?, &name[19..])
+    } else {
         return None;
-    }
-    let suffix = match &name[19..] {
+    };
+    let suffix = match rest {
         "" => 1,
         rest => rest
             .strip_prefix('-')
@@ -264,14 +261,15 @@ fn import_folder_key(name: &str) -> Option<(String, u32)> {
             .parse()
             .ok()?,
     };
-    Some((name[..19].to_string(), suffix))
+    Some((time, suffix))
 }
 
-/// The newest import report under `hq_root` (by folder name), with only the
-/// contract's fields, or None when there is none or it cannot be read.
+/// The newest import report under `hq_root` (by the folder's UTC time, then
+/// its `-N` suffix; never by plain text), with only the contract's fields, or
+/// None when there is none or it cannot be read.
 pub fn latest_import_report_in(hq_root: &Path) -> Option<Value> {
     let imports = hq_root.join(IMPORTS_DIR);
-    let mut folders: Vec<((String, u32), String)> = fs::read_dir(&imports)
+    let mut folders: Vec<((DateTime<Utc>, u32), String)> = fs::read_dir(&imports)
         .ok()?
         .filter_map(Result::ok)
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
@@ -533,16 +531,16 @@ mod tests {
         let key = |n: &str| import_folder_key(n);
         assert_eq!(
             key("2026-10-19T08-12-30"),
-            Some(("2026-10-19T08-12-30".into(), 1))
+            Some((at("2026-10-19T08:12:30Z"), 1))
         );
         assert_eq!(
             key("2026-10-19T08-12-30-12"),
-            Some(("2026-10-19T08-12-30".into(), 12))
+            Some((at("2026-10-19T08:12:30Z"), 12))
         );
         // /import-context's compact stamp orders by the same time.
         assert_eq!(
             key("20261019T081230Z"),
-            Some(("2026-10-19T08-12-30".into(), 1))
+            Some((at("2026-10-19T08:12:30Z"), 1))
         );
         for bad in [
             "2026-10-19T08-12-30-",
@@ -550,6 +548,10 @@ mod tests {
             "2026-10-19 08-12-30",
             "20261019T081230",
             "latest",
+            // The right shape but no real time: matches neither format.
+            "2026-13-45T99-99-99",
+            "2026-02-30T08-12-30",
+            "20261345T999999Z",
         ] {
             assert_eq!(key(bad), None, "{bad}");
         }
@@ -597,5 +599,61 @@ mod tests {
             latest_import_report_in(root.path()).unwrap()["scan_id"],
             "newer"
         );
+    }
+
+    /// One folder under workspace/imports holding a minimal report with `scan_id`.
+    fn import_folder(root: &Path, name: &str, scan_id: &str) {
+        let dir = root.join("workspace/imports").join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("report.json"),
+            json!({ "scan_id": scan_id, "counts": {} }).to_string(),
+        )
+        .unwrap();
+    }
+
+    fn latest_scan(root: &Path) -> Value {
+        latest_import_report_in(root).unwrap()["scan_id"].clone()
+    }
+
+    #[test]
+    fn import_report_latest_compact_old_dashed_new() {
+        let root = tempfile::tempdir().unwrap();
+        import_folder(root.path(), "20261018T090000Z", "compact-old");
+        import_folder(root.path(), "2026-10-19T08-00-00", "dashed-new");
+        assert_eq!(latest_scan(root.path()), "dashed-new");
+    }
+
+    #[test]
+    fn import_report_latest_dashed_old_compact_new() {
+        let root = tempfile::tempdir().unwrap();
+        import_folder(root.path(), "2026-10-19T08-00-00", "dashed-old");
+        import_folder(root.path(), "20261019T080001Z", "compact-new");
+        assert_eq!(latest_scan(root.path()), "compact-new");
+    }
+
+    #[test]
+    fn import_report_latest_same_second_suffix_is_numeric() {
+        let root = tempfile::tempdir().unwrap();
+        import_folder(root.path(), "2026-10-19T08-12-30", "first");
+        import_folder(root.path(), "2026-10-19T08-12-30-2", "second");
+        import_folder(root.path(), "2026-10-19T08-12-30-10", "tenth");
+        assert_eq!(latest_scan(root.path()), "tenth");
+    }
+
+    #[test]
+    fn import_report_latest_ignores_names_that_match_neither_format() {
+        let root = tempfile::tempdir().unwrap();
+        import_folder(root.path(), "2026-10-19T08-00-00", "real");
+        for junk in [
+            "2026-13-45T99-99-99",
+            "20261345T999999Z",
+            "2099-02-30T00-00-00",
+            "latest",
+            "zzz",
+        ] {
+            import_folder(root.path(), junk, junk);
+        }
+        assert_eq!(latest_scan(root.path()), "real");
     }
 }

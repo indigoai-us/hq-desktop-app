@@ -228,17 +228,20 @@ function listOf(names: readonly string[]): string {
 }
 
 /**
- * The session count: the import report's sessions.total, then
- * sessions.imported + sessions.local, then sessions.total.
+ * The session count and its days: the import report's sessions.total, then
+ * sessions.imported + sessions.local, then sessions.total. The days always
+ * come from the same source as the count; a source with no days gives 0,
+ * so the count line never pairs one source's sessions with another's days.
  */
-function sessionCount(f: WelcomeBriefFields, report: ImportReport | null): number {
-  if (report?.sessions?.total) return report.sessions.total;
+function sessionCount(f: WelcomeBriefFields, report: ImportReport | null): { total: number; days: number } {
+  if (report?.sessions?.total) return { total: report.sessions.total, days: report.sessions.days_seen };
   const s = f.sessions;
+  const days = s?.days_seen ?? 0;
   if (s && (s.imported !== undefined || s.local !== undefined)) {
     const sum = (s.imported ?? 0) + (s.local ?? 0);
-    if (sum > 0) return sum;
+    if (sum > 0) return { total: sum, days };
   }
-  return s?.total ?? 0;
+  return { total: s?.total ?? 0, days };
 }
 
 /**
@@ -293,8 +296,7 @@ export function buildFirstView(input: FirstViewInput): FirstView {
   const canRun = input.canRun ?? (() => true);
   const now = input.now instanceof Date ? input.now : new Date(input.now);
 
-  const total = sessionCount(f, report);
-  const days = report?.sessions?.days_seen || f.sessions?.days_seen || 0;
+  const { total, days } = sessionCount(f, report);
   const tools = toolsFound(f, welcome, report);
 
   const fromWelcome = (f.top_projects ?? []).flatMap((p): FirstViewProject[] => {

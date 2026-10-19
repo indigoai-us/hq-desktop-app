@@ -145,6 +145,23 @@ describe("buildFirstView", () => {
     expect(pastWork(v)).toEqual([]);
   });
 
+  it("a report count with no days hides the days, never borrowing the brief's (review m1)", () => {
+    // The hq-cli fallback writes days as null (read as 0); the 16.0.30 brief says 9 days for its own 41 sessions.
+    const cli = parseImportReport({ ...desktopReport.report, sessions: { ...desktopReport.report.sessions, total: 400, days_seen: null } })!;
+    const v = view(legacy.welcome, { importReport: cli });
+    expect(v.count).toBe(400);
+    expect(v.countLine).toBe("400 sessions in Claude Code and Codex. Top threads: hq, hq-desktop-app, billing-api.");
+    expect(v.pills.days).toBeNull();
+  });
+
+  it("a report with no sessions block leaves the brief's count and its own days together", () => {
+    const old = parseImportReport({ scan_id: "s1", counts: { conversations: 12 } })!;
+    const v = view(legacy.welcome, { importReport: old });
+    expect(v.count).toBe(41);
+    expect(v.countLine).toBe("41 sessions over 9 days in Claude Code and Codex.");
+    expect(v.pills.days).toBe(9);
+  });
+
   it("the projects pill counts every report project, not only the five shown", () => {
     const names = ["a1", "b2", "c3", "d4", "e5", "f6", "g7"];
     const v = view(legacy.welcome, { importReport: { ...report, projects: names } });
