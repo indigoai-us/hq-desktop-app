@@ -80,14 +80,19 @@ export interface RisePixel {
   x: number;
   y: number;
   color: string;
+  /** Cell opacity. The halo fades with distance from the mark. */
+  alpha: number;
 }
 
 /** 6 px cells on the 8 px pitch, sunrise palette, in a ring around the 60 px mark. */
+export const RISE_HALO_ALPHA_DARK = 0.55;
+export const RISE_HALO_ALPHA_LIGHT = 0.38;
 export const RISE_HALO_DARK = ["#ffb580", "#ff809f", "#ffa88c", "#ffbea0", "#ff9696"];
 export const RISE_HALO_LIGHT = ["#d67860", "#d46880", "#dc8c6e"];
 
 export function riseHaloCells(theme: "dark" | "light"): RisePixel[] {
   const colors = theme === "light" ? RISE_HALO_LIGHT : RISE_HALO_DARK;
+  const peak = theme === "light" ? RISE_HALO_ALPHA_LIGHT : RISE_HALO_ALPHA_DARK;
   const cells: RisePixel[] = [];
   const r0 = RISE_ICON / 2 - 10;
   const r1 = RISE_ICON / 2 + 26;
@@ -97,7 +102,9 @@ export function riseHaloCells(theme: "dark" | "light"): RisePixel[] {
       const d = Math.hypot(gx + RISE_CELL / 2, gy + RISE_CELL / 2);
       if (d < r0 || d > r1) continue;
       const color = colors[Math.abs((gx / RISE_PITCH + gy / RISE_PITCH) | 0) % colors.length]!;
-      cells.push({ x: gx, y: gy, color });
+      // Round 11b: full strength at the mark's edge, fading to nothing at the outer ring.
+      const falloff = 1 - (d - r0) / (r1 - r0);
+      cells.push({ x: gx, y: gy, color, alpha: Number((peak * falloff).toFixed(3)) });
     }
   }
   return cells;
@@ -116,7 +123,7 @@ export function riseRippleCells(age: number, theme: "dark" | "light"): RisePixel
       const ry = gy / (RISE_PITCH * 2);
       const dx = (gx + RISE_CELL / 2) / rr;
       if (Math.abs(Math.hypot(dx, ry * 0.9) - 1) > 0.12) continue;
-      cells.push({ x: gx, y: gy, color });
+      cells.push({ x: gx, y: gy, color, alpha: 1 });
     }
   }
   return cells;

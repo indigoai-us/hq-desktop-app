@@ -144,7 +144,7 @@
   >
     <span class="halo" aria-hidden="true">
       {#each halo as cell (`${cell.x},${cell.y}`)}
-        <i style="left:{cell.x}px;top:{cell.y}px;background:{cell.color}"></i>
+        <i style="left:{cell.x}px;top:{cell.y}px;background:{cell.color};opacity:{cell.alpha}"></i>
       {/each}
     </span>
     {#if mark}
@@ -199,7 +199,7 @@
         {#if icon.ripple}
           <div class="ripple" style:--lane="{icon.lane}px" data-testid={`brief-rise-ripple-${icon.id}`}>
             {#each riseRippleCells(icon.rippleAge, resolvedTheme) as cell (`${icon.id}:${cell.x},${cell.y}`)}
-              <i style="left:{cell.x}px;top:{cell.y}px;background:{cell.color}"></i>
+              <i style="left:{cell.x}px;top:{cell.y}px;background:{cell.color};opacity:{cell.alpha}"></i>
             {/each}
           </div>
         {/if}

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   RISE_CRUMB,
   RISE_EYEBROW,
+  RISE_HALO_ALPHA_DARK,
+  RISE_HALO_ALPHA_LIGHT,
   RISE_HEADLINE,
   RISE_ICON,
   RISE_PITCH,
@@ -143,6 +145,20 @@ describe("rise pixels", () => {
     }
     expect(riseHaloCells("light").some((cell) => cell.color === "#d67860")).toBe(true);
     expect(riseHaloCells("dark").some((cell) => cell.color === "#ffb580")).toBe(true);
+  });
+
+  it("fades the halo with distance from the mark, softer in dark than full strength", () => {
+    for (const [theme, peak] of [["dark", RISE_HALO_ALPHA_DARK], ["light", RISE_HALO_ALPHA_LIGHT]] as const) {
+      const cells = riseHaloCells(theme).map((cell) => ({ d: Math.hypot(cell.x + 3, cell.y + 3), alpha: cell.alpha }));
+      expect(Math.max(...cells.map((cell) => cell.alpha))).toBeLessThanOrEqual(peak);
+      const inner = cells.filter((cell) => cell.d < RISE_ICON / 2);
+      const outer = cells.filter((cell) => cell.d > RISE_ICON / 2 + 20);
+      expect(inner.length).toBeGreaterThan(0);
+      expect(outer.length).toBeGreaterThan(0);
+      expect(Math.min(...inner.map((cell) => cell.alpha))).toBeGreaterThan(Math.max(...outer.map((cell) => cell.alpha)));
+      expect(Math.max(...outer.map((cell) => cell.alpha))).toBeLessThan(peak * 0.25);
+    }
+    expect(RISE_HALO_ALPHA_DARK).toBeLessThan(0.7);
   });
 
   it("keeps a short ripple at emergence and none outside that window", () => {

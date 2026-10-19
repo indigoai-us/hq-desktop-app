@@ -53,6 +53,9 @@ describe("BriefRise frames", () => {
     expect(icon?.dataset.whole).toBe("false");
     expect(icon?.querySelector("svg")?.getAttribute("width")).toBe("60");
     expect(icon?.querySelectorAll(".halo i").length).toBeGreaterThan(12);
+    const alphas = [...(icon?.querySelectorAll<HTMLElement>(".halo i") ?? [])].map((cell) => Number(cell.style.opacity));
+    expect(Math.max(...alphas)).toBeLessThan(1);
+    expect(Math.min(...alphas)).toBeLessThan(Math.max(...alphas));
   });
 
   it("draws the whole 60 px mark, the halo, and the ripple once the icon has cleared the water", async () => {
