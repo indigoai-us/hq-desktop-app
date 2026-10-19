@@ -7,7 +7,7 @@ import { resolveHarnessState, resolveLoadingMs, withHarnessState } from '../stat
 import { conflictNoticesSwitch, readsSwitch, switchedHandler, withReadsSwitch } from '../audit-switches';
 import { emit } from './event';
 import { deployAppsFixture } from '../../../../packages/ui/src/library/personal-deployments.fixture';
-import { companyFlowAnswer, companyFlowEnabled, NOT_HANDLED } from '../company-flow-mocks';
+import { companyFlowAnswer, companyFlowEnabled, NOT_HANDLED, onboardingMembershipMeAnswer } from '../company-flow-mocks';
 import { storageAnswer } from '../storage-mocks';
 
 const settings = {
@@ -2247,6 +2247,8 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
     const answer = await companyFlowAnswer(cmd, args);
     if (answer !== NOT_HANDLED) return answer as T;
   }
+  const membershipMe = onboardingMembershipMeAnswer(cmd, args);
+  if (membershipMe !== NOT_HANDLED) return membershipMe as T;
   if (cmd === 'hq_pro_fetch') {
     const notify = harnessNotifyFetch(args);
     if (notify) return withSwitchedFlags(notify, args) as T;

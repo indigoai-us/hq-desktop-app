@@ -159,4 +159,33 @@ describe('resolveAccountKind', () => {
     expect(decision).toEqual({ kind: 'lookup_failed' });
     expect(readMembershipMe).toHaveBeenCalledTimes(ACCOUNT_KIND_LOOKUP_ATTEMPTS);
   });
+
+  it('calls onRetry once before each retry, so the caller knows the answer is not in yet', async () => {
+    const firstTry = vi.fn();
+    await resolveAccountKind({
+      readMembershipMe: vi.fn().mockResolvedValue({ memberships: [row()] }),
+      sleep: async () => {},
+      onRetry: firstTry,
+    });
+    expect(firstTry).not.toHaveBeenCalled();
+
+    const secondTry = vi.fn();
+    await resolveAccountKind({
+      readMembershipMe: vi
+        .fn()
+        .mockRejectedValueOnce(new Error('offline'))
+        .mockResolvedValueOnce({ memberships: [row()] }),
+      sleep: async () => {},
+      onRetry: secondTry,
+    });
+    expect(secondTry).toHaveBeenCalledTimes(1);
+
+    const never = vi.fn();
+    await resolveAccountKind({
+      readMembershipMe: vi.fn().mockRejectedValue(new Error('offline')),
+      sleep: async () => {},
+      onRetry: never,
+    });
+    expect(never).toHaveBeenCalledTimes(ACCOUNT_KIND_LOOKUP_ATTEMPTS - 1);
+  });
 });

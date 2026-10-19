@@ -3253,6 +3253,13 @@
   let accountKind = $state<AccountKind | null>(null);
   let accountLookupFailed = $state(false);
   let accountLookupRetrying = $state(false);
+  /** The lookup's first read failed and it is retrying; Ready must not read as done yet. */
+  let accountLookupRetryPending = $state(false);
+  /**
+   * A retry only holds Ready once the person entity exists. Before that the
+   * lookup is provisional: a failure there just looks again after setup.
+   */
+  const accountLookupFinalRetryPending = $derived(accountLookupRetryPending && (blockingPhaseDone || setupCompleted));
   let accountKindResolution: Promise<AccountKind> | null = null;
   let accountKindGeneration = 0;
   let accountKindRecorded = false;
@@ -3290,6 +3297,7 @@
     accountKind = null;
     accountLookupFailed = false;
     accountLookupRetrying = false;
+    accountLookupRetryPending = false;
     accountKindResolution = null;
     accountKindRecorded = false;
     companyPullGeneration += 1;
@@ -3308,8 +3316,12 @@
       invalidateMembershipMeRead: () => {
         membershipMeRead = null;
       },
+      onRetry: () => {
+        if (generation === accountKindGeneration) accountLookupRetryPending = true;
+      },
     }).then((result) => {
       if (generation !== accountKindGeneration) return result;
+      accountLookupRetryPending = false;
       if (result.kind === 'lookup_failed') {
         if (accountKindResolution === resolution) accountKindResolution = null;
         return result;
@@ -5375,7 +5387,7 @@
             ? returningAccount && returningCompanyNames
               ? `Welcome back. Bringing ${returningCompanyNames} to this Mac.`
               : 'Almost ready.'
-            : requiredFailureHeading ?? (accountLookupFailed ? 'Almost ready.' : returningReadyHeading ?? 'HQ is ready.')}
+            : requiredFailureHeading ?? (accountLookupFailed || accountLookupFinalRetryPending ? 'Almost ready.' : returningReadyHeading ?? 'HQ is ready.')}
         </h2>
         <!-- The menu-bar sentence says setup is done, so it waits for Try again. -->
         {#if !requiredFailureHeading}

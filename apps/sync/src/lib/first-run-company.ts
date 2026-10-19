@@ -242,6 +242,8 @@ export async function resolveAccountKind(deps: {
   readMembershipMe: () => Promise<Record<string, unknown>>;
   /** Drop a cached read before the next attempt. */
   invalidateMembershipMeRead?: () => void;
+  /** Called before each retry, so the caller can say the answer is not in yet. */
+  onRetry?: () => void;
   sleep?: CompanyRouteRetrySleep;
   attempts?: number;
 }): Promise<AccountKind> {
@@ -249,6 +251,7 @@ export async function resolveAccountKind(deps: {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (attempt > 0) {
       deps.invalidateMembershipMeRead?.();
+      deps.onRetry?.();
       await (deps.sleep ?? waitForCompanyRouteRetry)(ACCOUNT_KIND_LOOKUP_RETRY_DELAY_MS * attempt);
     }
     try {

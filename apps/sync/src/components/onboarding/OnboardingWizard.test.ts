@@ -2249,12 +2249,17 @@ describe('onboarding launch handoff', () => {
       claude_desktop: true,
       any: true,
     };
-    tauri.invoke.mockImplementation(async (command: string) => {
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
       switch (command) {
         case 'resolve_hq_path':
           return '/placeholder/hq';
         case 'detect_ai_tools':
           return claudeDesktopOnly;
+        case 'hq_pro_fetch':
+          // A brand-new account: no memberships and no company history.
+          return args?.url === MEMBERSHIP_ME
+            ? { status: 200, body: JSON.stringify({ memberships: [], historicalCompanyIdentities: {} }) }
+            : undefined;
         case 'start_install_queue':
           throw new Error('dependency installation failed');
         case 'detect_claude_desktop_connectors':
@@ -4925,6 +4930,23 @@ describe('company onboarding step', () => {
         ([command, args]) => command === 'run_card_action' && (args as { cardId?: string })?.cardId === 'card_create_company',
       ),
     ).toBe(false);
+  });
+
+  it('holds the Ready heading on "Almost ready." while the account lookup retries, never "HQ is ready." (US-023)', async () => {
+    await reachCompanyScenario({
+      membershipFailures: 3,
+      companyRouteLookupRetryEnabled: true,
+    });
+    const headings = new Set<string>();
+    await flushUntil(() => {
+      const heading = host.querySelector('[data-scene="ready"] [data-scene-heading]')?.textContent?.trim();
+      if (heading) headings.add(heading);
+      return companyRows().some((row) => row.decision === 'lookup_failed');
+    });
+
+    expect(headings.size).toBeGreaterThan(0);
+    expect([...headings]).not.toContain('HQ is ready.');
+    expect(host.querySelector('[data-scene="ready"] [data-scene-heading]')?.textContent?.trim()).toBe('Almost ready.');
   });
 
   it('omits unknown membership counts from lookup-failure telemetry', async () => {

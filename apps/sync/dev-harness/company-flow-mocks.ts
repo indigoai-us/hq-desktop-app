@@ -77,6 +77,26 @@ function answerStartSync(args?: Record<string, unknown>): null {
 
 const NOT_HANDLED = Symbol('not-handled');
 
+/**
+ * Any onboarding preview signs in as a brand-new account unless
+ * `?account=returning` says otherwise: memberships and company history both
+ * empty. Without an answer the account lookup fails, which the wizard shows
+ * as an error rather than a new account (US-023).
+ */
+export function onboardingMembershipMeAnswer(cmd: string, args?: Record<string, unknown>): unknown {
+  if (typeof window === 'undefined' || cmd !== 'hq_pro_fetch') return NOT_HANDLED;
+  if (new URLSearchParams(window.location.search).get('view') !== 'onboarding') return NOT_HANDLED;
+  const url = typeof args?.url === 'string' ? args.url : '';
+  if (url !== '/membership/me' && !url.startsWith('/membership/me?')) return NOT_HANDLED;
+  return {
+    status: 200,
+    body: JSON.stringify({
+      memberships: returningAccount() ? RETURNING_MEMBERSHIPS : [],
+      historicalCompanyIdentities: {},
+    }),
+  };
+}
+
 function connectorSwitch(): 'ok' | 'fail' | null {
   const value = new URLSearchParams(window.location.search).get('connectors');
   return value === 'ok' || value === 'fail' ? value : null;
@@ -130,15 +150,8 @@ export async function companyFlowAnswer(cmd: string, args?: Record<string, unkno
       return { state: 'done' };
     case 'hq_pro_fetch': {
       const url = typeof args?.url === 'string' ? args.url : '';
-      if (url === '/membership/me' || url.startsWith('/membership/me?')) {
-        return {
-          status: 200,
-          body: JSON.stringify({
-            memberships: returningAccount() ? RETURNING_MEMBERSHIPS : [],
-            historicalCompanyIdentities: {},
-          }),
-        };
-      }
+      const membershipMe = onboardingMembershipMeAnswer(cmd, args);
+      if (membershipMe !== NOT_HANDLED) return membershipMe;
       if (url === '/membership/pending-by-email') return { status: 200, body: JSON.stringify({ invites: [] }) };
       if (url.startsWith('/entity/')) {
         return { status: 200, body: JSON.stringify({ entity: { status: 'active', bucketName: 'hq-vault-preview' } }) };
