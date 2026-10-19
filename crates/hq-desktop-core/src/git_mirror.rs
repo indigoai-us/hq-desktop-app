@@ -14568,7 +14568,9 @@ mod tests {
     fn mirror_git_refuses_the_usr_bin_stub_without_spawning_it() {
         let repo = TempDir::new().unwrap();
         let _stubs = paths::AppleToolStubsOverride::set(true);
-        TEST_GIT_SEARCH_PATH.with(|path| *path.borrow_mut() = Some("/usr/bin:/bin".into()));
+        // Only /usr/bin: Linux runners also carry a real git in /bin, which
+        // the resolver would rightly pick, while on a Mac /bin has no git.
+        TEST_GIT_SEARCH_PATH.with(|path| *path.borrow_mut() = Some("/usr/bin".into()));
         let result = run_git(
             repo.path().to_str().unwrap(),
             &["--version"],
