@@ -40,6 +40,8 @@ export interface LinkPreview {
   action?: { label: string; href: string };
   /** True when a fetched page title would read better than the parsed label. */
   wantsPageTitle: boolean;
+  /** GitHub pull request or issue: the card can ask for live details. */
+  github?: { kind: 'pull' | 'issue'; repo: string; number: string };
 }
 
 const MAX_LABEL = 72;
@@ -296,7 +298,13 @@ function parseGithub(url: URL): LinkPreview | null {
     const isPr = kind === 'pull';
     const fields = [repoField, { label: isPr ? 'Pull request' : 'Issue', value: `#${id}` }];
     if (isPr && rest[0] === 'files') fields.push({ label: 'View', value: 'Files changed' });
-    return { ...base, title: `${slug}#${id}`, kind: isPr ? 'Pull request' : 'Issue', fields };
+    return {
+      ...base,
+      title: `${slug}#${id}`,
+      kind: isPr ? 'Pull request' : 'Issue',
+      fields,
+      github: { kind: isPr ? 'pull' : 'issue', repo: slug, number: id },
+    };
   }
   if (kind === 'commit' && id) {
     const short = id.slice(0, 7);
