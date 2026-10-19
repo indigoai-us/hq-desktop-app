@@ -2132,6 +2132,38 @@ function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; b
       }),
     };
   }
+  // The caller's personal account (US-018, 2026-10-19): person summary,
+  // person month statement and personal spend limit.
+  if (url === '/v1/billing/person/summary') {
+    return {
+      status: 200,
+      body: JSON.stringify({
+        cardOnFile: false,
+        personalUsage: { allowanceCents: 1000, usedCents: 340, usagePeriodStart: '2026-10-01', usageThroughDay: '2026-10-17', cardRequired: false, cardOnFile: false, syncPaused: false },
+      }),
+    };
+  }
+  if (url.startsWith('/v1/billing/usage?') && url.includes('scope=person')) {
+    return {
+      status: 200,
+      body: JSON.stringify({
+        scope: 'person', window: 'month', periodStart: '2026-10-01', periodEnd: '2026-10-31', asOf: '2026-10-17', complete: true,
+        allowanceCents: 1000, usageCents: 340, allowanceLeftCents: 660, billCents: 0, projectedUsageCents: 680, projectedBillCents: 0,
+        lines: [
+          { key: 'member-sync', displayName: 'Sync', unit: 'sync', unitCents: 10, kind: 'counter', status: 'measured', billed: true, interim: false, units: 12, usage: 12, costCents: 120, projectedUnits: 24, projectedCostCents: 240 },
+          { key: 'agent-run', displayName: 'Agent run', unit: 'run', unitCents: 5, kind: 'counter', status: 'measured', billed: true, interim: false, units: 20, usage: 20, costCents: 100, projectedUnits: 40, projectedCostCents: 200 },
+          { key: 'storage', displayName: 'Storage', unit: 'GB-month', unitCents: 200, kind: 'gauge', status: 'measured', billed: true, interim: false, units: 0.6, usage: 0.6, costCents: 120, projectedUnits: 1.2, projectedCostCents: 240 },
+        ],
+        free: [{ key: 'free', text: 'Deploys, DMs and background AI are free.' }],
+      }),
+    };
+  }
+  if (url === '/v1/billing/person/spend-limit') {
+    return { status: 200, body: JSON.stringify({ limitCents: 10000, custom: false, defaultLimitCents: 10000, paused: false, spend: null }) };
+  }
+  if (url === '/v1/billing/checkout/person' && method === 'POST') {
+    return { status: 200, body: JSON.stringify({ url: 'https://checkout.stripe.com/c/pay/cs_test_harness_person' }) };
+  }
   if (url.startsWith('/v1/billing/usage?')) {
     const line = (key: string, displayName: string, unit: string, unitCents: number, units: number, costCents: number, extra: Record<string, unknown> = {}) => ({
       key, displayName, unit, unitCents, kind: 'counter', status: 'measured', billed: true, interim: false,

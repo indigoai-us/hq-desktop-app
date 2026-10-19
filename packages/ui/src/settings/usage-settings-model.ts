@@ -29,6 +29,7 @@ import {
   planLabelFromSummary,
   runningTrialFromSummary,
   usageNoticeFromSummary,
+  personalNoticeFromSummary,
   type RunningTrial,
   type UsageNotice,
 } from "../home/core-usage-model.js";
@@ -104,6 +105,9 @@ export interface UsageDetailsSource {
   getUsageStatement?(companyUid: string): Promise<AdapterResult<Json>>;
   getPricing?(): Promise<AdapterResult<Json>>;
   getSpendLimit?(companyUid: string): Promise<AdapterResult<Json>>;
+  getPersonalBillingSummary?(): Promise<AdapterResult<Json>>;
+  getPersonalUsageStatement?(): Promise<AdapterResult<Json>>;
+  getPersonalSpendLimit?(): Promise<AdapterResult<Json>>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -225,6 +229,50 @@ export async function readUsageDetails(
     settle(source.getPricing ? () => source.getPricing!() : null, "pricing"),
     settle(source.getSpendLimit ? () => source.getSpendLimit!(companyUid) : null, "spend limit"),
   ]);
+  const at = now();
+  return buildDetails(statement, pricing, spend, {
+    planLabel: planLabelFromSummary(summary.value, at),
+    trial: runningTrialFromSummary(summary.value, at),
+    notice: usageNoticeFromSummary(summary.value),
+  });
+}
+
+/**
+ * Settings > Usage for the caller's own personal account (owner requirement
+ * 2026-10-19): `GET /v1/billing/person/summary`, the person month statement
+ * (`GET /v1/billing/usage?scope=person`), `GET /v1/pricing` and
+ * `GET /v1/billing/person/spend-limit`. No `personalUsage` on the summary
+ * means the person is not on usage-only personal pricing.
+ */
+export async function readPersonalUsageDetails(
+  source: UsageDetailsSource | null | undefined,
+): Promise<UsageDetailsView> {
+  if (!source?.getPersonalBillingSummary) return { kind: "unavailable" };
+  const summary = await settle(() => source.getPersonalBillingSummary!(), "personal summary");
+  if (!summary) return { kind: "unavailable" };
+  if (!summary.ok) {
+    console.warn("[usage-settings] personal summary read failed", summary.code ?? "unknown");
+    return { kind: "unavailable" };
+  }
+  if (!isRecord(summary.value) || !isRecord(summary.value.personalUsage)) return { kind: "not-usage" };
+  const [statement, pricing, spend] = await Promise.all([
+    settle(source.getPersonalUsageStatement ? () => source.getPersonalUsageStatement!() : null, "personal statement"),
+    settle(source.getPricing ? () => source.getPricing!() : null, "pricing"),
+    settle(source.getPersonalSpendLimit ? () => source.getPersonalSpendLimit!() : null, "personal spend limit"),
+  ]);
+  return buildDetails(statement, pricing, spend, {
+    planLabel: "Usage plan",
+    trial: null,
+    notice: personalNoticeFromSummary(summary.value),
+  });
+}
+
+function buildDetails(
+  statement: AdapterResult<Json> | null,
+  pricing: AdapterResult<Json> | null,
+  spend: AdapterResult<Json> | null,
+  head: { planLabel: string | null; trial: RunningTrial | null; notice: UsageNotice | null },
+): UsageDetailsView {
   if (!statement?.ok || !isRecord(statement.value)) {
     if (statement && !statement.ok) console.warn("[usage-settings] usage statement read failed", statement.code ?? "unknown");
     return { kind: "unavailable" };
@@ -239,11 +287,10 @@ export async function readUsageDetails(
     return { kind: "unavailable" };
   }
   const feed = pricing?.ok ? usagePricingFromFeed(pricing.value) : null;
-  const at = now();
   return {
     kind: "ready",
-    planLabel: planLabelFromSummary(summary.value, at),
-    trial: runningTrialFromSummary(summary.value, at),
+    planLabel: head.planLabel,
+    trial: head.trial,
     periodStart,
     periodEnd: str(body.periodEnd),
     asOf: str(body.asOf),
@@ -256,7 +303,7 @@ export async function readUsageDetails(
     lines: detailLines(Array.isArray(body.lines) ? body.lines : [], feed),
     spendLimit: spend?.ok ? spendLimitFromBody(spend.value) : null,
     freeText: freeTextFromStatement(body),
-    notice: usageNoticeFromSummary(summary.value),
+    notice: head.notice,
   };
 }
 

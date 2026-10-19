@@ -42,7 +42,7 @@
     type CloudFileEventPayload,
 } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
-  import { resolveUsageCompany } from "../home/core-usage-model.js";
+  import { resolveUsageCompany, usageAccounts } from "../home/core-usage-model.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
@@ -5567,13 +5567,22 @@
     );
   });
   /**
-   * Company for the Core menu's usage panel: the company on screen, else the
-   * branded company. A local-only company shows "No usage", never another
-   * company's spend (resolveUsageCompany).
+   * Account for the Core menu's usage panel (owner decision 2026-10-19): the
+   * company on screen, else the company the rail has active, else the
+   * branded company, else the personal account. Never the first company in
+   * the list. A local-only company shows "No usage", never another
+   * account's spend (resolveUsageCompany).
    */
-  const usageCompany = $derived(
-    resolveUsageCompany(companies, selectedCompanySlug, brandState?.companySlug),
+  const tenantCompanySlug = $derived(
+    tenantCompanyId
+      ? ((companies ?? []).find((c) => (c.cloudUid ?? "").trim() === tenantCompanyId)?.slug ?? "")
+      : "",
   );
+  const usageCompany = $derived(
+    resolveUsageCompany(companies, selectedCompanySlug || tenantCompanySlug, brandState?.companySlug),
+  );
+  /** Every account the usage switcher offers: owner/admin companies, then personal. */
+  const usageAccountList = $derived(usageAccounts(companies, usageCompany));
   const activeCompanyPane = $derived.by(() => {
     if (view !== "conversation" || selectedRow?.kind !== "channel") return null;
     const scope = (selectedRow.channelScope ?? "").trim();
@@ -14299,6 +14308,7 @@
     {cloudError}
     workspaces={syncWorkspaces}
     {usageCompany}
+    usageAccounts={usageAccountList}
     hqFolderPath={hqFolderPath ?? liveSync.hqFolderPath}
     watchedCount={watched}
     {unreadCount}
@@ -14590,6 +14600,7 @@
       {#await loadShellSettings() then { default: ShellSettings }}
         <ShellSettings
           onnewbot={openNewBotFromSettings}
+          usageAccounts={usageAccountList}
           profile={resolvedSettingsProfile}
           {companies}
           {adapter}

@@ -721,6 +721,11 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     getPricing: () => this.hqProJson("GET", WEB_PATHS.pricing),
     getSpendLimit: (companyUid) =>
       this.hqProJson("GET", WEB_PATHS.companySpendLimit(companyUid)),
+    getPersonalBillingSummary: () => this.hqProJson("GET", WEB_PATHS.personalBillingSummary),
+    getPersonalUsageStatement: () => this.hqProJson("GET", WEB_PATHS.personalUsageStatement),
+    getPersonalSpendLimit: () => this.hqProJson("GET", WEB_PATHS.personalSpendLimit),
+    createPersonalBillingCheckoutSession: () => this.hqProJson("POST", WEB_PATHS.personalBillingCheckout, {}),
+    createPersonalBillingPortalSession: () => this.hqProJson("POST", WEB_PATHS.personalBillingPortal, {}),
     getFirstWeekReturnNudge: (companyUid) =>
       this.hqProJson("GET", WEB_PATHS.firstWeekReturnNudge(companyUid)),
   };

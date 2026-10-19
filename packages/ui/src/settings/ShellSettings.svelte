@@ -121,6 +121,8 @@
     uiVersion?: string | null;
     /** Settings › Bots "New bot": opens the Messages New bot modal. */
     onnewbot?: (() => void) | null;
+    /** Settings › Usage: owner/admin companies plus the personal account (US-018). */
+    usageAccounts?: readonly import("../home/core-usage-model.js").UsageAccount[];
   }
 
   let {
@@ -145,6 +147,7 @@
     refreshAppVersion,
     uiVersion = null,
     onnewbot = null,
+    usageAccounts = undefined,
   }: Props = $props();
 
   let externalError = $state<string | null>(null);
@@ -722,7 +725,7 @@
       {:else if active === "billing"}
         <BillingSettingsPane {openExternal} company={adapter?.company ?? null} companies={profileCompanies} {selectedCompanyUid} />
       {:else if active === "usage"}
-        <UsageSettingsPane company={adapter?.company ?? null} companies={profileCompanies} {selectedCompanyUid} />
+        <UsageSettingsPane company={adapter?.company ?? null} companies={profileCompanies} accounts={usageAccounts} {selectedCompanyUid} />
       {:else if active === "companies"}
         <CompaniesSettingsPane
           {adapter}

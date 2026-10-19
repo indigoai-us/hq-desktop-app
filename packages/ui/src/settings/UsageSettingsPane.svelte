@@ -12,10 +12,16 @@
    */
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
-  import { formatUsd } from "../home/core-usage-model.js";
+  import {
+    PERSONAL_ACCOUNT_KEY,
+    formatUsd,
+    preferredUsageAccount,
+    type UsageAccount,
+  } from "../home/core-usage-model.js";
   import {
     lineCostText,
     periodLabel,
+    readPersonalUsageDetails,
     readUsageDetails,
     spendLimitLine,
     trialEndLabel,
@@ -32,35 +38,65 @@
   let {
     company = null,
     companies = [],
+    accounts = undefined,
     selectedCompanyUid = null,
   }: {
     company?: UsageDetailsSource | null;
     /** The caller's companies with their real role (null when unknown). */
     companies?: ReadonlyArray<UsageCompanyRow>;
+    /**
+     * The same accounts as the Core menu switcher: owner/admin companies and
+     * the personal account. When given, it replaces `companies`.
+     */
+    accounts?: readonly UsageAccount[];
     /** The company selected in the shell, preferred when present. */
     selectedCompanyUid?: string | null;
   } = $props();
 
-  const isOwner = (row: UsageCompanyRow): boolean => (row.role ?? "").toLowerCase() === "owner";
+  interface PaneRow {
+    /** Company uid, or "personal". */
+    uid: string;
+    label: string;
+    role: string | null;
+    personal: boolean;
+  }
 
-  let chosenUid = $state<string | null>(null);
+  const rows = $derived<PaneRow[]>(
+    accounts
+      ? accounts.flatMap((a): PaneRow[] =>
+          a.kind === "personal"
+            ? [{ uid: PERSONAL_ACCOUNT_KEY, label: a.name, role: null, personal: true }]
+            : a.uid
+              ? [{ uid: a.uid, label: a.name, role: a.role, personal: false }]
+              : [],
+        )
+      : companies.map((row) => ({ ...row, personal: false })),
+  );
+
+  const isOwner = (row: PaneRow): boolean => row.personal || (row.role ?? "").toLowerCase() === "owner";
+
+  // The Core menu's Usage details opens this screen on the account it showed.
+  let chosenUid = $state<string | null>(preferredUsageAccount());
   let view = $state<UsageDetailsView>({ kind: "loading" });
   let reloading = $state(false);
   let nonce = $state(0);
 
   const defaultUid = $derived(
-    companies.find((row) => row.uid === selectedCompanyUid)?.uid ??
-      companies.find(isOwner)?.uid ??
-      companies[0]?.uid ??
+    rows.find((row) => row.uid === selectedCompanyUid)?.uid ??
+      rows.find((row) => isOwner(row) && !row.personal)?.uid ??
+      rows[0]?.uid ??
       null,
   );
-  const target = $derived(companies.find((row) => row.uid === (chosenUid ?? defaultUid)) ?? null);
+  const target = $derived(
+    rows.find((row) => row.uid === chosenUid) ?? rows.find((row) => row.uid === defaultUid) ?? null,
+  );
   // Usage reads are owner-gated: a known non-owner gets the note, not a 403.
   const knownNonOwner = $derived(target !== null && target.role !== null && !isOwner(target));
 
   $effect(() => {
     void nonce;
     const uid = target?.uid ?? null;
+    const personal = target?.personal ?? false;
     const nonOwner = knownNonOwner;
     const api = company;
     if (!uid) return;
@@ -71,7 +107,7 @@
     }
     view = { kind: "loading" };
     let cancelled = false;
-    void readUsageDetails(api, uid).then((next) => {
+    void (personal ? readPersonalUsageDetails(api) : readUsageDetails(api, uid)).then((next) => {
       if (cancelled) return;
       view = next;
       reloading = false;
@@ -93,14 +129,14 @@
 </script>
 
 <div class="proto-stack" data-testid="settings-usage-pane" data-state={target ? view.kind : "no-company"}>
-  {#if companies.length > 1}
+  {#if rows.length > 1}
     <div class="set-row">
       <div>
-        <div class="sn">Company</div>
-        <div class="sd">Usage is billed per company.</div>
+        <div class="sn">{accounts ? "Account" : "Company"}</div>
+        <div class="sd">{accounts ? "Usage is billed per company and for your personal account." : "Usage is billed per company."}</div>
       </div>
-      <div class="picker" role="radiogroup" aria-label="Company">
-        {#each companies as row (row.uid)}
+      <div class="picker" role="radiogroup" aria-label={accounts ? "Account" : "Company"}>
+        {#each rows as row (row.uid)}
           <button
             type="button"
             class="chip"
@@ -109,7 +145,7 @@
             aria-checked={target?.uid === row.uid}
             data-testid="usage-company"
             onclick={() => choose(row.uid)}
-          ><CompanyLabel name={row.label} companyUid={row.uid} size={14} /></button>
+          >{#if row.personal}{row.label}{:else}<CompanyLabel name={row.label} companyUid={row.uid} size={14} />{/if}</button>
         {/each}
       </div>
     </div>

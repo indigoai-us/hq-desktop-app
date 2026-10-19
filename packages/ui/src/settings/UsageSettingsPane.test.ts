@@ -192,4 +192,64 @@ describe("UsageSettingsPane", () => {
     expect(text("usage-allowance-note")).toContain("the included usage applies once the trial ends");
     expect(text("usage-trial-days")).not.toContain(". .");
   });
+
+  it("offers the same companies and the personal account, and reads the person routes for Personal", async () => {
+    const src = {
+      ...source(),
+      getPersonalBillingSummary: vi.fn(async () => ok({ cardOnFile: false, personalUsage: { allowanceCents: 1000, usedCents: 340 } })),
+      getPersonalUsageStatement: vi.fn(async () => ok({ ...STATEMENT, usageCents: 340, allowanceLeftCents: 660, projectedBillCents: 0, lines: [STATEMENT.lines[0]] })),
+      getPersonalSpendLimit: vi.fn(async () => ok({ limitCents: 5000, custom: true, paused: false })),
+    };
+    host = document.createElement("div");
+    document.body.append(host);
+    component = mount(UsageSettingsPane, {
+      target: host,
+      props: {
+        company: src as never,
+        accounts: [
+          { kind: "company", uid: "cmp_northwind", name: "Northwind", role: "owner" },
+          { kind: "personal", uid: null, name: "Personal", role: null },
+        ] as never,
+        selectedCompanyUid: null,
+      },
+    });
+    await settle();
+    const chips = [...host.querySelectorAll('[data-testid="usage-company"]')];
+    expect(chips).toHaveLength(2);
+    expect(chips[0]?.textContent).toContain("Northwind");
+    expect(chips[1]?.textContent?.trim()).toBe("Personal");
+    expect(src.getUsageStatement).toHaveBeenLastCalledWith("cmp_northwind");
+    (chips[1] as HTMLElement).click();
+    await settle();
+    expect(src.getPersonalBillingSummary).toHaveBeenCalledTimes(1);
+    expect(text("usage-total")).toBe("$3.40");
+    expect(text("usage-allowance-left")).toBe("$6.60 of free usage left");
+    expect(text("usage-spend-limit")).toBe("$50.00 a month");
+  });
+
+  it("opens on the account the Core menu showed", async () => {
+    const { setPreferredUsageAccount } = await import("../home/core-usage-model");
+    setPreferredUsageAccount("personal");
+    const src = {
+      ...source(),
+      getPersonalBillingSummary: vi.fn(async () => ok({ cardOnFile: false, personalUsage: { allowanceCents: 1000 } })),
+      getPersonalUsageStatement: vi.fn(async () => ok(STATEMENT)),
+    };
+    host = document.createElement("div");
+    document.body.append(host);
+    component = mount(UsageSettingsPane, {
+      target: host,
+      props: {
+        company: src as never,
+        accounts: [
+          { kind: "company", uid: "cmp_northwind", name: "Northwind", role: "owner" },
+          { kind: "personal", uid: null, name: "Personal", role: null },
+        ] as never,
+      },
+    });
+    await settle();
+    expect(src.getPersonalBillingSummary).toHaveBeenCalledTimes(1);
+    expect(src.getBillingSummary).not.toHaveBeenCalled();
+    setPreferredUsageAccount(null);
+  });
 });

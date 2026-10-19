@@ -93,6 +93,8 @@ export interface UsageMeterView {
   rows: UsageGroupRow[];
   /** Trial mode only: why the per-group rows are not shown. */
   rowsNote: string | null;
+  /** The headline total in cents (month usage, or trial usage); null when not measured. */
+  totalCents: number | null;
 }
 
 /** The trial as the summary reports it, when it is running. */
@@ -285,6 +287,7 @@ export function meterView(statement: MonthStatement): UsageMeterView {
     partial,
     rows,
     rowsNote: null,
+    totalCents: usageCents,
   };
 }
 
@@ -313,6 +316,7 @@ export function trialMeterView(trial: RunningTrial): UsageMeterView {
       partial: true,
       rows: [],
       rowsNote: TRIAL_ROWS_NOTE,
+      totalCents: null,
     };
   }
   const line = `${formatUsd(trial.usedCents)} of ${formatUsd(trial.capCents)} trial usage`;
@@ -327,6 +331,7 @@ export function trialMeterView(trial: RunningTrial): UsageMeterView {
     partial: minimum,
     rows: [],
     rowsNote: TRIAL_ROWS_NOTE,
+    totalCents: trial.usedCents,
   };
 }
 
@@ -558,11 +563,30 @@ export function staleUsageLine(at: number | null): string {
   return `Couldn't refresh. Showing usage from ${time}.`;
 }
 
-/** The company the Core menu's usage panel is about. A null uid means local only. */
-export interface UsageCompany {
-  uid: string | null;
-  name: string;
-  role: string | null;
+/**
+ * The account the Core menu's usage panel is about: a company (a null uid
+ * means local only, so nothing is metered) or the signed-in person's own
+ * personal account (usage-only personal pricing; hq-pro reads it from the
+ * JWT, so it carries no uid).
+ */
+export type UsageAccount =
+  | { kind: "company"; uid: string | null; name: string; role: string | null }
+  | { kind: "personal"; uid: null; name: string; role: null };
+
+/** Kept for existing callers: a company account. */
+export type UsageCompany = UsageAccount;
+
+export const PERSONAL_ACCOUNT_LABEL = "Personal";
+export const PERSONAL_ACCOUNT_KEY = "personal";
+
+export function personalUsageAccount(): UsageAccount {
+  return { kind: "personal", uid: null, name: PERSONAL_ACCOUNT_LABEL, role: null };
+}
+
+/** Stable key for caches and the switcher: the company uid, or "personal". */
+export function usageAccountKey(account: UsageAccount): string {
+  if (account.kind === "personal") return PERSONAL_ACCOUNT_KEY;
+  return account.uid ?? `local:${account.name}`;
 }
 
 export interface UsageCompanyRow {
@@ -573,32 +597,185 @@ export interface UsageCompanyRow {
   role?: string | null;
 }
 
+function companyAccount(c: UsageCompanyRow): UsageAccount {
+  return {
+    kind: "company",
+    uid: (c.cloudUid ?? "").trim() || null,
+    name: c.displayName || c.slug,
+    role: c.role ?? null,
+  };
+}
+
 /**
- * Pick the panel's company. The company on screen wins, then the branded
- * company. When that company has no cloud account, the panel says it has no
- * usage: it never falls back to another company's spend. When neither slug
- * names a known company row (nothing on screen, or a slug with no company
- * row such as the personal space), the first cloud company stands in,
- * labelled with its own name.
+ * Pick the panel's default account (owner decision 2026-10-19). The company
+ * on screen wins, then the active (branded) company. With neither, the
+ * personal account: never the first company in the list. A local-only
+ * company on screen keeps "No usage for this company" rather than another
+ * account's spend.
  */
 export function resolveUsageCompany(
   companies: readonly UsageCompanyRow[] | null | undefined,
   onScreenSlug: string | null | undefined,
   brandSlug: string | null | undefined,
-): UsageCompany | null {
+): UsageAccount {
   const all = (companies ?? []).filter((c) => c.kind === "company");
-  const toView = (c: UsageCompanyRow): UsageCompany => ({
-    uid: (c.cloudUid ?? "").trim() || null,
-    name: c.displayName || c.slug,
-    role: c.role ?? null,
-  });
-  const slug = (onScreenSlug || brandSlug || "").trim();
-  if (slug) {
-    const row = all.find((c) => c.slug === slug);
-    if (row) return toView(row);
+  for (const slug of [onScreenSlug, brandSlug]) {
+    const want = (slug ?? "").trim();
+    if (!want) continue;
+    const row = all.find((c) => c.slug === want);
+    if (row) return companyAccount(row);
   }
-  const firstCloud = all.find((c) => (c.cloudUid ?? "").trim());
-  return firstCloud ? toView(firstCloud) : null;
+  return personalUsageAccount();
+}
+
+/**
+ * Every account the switcher offers: each cloud company where the person is
+ * an owner or admin (by name), the current account when it is not one of
+ * them (a member's company on screen), and the personal account last.
+ */
+export function usageAccounts(
+  companies: readonly UsageCompanyRow[] | null | undefined,
+  current: UsageAccount | null | undefined,
+): UsageAccount[] {
+  const managed = (companies ?? [])
+    .filter((c) => c.kind === "company" && (c.cloudUid ?? "").trim())
+    .filter((c) => {
+      const role = billingRole(c.role);
+      return role === "owner" || role === "admin";
+    })
+    .map(companyAccount)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const out: UsageAccount[] = [...managed];
+  if (current && current.kind === "company" && !out.some((a) => usageAccountKey(a) === usageAccountKey(current))) {
+    out.unshift(current);
+  }
+  out.push(personalUsageAccount());
+  return out;
+}
+
+/** The account Settings > Usage should open on, set by the Core menu's Usage details. */
+let preferredUsageAccountKey: string | null = null;
+
+export function setPreferredUsageAccount(key: string | null): void {
+  preferredUsageAccountKey = key;
+}
+
+export function preferredUsageAccount(): string | null {
+  return preferredUsageAccountKey;
+}
+
+export interface PersonalUsageSource {
+  getPersonalBillingSummary?(): Promise<AdapterResult<Json>>;
+  getPersonalUsageStatement?(): Promise<AdapterResult<Json>>;
+}
+
+/**
+ * The personal account's pause or card prompt
+ * (`GET /v1/billing/person/summary` → `personalUsage`). Personal accounts
+ * have no trial; only personal-vault sync pauses.
+ */
+export function personalNoticeFromSummary(summary: unknown): UsageNotice | null {
+  if (!isRecord(summary) || !isRecord(summary.personalUsage)) return null;
+  const p = summary.personalUsage;
+  const allowance = finite(p.allowanceCents);
+  const allowanceText = allowance !== null ? `the ${formatUsd(allowance)} of usage included this month` : "this month's included usage";
+  if (p.syncPaused === true) {
+    return {
+      kind: "paused-card-required",
+      text: `Personal vault sync is paused: ${allowanceText} is used up. Add a card to resume. Files on your computers are not affected.`,
+      actionLabel: "Add a card to resume",
+      memberText: `Personal vault sync is paused: ${allowanceText} is used up.`,
+    };
+  }
+  if (p.cardRequired === true) {
+    return {
+      kind: "card-required",
+      text: `Usage passed ${allowanceText}. Add a card to keep your personal vault syncing.`,
+      actionLabel: "Add a card",
+      memberText: `Usage passed ${allowanceText}.`,
+    };
+  }
+  return null;
+}
+
+/**
+ * Read the personal account. Never throws. `personalUsage` absent means the
+ * person is not on usage-only personal pricing: no meter.
+ */
+export async function readPersonalUsage(
+  source: (PersonalUsageSource & Record<string, unknown>) | null | undefined,
+  name: string = PERSONAL_ACCOUNT_LABEL,
+): Promise<CoreUsageView> {
+  if (!source?.getPersonalBillingSummary) return { kind: "unavailable", companyName: name };
+  let summary: AdapterResult<Json>;
+  try {
+    summary = await source.getPersonalBillingSummary();
+  } catch (err) {
+    console.warn("[core-usage] personal summary read failed", err instanceof Error ? err.name : "unknown");
+    return { kind: "unavailable", companyName: name };
+  }
+  if (!summary.ok) {
+    console.warn("[core-usage] personal summary read failed", summary.code ?? "unknown");
+    return { kind: "unavailable", companyName: name };
+  }
+  const value = summary.value as unknown;
+  const personal = isRecord(value) && isRecord(value.personalUsage) ? value.personalUsage : null;
+  const paid = personal?.cardOnFile === true || (isRecord(value) && value.cardOnFile === true);
+  const base = {
+    kind: "ready" as const,
+    companyName: name,
+    planLabel: personal ? "Usage plan" : null,
+    paid,
+    notice: personalNoticeFromSummary(value),
+  };
+  if (!personal) return { ...base, usage: null, usageUnavailable: false };
+  let statement: MonthStatement | null = null;
+  if (source.getPersonalUsageStatement) {
+    try {
+      const res = await source.getPersonalUsageStatement();
+      statement = res.ok ? monthStatementFromBody(res.value) : null;
+      if (!res.ok) console.warn("[core-usage] personal statement read failed", res.code ?? "unknown");
+    } catch (err) {
+      console.warn("[core-usage] personal statement read threw", err instanceof Error ? err.name : "unknown");
+    }
+  }
+  return statement
+    ? { ...base, usage: meterView(statement), usageUnavailable: false }
+    : { ...base, usage: null, usageUnavailable: true };
+}
+
+/** Read whichever account is selected, with the same quiet retries. */
+export async function readAccountUsage(
+  source: (CoreUsageSource & PersonalUsageSource) | null | undefined,
+  account: UsageAccount,
+  opts: Parameters<typeof readCoreUsageWithRetry>[3] = {},
+): Promise<CoreUsageView> {
+  if (account.kind === "company") {
+    if (!account.uid) return { kind: "no-usage", companyName: account.name };
+    return readCoreUsageWithRetry(source, account.uid, account.name, opts);
+  }
+  const delays = opts.delays ?? USAGE_RETRY_DELAYS_MS;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let view = await readPersonalUsage(source as never, account.name);
+  for (const delay of delays) {
+    if (view.kind !== "unavailable" || opts.cancelled?.()) break;
+    await sleep(delay);
+    if (opts.cancelled?.()) break;
+    view = await readPersonalUsage(source as never, account.name);
+  }
+  return view;
+}
+
+/** The switcher row total for an account's view: "$8.00", "At least $8.00", or a word. */
+export function accountTotalText(view: CoreUsageView | null | undefined): string {
+  if (!view || view.kind === "loading") return "…";
+  if (view.kind === "owner-only") return "Owner only";
+  if (view.kind === "no-usage") return "No usage";
+  if (view.kind === "unavailable") return "Unavailable";
+  if (!view.usage) return view.usageUnavailable ? "Unavailable" : "Not on usage plan";
+  if (view.usage.totalCents === null) return "Not measured";
+  const text = formatUsd(view.usage.totalCents);
+  return view.usage.partial ? `At least ${text}` : text;
 }
 
 /** The caller's billing role from a roster or membership role string. */

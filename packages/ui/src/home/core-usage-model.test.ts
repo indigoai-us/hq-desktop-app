@@ -8,6 +8,13 @@ import {
   billingIsSetUp,
   billingRole,
   cachedCoreUsage,
+  personalUsageAccount,
+  usageAccounts,
+  usageAccountKey,
+  readPersonalUsage,
+  readAccountUsage,
+  accountTotalText,
+  personalNoticeFromSummary,
   cachedCoreUsageAt,
   staleUsageLine,
   usageNoticeFromSummary,
@@ -190,17 +197,25 @@ describe("which company the panel shows", () => {
   ];
 
   it("a local company on screen gets no usage, never another company's spend", () => {
-    expect(resolveUsageCompany(rows, "garage", "acme")).toEqual({ uid: null, name: "Garage", role: null });
+    expect(resolveUsageCompany(rows, "garage", "acme")).toEqual({ kind: "company", uid: null, name: "Garage", role: null });
   });
 
   it("a cloud company on screen is used with its role", () => {
-    expect(resolveUsageCompany(rows, "acme", null)).toEqual({ uid: "cmp_acme", name: "Acme", role: "owner" });
+    expect(resolveUsageCompany(rows, "acme", null)).toEqual({ kind: "company", uid: "cmp_acme", name: "Acme", role: "owner" });
   });
 
-  it("falls back to the branded company, then the first cloud company", () => {
-    expect(resolveUsageCompany(rows, "", "garage")?.uid).toBeNull();
-    expect(resolveUsageCompany(rows, null, null)?.uid).toBe("cmp_acme");
-    expect(resolveUsageCompany([], null, null)).toBeNull();
+  it("with no company on screen uses the active company, else the personal account, never the first company", () => {
+    expect(resolveUsageCompany(rows, "", "garage")).toMatchObject({ kind: "company", uid: null, name: "Garage" });
+    expect(resolveUsageCompany(rows, null, "acme")).toMatchObject({ kind: "company", uid: "cmp_acme" });
+    // Nothing on screen and no active company: personal, not Acme (the first company).
+    expect(resolveUsageCompany(rows, null, null)).toEqual(personalUsageAccount());
+    expect(resolveUsageCompany(rows, "", "")).toEqual(personalUsageAccount());
+    expect(resolveUsageCompany([], null, null)).toEqual(personalUsageAccount());
+  });
+
+  it("an on-screen slug that names no company (the personal space) falls to the active company, then personal", () => {
+    expect(resolveUsageCompany(rows, "personal", "acme")).toMatchObject({ kind: "company", uid: "cmp_acme" });
+    expect(resolveUsageCompany(rows, "personal", null)).toEqual(personalUsageAccount());
   });
 
   it("only owners (or an unknown role) read billing", () => {
@@ -511,9 +526,98 @@ describe("stale numbers", () => {
   });
 });
 
-describe("resolveUsageCompany fallback (documented)", () => {
-  it("an on-screen slug with no company row falls back to the first cloud company, labelled as itself", () => {
-    const rows = [{ slug: "acme", displayName: "Acme", kind: "company", cloudUid: "cmp_acme", role: "owner" }];
-    expect(resolveUsageCompany(rows, "personal", null)).toEqual({ uid: "cmp_acme", name: "Acme", role: "owner" });
+
+describe("accounts for multi-company owners", () => {
+  const rows = [
+    { slug: "zeta", displayName: "Zeta", kind: "company", cloudUid: "cmp_zeta", role: "owner" },
+    { slug: "amass", displayName: "Amass", kind: "company", cloudUid: "cmp_amass", role: "admin" },
+    { slug: "liverecover", displayName: "Liverecover", kind: "company", cloudUid: "cmp_lr", role: "member" },
+    { slug: "garage", displayName: "Garage", kind: "company", cloudUid: null, role: "owner" },
+    { slug: "personal", displayName: "Corey", kind: "personal", cloudUid: "cmp_personal", role: null },
+  ];
+
+  it("lists every cloud company where the person is owner or admin, by name, then the personal account", () => {
+    const list = usageAccounts(rows, personalUsageAccount());
+    expect(list.map((a) => [a.kind, a.name, a.role])).toEqual([
+      ["company", "Amass", "admin"],
+      ["company", "Zeta", "owner"],
+      ["personal", "Personal", null],
+    ]);
+  });
+
+  it("keeps a member's on-screen company at the top so the switcher shows what the panel shows", () => {
+    const current = resolveUsageCompany(rows, "liverecover", null);
+    const list = usageAccounts(rows, current);
+    expect(list.map((a) => a.name)).toEqual(["Liverecover", "Amass", "Zeta", "Personal"]);
+  });
+
+  it("keys accounts by company uid, and the personal account as personal", () => {
+    expect(usageAccountKey(personalUsageAccount())).toBe("personal");
+    expect(usageAccountKey(resolveUsageCompany(rows, "zeta", null))).toBe("cmp_zeta");
+  });
+
+  it("summarizes each account's total for the switcher row", () => {
+    expect(accountTotalText(undefined)).toBe("…");
+    expect(accountTotalText({ kind: "owner-only", companyName: "A" })).toBe("Owner only");
+    expect(accountTotalText({ kind: "unavailable", companyName: "A" })).toBe("Unavailable");
+    const ready = meterView(monthStatementFromBody(statementBody())!);
+    expect(accountTotalText({ kind: "ready", companyName: "A", planLabel: null, paid: false, usage: ready, usageUnavailable: false, notice: null })).toBe("$8.00");
+    const partial = meterView(monthStatementFromBody(statementBody({ complete: false }))!);
+    expect(accountTotalText({ kind: "ready", companyName: "A", planLabel: null, paid: false, usage: partial, usageUnavailable: false, notice: null })).toBe("At least $8.00");
+  });
+});
+
+describe("personal account usage", () => {
+  const personSummary = (extra: Record<string, unknown> = {}) => ({
+    cardOnFile: false,
+    personalUsage: { allowanceCents: 1000, usedCents: 340, cardRequired: false, cardOnFile: false, syncPaused: false, ...extra },
+  });
+
+  it("reads the person summary and the person month statement", async () => {
+    const source = {
+      getPersonalBillingSummary: vi.fn(async () => ok(personSummary())),
+      getPersonalUsageStatement: vi.fn(async () => ok(statementBody({ scope: "person", usageCents: 340, lines: [{ key: "member-sync", status: "measured", billed: true, costCents: 340 }] }))),
+    };
+    const view = await readPersonalUsage(source);
+    expect(view).toMatchObject({ kind: "ready", companyName: "Personal", planLabel: "Usage plan", paid: false, notice: null });
+    if (view.kind !== "ready") return;
+    expect(view.usage?.usedLine).toBe("$3.40 of $10.00 free");
+    expect(view.usage?.rows).toEqual([{ id: "sync", label: "Sync", amount: { kind: "amount", cents: 340, partial: false } }]);
+    expect(source.getPersonalUsageStatement).toHaveBeenCalledTimes(1);
+  });
+
+  it("a person not on usage-only personal pricing gets no meter", async () => {
+    const view = await readPersonalUsage({ getPersonalBillingSummary: async () => ok({ cardOnFile: true }), getPersonalUsageStatement: vi.fn() });
+    expect(view).toMatchObject({ kind: "ready", planLabel: null, paid: true, usage: null, usageUnavailable: false });
+  });
+
+  it("a failed personal read is unavailable, never $0", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect((await readPersonalUsage({ getPersonalBillingSummary: async () => fail("http-500") })).kind).toBe("unavailable");
+    expect((await readPersonalUsage({})).kind).toBe("unavailable");
+    const noStatement = await readPersonalUsage({
+      getPersonalBillingSummary: async () => ok(personSummary()),
+      getPersonalUsageStatement: async () => fail("http-502"),
+    });
+    expect(noStatement).toMatchObject({ kind: "ready", usage: null, usageUnavailable: true });
+  });
+
+  it("says why personal vault sync is paused, or that a card is needed", () => {
+    expect(personalNoticeFromSummary(personSummary({ syncPaused: true, cardRequired: true }))).toMatchObject({
+      kind: "paused-card-required",
+      text: "Personal vault sync is paused: the $10.00 of usage included this month is used up. Add a card to resume. Files on your computers are not affected.",
+      actionLabel: "Add a card to resume",
+    });
+    expect(personalNoticeFromSummary(personSummary({ cardRequired: true }))).toMatchObject({ kind: "card-required", actionLabel: "Add a card" });
+    expect(personalNoticeFromSummary(personSummary())).toBeNull();
+  });
+
+  it("readAccountUsage dispatches by account and retries the personal read", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const getPersonalBillingSummary = vi.fn().mockResolvedValueOnce(fail("network")).mockResolvedValueOnce(ok({ cardOnFile: false }));
+    const view = await readAccountUsage({ getPersonalBillingSummary }, personalUsageAccount(), { delays: [1], sleep: async () => {} });
+    expect(getPersonalBillingSummary).toHaveBeenCalledTimes(2);
+    expect(view.kind).toBe("ready");
+    expect((await readAccountUsage({}, { kind: "company", uid: null, name: "Garage", role: null })).kind).toBe("no-usage");
   });
 });

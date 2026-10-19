@@ -7,13 +7,39 @@ import { expect, test, type Page } from '@playwright/test';
  * failed lookup, a company with a card on file, or a running trial.
  */
 
-async function openCoreMenu(page: Page, query = ''): Promise<void> {
+/**
+ * Open the Core menu. The harness shell starts with no company open, so the
+ * panel defaults to the personal account (owner decision 2026-10-19); the
+ * company cases pick Indigo in the account switcher first.
+ */
+async function openCoreMenu(page: Page, query = '', account: 'indigo' | 'personal' = 'indigo'): Promise<void> {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(`/dev-harness/index.html?view=shell&persona=indigo&theme=dark${query}`);
   await expect(page.getByTestId('app-rail')).toBeVisible({ timeout: 30_000 });
   await page.getByTestId('titlebar-core-pill').click();
   await expect(page.getByTestId('core-popover')).toBeVisible({ timeout: 10_000 });
+  if (account === 'indigo') {
+    await page.getByTestId('core-usage-switch').click();
+    await page.locator('[data-testid="core-usage-account"][data-key="cmp_indigo"]').click();
+    await expect(page.getByTestId('core-usage-company')).toContainText('Indigo');
+  }
 }
+
+test('with no company open the meter shows the personal account, and the switcher lists companies and Personal', async ({ page }) => {
+  await openCoreMenu(page, '', 'personal');
+  const panel = page.getByTestId('core-usage');
+  await expect(panel).toHaveAttribute('data-state', 'ready', { timeout: 10_000 });
+  await expect(page.getByTestId('core-usage-company')).toHaveText('Personal');
+  await expect(page.getByTestId('core-usage-used')).toHaveText('$3.40 of $10.00 free');
+  await page.getByTestId('core-usage-switch').click();
+  const rows = page.getByTestId('core-usage-account');
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0)).toContainText('Indigo');
+  await expect(rows.nth(0)).toContainText('Owner');
+  await expect(rows.nth(0)).toContainText('$8.00', { timeout: 10_000 });
+  await expect(rows.nth(1)).toContainText('Personal');
+  await expect(rows.nth(1)).toContainText('$3.40');
+});
 
 test('shows month-to-date usage under the sync row', async ({ page }) => {
   await openCoreMenu(page);
@@ -51,7 +77,10 @@ test('shows month-to-date usage under the sync row', async ({ page }) => {
   });
   expect(fill.ratio).toBe('0.8');
   expect(fill.property).toBe('transform');
-  expect(fill.transform).toMatch(/^matrix\(0\.8, 0, 0, 1/);
+  // Switching from the personal account animates the bar; wait for it to settle.
+  await expect
+    .poll(() => page.evaluate(() => getComputedStyle(document.querySelector('.core-usage-fill') as HTMLElement).transform))
+    .toMatch(/^matrix\(0\.8, 0, 0, 1/);
 
   await expect(page.getByTestId('core-usage-billing')).toContainText('Set up billing');
   await expect(page.getByTestId('core-usage-details')).toContainText('Usage details');

@@ -426,4 +426,109 @@ describe("CoreUsagePanel", () => {
     expect(q("core-usage-stale")).toBeNull();
   });
 
+
+  describe("multi-company owners and the personal account", () => {
+    const ACCOUNTS = [
+      { kind: "company" as const, uid: "cmp_amass", name: "Amass", role: "admin" },
+      { kind: "company" as const, uid: "cmp_northwind", name: "Northwind", role: "owner" },
+      { kind: "personal" as const, uid: null, name: "Personal", role: null },
+    ];
+    const PERSON_STATEMENT = { ...STATEMENT, usageCents: 340, lines: [{ key: "member-sync", status: "measured", billed: true, costCents: 340 }] };
+
+    function multiSource(overrides: Record<string, unknown> = {}) {
+      return {
+        ...source(),
+        getPersonalBillingSummary: vi.fn(async () => ok({ cardOnFile: false, personalUsage: { allowanceCents: 1000, usedCents: 340, cardOnFile: false } })),
+        getPersonalUsageStatement: vi.fn(async () => ok(PERSON_STATEMENT)),
+        createPersonalBillingCheckoutSession: vi.fn(async () => ok({ url: "https://checkout.stripe.com/c/pay/cs_person" })),
+        createPersonalBillingPortalSession: vi.fn(async () => ok({ url: "https://billing.stripe.com/p/session/person" })),
+        ...overrides,
+      } as ReturnType<typeof source> & {
+        getPersonalBillingSummary: ReturnType<typeof vi.fn>;
+        getPersonalUsageStatement: ReturnType<typeof vi.fn>;
+        createPersonalBillingCheckoutSession: ReturnType<typeof vi.fn>;
+        createPersonalBillingPortalSession: ReturnType<typeof vi.fn>;
+      };
+    }
+
+    it("defaults to the personal account when that is the default, reading the person routes", async () => {
+      const src = multiSource();
+      await render(src, vi.fn(), { account: ACCOUNTS[2], accounts: ACCOUNTS });
+      expect(q("core-usage")?.dataset.state).toBe("ready");
+      expect(q("core-usage-company")?.textContent).toBe("Personal");
+      expect(q("core-usage-used")?.textContent).toBe("$3.40 of $10.00 free");
+      expect(src.getPersonalBillingSummary).toHaveBeenCalledTimes(1);
+      expect(src.getBillingSummary).not.toHaveBeenCalled();
+    });
+
+    it("lists every owner/admin company and the personal account with this month's total, and switches", async () => {
+      const src = multiSource();
+      await render(src, vi.fn(), { account: ACCOUNTS[1], accounts: ACCOUNTS });
+      expect(q("core-usage-company")?.textContent).toContain("Northwind");
+      q("core-usage-switch")!.click();
+      flushSync();
+      for (let i = 0; i < 5; i += 1) await tick();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      const rows = [...host.querySelectorAll('[data-testid="core-usage-account"]')].map((r) => r.textContent?.replace(/\s+/g, " ").trim());
+      expect(rows).toEqual(["Amass Admin Owner only", "Northwind Owner $8.00", "Personal Your account $3.40"]);
+      // An admin's company is never read with the owner-gated routes.
+      expect(src.getBillingSummary).not.toHaveBeenCalledWith("cmp_amass");
+      (host.querySelector('[data-key="personal"]') as HTMLElement).click();
+      flushSync();
+      for (let i = 0; i < 5; i += 1) await tick();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      expect(q("core-usage-company")?.textContent).toBe("Personal");
+      expect(q("core-usage-used")?.textContent).toBe("$3.40 of $10.00 free");
+      expect(q("core-usage-accounts")).toBeNull();
+    });
+
+    it("a single account shows no switcher", async () => {
+      await render(source(), vi.fn(), { account: ACCOUNTS[1], accounts: [ACCOUNTS[1]] });
+      expect(q("core-usage-switch")).toBeNull();
+    });
+
+    it("Set up billing on the personal account opens personal card capture", async () => {
+      const src = multiSource();
+      const open = await render(src, vi.fn(), { account: ACCOUNTS[2], accounts: ACCOUNTS });
+      expect(q("core-usage-billing")?.textContent).toContain("Set up billing");
+      q("core-usage-billing")!.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(src.createPersonalBillingCheckoutSession).toHaveBeenCalledTimes(1);
+      expect(src.createBillingCheckoutSession).not.toHaveBeenCalled();
+      expect(open).toHaveBeenCalledWith("https://checkout.stripe.com/c/pay/cs_person");
+    });
+
+    it("a personal card on file opens the personal portal", async () => {
+      const src = multiSource({
+        getPersonalBillingSummary: vi.fn(async () => ok({ cardOnFile: true, personalUsage: { allowanceCents: 1000, usedCents: 340, cardOnFile: true } })),
+      });
+      const open = await render(src, vi.fn(), { account: ACCOUNTS[2], accounts: ACCOUNTS });
+      expect(q("core-usage-billing")?.textContent).toContain("Manage billing");
+      q("core-usage-billing")!.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(src.createPersonalBillingPortalSession).toHaveBeenCalledTimes(1);
+      expect(open).toHaveBeenCalledWith("https://billing.stripe.com/p/session/person");
+    });
+
+    it("Usage details remembers the account so Settings > Usage opens on it", async () => {
+      const { preferredUsageAccount, setPreferredUsageAccount } = await import("./core-usage-model");
+      setPreferredUsageAccount(null);
+      const onopenusage = vi.fn();
+      await render(multiSource(), vi.fn(), { account: ACCOUNTS[2], accounts: ACCOUNTS, onopenusage });
+      q("core-usage-details")!.click();
+      expect(onopenusage).toHaveBeenCalledTimes(1);
+      expect(preferredUsageAccount()).toBe("personal");
+      setPreferredUsageAccount(null);
+    });
+
+    it("a personal account not on the usage plan says so", async () => {
+      await render(multiSource({ getPersonalBillingSummary: vi.fn(async () => ok({ cardOnFile: false })) }), vi.fn(), {
+        account: ACCOUNTS[2],
+        accounts: ACCOUNTS,
+      });
+      expect(q("core-usage-personal-none")).not.toBeNull();
+    });
+  });
 });

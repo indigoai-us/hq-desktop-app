@@ -1271,6 +1271,20 @@ export interface CompanyApi {
    * this month's measured spend and whether metered work is paused.
    */
   getSpendLimit?(companyUid: string): AdapterPromise<Json>;
+  /**
+   * The caller's own personal account (usage-only personal pricing, US-018
+   * owner requirement 2026-10-19). hq-pro reads the person from the JWT.
+   * `GET /v1/billing/person/summary` (`personalUsage`: allowance, card, pause).
+   */
+  getPersonalBillingSummary?(): AdapterPromise<Json>;
+  /** `GET /v1/billing/usage?scope=person&window=month`: the personal month statement. */
+  getPersonalUsageStatement?(): AdapterPromise<Json>;
+  /** `GET /v1/billing/person/spend-limit`: the personal spend limit. */
+  getPersonalSpendLimit?(): AdapterPromise<Json>;
+  /** `POST /v1/billing/checkout/person`: hosted card capture for the personal account. */
+  createPersonalBillingCheckoutSession?(): AdapterPromise<{ url: string }>;
+  /** `POST /v1/billing/person/portal`: the personal Stripe customer portal. */
+  createPersonalBillingPortalSession?(): AdapterPromise<{ url: string }>;
   /** Membership-scoped, aggregate eligibility for the first-week return nudge. */
   getFirstWeekReturnNudge(companyUid: string): AdapterPromise<Json>;
 }

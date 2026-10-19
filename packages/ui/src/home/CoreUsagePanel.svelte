@@ -14,6 +14,7 @@
   import type { AdapterResult } from "@hq/platform";
   import RailIcon from "../common/button/RailIcon.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
+  import Caret from "../common/Caret.svelte";
   import {
     approvedCheckoutUrl,
     billingPortalHint,
@@ -25,12 +26,17 @@
     USAGE_REFRESH_MS,
     billingRole,
     cachedCoreUsage,
+    PERSONAL_ACCOUNT_KEY,
+    accountTotalText,
+    readAccountUsage,
+    setPreferredUsageAccount,
+    usageAccountKey,
+    type UsageAccount,
     cachedCoreUsageAt,
     staleUsageLine,
     canReadBilling,
     canSetUpBilling,
     formatUsd,
-    readCoreUsageWithRetry,
     rememberCoreUsage,
     type CoreUsageView,
   } from "./core-usage-model.js";
@@ -40,19 +46,30 @@
     getUsageStatement?(companyUid: string): Promise<AdapterResult<unknown>>;
     createBillingPortalSession(companyUid: string): Promise<AdapterResult<{ url: string }>>;
     createBillingCheckoutSession?(companyUid: string): Promise<AdapterResult<{ url: string }>>;
+    getPersonalBillingSummary?(): Promise<AdapterResult<unknown>>;
+    getPersonalUsageStatement?(): Promise<AdapterResult<unknown>>;
+    createPersonalBillingCheckoutSession?(): Promise<AdapterResult<{ url: string }>>;
+    createPersonalBillingPortalSession?(): Promise<AdapterResult<{ url: string }>>;
   }
 
   interface Props {
     /** The adapter's company slice. */
     source: BillingSource;
-    /** Null when the company has no cloud account: nothing is metered. */
-    companyUid: string | null;
-    companyName: string;
+    /**
+     * The default account: the company on screen, the active company, or the
+     * personal account. Takes precedence over companyUid/companyName/role.
+     */
+    account?: UsageAccount | null;
+    /** Every account the switcher offers (owner/admin companies plus personal). */
+    accounts?: readonly UsageAccount[];
+    /** Legacy single-company form. Null when the company has no cloud account. */
+    companyUid?: string | null;
+    companyName?: string;
     /** The caller's role in the company, when the roster knows it. */
     role?: string | null;
     /** Open an external link in the system browser. */
     onopenurl?: (url: string) => void;
-    /** Open Settings > Usage. */
+    /** Open Settings > Usage (on the account shown here). */
     onopenusage?: () => void;
     /** Open the Sync section of Settings (repointed to US-016's per-vault section when it lands). */
     onopensync?: () => void;
@@ -64,9 +81,11 @@
 
   let {
     source,
-    companyUid,
-    companyName,
-    role = null,
+    account = null,
+    accounts = [],
+    companyUid: propCompanyUid = null,
+    companyName: propCompanyName = "",
+    role: propRole = null,
     onopenurl,
     onopenusage,
     onopensync,
@@ -85,35 +104,59 @@
   /** Set when a refresh failed and the last good numbers stay on screen. */
   let staleAt = $state<number | null | undefined>(undefined);
 
-  const roleKind = $derived(billingRole(role));
+  const defaultAccount = $derived<UsageAccount>(
+    account ?? { kind: "company", uid: propCompanyUid, name: propCompanyName, role: propRole },
+  );
+  /** The account picked in the switcher; cleared when the default changes. */
+  let pickedKey = $state<string | null>(null);
+  let pickedFor = $state<string | null>(null);
+  const defaultKey = $derived(usageAccountKey(defaultAccount));
+  const current = $derived<UsageAccount>(
+    (pickedKey !== null && pickedFor === defaultKey
+      ? accounts.find((a) => usageAccountKey(a) === pickedKey)
+      : null) ?? defaultAccount,
+  );
+  const currentKey = $derived(usageAccountKey(current));
+  const isPersonal = $derived(current.kind === "personal");
+  const companyUid = $derived(current.kind === "company" ? current.uid : null);
+  const companyName = $derived(current.name);
+  const role = $derived(current.role);
+  const roleKind = $derived(isPersonal ? "owner" : billingRole(role));
+  const switchable = $derived(accounts.length > 1);
+  let listOpen = $state(false);
+  /** Switcher row views, keyed by account; read when the list opens. */
+  let rowViews = $state<Record<string, CoreUsageView>>({});
 
   $effect(() => {
     void refreshNonce;
-    const uid = companyUid;
-    const name = companyName;
+    const acct = current;
+    const key = usageAccountKey(acct);
+    const name = acct.name;
     const api = source;
     const delays = retryDelays;
     untrack(() => {
       outcome = null;
     });
-    if (!uid) {
+    if (acct.kind === "company" && !acct.uid) {
       view = { kind: "no-usage", companyName: name };
       return;
     }
-    // The reads are owner-gated: a known non-owner gets the note at once
-    // instead of a loading line and a 403.
-    if (!canReadBilling(role)) {
+    // The company reads are owner-gated: a known non-owner gets the note at
+    // once instead of a loading line and a 403. The personal account is
+    // always the caller's own.
+    if (acct.kind === "company" && !canReadBilling(acct.role)) {
       view = { kind: "owner-only", companyName: name };
       return;
     }
     const shown = untrack(() => view);
-    const sameCompany = untrack(() => shownUid) === uid;
-    const cached = cachedCoreUsage(uid);
-    if (!sameCompany) staleAt = undefined;
-    view = cached ?? (shown.kind === "ready" && sameCompany ? shown : { kind: "loading", companyName: name });
-    shownUid = uid;
+    const sameAccount = untrack(() => shownUid) === key;
+    const cached = cachedCoreUsage(key);
+    if (!sameAccount) staleAt = undefined;
+    view = cached ?? (shown.kind === "ready" && sameAccount ? shown : { kind: "loading", companyName: name });
+    shownUid = key;
+    const uid = key;
     let cancelled = false;
-    void readCoreUsageWithRetry(api as never, uid, name, {
+    void readAccountUsage(api as never, acct, {
       ...(delays ? { delays } : {}),
       cancelled: () => cancelled,
     }).then((next) => {
@@ -128,6 +171,7 @@
       view = next;
       staleAt = undefined;
       rememberCoreUsage(uid, next);
+      rowViews = { ...rowViews, [uid]: next };
     });
     return () => {
       cancelled = true;
@@ -137,7 +181,7 @@
   // Opening the menu mounts this panel, which reads once; while it stays
   // open it re-reads at most every few minutes.
   $effect(() => {
-    if (!companyUid || refreshMs <= 0) return;
+    if ((current.kind === "company" && !current.uid) || refreshMs <= 0) return;
     const timer = setInterval(() => {
       refreshNonce += 1;
     }, refreshMs);
@@ -157,9 +201,12 @@
         : (notice?.actionLabel ?? "Set up billing"),
   );
   const hint = $derived(billingPortalHint(outcome, companyName));
-  const mayBill = $derived(canSetUpBilling(role));
+  const mayBill = $derived(isPersonal || canSetUpBilling(role));
   const canBill = $derived(
-    Boolean(onopenurl) && (paid || typeof source.createBillingCheckoutSession === "function"),
+    Boolean(onopenurl) &&
+      (isPersonal
+        ? typeof (paid ? source.createPersonalBillingPortalSession : source.createPersonalBillingCheckoutSession) === "function"
+        : paid || typeof source.createBillingCheckoutSession === "function"),
   );
   const showBilling = $derived(
     mayBill && (view.kind === "ready" || (view.kind === "owner-only" && roleKind === "admin")),
@@ -185,9 +232,65 @@
     refreshNonce += 1;
   }
 
+  function pick(next: UsageAccount): void {
+    pickedKey = usageAccountKey(next);
+    pickedFor = defaultKey;
+    listOpen = false;
+  }
+
+  function toggleList(): void {
+    listOpen = !listOpen;
+    if (!listOpen) return;
+    // Read each account's total once per open; cached reads paint at once.
+    for (const acct of accounts) {
+      const key = usageAccountKey(acct);
+      const cached = cachedCoreUsage(key);
+      if (cached) {
+        rowViews = { ...rowViews, [key]: cached };
+        continue;
+      }
+      if (acct.kind === "company" && !acct.uid) {
+        rowViews = { ...rowViews, [key]: { kind: "no-usage", companyName: acct.name } };
+        continue;
+      }
+      if (acct.kind === "company" && !canReadBilling(acct.role)) {
+        rowViews = { ...rowViews, [key]: { kind: "owner-only", companyName: acct.name } };
+        continue;
+      }
+      rowViews = { ...rowViews, [key]: { kind: "loading", companyName: acct.name } };
+      void readAccountUsage(source as never, acct, { delays: [] }).then((next) => {
+        rememberCoreUsage(key, next);
+        rowViews = { ...rowViews, [key]: next };
+      });
+    }
+  }
+
+  function openDetails(): void {
+    setPreferredUsageAccount(currentKey);
+    onopenusage?.();
+  }
+
   async function openBilling(): Promise<void> {
+    if (pending || !onopenurl) return;
+    if (isPersonal) {
+      pending = true;
+      outcome = null;
+      try {
+        outcome = await openBillingPortal({
+          companyUid: PERSONAL_ACCOUNT_KEY,
+          createSession: () =>
+            paid ? source.createPersonalBillingPortalSession!() : source.createPersonalBillingCheckoutSession!(),
+          openExternal: onopenurl,
+          ...(paid ? {} : { approveUrl: approvedCheckoutUrl }),
+        });
+        if (outcome.kind === "opened") refreshOnReturn();
+      } finally {
+        pending = false;
+      }
+      return;
+    }
     const uid = companyUid;
-    if (pending || !onopenurl || !uid) return;
+    if (!uid) return;
     pending = true;
     outcome = null;
     try {
@@ -217,11 +320,49 @@
   aria-label="Usage this month"
 >
   <div class="core-usage-head">
-    <span class="core-usage-company" data-testid="core-usage-company"><CompanyLabel name={companyName} {companyUid} /></span>
+    {#if switchable}
+      <button
+        type="button"
+        class="core-usage-switch"
+        data-testid="core-usage-switch"
+        aria-expanded={listOpen}
+        aria-haspopup="listbox"
+        onclick={toggleList}
+      >
+        <span class="core-usage-company" data-testid="core-usage-company">{#if isPersonal}{companyName}{:else}<CompanyLabel name={companyName} {companyUid} />{/if}</span>
+        <span class="core-usage-caret" aria-hidden="true"><Caret tone="var(--t3)" /></span>
+      </button>
+    {:else}
+      <span class="core-usage-company" data-testid="core-usage-company">{#if isPersonal}{companyName}{:else}<CompanyLabel name={companyName} {companyUid} />{/if}</span>
+    {/if}
     {#if view.kind === "ready" && view.planLabel}
       <span class="core-usage-plan" data-testid="core-usage-plan">{view.planLabel}</span>
     {/if}
   </div>
+
+  {#if listOpen}
+    <ul class="core-usage-accounts" role="listbox" aria-label="Accounts" data-testid="core-usage-accounts">
+      {#each accounts as acct (usageAccountKey(acct))}
+        {@const key = usageAccountKey(acct)}
+        <li>
+          <button
+            type="button"
+            role="option"
+            class="core-usage-account"
+            class:on={key === currentKey}
+            aria-selected={key === currentKey}
+            data-testid="core-usage-account"
+            data-key={key}
+            onclick={() => pick(acct)}
+          >
+            <span class="core-usage-account-name">{acct.name}</span>
+            <span class="core-usage-account-role">{acct.kind === "personal" ? "Your account" : billingRole(acct.role) === "admin" ? "Admin" : billingRole(acct.role) === "owner" ? "Owner" : billingRole(acct.role) === "member" ? "Member" : ""}</span>
+            <span class="core-usage-account-total" data-testid="core-usage-account-total">{accountTotalText(rowViews[key])}</span>
+          </button>
+        </li>
+      {/each}
+    </ul>
+  {/if}
 
   {#if notice}
     <p
@@ -303,6 +444,8 @@
     {:else if usage.partial && usage.mode === "trial" && usage.usedLine.startsWith("At least")}
       <p class="core-usage-note small" data-testid="core-usage-partial">{TRIAL_MINIMUM_NOTE}</p>
     {/if}
+  {:else if isPersonal}
+    <p class="core-usage-note" data-testid="core-usage-personal-none">Your personal account isn't on the usage plan, so it has no usage bill.</p>
   {/if}
 
   {#if view.kind === "ready" && staleAt !== undefined}
@@ -327,7 +470,7 @@
           class="core-usage-btn secondary"
           data-testid="core-usage-details"
           disabled={!onopenusage}
-          onclick={() => onopenusage?.()}
+          onclick={openDetails}
         ><RailIcon name="arrow-right" />Usage details</button>
       {/if}
     </div>
@@ -386,6 +529,75 @@
 
   .core-usage-plan {
     flex: none;
+  }
+
+  .core-usage-switch {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .core-usage-caret {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .core-usage-accounts {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 0;
+    padding: 4px;
+    list-style: none;
+    border: 1px solid var(--v4-hairline, var(--line));
+    border-radius: 8px;
+  }
+
+  .core-usage-account {
+    appearance: none;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: baseline;
+    gap: 8px;
+    width: 100%;
+    padding: 5px 6px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--t1);
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .core-usage-account:hover,
+  .core-usage-account.on {
+    background: var(--v4-active-row, var(--hover));
+  }
+
+  .core-usage-account-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .core-usage-account-role {
+    color: var(--t3);
+    font-size: 12px;
+  }
+
+  .core-usage-account-total {
+    color: var(--t2);
+    font-variant-numeric: tabular-nums;
   }
 
   .core-usage-notice {
