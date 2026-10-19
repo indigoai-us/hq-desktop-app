@@ -25,7 +25,7 @@
 //! `HQ_SCRATCH_BUILD` they are ignored even when compiled in.
 
 /// Truthy values, the same as the runtime `HQ_UPDATER_DISABLED` switch.
-fn switch_on(value: Option<&str>) -> bool {
+pub(crate) fn switch_on(value: Option<&str>) -> bool {
     matches!(
         value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
         Some("1" | "true" | "yes")
