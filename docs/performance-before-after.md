@@ -378,13 +378,13 @@ which builds `apps/sync` with its real `vite.config.ts` into a temporary
 directory and sums the JS in each window's static import graph. The main
 column is the same script run in a worktree at `a176d88a3`. The harness row
 comes from the `initialJsBytes` line of `pnpm perf:rail`. The branch figures
-include the lazy-door retry and Sentry reporter added after review (about
+include the lazy-door retry added after review (about
 1.8 KB over the first measurement).
 
 Because the doors now load from separate files in the shipped app, a chunk
 can fail to load (for example while an app update replaces the bundle). A
-door retries twice (250 ms, then 1 s), then reports the failure to Sentry
-tagged with the window and the door, and shows a short failed line with Try
+door retries twice (250 ms, then 1 s), then logs the failure to the console
+and shows a short failed line with Try
 again in place of its loading frame.
 
 The harness number falls by less than the shipped number because the harness

@@ -7,7 +7,6 @@
  * Same pattern as atlas-lazy.ts and telemetry-lazy.ts.
  */
 import type { Component } from "svelte";
-import { reportLazyLoadFailure } from "../common/lazy-load-report.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyComponent = Component<any>;
@@ -22,14 +21,14 @@ export interface Door {
  * Waits between attempts after a failed chunk load. A chunk can fail to load
  * when the file is briefly missing (a UI bundle swap, an app update in
  * progress) or the read is interrupted. Two retries, then the failure is
- * reported and the door shows its failed state with Try again.
+ * logged and the door shows its failed state with Try again.
  */
 export const LAZY_DOOR_RETRY_DELAYS_MS: readonly number[] = [250, 1000];
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
- * A memoized door. `surface` names the body in failure reports. A load that
+ * A memoized door. `surface` names the body in the failure log. A load that
  * fails after its retries clears the memo, so the next `load()` (Try again,
  * or the next mount) starts over.
  */
@@ -50,7 +49,7 @@ export function createDoor(
         if (i < retryDelaysMs.length) await wait(retryDelaysMs[i]!);
       }
     }
-    reportLazyLoadFailure(surface, lastError);
+    console.error("[lazy-door] load failed after retries", surface, lastError);
     throw lastError;
   };
   const load = () => {

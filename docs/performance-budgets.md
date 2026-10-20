@@ -115,7 +115,7 @@ the HTML entries and of modules the app `import()`s at boot) goes into
 (lazy doors, Atlas, telemetry) keep their own chunks. Stylesheets stay in
 `hq-shared`. Before this rule every workspace module was forced into
 `hq-shared`, so lazy doors split nothing in the shipped app. The perf harness
-build uses the same function. A door retries a failed chunk load twice (250 ms, then 1 s), reports the final failure to Sentry through `@hq/ui/lazy-load-report`, and then shows a short failed line with Try again.
+build uses the same function. A door retries a failed chunk load twice (250 ms, then 1 s), logs the final failure, and then shows a short failed line with Try again.
 
 ### 8. Bundle size
 

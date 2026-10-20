@@ -20,7 +20,6 @@ import { installDesktopZoom } from './lib/desktopZoom';
 import { installAppearancePreferences } from './lib/appearancePreferences';
 import { installLinkTitleFetcher } from './lib/linkTitleFetcher';
 import { signalUiBoot } from './lib/ui-hot';
-import { installLazyLoadSentryReporter } from './lib/lazy-load-sentry';
 
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN,
@@ -31,7 +30,6 @@ Sentry.init({
 });
 
 const windowLabel = getCurrentWindow().label;
-installLazyLoadSentryReporter(windowLabel);
 // Tag the document so per-window `:global(html, body)` rules can scope
 // themselves with `[data-window="…"]` and stop bleeding across windows.
 // Without this, whichever component's CSS gets bundled last wins the

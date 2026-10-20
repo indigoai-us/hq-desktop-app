@@ -2,7 +2,7 @@
   /**
    * Renders a door's body once it has loaded. Until then it renders the
    * caller's loading frame (the `skeleton` snippet) synchronously, so the click paints its frame at once.
-   * The door retries a failed chunk load (lazy-doors.ts) and reports the
+   * The door retries a failed chunk load (lazy-doors.ts) and logs the
    * final failure. Then this shows a short failed line with Try again, the
    * same treatment as the Daily Brief host; no error text is shown.
    */
@@ -38,7 +38,7 @@
         if (live) Body = loaded;
       },
       () => {
-        // Logged and reported by the door after its retries.
+        // Logged by the door after its retries.
         if (live) failed = true;
       },
     );

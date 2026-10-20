@@ -25,7 +25,6 @@
       "default": "./src/common/button/RailIcon.svelte"
     },
     "./rail-icons": "./src/common/button/rail-icons.ts",
-    "./lazy-load-report": "./src/common/lazy-load-report.ts",
     "./brand": {
       "svelte": "./src/brand/index.ts",
       "default": "./src/brand/index.ts"
