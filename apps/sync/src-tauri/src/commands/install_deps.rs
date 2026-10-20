@@ -1151,7 +1151,27 @@ pub fn extended_search_path_in(home: Option<&std::path::Path>) -> String {
             vm_count += 1;
         }
     }
-    let joined = dirs.join(":");
+    let mut joined = dirs.join(":");
+    // On a Mac without Apple's developer tools, /usr/bin/python3, make and the
+    // compilers are stubs that open Apple's install prompt. An npm install that
+    // falls back to a node-gyp compile would run them, so HQ's guard scripts go
+    // just ahead of /usr/bin and the install fails with the deps failure.
+    if crate::util::paths::apple_tool_stubs_active() {
+        if let Some(home) = home_buf.as_deref() {
+            if let Ok(guard) = crate::util::paths::ensure_apple_tool_guard_dir_in(home) {
+                let mut parts: Vec<String> = joined
+                    .split(':')
+                    .filter(|part| !part.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                crate::util::paths::insert_before_usr_bin(
+                    &mut parts,
+                    guard.to_string_lossy().into_owned(),
+                );
+                joined = parts.join(":");
+            }
+        }
+    }
     // Env-gated diagnostic — emits at most one line per call when
     // HQ_INSTALLER_DEBUG_DEPS=1. Silent for any other value of the env var.
     // shell_path is colon-joined; count individual dirs so support can
@@ -2061,7 +2081,31 @@ fn shell_profile_with_block(contents: &str, block: &str, replace_stale: bool) ->
 #[cfg(not(windows))]
 pub fn shell_path_block() -> String {
     let home = dirs::home_dir().unwrap_or_default();
-    shell_path_block_for(&home, &managed_toolchain_dir_in(&home))
+    let include_git_shim = !user_git_present_on(
+        &extended_search_path_in(Some(&home)),
+        &home,
+        crate::util::paths::apple_tool_stubs_active(),
+    );
+    shell_path_block_for(&home, &managed_toolchain_dir_in(&home), include_git_shim)
+}
+
+/// True when `search_path` has a working git of the user's own (Homebrew,
+/// Xcode or the Command Line Tools). HQ's managed toolchain and guard do not
+/// count, and neither does Apple's stub while the stubs are live. Nothing is
+/// spawned.
+#[cfg(not(windows))]
+fn user_git_present_on(search_path: &str, home: &std::path::Path, stubs_active: bool) -> bool {
+    let toolchain = managed_toolchain_dir_in(home);
+    let user_dirs: Vec<&str> = search_path
+        .split(':')
+        .filter(|dir| !dir.is_empty() && !std::path::Path::new(dir).starts_with(&toolchain))
+        .collect();
+    crate::util::paths::resolve_git_on_path(
+        &user_dirs.join(":"),
+        stubs_active,
+        Some(&crate::util::paths::apple_tool_guard_dir_in(home)),
+    )
+    .is_ok()
 }
 
 /// [`shell_path_block`] for an explicit home and toolchain root. A root under
@@ -2069,7 +2113,11 @@ pub fn shell_path_block() -> String {
 /// user's home at run time; any other root (an `XDG_DATA_HOME` outside the
 /// home directory) is written as an absolute path.
 #[cfg(not(windows))]
-fn shell_path_block_for(home: &std::path::Path, toolchain: &std::path::Path) -> String {
+fn shell_path_block_for(
+    home: &std::path::Path,
+    toolchain: &std::path::Path,
+    include_git_shim: bool,
+) -> String {
     // Every managed bin dir a user-facing tool lands in — node, the npm
     // global prefix (qmd, hq, claude), the portable dugite git, and
     // ~/.local/bin (yq's direct-binary fallback). The git dir MUST come
@@ -2077,12 +2125,20 @@ fn shell_path_block_for(home: &std::path::Path, toolchain: &std::path::Path) -> 
     // that pops the "install developer tools" dialog. The install matrix
     // (sonoma-consumer:bare:full-fresh-install, 2026-09-03) caught both
     // `yq: command not found` and the stub git after a reported-OK install.
+    // A Mac that already has its own git (Homebrew, Xcode or the Command Line
+    // Tools) keeps it first in the terminal: HQ's git is left out and stays
+    // first only for HQ's own child processes.
     let root = match toolchain.strip_prefix(home) {
         Ok(relative) => format!("$HOME/{}", relative.display()),
         Err(_) => toolchain.display().to_string(),
     };
+    let git_shim = if include_git_shim {
+        format!("{root}/git-shim:")
+    } else {
+        String::new()
+    };
     format!(
-        "\n{SHELL_PATH_MARKER}\nexport PATH=\"{root}/node/bin:{root}/npm-global/bin:{root}/git-shim:$HOME/.local/bin:$PATH\"\n"
+        "\n{SHELL_PATH_MARKER}\nexport PATH=\"{root}/node/bin:{root}/npm-global/bin:{git_shim}$HOME/.local/bin:$PATH\"\n"
     )
 }
 
@@ -2404,16 +2460,45 @@ pub async fn configure_claude_settings_path(
     Ok("[path] skipped - PATH is registry-managed on Windows".to_string())
 }
 
-/// Internal implementation shared by `check_dep` (uses real PATH) and
-/// `check_dep_in` (uses a caller-supplied search path — useful for tests).
-/// True when `(tool, bin_path)` is the macOS `/usr/bin/git` CLT shim. Pure so
-/// the path classification is unit-tested without filesystem/xcode-select; the
-/// caller layers the CLT-presence check on top to decide "usable or not".
-#[cfg(not(windows))]
-pub fn is_macos_git_shim(tool: &str, bin_path: &std::path::Path) -> bool {
-    tool == "git" && bin_path == std::path::Path::new("/usr/bin/git")
+/// True when `(tool, bin_path)` is one of the stubs macOS ships at `/usr/bin`
+/// in place of Apple's developer tools: git, python3, make and clang. On a Mac
+/// without those tools, running a stub opens Apple's install prompt (a
+/// multi-GB download). HQ never runs them and never installs Apple's tools: it
+/// provisions its own prebuilt git and Node instead. With Command Line Tools
+/// or Xcode installed the `/usr/bin` tools work and are not stubs. The check
+/// reads the developer-tools folders only and never spawns anything.
+pub fn is_macos_clt_shim(tool: &str, bin_path: &std::path::Path) -> bool {
+    matches!(tool, "git" | "python3" | "make" | "clang")
+        && crate::util::paths::is_apple_tool_prompt_stub_with(
+            tool,
+            bin_path,
+            crate::util::paths::apple_tool_stubs_active(),
+        )
 }
 
+/// True when `bin_path` is one of HQ's guard scripts, which stand in for
+/// Apple's stubs. Finding one means the real tool is missing.
+#[cfg(not(windows))]
+fn is_apple_tool_guard(bin_path: &std::path::Path) -> bool {
+    dirs::home_dir().is_some_and(|home| {
+        bin_path.parent() == Some(crate::util::paths::apple_tool_guard_dir_in(&home).as_path())
+    })
+}
+
+#[cfg(windows)]
+fn is_apple_tool_guard(_bin_path: &std::path::Path) -> bool {
+    false
+}
+
+/// True when `(tool, bin_path)` is the macOS `/usr/bin/git` stub. Kept for
+/// existing callers; [`is_macos_clt_shim`] covers the other stubs too.
+#[cfg(not(windows))]
+pub fn is_macos_git_shim(tool: &str, bin_path: &std::path::Path) -> bool {
+    tool == "git" && is_macos_clt_shim(tool, bin_path)
+}
+
+/// Internal implementation shared by `check_dep` (uses real PATH) and
+/// `check_dep_in` (uses a caller-supplied search path — useful for tests).
 #[cfg(not(windows))]
 pub fn check_dep_impl(tool: &str, search_path: Option<&str>) -> DepStatus {
     // Locate the binary.
@@ -2435,26 +2520,26 @@ pub fn check_dep_impl(tool: &str, search_path: Option<&str>) -> DepStatus {
         }
     };
 
-    // macOS ships a non-functional `git` shim at /usr/bin/git that forwards to
-    // the Xcode Command Line Tools. With no CLT installed it can't run git — it
-    // errors and pops the "install developer tools" dialog. Treat it as NOT
-    // installed so the managed (dugite) git gets provisioned instead. Detected
-    // via path + `xcode-select -p` so we never RUN the shim (running it is what
-    // pops the dialog). Once the toolchain git is installed, which_in resolves
-    // to it first (toolchain is ahead of /usr/bin), so this guard stops firing.
-    if is_macos_git_shim(tool, &bin_path) {
-        let clt_present = Command::new("/usr/bin/xcode-select")
-            .arg("-p")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if !clt_present {
-            return DepStatus {
-                installed: false,
-                version: None,
-                path: None,
-            };
-        }
+    let probe_path = search_path
+        .map(str::to_owned)
+        .unwrap_or_else(extended_search_path);
+    check_dep_resolved(tool, bin_path, &probe_path)
+}
+
+/// Classify a located binary. A macOS `/usr/bin` developer-tools stub counts
+/// as not installed when Apple's tools are absent, so the managed (dugite) git
+/// gets provisioned and the stub is never run (running it is what opens
+/// Apple's install prompt). Once the toolchain git is installed, `which_in`
+/// resolves to it first (the toolchain is ahead of /usr/bin), so this branch
+/// stops firing.
+#[cfg(not(windows))]
+pub fn check_dep_resolved(tool: &str, bin_path: PathBuf, probe_path: &str) -> DepStatus {
+    if is_macos_clt_shim(tool, &bin_path) || is_apple_tool_guard(&bin_path) {
+        return DepStatus {
+            installed: false,
+            version: None,
+            path: None,
+        };
     }
 
     // Run `<tool> --version` and capture the first line of stdout.
@@ -2465,9 +2550,6 @@ pub fn check_dep_impl(tool: &str, search_path: Option<&str>) -> DepStatus {
     // `version: None` for a perfectly healthy qmd. A non-zero exit is a
     // FAILED probe — a leftover stub that prints and exits 97 must not be
     // mistaken for a working tool (install matrix `stale-toolchain`, 2026-09-03).
-    let probe_path = search_path
-        .map(str::to_owned)
-        .unwrap_or_else(extended_search_path);
     let version = Command::new(&bin_path)
         .arg("--version")
         .env("PATH", probe_path)
@@ -3228,7 +3310,29 @@ async fn install_node_macos<R: tauri::Runtime>(app: AppHandle<R>) -> Result<Stri
 // install_git
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Install git via `brew install git`.
+/// Finish a managed Git install: write the portable-Git wrapper that sets
+/// `GIT_EXEC_PATH` and the templates dir. Git setup runs right after this
+/// stage and needs the wrapper; without it the lookup falls through to
+/// `/usr/bin/git`, which first-run refuses on a Mac without Apple's tools.
+#[cfg(not(windows))]
+pub(crate) fn finish_managed_git_install(home: &std::path::Path) -> Result<PathBuf, String> {
+    ensure_managed_git_shim_in(home)
+}
+
+/// True when HQ must download its own git: it is not installed yet and
+/// `search_path` has no working git of the user's own. A Mac with Homebrew,
+/// Xcode or the Command Line Tools keeps using that git.
+#[cfg(not(windows))]
+fn managed_git_download_needed(
+    home: &std::path::Path,
+    search_path: &str,
+    stubs_active: bool,
+) -> bool {
+    !managed_git_bin_in(home).join("git").exists()
+        && !user_git_present_on(search_path, home, stubs_active)
+}
+
+/// Install HQ's portable git, unless the Mac already has a working git.
 #[cfg(not(windows))]
 async fn install_git_macos(app: AppHandle) -> Result<String, String> {
     let home = home_dir_or_err(&app, "git")?;
@@ -3241,7 +3345,20 @@ async fn install_git_macos(app: AppHandle) -> Result<String, String> {
             &app,
             &format!("[git] managed Git already present at {}", git_bin.display()),
         );
+        if let Err(reason) = finish_managed_git_install(&home) {
+            let msg = format!("[git] managed Git wrapper could not be written: {reason}");
+            emit_preflight_line(&app, &msg);
+            return Err(msg);
+        }
         return Ok(format!("git already installed at {}", git_bin.display()));
+    }
+
+    // Git setup searches the child PATH, so the same PATH decides here.
+    let search_path = crate::util::paths::child_path();
+    let stubs_active = crate::util::paths::apple_tool_stubs_active();
+    if !managed_git_download_needed(&home, &search_path, stubs_active) {
+        emit_preflight_line(&app, "[git] this Mac already has a working git");
+        return Ok("git already installed".to_string());
     }
 
     let arch = std::env::consts::ARCH;
@@ -3311,6 +3428,12 @@ async fn install_git_macos(app: AppHandle) -> Result<String, String> {
             "[git] install completed but git binary not found at {}",
             git_bin.display()
         );
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    }
+
+    if let Err(reason) = finish_managed_git_install(&home) {
+        let msg = format!("[git] managed Git wrapper could not be written: {reason}");
         emit_preflight_line(&app, &msg);
         return Err(msg);
     }
@@ -4509,6 +4632,13 @@ async fn npm_install_global_managed<R: tauri::Runtime>(
 /// hq-cli's package.json. Installing `latest` here produced a live three-way
 /// skew (2.8.3 vs 2.5.3 vs 1.0.7) that the install matrix caught on
 /// 2026-09-03 — `setup.sh` then "downgraded" what the app had just installed.
+///
+/// Do not bump this without checking qmd's native modules. qmd 2.8.x depends
+/// on better-sqlite3 13.0.3, which ships no darwin prebuild for the managed
+/// Node's ABI (node-v127). npm then compiles it from source, and on a Mac
+/// without Apple's Command Line Tools that compile runs the /usr/bin clang,
+/// make and python3 shims and opens Apple's install prompt. 2.5.3 installs
+/// from prebuilt binaries only.
 pub const MANAGED_QMD_VERSION: &str = "2.5.3";
 
 /// Install qmd via `npm install -g @tobilu/qmd@<pin>`.
@@ -9975,6 +10105,7 @@ mod install_deps_tests {
 
     #[test]
     fn test_is_macos_git_shim_classifies_stub_path() {
+        let _stubs = crate::util::paths::AppleToolStubsOverride::set(true);
         assert!(is_macos_git_shim("git", Path::new("/usr/bin/git")));
         assert!(!is_macos_git_shim(
             "git",
@@ -9985,6 +10116,66 @@ mod install_deps_tests {
             Path::new("/opt/homebrew/bin/git")
         ));
         assert!(!is_macos_git_shim("node", Path::new("/usr/bin/git")));
+    }
+
+    #[test]
+    fn test_is_macos_clt_shim_covers_git_python3_make_and_clang() {
+        let _stubs = crate::util::paths::AppleToolStubsOverride::set(true);
+        for tool in ["git", "python3", "make", "clang"] {
+            let shim = Path::new("/usr/bin").join(tool);
+            assert!(is_macos_clt_shim(tool, &shim), "{tool} at {shim:?}");
+            assert!(!is_macos_clt_shim(
+                tool,
+                &Path::new("/opt/homebrew/bin").join(tool)
+            ));
+        }
+        assert!(!is_macos_clt_shim(
+            "git",
+            Path::new("/Users/x/Library/Application Support/Indigo HQ/toolchain/git/bin/git")
+        ));
+        assert!(!is_macos_clt_shim("node", Path::new("/usr/bin/node")));
+        assert!(!is_macos_clt_shim("python3", Path::new("/usr/bin/git")));
+    }
+
+    // Gate-2 finding: a Mac with Command Line Tools, Xcode or Homebrew already
+    // has a working /usr/bin/git, python3, make and clang. Counting them as
+    // missing made every Mac download HQ's git in the blocking setup phase.
+    #[test]
+    fn test_usr_bin_tools_count_as_installed_when_apple_tools_are_present() {
+        let _stubs = crate::util::paths::AppleToolStubsOverride::set(false);
+        for tool in ["git", "python3", "make", "clang"] {
+            let tool_path = Path::new("/usr/bin").join(tool);
+            assert!(!is_macos_clt_shim(tool, &tool_path), "{tool}");
+        }
+        assert!(!is_macos_git_shim("git", Path::new("/usr/bin/git")));
+    }
+
+    /// A Mac without Apple's developer tools: every /usr/bin shim counts as
+    /// missing so HQ installs its own copy, and the shim is never run (running
+    /// it opens Apple's install prompt). No probe of the developer tools runs
+    /// either: the decision is the path alone.
+    #[cfg(not(windows))]
+    #[test]
+    fn test_check_dep_resolved_reports_clt_shims_missing_without_running_them() {
+        let _stubs = crate::util::paths::AppleToolStubsOverride::set(true);
+        for tool in ["git", "python3", "make", "clang"] {
+            let status =
+                check_dep_resolved(tool, Path::new("/usr/bin").join(tool), "/usr/bin:/bin");
+            assert!(!status.installed, "{tool} shim must not count as installed");
+            assert!(status.path.is_none());
+            assert!(status.version.is_none());
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_check_dep_resolved_still_probes_real_binaries() {
+        let dir = tempfile::TempDir::new().unwrap();
+        make_fake_bin(&dir, "git");
+        let bin = dir.path().join("git");
+        let status = check_dep_resolved("git", bin.clone(), dir.path().to_str().unwrap());
+        assert!(status.installed);
+        assert_eq!(status.path, Some(bin));
     }
 
     #[test]
@@ -11673,7 +11864,9 @@ mod shell_path_block_tests {
 
     #[test]
     fn path_block_covers_git_and_local_bin_before_system_dirs() {
-        let block = shell_path_block();
+        // A Mac with no git of its own gets HQ's git on the terminal PATH.
+        let home = std::path::Path::new("/Users/x");
+        let block = shell_path_block_for(home, &managed_toolchain_dir_in(home), true);
         let export = block.lines().find(|l| l.starts_with("export PATH=")).expect("export line");
         let idx = |needle: &str| export.find(needle).unwrap_or_else(|| panic!("missing {needle}"));
         assert!(idx("toolchain/node/bin") < idx("toolchain/npm-global/bin"));
@@ -11717,19 +11910,87 @@ mod shell_path_block_tests {
         let home = std::path::Path::new("/Users/x");
         let toolchain = home.join("Library/Application Support/Indigo HQ/toolchain");
         assert_eq!(
-            shell_path_block_for(home, &toolchain),
+            shell_path_block_for(home, &toolchain, true),
             "\n# Indigo HQ managed toolchain\nexport PATH=\"$HOME/Library/Application Support/Indigo HQ/toolchain/node/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/npm-global/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/git-shim:$HOME/.local/bin:$PATH\"\n"
         );
+    }
+
+    // Gate-2 finding: the terminal PATH put HQ's git ahead of a user's own
+    // Homebrew, Xcode or Command Line Tools git. HQ's git goes on the terminal
+    // PATH only when the Mac has no working git of its own.
+    #[test]
+    fn path_block_leaves_hq_git_off_the_terminal_path_when_the_user_has_git() {
+        let home = std::path::Path::new("/Users/x");
+        let toolchain = home.join("Library/Application Support/Indigo HQ/toolchain");
+        let block = shell_path_block_for(home, &toolchain, false);
+        assert!(!block.contains("git-shim"), "{block}");
+        assert!(
+            block.contains("toolchain/npm-global/bin:$HOME/.local/bin:$PATH"),
+            "{block}"
+        );
+        assert!(shell_path_block_for(home, &toolchain, true).contains("toolchain/git-shim:"));
+    }
+
+    fn write_fake_git(dir: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(dir).unwrap();
+        let git = dir.join("git");
+        std::fs::write(&git, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn a_users_own_git_is_found_without_counting_hq_git_or_apple_stubs() {
+        let home = tempfile::TempDir::new().unwrap();
+        let toolchain = managed_toolchain_dir_in(home.path());
+        let shim = toolchain.join("git-shim");
+        write_fake_git(&shim);
+        let brew = home.path().join("brew/bin");
+        let only_hq = format!("{}:/usr/bin:/bin", shim.display());
+        let with_brew = format!("{}:{}:/usr/bin:/bin", shim.display(), brew.display());
+
+        // HQ's own git and Apple's stub do not count as the user's git.
+        assert!(!user_git_present_on(&only_hq, home.path(), true));
+        // With Apple's tools installed, /usr/bin/git is the user's git.
+        assert!(user_git_present_on(&only_hq, home.path(), false));
+
+        write_fake_git(&brew);
+        assert!(user_git_present_on(&with_brew, home.path(), true));
+    }
+
+    // Gate-2 finding: the blocking git step downloaded HQ's git on every Mac,
+    // even one that already had Homebrew, Xcode or the Command Line Tools.
+    #[test]
+    fn hq_git_is_downloaded_only_when_the_mac_has_no_working_git() {
+        let home = tempfile::TempDir::new().unwrap();
+        let brew = home.path().join("brew/bin");
+        let stub_only = "/usr/bin:/bin";
+        let with_brew = format!("{}:/usr/bin:/bin", brew.display());
+
+        // No CLT, no Homebrew: only Apple's stub, so HQ installs its git.
+        assert!(managed_git_download_needed(home.path(), stub_only, true));
+        // The Command Line Tools or Xcode make /usr/bin/git a working git.
+        assert!(!managed_git_download_needed(home.path(), stub_only, false));
+        // Homebrew git on a Mac without Apple's tools.
+        write_fake_git(&brew);
+        assert!(!managed_git_download_needed(home.path(), &with_brew, true));
+        // HQ's own git already installed.
+        write_fake_git(&managed_git_bin_in(home.path()));
+        assert!(!managed_git_download_needed(home.path(), stub_only, true));
     }
 
     #[test]
     fn path_block_follows_the_linux_xdg_root() {
         let home = std::path::Path::new("/home/x");
-        let under_home = shell_path_block_for(home, &home.join(".local/share/IndigoHQ/toolchain"));
+        let under_home =
+            shell_path_block_for(home, &home.join(".local/share/IndigoHQ/toolchain"), true);
         assert!(under_home.contains("export PATH=\"$HOME/.local/share/IndigoHQ/toolchain/node/bin:"));
         assert!(!under_home.contains("Library"));
-        let outside_home =
-            shell_path_block_for(home, std::path::Path::new("/srv/xdg-data/IndigoHQ/toolchain"));
+        let outside_home = shell_path_block_for(
+            home,
+            std::path::Path::new("/srv/xdg-data/IndigoHQ/toolchain"),
+            true,
+        );
         assert!(outside_home.contains("export PATH=\"/srv/xdg-data/IndigoHQ/toolchain/node/bin:"));
     }
 
@@ -11792,7 +12053,13 @@ mod git_shim_tests {
 
     #[test]
     fn qmd_pin_matches_setup_sh_contract() {
-        assert_eq!(MANAGED_QMD_VERSION, "2.5.3");
+        assert_eq!(
+            MANAGED_QMD_VERSION, "2.5.3",
+            "qmd versions that pull better-sqlite3 13.x have no darwin node-v127 \
+             prebuild and compile from source, which needs Apple's Command Line \
+             Tools. Confirm every native dependency of the new qmd ships a darwin \
+             prebuild for the managed Node before changing this pin."
+        );
     }
 }
 
@@ -12611,6 +12878,74 @@ mod npm_setup_recovery_tests {
                 "{layout} setup must preserve npm argv"
             );
         }
+    }
+
+    // Gate-2 finding: a package without a prebuilt binary made npm fall back
+    // to a node-gyp compile, which runs python3, make and clang. On a Mac
+    // without Apple's tools those are the stubs that open Apple's prompt.
+    #[test]
+    fn setup_npm_command_never_builds_native_modules_from_source() {
+        let command = setup_npm_command(
+            "npm",
+            "/test/child-path",
+            Path::new("/tmp/app-cache/npm"),
+            &["install", "-g", "@tobilu/qmd"],
+        );
+        let build_from_source = command
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new("npm_config_build_from_source"))
+            .and_then(|(_, value)| value)
+            .map(|value| value.to_string_lossy().into_owned());
+        assert_eq!(build_from_source.as_deref(), Some("false"));
+    }
+
+    // The npm child gets HQ's guard ahead of /usr/bin, so a compile fallback
+    // that looks up python3, make or clang fails with the deps failure.
+    #[cfg(not(windows))]
+    #[test]
+    fn setup_search_path_puts_the_apple_tool_guard_before_usr_bin_when_stubs_are_live() {
+        let home = tempfile::TempDir::new().unwrap();
+        let guard = crate::util::paths::apple_tool_guard_dir_in(home.path())
+            .to_string_lossy()
+            .into_owned();
+
+        let live = {
+            let _stubs = crate::util::paths::AppleToolStubsOverride::set(true);
+            extended_search_path_in(Some(home.path()))
+        };
+        let parts: Vec<&str> = live.split(':').collect();
+        let guard_at = parts.iter().position(|part| *part == guard);
+        assert!(guard_at.is_some(), "guard missing from {live}");
+        if let Some(usr_bin) = parts.iter().position(|part| *part == "/usr/bin") {
+            assert!(guard_at.unwrap() < usr_bin, "{live}");
+        }
+        assert!(Path::new(&guard).join("python3").is_file());
+
+        let installed = {
+            let _stubs = crate::util::paths::AppleToolStubsOverride::set(false);
+            extended_search_path_in(Some(home.path()))
+        };
+        assert!(
+            !installed.split(':').any(|part| part == guard),
+            "{installed}"
+        );
+    }
+
+    // HQ's guard scripts stand in for Apple's stubs; finding one means the
+    // tool is missing, never installed.
+    #[cfg(not(windows))]
+    #[test]
+    fn check_dep_resolved_reports_the_hq_guard_as_missing() {
+        let home = tempfile::TempDir::new().unwrap();
+        let _guard = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _home = crate::util::test_support::scoped_home(home.path());
+        let guard_dir =
+            crate::util::paths::ensure_apple_tool_guard_dir_in(home.path()).expect("guard dir");
+        let status = check_dep_resolved("git", guard_dir.join("git"), "/usr/bin:/bin");
+        assert!(!status.installed);
+        assert!(status.path.is_none());
     }
 
     #[test]

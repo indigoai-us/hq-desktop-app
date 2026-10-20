@@ -66,7 +66,6 @@
     pinCompany,
     type MoreCompany,
   } from "./more-companies.js";
-  import type { LocalOnlyCompany } from "../company/company-display-map.js";
   import type { NewCompanyPlan, ProjectTemplate } from "./new-company/new-company.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import BriefRailHost from "./BriefRailHost.svelte";
@@ -139,7 +138,6 @@
   } from "./company-pane.js";
   import { entryCompanyUidForCommit, paneForEntry } from "./destination-pane.js";
   import {
-    RAIL_SHORTCUT_COUNT,
     railShortcutItems,
     activeRailItemId,
     railDestination,
@@ -158,17 +156,14 @@
   import ChatSidebar, {
     type ChatSidebarActions,
   } from "../chat/ChatSidebar.svelte";
-  import type { RowExtrasResolver } from "../chat/row-extras.js";
   import DmRequestsPanel from "../chat/DmRequestsPanel.svelte";
   import ShortcutCheatSheet from "../common/ShortcutCheatSheet.svelte";
   import {
     formatShortcut,
     registerShortcuts,
     shortcutsSuspended,
-    type ShortcutBinding,
   } from "../common/keyboard-shortcuts.js";
   import {
-    advertisedShortcut,
     atlasShortcutTarget,
   } from "./advertised-shortcuts.js";
   import { dismissToastByKey, pushToast } from "./toast-stack.svelte.js";
@@ -182,7 +177,6 @@
     withSyncToastRestored,
     writeDismissedSyncToasts,
   } from "./sync-toast.js";
-  import { CREATE_MENU_ITEMS, type CreateMenuAction } from "../chat/create-menu.js";
   import {
     SIDEBAR_OVERLAY_MAX_PX,
     sidebarLayout,
@@ -305,7 +299,6 @@
     type CardModalContentProps,
   } from "../chat/messaging/card-modal-registry.js";
   import { SETUP_FAILURE_COPY } from "../chat/setup-run";
-  import type { SetupRunApi } from "../chat/setup-run.js";
   import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
   import { createLaunchActions } from "../settings/launch-actions";
   import FirstRunTakeover from "../chat/first-run/FirstRunTakeover.svelte";
@@ -488,7 +481,6 @@
     type CompanyChannelTabId,
     type CompanyTabModel,
   } from "../chat/tabs/tab-model.js";
-  import type { OfficeCallsHost } from "../meet/office-host.js";
   import NotificationsView from "../inbox/NotificationsView.svelte";
   import ToastStack from "./ToastStack.svelte";
   import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
@@ -503,7 +495,6 @@
   import CommandPalette, {
     type CommandPaletteItem,
   } from "../common/CommandPalette.svelte";
-  import type { ShellSettingsProfile } from "../settings/ShellSettings.svelte";
   import { loadShellSettings } from "./settings-lazy.js";
   import RecommendedUpdateBanner from "../settings/RecommendedUpdateBanner.svelte";
   import MembershipSyncBanner from "./MembershipSyncBanner.svelte";
@@ -521,7 +512,6 @@
     RETRY_EVENT,
     type NativeNotificationRecovery,
   } from "./notification-recovery.js";
-  import type { SyncEventHost } from "./sync-events.js";
   import {
     emptySyncStatus,
     reduceSyncEvent,
@@ -595,7 +585,6 @@
   } from "../meetings/meetings-store.svelte";
 
   import LibraryOverlay from "../library/LibraryOverlay.svelte";
-  import type { PackagesEvents } from "../library/packages-events.js";
   import type { LibraryTab } from "../library/library-overlay-model.js";
   import {
     EMBEDDED_NAVIGATION_EVENT,
@@ -634,7 +623,6 @@
     onMount,
     tick as svelteTick,
     untrack,
-    type Component,
   } from "svelte";
   import {
     applyUiSize,
@@ -656,14 +644,11 @@
   } from "../settings/live-sync-status.js";
   import type { SyncState } from "../common/sync-model.js";
   import {
-    buildChannelStatusModel,
     type ChannelStatusModel,
     type StatusPersonRow,
   } from "../chat/channel-status-model.js";
   import { liveInputsForCompanyProject, liveReadFor } from "../chat/live-read-store.svelte.js";
   import {
-    applyAuthoritativePresence,
-    applyChannelRoster,
     parseChannelMembers,
   } from "./mesh-overlay.js";
   import {
@@ -869,14 +854,9 @@
   import { parseRuntimeStatus, type RuntimeStatus } from "../chat/create-bot/runtime-status.js";
   import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
   import type {
-    ChatSidebarApi,
     ChatWakeBus,
     ConversationApi,
     ConversationMessageWire,
-    NotificationsApi,
-    ProjectMemberAddResult,
-    ReplyThreadScope,
-    ReplyThreadResponse,
   } from "../chat/chat-api.js";
   import {
     replyNewMatchesConversation,
@@ -922,7 +902,6 @@
   import {
     presignUrlFromResult,
     uploadChatAttachments,
-    type PutChatAttachment,
   } from "../chat/messaging/upload-chat-attachments.js";
   import {
     companyChannelUnread,
@@ -988,7 +967,6 @@
     takePendingConversation,
     type ConversationTarget,
   } from "../chat/pending-conversation.js";
-  import type { ChannelDirectoryRow } from "../chat/channel-directory-reconciler.js";
   import {
     NO_RETIRED_ENTITIES,
     liveCompanyUidSet,
@@ -1022,323 +1000,28 @@
     accountChromeFromSelf,
     isSelf,
     settingsProfileFromSelf,
-    type SelfIdentity,
   } from "../identity/self.js";
   import { createTenantStorage } from "../identity/tenant-storage.js";
-  import type { RosterStatus } from "../identity/roster-refresh.js";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
   import "../chat/messaging/messaging-tokens.css";
   import "../home/tokens.css";
   import Caret from "../common/Caret.svelte";
   import { startVisibleInterval } from "../common/visible-interval.js";
+  import type { DesktopAppProps } from "./desktop-app/props.js";
+  import {
+    asReplyThread,
+    createConversationApi,
+    unwrapAdapter,
+  } from "./desktop-app/conversation-api.js";
+  import {
+    projectRowHasPresence,
+    selectedChannelStatus,
+    type ChannelStatusSources,
+  } from "./desktop-app/channel-status.js";
+  import { buildShellShortcuts } from "./desktop-app/shell-shortcuts.js";
 
-  interface Props {
-    /** Platform seam — forwarded to the title-bar Core popover. */
-    adapter: PlatformAdapter;
-    /** App version, shown in the Core popover. */
-    version?: string;
-    sidebarApi: ChatSidebarApi;
-    notificationsApi: NotificationsApi;
-    /**
-     * Resolve the (injected) timeline for a row, oldest → newest. Synchronous —
-     * the display layer never fetches. Defaults to an empty timeline.
-     */
-    messagesByRow?: (row: ConversationRow) => ConversationMessageWire[];
-    /** Resolve the (injected) reaction aggregates for a row. */
-    reactionsByRow?: (row: ConversationRow) => ReactionMap;
-    /** Persist a fetched/toggled reaction map into the host cache. */
-    onreactionscache?: (row: ConversationRow, reactions: ReactionMap) => void;
-    /** Resolve the (injected) Board fixture for a row (columns + stories). */
-    boardByRow?: (row: ConversationRow) => BoardTabData | null;
-    /** Add an active company member to a project row through the host API. */
-    addProjectMember?: (row: ConversationRow, personUid: string) => Promise<ProjectMemberAddResult>;
-    /** Resolve the (injected) Files fixture rows for a row. */
-    filesByRow?: (row: ConversationRow) => ChannelFileItemModel[];
-    loadFilePreview?: (item: ChannelFileItemModel) => Promise<ChannelFilePreview>;
-    /** Platform seam for opening an external URL (run-card preview/diff). */
-    onopenurl?: (url: string) => void;
-    /**
-     * Host-owned notification rows (paused uploads) open through the host, so
-     * it can record the engagement and open only an approved link.
-     */
-    onopenhostnotification?: (id: string, url: string) => void;
-    /** Bubbled lifecycle-card action (host posts in US-009). */
-    oncardaction?: (event: LifecycleCardActionEvent) => void;
-    /** Wake events (host bridges MeshClient → bus); null when offline. */
-    wakes?: ChatWakeBus | null;
-    /** Workspace memberships → sidebar company scopes. */
-    companies?: Workspace[] | null;
-    /**
-     * Company folders on this Mac with no cloud id. Listed in the company
-     * switcher only; they cannot be opened until they sync.
-     */
-    localCompanies?: readonly LocalOnlyCompany[];
-    /**
-     * A company's home channel was just created/adopted client-side
-     * (`ensureCompanyHomeChannel`, from a Companies-row click) and the
-     * `companies` roster prop hasn't caught up yet. The host should patch
-     * its own roster copy and kick a background refresh so the persisted
-     * value matches; the shell already applies the id locally (see
-     * `resolvedHomeChannelIds`) so chrome is correct immediately either way.
-     */
-    onhomechannelresolved?: (companyUid: string, homeChannelId: string) => void;
-    /**
-     * App-level event subscription (Tauri `listen`, or a web bridge), used to
-     * observe sync outcomes the command result cannot report — see
-     * `syncMembership`. Omitted on platforms without an event bus; the
-     * membership banner degrades to reporting dispatch errors only.
-     */
-    syncEvents?: SyncEventHost | null;
-    /**
-     * Where the host is in loading `companies` for this session. #setup
-     * hides the seeded "Create a company" card and the create hero copy
-     * until the roster has loaded once (`ready` | `failed`). Omitted = ready.
-     */
-    rosterStatus?: RosterStatus | null;
-    /** Re-run the host's roster fetch after `rosterStatus === "failed"`. */
-    onretryroster?: () => void;
-    /**
-     * Re-read `companies` now, without touching `rosterStatus`. Called when a
-     * channel names a company the roster does not have yet (the setup bot
-     * created it); resolves once the host has applied the fresh roster.
-     */
-    onrefreshroster?: () => Promise<unknown>;
-    /**
-     * Start reauthentication from the session-expired banner (PL-03). The
-     * desktop host clears the dead session and lands the user on its sign-in
-     * surface. Omitted → the banner states the problem without an action.
-     */
-    onsignin?: () => void | Promise<void>;
-    /**
-     * Verified signed-in principal (host-supplied: web = Cognito session,
-     * desktop = its auth source). Drives "you" tagging + admin gating in the
-     * shared UI. Null on the unauth / empty path.
-     */
-    self?: SelfIdentity | null;
-    /** Native account partition for renderer persistence and async guards. */
-    tenantAccountId?: string | null;
-    /** Monotonic native auth-session generation. A new value remounts the host. */
-    tenantGeneration?: number;
-    /**
-     * Optional explicit admin/owner flag from a defensive host probe
-     * (`identity.isAdmin()`). When omitted, admin is derived from membership
-     * roles; unknown ⇒ not-admin (admin affordances hidden).
-     */
-    isAdmin?: boolean | null;
-    accountLabel?: string | null;
-    accountInitials?: string | null;
-    /** Seed the titlebar bell before NotificationsView mounts. */
-    initialUnreadCount?: number;
-    /** Pre-selected conversation so the default view renders a live channel. */
-    initialRow?: ConversationRow | null;
-    /**
-     * Optional `?reply=<rootEventId>` target. Web passes this from the
-     * conversation URL; desktop honors the same query on its deep-link.
-     */
-    initialReplyRootEventId?: string | null;
-    /**
-     * Host-owned directory (local mesh overlay). Forwarded to the sidebar so
-     * the rail paints before the async directory reconciler settles.
-     */
-    seedDirectory?: ChannelDirectoryRow[] | null;
-    /**
-     * Rows the ⌘K / sidebar-search overlay typeaheads over (channels + people).
-     * Injected from the host overlay — the display layer never fetches.
-     */
-    searchRows?: ConversationRow[];
-    /**
-     * Signed-in profile for the Settings destination. Null/omitted paints
-     * the "No data" profile pane — never a fixture person.
-     */
-    settingsProfile?: ShellSettingsProfile | null;
-    /**
-     * Resolve the (injected) channel status/members model for a row — powers the
-     * member-pill popover. Synchronous; null when the row has no status fixture.
-     */
-    channelStatusByRow?: (row: ConversationRow) => ChannelStatusModel | null;
-    /** person/agent uid → display name used to join the channel creator roster. */
-    identities?: Readonly<Record<string, string>> | null;
-    /** Contacts + agents for @ mention completion. */
-    mentionCandidates?: MentionTarget[];
-    /**
-     * Inject the D-08 designed fixtures into the titlebar Core popover (packs /
-     * update). MUST stay false on real-data paths.
-     */
-    coreFixtures?: boolean;
-    /**
-     * Keep the sidebar's legacy Companies block. Off in the console-rail
-     * shell, where companies live on the rail only; the company-home heal
-     * tests still drive that block.
-     */
-    sidebarCompanies?: boolean;
-    onsignout?: () => Promise<void> | void;
-    onOpenSettings?: () => void;
-    /** Open HQ Console externally (Settings → Manage account). */
-    onOpenConsole?: (url: string) => Promise<void> | void;
-    /**
-     * Called once the mounted app can receive embedded host navigation.
-     * A returned cleanup detaches the host while lifecycle changes unmount it.
-     */
-    onembeddednavigationready?: () => void | (() => void);
-    /** Optional desktop package-operation stream for Library → Installed. */
-    packagesEvents?: PackagesEvents | null;
-    /** Native app/Core/CLI update event edge for Settings → Updates. */
-    updateWakeSeq?: number;
-    /** Read the current native app version during an Updates refresh. */
-    refreshAppVersion?: () => Promise<string>;
-    /** Live interface version when a UI hot update is serving. */
-    uiVersion?: string | null;
-    /** MeshClient notification wakes — bumps NotificationsView to re-fetch REST. */
-    notificationWakeSeq?: number;
-    /** Host owns native active-thread registration for realtime reply wakes. */
-    onactivethreadchange?: (
-      active:
-        | {
-            rootEventId: string;
-            scope: ReplyThreadScope;
-            channelId?: string | null;
-            withPersonUid?: string | null;
-            seenReplyIds: string[];
-          }
-        | null,
-    ) => void;
-    /** The persisted post-ready marker used by the desktop telemetry path. */
-    readyFirstActionReady?: boolean;
-    /**
-     * When true, messagesByRow is first-paint only — the shell still fetches
-     * REST for the selected row so mentions, member-added lines, and the
-     * latest timeline land even when the machine cache is stale.
-     */
-    hydrateLiveMessages?: boolean;
-    /** Persist the REST timeline into the host's shallow cache. */
-    onlivemessages?: (
-      row: ConversationRow,
-      messages: ConversationMessageWire[],
-    ) => void;
-    /** Persist the conversation the user just opened (fresh-load restore). */
-    onselectrow?: (row: ConversationRow) => void;
-    /**
-     * QA-075: the company whose pane is open (a company or project channel),
-     * or null on personal pages and every non-conversation view. Hosts use it
-     * to scope per-company notices to that company's pane.
-     */
-    onactivecompanychange?: (company: { uid: string | null; slug: string } | null) => void;
-    /** Desktop: PUT attachment bytes outside the webview (no S3 CORS). */
-    putAttachmentObject?: PutChatAttachment;
-    /**
-     * Host-owned bounded byte transport for presigned Vault GETs. Desktop
-     * supplies a native hop. Web uses the Work app's same-origin proxy because
-     * Vault buckets do not grant browser CORS to raw presigned URLs.
-     */
-    getAttachmentObject?: (url: string, maxBytes?: number) => Promise<Response>;
-    /**
-     * Bound for first-paint optional fetches (directory, contacts, DM
-     * threads). Tests pass a short value so a hung/404 call cannot leave the
-     * conversation pane on its loader.
-     */
-    bootTimeoutMs?: number;
-    /** First successful conversation/empty paint — host reports `shell_ready`. */
-    onShellReady?: () => void;
-    /**
-     * US-018 native calling seams. Supplied by a desktop host; absent on the
-     * web. The Office tab is gated on `adapter.capabilities.nativeCalls`, and
-     * the panel refuses in its own voice when this is missing.
-     */
-    callsHost?: OfficeCallsHost | null;
-    /** Host-registered full-column destinations keyed by page id. */
-    extraPages?: Record<
-      string,
-      {
-        label: string;
-        detail?: string;
-        /** Optional host-owned create action in the window header. */
-        createAction?: { label: string; param: () => string | null };
-        /**
-         * Optional host-owned "Run Setup" destination for #welcome: a fresh
-         * session whose param carries the setup prompt so the page can send
-         * it as soon as the provider is ready. Falls back to `createAction`.
-         */
-        setupAction?: { label: string; param: () => string | null };
-        /**
-         * Optional host guided-run API. When present, #welcome's Run Setup
-         * runs `/setup` natively inside the hero (stepper + question cards)
-         * and only falls back to `setupAction` when the host's preflight says
-         * the Sessions page must go first. "Show details" opens the session
-         * on this page with its id as the param.
-         */
-        setupRun?: SetupRunApi;
-        /** After setup: a fresh session with `/startwork <company>` as its first turn. */
-        startworkAction?: { label: string; param: (company: string | null) => string | null };
-        component: Component<{
-          param?: string | null;
-          restoreScroll?: NavigationScrollState | null;
-          onnavigate?: (
-            param: string | null,
-            options?: { mode?: "push" | "replace" },
-          ) => void;
-        }>;
-      }
-    >;
-    /** Host decoration for sidebar rows: badge, hover card, and actions. */
-    rowExtrasLoading?: boolean;
-    rowExtrasError?: boolean;
-    rowExtras?: RowExtrasResolver | null;
-    /**
-     * US-005 wiring for the guided install path in #setup. When the setup
-     * bot fails to start because no coding tool is signed in, the hero shows
-     * `SetupInstallGuide` instead of a dead-end. The host provides real
-     * callbacks that drive the Rust install / sign-in / detect commands
-     * (see `apps/sync/src/desktop-alt/lib/install-guide-adapter.ts`).
-     * Omitted callers keep today's behavior: error message only, no guide.
-     */
-    setupInstallGuide?: {
-      oninstall(tool: "claude" | "codex"): Promise<{ ok: boolean; reason?: string }>;
-      onsignin(
-        tool: "claude" | "codex",
-        options?: { signal?: AbortSignal },
-      ): Promise<{ ok: boolean; reason?: string }>;
-      /** Is this tool already signed in? Lets the guide skip to Continue. */
-      onstatus?(tool: "claude" | "codex"): Promise<boolean>;
-      /** Stop a pending sign-in so the guide can open a fresh one. */
-      oncancelsignin?(tool: "claude" | "codex"): Promise<void>;
-      onrefresh(): Promise<void>;
-      downloadUrlFor(tool: "claude" | "codex"): string;
-      onopen(url: string): Promise<{ ok: boolean; reason?: string }> | void;
-      /**
-       * Open one of the assistant desktop apps with a fixed install prompt
-       * pre-filled. Wired to `open_claude_code_link` /
-       * `open_codex_deep_link` via the install-guide adapter. When present,
-       * the shared InstallChoice panel offers a "Set up with Claude" or
-       * "Set up with ChatGPT" button on both the New bot wizard and the
-       * setup assistant.
-       */
-      onopenassistant?(
-        assistant: "claude-desktop" | "chatgpt-desktop",
-        url: string,
-      ): Promise<{ ok: boolean; reason?: string }>;
-    } | null;
-    /**
-     * Live AiTools payload. Passed through the New-bot wizard so the
-     * shared InstallChoice panel can decide which assistant buttons to
-     * offer without a per-open probe. Null while the initial probe runs.
-     */
-    aiTools?: import("../install-choice/install-choice.js").AiTools | null;
-    /** Open the assistant desktop app with a pre-filled install prompt. */
-    onopenassistant?: (
-      assistant: import("../install-choice/install-choice.js").AssistantId,
-      url: string,
-    ) => Promise<import("../install-choice/install-choice.js").InstallOutcome>;
-    /** HQ's own one-click installer for a coding tool. */
-    onassistedinstall?: (
-      tool: import("../install-choice/install-choice.js").CodingTool,
-    ) => Promise<import("../install-choice/install-choice.js").InstallOutcome>;
-    /**
-     * Ask the host to (re-)probe `detect_ai_tools`. Called lazily by the
-     * New bot wizard on mount so the probe is not paid on every app open.
-     */
-    onrequestaitools?: () => void;
-  }
+  type Props = DesktopAppProps;
 
   let {
     adapter,
@@ -9547,128 +9230,38 @@
     };
   });
 
+  // Sources for the channel status model (desktop-app/channel-status.ts).
+  // Getters, so each source is read only when the calculation reaches it.
+  const channelStatusSources: ChannelStatusSources = {
+    get channelRosterById() {
+      return channelRosterById;
+    },
+    liveInputsFor: liveInputsForCompanyProject,
+    presenceStatus,
+    get hostStatus() {
+      return channelStatusByRow;
+    },
+    get liveTabsStatus() {
+      return liveTabs?.status;
+    },
+    get companyNames() {
+      return companyNames;
+    },
+    get companyIcons() {
+      return companyIcons;
+    },
+    get identities() {
+      return identities;
+    },
+  };
   /** Sidebar presence dot: only when a project channel has a known online actor. */
   function rowHasProjectPresence(row: ConversationRow): boolean {
-    if (row.kind !== "channel") return false;
-    const isProject =
-      (row.channelScope ?? "").trim() === "project" ||
-      Boolean((row.projectId ?? "").trim());
-    if (!isProject) return false;
-    const companyUid = (row.companyUid ?? "").trim();
-    if (!companyUid) return false;
-    const projectId = (row.projectId ?? "").trim() || projectIdForRow(row);
-    const live = liveInputsForCompanyProject(companyUid, projectId);
-    // Prefer live-read actors on this project; fall back to channel roster.
-    const fromLive = live.liveSessions
-      .map((s) => s.actorUid)
-      .filter(Boolean);
-    if (fromLive.length > 0) {
-      return fromLive.some(
-        (uid) => presenceStatus(companyUid, uid) === "online",
-      );
-    }
-    const channelId = row.channelId?.trim() ?? "";
-    const roster = channelRosterById[channelId] ?? [];
-    const actorUids =
-      roster.length > 0
-        ? roster.map((m) => m.personUid)
-        : (row.members ?? []).map((m) => m.personUid);
-    if (actorUids.length === 0) {
-      // Company-wide online on any presence entry for transparent companies is
-      // not enough — without project actors we stay dark (fail closed).
-      return false;
-    }
-    return actorUids.some(
-      (uid) => presenceStatus(companyUid, uid) === "online",
-    );
+    return projectRowHasPresence(row, channelStatusSources);
   }
 
-  const channelStatus = $derived.by((): ChannelStatusModel | null => {
-    if (!selectedRow) return null;
-    const channelId = selectedRow.channelId?.trim() ?? "";
-    const roster = channelRosterById[channelId] ?? [];
-    const companyUid = (selectedRow.companyUid ?? "").trim();
-    const projectId = (selectedRow.projectId ?? "").trim() || projectIdForRow(selectedRow);
-    const live = liveInputsForCompanyProject(companyUid, projectId);
-    const base =
-      channelStatusByRow?.(selectedRow) ??
-      liveTabs?.status ??
-      (roster.length > 0
-        ? rosterStatusForRow(
-            selectedRow,
-            roster,
-            companyUid
-              ? companyDisplayName(companyUid, companyNames)
-              : null,
-            companyUid ? companyIconUrl(companyUid, companyIcons) : null,
-          )
-        : null);
-    // Prefer rebuilding from live read + presence when we have sessions.
-    const fromLive =
-      live.liveSessions.length > 0 || live.presence.length > 0
-        ? buildChannelStatusModel({
-            project: {
-              id: projectId || channelId || selectedRow.id,
-              title: selectedRow.title,
-              company: companyUid || undefined,
-              storiesTotal: base?.stories.total,
-              storiesComplete: base?.stories.complete,
-              description: base?.project.description ?? null,
-            },
-            prd: base
-              ? {
-                  branchName: base.project.branch,
-                  repoPath: base.project.repo,
-                  repos: base.project.repos,
-                  previewUrl: base.project.previewUrl ?? undefined,
-                }
-              : null,
-            members:
-              roster.length > 0
-                ? roster
-                : [
-                    ...((base?.members ?? []).map((m) => ({
-                      personUid: m.personUid,
-                      displayName: m.displayName,
-                      email: m.email ?? undefined,
-                      role: m.role ?? undefined,
-                      avatarUrl: m.avatarUrl ?? undefined,
-                      description: m.description ?? undefined,
-                    })) ?? []),
-                    ...((base?.agents ?? []).map((a) => ({
-                      personUid: a.personUid,
-                      displayName: a.displayName,
-                      email: a.email ?? undefined,
-                      role: a.role ?? undefined,
-                      avatarUrl: a.avatarUrl ?? undefined,
-                      description: a.description ?? undefined,
-                      isAgent: true,
-                    })) ?? []),
-                  ],
-            liveSessions: live.liveSessions,
-            presence: live.presence,
-            companyLabel: base?.companyLabel ?? null,
-          })
-        : null;
-    const merged = fromLive ?? base;
-    if (!merged) return null;
-    const withRoster =
-      roster.length === 0
-        ? merged
-        : applyChannelRoster(merged, roster, identities);
-    // Presence store is the only online source (US-015) — re-apply after roster
-    // rebuild so timestamps/sessions never invent connection state.
-    const withPresence = (uid: string): boolean =>
-      Boolean(companyUid) && presenceStatus(companyUid, uid) === "online";
-    return {
-      ...applyAuthoritativePresence(withRoster, withPresence),
-      activeSessions:
-        fromLive?.activeSessions ?? withRoster.activeSessions ?? [],
-      liveAgents: fromLive?.liveAgents?.length
-        ? fromLive.liveAgents
-        : withRoster.liveAgents,
-    };
-  });
+  const channelStatus = $derived.by((): ChannelStatusModel | null =>
+    selectedChannelStatus(selectedRow, channelStatusSources),
+  );
   /** Directory count wins; otherwise the status model (fixture fill) so the pill still opens. */
   const memberPillCount = $derived(
     selectedRow?.memberCount && selectedRow.memberCount > 0
@@ -9705,161 +9298,10 @@
           (selectedRow!.membership ?? "joined") === "joined")),
   );
 
-  function unwrapAdapter<T>(
-    result:
-      | { ok: true; value: T }
-      | { ok?: false; message?: string; reason?: string; code?: string },
-  ): T {
-    if ("ok" in result && result.ok) return result.value;
-    const fail = result as { message?: string; reason?: string; code?: string };
-    const detail = fail.message ?? fail.reason ?? "request failed";
-    throw new Error(fail.code ? `[${fail.code}] ${detail}` : detail);
-  }
-
-  function asReplyThread(value: unknown): ReplyThreadResponse {
-    const rec =
-      value && typeof value === "object" && !Array.isArray(value)
-        ? (value as Record<string, unknown>)
-        : {};
-    const rootRows = rec.root ? normalizeConversationMessages([rec.root]) : [];
-    const replies = normalizeConversationMessages(rec.replies ?? []);
-    const root = rootRows[0] ?? null;
-    const rootCount = root?.replyCount;
-    const replyCount =
-      typeof rec.replyCount === "number"
-        ? rec.replyCount
-        : (rootCount ?? replies.length);
-    return {
-      scope: rec.scope === "dm" ? "dm" : "channel",
-      root,
-      replies,
-      replyCount,
-    };
-  }
-
   // Built once: only closes over the platform adapter, which is fixed for
   // the life of the shell (the host remounts on adapter change).
   // svelte-ignore state_referenced_locally
-  const conversationApi: ConversationApi = {
-    fetchChannel: async (args) => {
-      const raw = unwrapAdapter(await adapter.messaging.fetchChannel(args));
-      const page = timelinePageFromPayload(raw);
-      return {
-        messages: normalizeConversationMessages(page.messages, { keepAudience: true }),
-        nextCursor: page.nextCursor ?? null,
-        ...(page.view ? { view: page.view } : {}),
-        ...(page.viewScanTruncated ? { viewScanTruncated: true } : {}),
-      };
-    },
-    sendChannelMessage: async (args) => {
-      unwrapAdapter(
-        await adapter.messaging.sendChannelMessage(args.channelId, args.body, {
-          mentions: args.mentions,
-          attachments: args.attachments,
-        }),
-      );
-    },
-    fetchDmThread: async (args) => {
-      const raw = unwrapAdapter(await adapter.messaging.fetchDmThread(args));
-      const page = timelinePageFromPayload(raw);
-      return {
-        messages: normalizeConversationMessages(page.messages, { keepAudience: true }),
-        nextCursor: page.nextCursor ?? null,
-        ...(page.view ? { view: page.view } : {}),
-        ...(page.viewScanTruncated ? { viewScanTruncated: true } : {}),
-      };
-    },
-    sendDm: async (args) => {
-      unwrapAdapter(
-        await adapter.messaging.sendDm(args.toPersonUid, args.body, {
-          attachments: args.attachments,
-        }),
-      );
-    },
-    fetchReplyThread: async (args) =>
-      asReplyThread(
-        unwrapAdapter(await adapter.messaging.fetchReplyThread(args)),
-      ),
-    sendReply: async (args) => {
-      unwrapAdapter(await adapter.messaging.sendReply(args));
-    },
-    listChannelAgentTasks: adapter.messaging.listChannelAgentTasks
-      ? async (args) =>
-          unwrapAdapter(
-            await adapter.messaging.listChannelAgentTasks!(args.agentUid, args.channelId),
-          )
-      : undefined,
-    listAgentTasks: adapter.messaging.listAgentTasks
-      ? async (args) => unwrapAdapter(await adapter.messaging.listAgentTasks!(args.agentUid))
-      : undefined,
-    runCardAction: async (args) => {
-      const raw = unwrapAdapter(
-        await adapter.messaging.runCardAction(args),
-      ) as Record<string, unknown> | undefined;
-      return {
-        cardId: typeof raw?.cardId === "string" ? raw.cardId : args.cardId,
-        actionId: typeof raw?.actionId === "string" ? raw.actionId : args.actionId,
-        eventId: typeof raw?.eventId === "string" ? raw.eventId : undefined,
-        state: typeof raw?.state === "string" ? raw.state : "",
-        fields: raw?.fields,
-        replayed: raw?.replayed === true,
-        // US-006/011: create_agent accept mints the agent channel; keep the
-        // ids so handleCardAction can select it (they were dropped here).
-        agentChannelId:
-          typeof raw?.agentChannelId === "string" ? raw.agentChannelId : undefined,
-        agentUid: typeof raw?.agentUid === "string" ? raw.agentUid : undefined,
-        companyChannelId: typeof raw?.companyChannelId === "string" ? raw.companyChannelId : undefined,
-        companyUid: typeof raw?.companyUid === "string" ? raw.companyUid : undefined,
-        focusCardId:
-          typeof raw?.focusCardId === "string" ? raw.focusCardId : undefined,
-        // Entry points: the summary card's create_company action answers with
-        // the channel + card it posted; pending checkout answers with a url.
-        channelId:
-          typeof raw?.channelId === "string" ? raw.channelId : undefined,
-        reason: typeof raw?.reason === "string" ? raw.reason : undefined,
-        url: typeof raw?.url === "string" ? raw.url : undefined,
-      };
-    },
-    checkCompanySlug: adapter.messaging.checkCompanySlug
-      ? async (slug: string) =>
-          unwrapAdapter(await adapter.messaging.checkCompanySlug!(slug))
-      : undefined,
-    activateCompanyCloud: adapter.messaging.activateCompanyCloud
-      ? async (companyUid: string) =>
-          unwrapAdapter(await adapter.messaging.activateCompanyCloud!(companyUid))
-      : undefined,
-    getCompanyTab: adapter.messaging.getCompanyTab
-      ? async (companyUid, tabId) =>
-          unwrapAdapter(await adapter.messaging.getCompanyTab!(companyUid, tabId))
-      : undefined,
-    runCompanyTabAction: adapter.messaging.runCompanyTabAction
-      ? async (args) => {
-          const raw = unwrapAdapter(
-            await adapter.messaging.runCompanyTabAction!(args),
-          ) as Record<string, unknown> | undefined;
-          return {
-            cardId: typeof raw?.cardId === "string" ? raw.cardId : args.cardId,
-            actionId:
-              typeof raw?.actionId === "string" ? raw.actionId : args.actionId,
-            eventId: typeof raw?.eventId === "string" ? raw.eventId : undefined,
-            state: typeof raw?.state === "string" ? raw.state : "",
-            fields: raw?.fields,
-            replayed: raw?.replayed === true,
-            agentChannelId:
-              typeof raw?.agentChannelId === "string" ? raw.agentChannelId : undefined,
-            agentUid: typeof raw?.agentUid === "string" ? raw.agentUid : undefined,
-            navigateTo:
-              raw?.navigateTo === "chat" ? "chat" : undefined,
-            focusCardId:
-              typeof raw?.focusCardId === "string" ? raw.focusCardId : undefined,
-            channelId:
-              typeof raw?.channelId === "string" ? raw.channelId : undefined,
-            reason: typeof raw?.reason === "string" ? raw.reason : undefined,
-            url: typeof raw?.url === "string" ? raw.url : undefined,
-          };
-        }
-      : undefined,
-  };
+  const conversationApi: ConversationApi = createConversationApi(adapter);
 
   // ── Lifecycle entry points (New company / New agent) ─────────────────────
 
@@ -13856,10 +13298,6 @@
     withSidebar((actions) => actions.openCreate());
   }
 
-  function createMenuKeys(action: CreateMenuAction): string {
-    return CREATE_MENU_ITEMS.find((item) => item.id === action)!.keys;
-  }
-
   /** ⇧⌘K: the New message sheet, from any page (QA-077). */
   function openNewMessage(): void {
     paletteOpen = false;
@@ -13903,149 +13341,48 @@
     handleSelect(next);
   }
 
-  /**
-   * App-wide bindings. Ids double as the native View-menu payload ids
-   * (`shortcut:invoke` → `runShortcut(id)`), so keep them stable.
-   */
-  // svelte-ignore state_referenced_locally
-  const shellShortcuts: ShortcutBinding[] = [
-    {
-      id: "palette.toggle",
-      keys: advertisedShortcut("palette.toggle").keys,
-      label: advertisedShortcut("palette.toggle").label,
-      group: "General",
-      run: () => {
-        cheatSheetOpen = false;
-        paletteOpen = !paletteOpen;
-      },
+  // App-wide bindings; the table lives in desktop-app/shell-shortcuts.ts.
+  const shellShortcuts = buildShellShortcuts({
+    togglePalette: () => {
+      cheatSheetOpen = false;
+      paletteOpen = !paletteOpen;
     },
-    {
-      id: "view.settings",
-      keys: advertisedShortcut("view.settings").keys,
-      label: advertisedShortcut("view.settings").label,
-      group: "General",
-      run: () => openSettings(),
+    openSettings: () => openSettings(),
+    openAtlas: () => openAtlasShortcut(),
+    toggleCheatSheet: () => {
+      paletteOpen = false;
+      cheatSheetOpen = !cheatSheetOpen;
     },
-    {
-      id: "view.atlas",
-      keys: advertisedShortcut("view.atlas").keys,
-      label: advertisedShortcut("view.atlas").label,
-      group: "Views",
-      run: () => openAtlasShortcut(),
+    closeCheatSheet: () => {
+      if (!cheatSheetOpen) return false;
+      cheatSheetOpen = false;
+      return true;
     },
-    {
-      id: "help.shortcuts",
-      keys: "Mod+/",
-      label: "Keyboard shortcuts",
-      group: "General",
-      // The composer holds focus for most of a session; the cheat sheet is
-      // exactly what someone reaches for while typing, so it must not be
-      // gated behind blurring the input first.
-      allowInInput: true,
-      run: () => {
-        paletteOpen = false;
-        cheatSheetOpen = !cheatSheetOpen;
-      },
+    selectRailIndex: (index) => selectRailIndex(index),
+    stepConversation: (delta) => stepSelectedConversation(delta),
+    openNewMessage: () => openNewMessage(),
+    openNewChannel: () => {
+      paletteOpen = false;
+      cheatSheetOpen = false;
+      withSidebar((actions) => actions.openNewChannel());
     },
-    {
-      id: "help.close",
-      keys: "Escape",
-      label: "Close this sheet",
-      group: "General",
-      allowInInput: true,
-      // Escape belongs to whichever overlay is open; only claim it for the
-      // cheat sheet, otherwise decline so other components keep it.
-      run: () => {
-        if (!cheatSheetOpen) return false;
-        cheatSheetOpen = false;
-        return true;
-      },
+    openNewAgent: () => {
+      paletteOpen = false;
+      cheatSheetOpen = false;
+      withSidebar((actions) => actions.openNewAgent(null));
     },
-    // ⌘1–⌘9 select the rail item at that position (console-rail US-003).
-    ...Array.from({ length: RAIL_SHORTCUT_COUNT }, (_, index) =>
-      ({
-        id: `view.rail.${index + 1}`,
-        keys: `Mod+${index + 1}`,
-        label:
-          index === 0 ? "Home" : index === 1 ? "Meetings" : `Rail item ${index + 1}`,
-        group: "Views",
-        run: () => selectRailIndex(index),
-      }) satisfies ShortcutBinding,
-    ),
-    {
-      id: "conversation.next",
-      keys: "Mod+Shift+]",
-      label: "Next conversation",
-      group: "Conversations",
-      run: () => stepSelectedConversation(1),
+    openNewChat: () => openNewChat(),
+    openHistory: () => {
+      paletteOpen = false;
+      cheatSheetOpen = false;
+      withSidebar((actions) => actions.openHistory());
     },
-    {
-      id: "conversation.previous",
-      keys: "Mod+Shift+[",
-      label: "Previous conversation",
-      group: "Conversations",
-      run: () => stepSelectedConversation(-1),
+    openSearch: () => {
+      paletteOpen = false;
+      cheatSheetOpen = false;
+      withSidebar((actions) => actions.openSearch());
     },
-    {
-      id: "create.message",
-      keys: advertisedShortcut("create.message").keys,
-      label: advertisedShortcut("create.message").label,
-      group: "Conversations",
-      run: () => openNewMessage(),
-    },
-    {
-      id: "create.channel",
-      keys: createMenuKeys("channel"),
-      label: "New channel",
-      group: "Conversations",
-      run: () => {
-        paletteOpen = false;
-        cheatSheetOpen = false;
-        withSidebar((actions) => actions.openNewChannel());
-      },
-    },
-    {
-      id: "create.agent",
-      keys: createMenuKeys("agent"),
-      label: "New bot",
-      group: "Conversations",
-      run: () => {
-        paletteOpen = false;
-        cheatSheetOpen = false;
-        withSidebar((actions) => actions.openNewAgent(null));
-      },
-    },
-    {
-      // ⌘N opens exactly one thing, the search-first create dialog.
-      id: "chat.new",
-      keys: advertisedShortcut("chat.new").keys,
-      label: advertisedShortcut("chat.new").label,
-      group: "Conversations",
-      run: () => openNewChat(),
-    },
-    {
-      id: "search.messages",
-      keys: "Mod+F",
-      label: "Search messages",
-      group: "Conversations",
-      run: () => {
-        paletteOpen = false;
-        cheatSheetOpen = false;
-        withSidebar((actions) => actions.openHistory());
-      },
-    },
-    {
-      id: "search.conversations",
-      keys: "Mod+Shift+F",
-      label: "Jump to conversation",
-      group: "Conversations",
-      run: () => {
-        paletteOpen = false;
-        cheatSheetOpen = false;
-        withSidebar((actions) => actions.openSearch());
-      },
-    },
-  ];
+  });
 
   function sweepStaleAttachmentTrays(reason: string): void {
     if (attachTray) return;

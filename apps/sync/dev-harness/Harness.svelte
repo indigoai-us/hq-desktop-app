@@ -25,6 +25,7 @@
   import GlobalErrorPreview from './GlobalErrorPreview.svelte';
   import ForwardPickerPreview from './ForwardPickerPreview.svelte';
   import ShareStackPreview from './ShareStackPreview.svelte';
+  import LinkCardPreview from './LinkCardPreview.svelte';
   import ClaudeCodePreview from './ClaudeCodePreview.svelte';
   import BotManagementPreview from './BotManagementPreview.svelte';
   import BotIntegrationsPreview from './BotIntegrationsPreview.svelte';
@@ -386,6 +387,9 @@
   <SignInPrompt reauth={true} />
 {:else if view === 'share-stack'}
   <ShareStackPreview />
+{:else if view === 'link-card'}
+  <!-- Chat link hovercards for GitHub PRs and issues. Hover a link. -->
+  <LinkCardPreview />
 {:else if view === 'conversation'}
   <!-- The shared messaging Conversation (desktop Messages styling via
        data-window='messages'). Hover a bubble to reveal the copy-message
