@@ -5,7 +5,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
-import UsageStackBar from "./UsageStackBar.svelte";
+import UsageStackBar, { __resetUsageSweepsForTests } from "./UsageStackBar.svelte";
 import UsageLevelChip from "./UsageLevelChip.svelte";
 import { levelTheme } from "./usage-level-theme";
 import { segmentColor } from "./usage-stack";
@@ -14,6 +14,7 @@ let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
 afterEach(async () => {
+  __resetUsageSweepsForTests();
   if (component) await unmount(component);
   component = null;
   host?.remove();
@@ -85,22 +86,61 @@ describe("UsageStackBar levels", () => {
     }
   });
 
-  it("plays the sheen once when a top level just unlocked", () => {
+  it("plays the sheen once when a top level just unlocked, then settles to hover", () => {
+    vi.useFakeTimers();
+    try {
+      reducedMotion(false);
+      const el = render({ segments: SEGMENTS, scaleCents: 1000, level: 6, celebrate: Date.now() });
+      expect(el.querySelector(".stack")?.getAttribute("data-sheen")).toBe("play");
+      expect(el.querySelector('[data-testid="usage-bar-sheen"]')).not.toBeNull();
+      vi.advanceTimersByTime(1700);
+      flushSync();
+      expect(el.querySelector(".stack")?.getAttribute("data-sheen")).toBe("hover");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not replay the unlock sweep when a bar mounts again for the same unlock", async () => {
     reducedMotion(false);
-    const el = render({ segments: SEGMENTS, scaleCents: 1000, level: 6, celebrate: true });
-    expect(el.querySelector(".stack")?.getAttribute("data-sheen")).toBe("play");
-    expect(el.querySelector('[data-testid="usage-bar-sheen"]')).not.toBeNull();
+    const at = Date.now();
+    render({ segments: SEGMENTS, scaleCents: 1000, level: 7, celebrate: at });
+    if (component) await unmount(component);
+    component = null;
+    host.remove();
+    const el = render({ segments: SEGMENTS, scaleCents: 1000, level: 7, celebrate: at });
+    expect(el.querySelector(".stack")?.getAttribute("data-sheen")).toBe("hover");
+  });
+
+  it("plays the sweep on a bar already on screen when the level unlocks", () => {
+    reducedMotion(false);
+    const props = $state({ segments: SEGMENTS, scaleCents: 1000, level: 5, celebrate: null as number | null });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(UsageStackBar, { target: host, props });
+    flushSync();
+    expect(host.querySelector(".stack")?.getAttribute("data-sheen")).toBe("none");
+    props.level = 6;
+    props.celebrate = Date.now();
+    flushSync();
+    expect(host.querySelector(".stack")?.getAttribute("data-sheen")).toBe("play");
+  });
+
+  it("does not play an old unlock", () => {
+    reducedMotion(false);
+    const el = render({ segments: SEGMENTS, scaleCents: 1000, level: 7, celebrate: Date.now() - 120_000 });
+    expect(el.querySelector(".stack")?.getAttribute("data-sheen")).toBe("hover");
   });
 
   it("never plays the unlock sheen under reduced motion (hover only, which CSS also stops)", () => {
     reducedMotion(true);
-    const el = render({ segments: SEGMENTS, scaleCents: 1000, level: 7, celebrate: true });
+    const el = render({ segments: SEGMENTS, scaleCents: 1000, level: 7, celebrate: Date.now() });
     expect(el.querySelector(".stack")?.getAttribute("data-sheen")).toBe("hover");
   });
 
   it("has no sheen below level 6, even on unlock", () => {
     reducedMotion(false);
-    const el = render({ segments: SEGMENTS, scaleCents: 1000, level: 5, celebrate: true });
+    const el = render({ segments: SEGMENTS, scaleCents: 1000, level: 5, celebrate: Date.now() });
     expect(el.querySelector(".stack")?.getAttribute("data-sheen")).toBe("none");
   });
 });
@@ -109,9 +149,19 @@ describe("UsageLevelChip", () => {
   it("shows the level, its progress to the next and the next threshold", () => {
     const el = render({ level: 4, bestCents: 75_000, bestMonth: "2026-10" }, UsageLevelChip);
     expect(el.querySelector('[data-testid="usage-level-name"]')?.textContent).toBe("Level 4 Momentum");
-    expect(el.querySelector('[data-testid="usage-level-progress"]')?.getAttribute("aria-valuenow")).toBe("50");
+    expect(el.querySelector('[data-testid="usage-level-chip"]')?.getAttribute("data-progress")).toBe("50");
+    // In a Settings line the chip sits inside the line's button: no nested progressbar role.
+    expect(el.querySelector('[role="progressbar"]')).toBeNull();
     expect(el.querySelector('[data-testid="usage-level-next"]')?.textContent).toBe("$1k");
     expect(el.querySelector('[data-testid="usage-level-chip"]')?.getAttribute("title")).toContain("Next: Level 5 Powerhouse at a $1k month");
+  });
+
+  it("is a labelled progressbar in the Core menu", () => {
+    const el = render({ level: 2, bestCents: 7_500, variant: "menu" }, UsageLevelChip);
+    const bar = el.querySelector('[data-testid="usage-level-progress"]');
+    expect(bar?.getAttribute("role")).toBe("progressbar");
+    expect(bar?.getAttribute("aria-label")).toBe("Progress to Level 3 Rising");
+    expect(bar?.getAttribute("aria-valuenow")).toBe("50");
   });
 
   it("says Top level at level 7 and No level yet below $10", () => {

@@ -14,6 +14,7 @@ import {
   usageLevelState,
 } from "./usage-levels.svelte";
 import { dismissToast, toastItems } from "../shell/toast-stack.svelte";
+import { clearAccountCaches } from "../common/account-caches";
 import { usageLevelCardText } from "./usage-level-announce";
 import type { LevelStorage } from "./usage-levels";
 import type { CoreUsageView } from "./core-usage-model";
@@ -42,7 +43,8 @@ describe("observeUsageLevel", () => {
     setUsageLevelViewer("prs_owner");
     const counts = { "agent-run": 1240, "member-sync": 3100 };
     const state = observeUsageLevel("cmp_ridge", "Ridge", { periodStart: "2026-10-01", cents: 61_000, counts }, { storage });
-    expect(state).toMatchObject({ level: 4, bestCents: 61_000, bestMonth: "2026-10", fresh: true });
+    expect(state).toMatchObject({ level: 4, bestCents: 61_000, bestMonth: "2026-10" });
+    expect(state?.freshAt).toEqual(expect.any(Number));
     expect(levelToasts()).toHaveLength(1);
     expect(levelToasts()[0].title).toBe("Ridge reached Level 4: Momentum");
     expect(levelToasts()[0].detail).toBe("October 2026 passed $500. The team did 1,240 agent runs and 3,100 syncs.");
@@ -63,7 +65,7 @@ describe("observeUsageLevel", () => {
     __resetUsageLevelsForTests();
     setUsageLevelViewer("prs_owner");
     const state = observeUsageLevel("cmp_ridge", "Ridge", { periodStart: "2026-10-01", cents: 12_500 }, { storage });
-    expect(state).toMatchObject({ level: 3, fresh: false });
+    expect(state).toMatchObject({ level: 3, freshAt: null });
     expect(levelToasts()).toHaveLength(0);
   });
 
@@ -120,6 +122,41 @@ describe("observeUsageLevel", () => {
     expect(toast.detail).toContain("You did 1 agent run.");
     toast.actions?.[0].onAction();
     expect(open).toHaveBeenCalledWith("personal");
+  });
+
+  it("closes a card still on screen at sign-out, so the next person never sees it", () => {
+    setUsageLevelViewer("prs_a");
+    observeUsageLevel("cmp_ridge", "Ridge", { periodStart: "2026-10-01", cents: 1_500, counts: { "agent-run": 9 } }, { storage: memory() });
+    expect(levelToasts()).toHaveLength(1);
+    clearAccountCaches();
+    expect(levelToasts()).toHaveLength(0);
+    expect(usageLevelState("cmp_ridge")).toBeNull();
+  });
+
+  it("closes the last person's card when another person signs in", () => {
+    setUsageLevelViewer("prs_a");
+    observeUsageLevel("cmp_ridge", "Ridge", { periodStart: "2026-10-01", cents: 1_500 }, { storage: memory() });
+    setUsageLevelViewer("prs_b");
+    expect(levelToasts()).toHaveLength(0);
+    expect(usageLevelState("cmp_ridge")).toBeNull();
+  });
+
+  it("keeps a level read before sign-in finished, and still gives the card once the person is known", () => {
+    const storage = memory();
+    expect(observeUsageLevel("cmp_ridge", "Ridge", { periodStart: "2026-10-01", cents: 12_000 }, { storage })?.level).toBe(3);
+    setUsageLevelViewer("prs_owner");
+    expect(usageLevelState("cmp_ridge")?.level).toBe(3);
+    observeUsageLevel("cmp_ridge", "Ridge", { periodStart: "2026-10-01", cents: 12_000 }, { storage });
+    expect(levelToasts().map((t) => t.title)).toEqual(["Ridge reached Level 3: Rising"]);
+  });
+
+  it("records a level without a card when told not to announce, and announces it later", () => {
+    const storage = memory();
+    setUsageLevelViewer("prs_owner");
+    observeUsageLevel("cmp_ridge", "Ridge", { periodStart: "2026-10-01", cents: 6_000 }, { storage, announce: false });
+    expect(levelToasts()).toHaveLength(0);
+    observeUsageLevel("cmp_ridge", "Ridge", { periodStart: "2026-10-01", cents: 6_000 }, { storage });
+    expect(levelToasts().map((t) => t.title)).toEqual(["Ridge reached Level 2: Steady"]);
   });
 
   it("ignores a period it can't read", () => {

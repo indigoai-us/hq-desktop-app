@@ -1,3 +1,15 @@
+<script lang="ts" module>
+  /** Unlocks whose sweep has played, so a bar that mounts again later stays still. */
+  const playedSweeps = new Set<string>();
+  /** A sweep only plays this soon after its unlock; later it is old news. */
+  export const SWEEP_WINDOW_MS = 30_000;
+
+  /** Test seam. */
+  export function __resetUsageSweepsForTests(): void {
+    playedSweeps.clear();
+  }
+</script>
+
 <script lang="ts">
   /**
    * The usage bar shared by the Core menu meter and Settings > Usage (owner
@@ -19,7 +31,7 @@
    *   back. At levels 6 and 7 a sheen crosses the bar once when the level has
    *   just unlocked (`celebrate`) and on hover; never under reduced motion.
    */
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { type StackMarker, type StackSegment, type StackTone } from "./usage-stack.js";
   import { levelHasSheen, levelPaletteActive, levelSegmentColor } from "./usage-level-theme.js";
 
@@ -33,7 +45,7 @@
     grow = "change",
     label = "",
     level = 0,
-    celebrate = false,
+    celebrate = null,
     ...rest
   }: {
     segments: readonly StackSegment[];
@@ -50,8 +62,13 @@
     label?: string;
     /** The account's company level (0 to 7): picks the parts' palette. */
     level?: number;
-    /** The level just unlocked: the sheen (levels 6 and 7) crosses once on mount. */
-    celebrate?: boolean;
+    /**
+     * When the level unlocked (ms), or null. The sheen (levels 6 and 7)
+     * crosses once per unlock, shortly after it, on whichever bar shows it
+     * first: a bar already on screen when the level unlocks, or one opened
+     * just after. Never again on a later mount.
+     */
+    celebrate?: number | null;
     [key: string]: unknown;
   } = $props();
 
@@ -89,12 +106,20 @@
   const sheen = $derived(levelHasSheen(level, tone));
   /** The one-time unlock sweep; reduced motion never sets it. */
   let sweep = $state(false);
-  onMount(() => {
-    if (!celebrate || typeof window === "undefined") return;
+  $effect(() => {
+    const at = celebrate;
+    const on = sheen;
+    if (at === null || !on || typeof window === "undefined") return;
+    const key = `${at}:${level}`;
+    if (playedSweeps.has(key) || Date.now() - at > SWEEP_WINDOW_MS) return;
     if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
-    sweep = true;
+    playedSweeps.add(key);
+    untrack(() => (sweep = true));
     const id = setTimeout(() => (sweep = false), 1600);
-    return () => clearTimeout(id);
+    return () => {
+      clearTimeout(id);
+      sweep = false;
+    };
   });
 
   // What is drawn now. Starts at the real value (no motion on a first paint)

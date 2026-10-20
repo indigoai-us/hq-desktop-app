@@ -34,10 +34,14 @@
   );
 </script>
 
-<span class="ulc" data-variant={variant} data-level={level} data-testid="usage-level-chip" title={title} {...rest}>
+<span class="ulc" data-variant={variant} data-progress={next ? Math.round(progress * 100) : 100} data-level={level} data-testid="usage-level-chip" title={title} {...rest}>
   <UsageLevelMark {level} size={variant === "menu" ? 18 : 16} />
   <span class="name" data-testid="usage-level-name">{info ? `Level ${info.n} ${info.name}` : "No level yet"}</span>
-  {#if next}
+  {#if next && variant === "row"}
+    <!-- Inside the line's button: the words above are the spoken part; the track and threshold repeat the tooltip. -->
+    <span class="track" aria-hidden="true"><span class="fill" style:width="{Math.round(progress * 100)}%" style:background={fill}></span></span>
+    <span class="next" aria-hidden="true" data-testid="usage-level-next">{levelThresholdText(next.cents)}</span>
+  {:else if next}
     <span
       class="track"
       role="progressbar"

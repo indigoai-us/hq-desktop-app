@@ -12851,11 +12851,6 @@
   const youBadges = $derived(badgesFor(youSubject));
 
   /**
-   * hq-accomplishment-badges US-016: the launch announcement, once, over the
-   * whole window, when the server has badges on for you (badge-launch.ts).
-   * It waits for first-run setup and the guided tour, which own the window.
-   */
-  /**
    * usage-only-pricing US-019: company levels are stored per signed-in person,
    * and the level-up card's "See usage" opens Settings > Usage on that account.
    */
@@ -12869,6 +12864,12 @@
     });
     return () => setUsageLevelOpener(null);
   });
+
+  /**
+   * hq-accomplishment-badges US-016: the launch announcement, once, over the
+   * whole window, when the server has badges on for you (badge-launch.ts).
+   * It waits for first-run setup and the guided tour, which own the window.
+   */
   let launchOpen = $state(false);
   const youBadgesEnabled = $derived(badgesEnabledFor(youSubject));
   $effect(() => {

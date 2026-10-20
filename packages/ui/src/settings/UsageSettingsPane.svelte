@@ -339,7 +339,7 @@
                 <span class="bar-row">
                   <UsageStackBar
                     level={lvl?.level ?? 0}
-                    celebrate={lvl?.fresh ?? false}
+                    celebrate={lvl?.freshAt ?? null}
                     segments={bar.segments}
                     scaleCents={bar.scaleCents}
                     includedCents={bar.includedCents}

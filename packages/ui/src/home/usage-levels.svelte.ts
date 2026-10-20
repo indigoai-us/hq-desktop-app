@@ -21,14 +21,20 @@ import {
   type LevelStorage,
 } from "./usage-levels.js";
 import { announceUsageLevel } from "./usage-level-announce.js";
+import { dismissToast, toastItems } from "../shell/toast-stack.svelte.js";
 import type { CoreUsageView } from "./core-usage-model.js";
 
 export interface UsageLevelState {
   level: number;
   bestCents: number;
   bestMonth: string | null;
-  /** The level unlocked during this session (the bar's sheen plays once for it). */
-  fresh: boolean;
+  /**
+   * When the level unlocked in this session (ms), or null. The bar's sheen
+   * plays once for each unlock (UsageStackBar remembers which it played).
+   */
+  freshAt: number | null;
+  /** The signed-in person this state was folded for (null: no one yet, nothing stored). */
+  viewer: string | null;
 }
 
 let viewer = $state<string | null>(null);
@@ -47,8 +53,20 @@ function defaultStorage(): LevelStorage | null {
 export function setUsageLevelViewer(uid: string | null | undefined): void {
   const next = uid?.trim() || null;
   if (next === viewer) return;
+  const previous = viewer;
   viewer = next;
-  states = {};
+  // Levels read before anyone was known stay on screen (they hold no one's
+  // record) and are folded with the person's stored record on the next read.
+  // A change of person forgets the last person's levels and cards.
+  if (previous !== null) {
+    states = {};
+    dismissLevelCards();
+  }
+}
+
+/** Close any level-up card still on screen (sign-out, a change of person). */
+function dismissLevelCards(): void {
+  for (const t of toastItems()) if (t.key?.startsWith("usage-level:")) dismissToast(t.id);
 }
 
 /** What the card's "See usage" does: open Settings > Usage on that account. */
@@ -86,23 +104,32 @@ export function observeUsageLevel(
   const storage = opts.storage === undefined ? defaultStorage() : opts.storage;
   const stored: LevelRecord | null = who ? loadLevelRecord(storage, who, accountKey) : null;
   const prior = states[accountKey];
-  // The in-memory state can be ahead of storage (storage refused a write).
-  const base: LevelRecord | null = stored ?? (prior ? { bestCents: prior.bestCents, bestMonth: prior.bestMonth, level: prior.level, announced: prior.level } : null);
-  const { record, announce } = observeMonth(base, { month, cents: input.cents });
+  // The in-memory state can be ahead of storage (storage refused a write),
+  // but only a state folded for this same person may stand in for the record.
+  const ownPrior = prior && who !== null && prior.viewer === who ? prior : null;
+  const base: LevelRecord | null =
+    stored ?? (ownPrior ? { bestCents: ownPrior.bestCents, bestMonth: ownPrior.bestMonth, level: ownPrior.level, announced: ownPrior.level } : null);
+  const folded = observeMonth(base, { month, cents: input.cents });
+  const announce = opts.announce === false ? null : folded.announce;
+  // Without a card, the level is still recorded but not as announced, so the
+  // person gets the card the first time they may see it.
+  const record = opts.announce === false ? { ...folded.record, announced: base?.announced ?? 0 } : folded.record;
   const saved = who ? saveLevelRecord(storage, who, accountKey, record) : false;
-  const willAnnounce = announce !== null && saved && opts.announce !== false;
+  const willAnnounce = announce !== null && saved;
   const next: UsageLevelState = {
     level: record.level,
     bestCents: record.bestCents,
     bestMonth: record.bestMonth,
-    fresh: (prior?.fresh ?? false) || willAnnounce,
+    freshAt: willAnnounce ? Date.now() : (prior?.freshAt ?? null),
+    viewer: who,
   };
   if (
     !prior ||
     prior.level !== next.level ||
     prior.bestCents !== next.bestCents ||
     prior.bestMonth !== next.bestMonth ||
-    prior.fresh !== next.fresh
+    prior.freshAt !== next.freshAt ||
+    prior.viewer !== next.viewer
   ) {
     states = { ...states, [accountKey]: next };
   }
@@ -161,4 +188,5 @@ export function __resetUsageLevelsForTests(): void {
 
 registerAccountCache(() => {
   states = {};
+  dismissLevelCards();
 });

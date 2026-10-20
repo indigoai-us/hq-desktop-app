@@ -191,8 +191,9 @@
       staleAt = undefined;
       rememberCoreUsage(uid, next, Date.now(), generation);
       rowViews = { ...rowViews, [uid]: next };
-      // US-019: every month read counts toward the account's level.
-      observeCoreView(uid, next);
+      // US-019: every month read counts toward the account's level, unless
+      // the account changed (sign-out) while it was in flight.
+      if (generation === coreUsageGeneration()) observeCoreView(uid, next);
     });
     return () => {
       cancelled = true;
@@ -453,7 +454,7 @@
     </div>
     <UsageStackBar
       {level}
-      celebrate={levelState?.fresh ?? false}
+      celebrate={levelState?.freshAt ?? null}
       segments={usage.segments}
       scaleCents={usage.scaleCents}
       includedCents={usage.includedCents}
