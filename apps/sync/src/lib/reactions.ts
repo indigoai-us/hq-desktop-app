@@ -30,6 +30,31 @@ export interface ReactionAggregate {
   /** True when the signed-in caller is one of the reactors (drives the
    * highlighted pill + toggle direction). */
   reactedByMe: boolean;
+  /** Who reacted, when the server sends it. The server lists the caller too. */
+  reactors?: Reactor[];
+}
+
+/** One person in an aggregate's `reactors` list. */
+export interface Reactor {
+  personUid: string;
+  displayName: string;
+}
+
+/**
+ * The aggregates to hand the shared `@hq/ui` ReactionBar. Its hover title and
+ * aria-label name each reactor, and say "You" for the reactor whose personUid
+ * is `selfPersonUid`. The server includes the caller in `reactors`, so without
+ * the caller's personUid the bar would say "You and <your name>". Until that
+ * uid is known the reactor list is dropped, and the bar falls back to "You and
+ * N other people", which is correct.
+ */
+export function reactionsForBar(
+  list: ReactionAggregate[] | undefined,
+  selfPersonUid: string | null | undefined,
+): ReactionAggregate[] {
+  const items = list ?? [];
+  if (selfPersonUid) return items;
+  return items.map(({ reactors: _reactors, ...rest }) => rest);
 }
 
 /** The payload of the `message:reaction` Tauri event emitted by the single poll

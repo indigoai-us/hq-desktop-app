@@ -7,26 +7,54 @@
 // Empty input means the changed-file set could not be established. Run the
 // gate in that case rather than risk hiding a platform regression.
 
-// apps/sync's `pnpm build` (run by the macOS job to satisfy tauri's
-// frontendDist) imports @hq/* from packages/* and @hq/work from apps/work, and
-// the root `pnpm install` reads every workspace package.json, so those inputs
-// feed what the macOS job builds.
+// Scoped to what the macOS runner compiles or links: Rust sources and
+// manifests, the toolchain pin, build scripts, native Swift/Objective-C
+// sources, the Recall sidecar (apps/sync/src-tauri/build.rs validates its
+// bundled resource paths), and the files that define this gate. The Svelte
+// bundle the app crate's tests read is built on Linux by the
+// `rust-macos-bundle` job, and the frontend itself is covered there, so
+// TypeScript, Svelte, docs, and workspace lockfile changes do not reach the
+// 10x macOS runner.
+//
+// Two non-Rust files are compiled into Rust tests with include_str!, so a
+// change to either one has to run the gate:
+//   apps/sync/src-tauri/src/welcome_window.rs reads welcome.css
+//   apps/sync/src-tauri/src/commands/version_gate.rs reads release.yml
+// Three more inputs are read by Rust at test or build time without include_str!:
+//   imports/** holds scripts that unix Rust tests execute (for example
+//     core_update_retry.rs runs imports/hq-sync-win/scripts/replace-rescue.sh)
+//   apps/sync/package.json is read by apps/sync/src-tauri/build.rs for the
+//     app version, and a Rust test checks that version is valid semver
+//   packages/ui/src/settings/__fixtures__/storage/** holds the `hq storage`
+//     JSON fixtures that apps/sync/src-tauri/src/commands/storage.rs loads
+//     through a CARGO_MANIFEST_DIR path and parses into its Rust structs
+// When a Rust test starts reading another file outside these patterns, add it
+// here. macos-check-relevant.test.ts scans include_str!/include_bytes! and
+// literal CARGO_MANIFEST_DIR paths and fails on an uncovered tracked file.
+//
+// `**/` matches zero or more leading directories; `**` matches any suffix;
+// `*` matches within one path segment. The test pins this list exactly.
 export const MACOS_RELEVANT_PATTERNS = [
-  "apps/sync/**",
-  "apps/work/**",
-  "apps/*/package.json",
-  "packages/**",
+  "**/src-tauri/**",
+  "apps/sync/sidecar/**",
   "crates/**",
+  ".cargo/**",
+  "**/Cargo.toml",
+  "**/Cargo.lock",
+  "rust-toolchain*",
+  "**/build.rs",
+  "**/*.rs",
+  "**/*.swift",
+  "**/*.m",
+  "**/*.mm",
+  "**/*.h",
+  "apps/sync/src/components/onboarding/welcome/welcome.css",
+  ".github/workflows/release.yml",
+  ".github/workflows/ci.yml",
+  "scripts/macos-check-relevant.mjs",
   "imports/**",
-  "Cargo.toml",
-  "Cargo.lock",
-  "rust-toolchain.toml",
-  "versions.toml",
-  "package.json",
-  "pnpm-lock.yaml",
-  "pnpm-workspace.yaml",
-  "scripts/**",
-  ".github/**",
+  "apps/sync/package.json",
+  "packages/ui/src/settings/__fixtures__/storage/**",
 ];
 
 function toRegExp(pattern) {
@@ -34,7 +62,10 @@ function toRegExp(pattern) {
   for (let i = 0; i < pattern.length; i += 1) {
     const char = pattern[i];
     if (char === "*") {
-      if (pattern[i + 1] === "*") {
+      if (pattern[i + 1] === "*" && pattern[i + 2] === "/") {
+        source += "(?:.*/)?";
+        i += 2;
+      } else if (pattern[i + 1] === "*") {
         source += ".*";
         i += 1;
       } else {
