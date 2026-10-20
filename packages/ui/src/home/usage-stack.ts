@@ -25,8 +25,10 @@ export function segmentColor(id: string): string {
     case "agents":
       return "var(--vio, #8b5cf6)";
     case "sync":
-    case "trial":
       return "var(--ice-ink, #5b7a99)";
+    // Trial usage is one total, not a group: a neutral ink no group uses.
+    case "trial":
+      return "var(--t1, #222)";
     case "storage":
       return "var(--t2, #888)";
     default:
