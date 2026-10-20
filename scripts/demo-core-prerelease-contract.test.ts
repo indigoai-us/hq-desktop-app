@@ -91,6 +91,8 @@ describe("HQ_CORE_PRERELEASE", () => {
 
 describe("DEMO_FLAG_DEFAULTS_ON", () => {
   const FOUND_APPS = "desktop.first-run-found-apps-v1";
+  const VISUAL_FIRST_RUN = "desktop.visual-first-run";
+  const LISTED = [FOUND_APPS, VISUAL_FIRST_RUN];
 
   function rustList(rust: string): string[] {
     const match = rust.match(/pub const DEMO_FLAG_DEFAULTS_ON: &\[&str\] = &\[([^\]]*)\];/);
@@ -98,8 +100,8 @@ describe("DEMO_FLAG_DEFAULTS_ON", () => {
     return [...match![1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
   }
 
-  it("lists only the first-run found-apps flag", async () => {
-    expect(rustList(await read("apps/sync/src-tauri/src/demo_build.rs"))).toEqual([FOUND_APPS]);
+  it("lists only the first-run found-apps and visual first-run flags", async () => {
+    expect(rustList(await read("apps/sync/src-tauri/src/demo_build.rs"))).toEqual(LISTED);
   });
 
   it("is an empty list from demo_flag_defaults_on in a build without the switch", async () => {
@@ -132,15 +134,17 @@ describe("DEMO_FLAG_DEFAULTS_ON", () => {
     );
     expect(match, "DEMO_FLAG_DEFAULT_CANDIDATES in sync-adapter.ts").not.toBeNull();
     const names = match![1].split(",").map((n) => n.trim()).filter(Boolean);
-    expect(names).toEqual(["FIRST_RUN_FOUND_APPS_FLAG"]);
+    expect(names).toEqual(["FIRST_RUN_FOUND_APPS_FLAG", "VISUAL_FIRST_RUN_FLAG"]);
     const flags = await read("packages/platform/src/flags.ts");
     expect(flags).toContain(`export const FIRST_RUN_FOUND_APPS_FLAG = "${FOUND_APPS}";`);
-    expect(rustList(await read("apps/sync/src-tauri/src/demo_build.rs"))).toEqual([FOUND_APPS]);
+    expect(flags).toContain(`export const VISUAL_FIRST_RUN_FLAG = "${VISUAL_FIRST_RUN}";`);
+    expect(rustList(await read("apps/sync/src-tauri/src/demo_build.rs"))).toEqual(LISTED);
   });
 
   it("is in the dev doc", async () => {
     const doc = await read("docs/dev-switches.md");
     expect(doc).toContain("DEMO_FLAG_DEFAULTS_ON");
     expect(doc).toContain(FOUND_APPS);
+    expect(doc).toContain(VISUAL_FIRST_RUN);
   });
 });

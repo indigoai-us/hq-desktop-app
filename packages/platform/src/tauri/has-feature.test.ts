@@ -7,6 +7,7 @@ import {
   COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
   FIRST_RUN_FOUND_APPS_FLAG,
   PERSONAL_TRANSCRIPTS_FLAG,
+  VISUAL_FIRST_RUN_FLAG,
   registryKeyFor,
 } from "../flags.js";
 
@@ -567,6 +568,7 @@ describe("createSyncPlatformAdapter hasFeature in a demo build", () => {
                   ? {}
                   : {
                       [FIRST_RUN_FOUND_APPS_FLAG]: value,
+                      [VISUAL_FIRST_RUN_FLAG]: value,
                       [PERSONAL_TRANSCRIPTS_FLAG]: value,
                       [COMPANY_NAME_PREFILL_FLAG]: value,
                       "agents.claude-provider": value,
@@ -580,26 +582,31 @@ describe("createSyncPlatformAdapter hasFeature in a demo build", () => {
     return { adapter, calls };
   }
 
-  it("asks only for the found-apps flag (scripts/demo-core-prerelease-contract.test.ts pins the Rust list)", () => {
-    expect([...DEMO_FLAG_DEFAULT_CANDIDATES]).toEqual([FIRST_RUN_FOUND_APPS_FLAG]);
+  const LISTED = [FIRST_RUN_FOUND_APPS_FLAG, VISUAL_FIRST_RUN_FLAG];
+  const CASES = LISTED.flatMap((flag) =>
+    (["false", "absent", "error"] as const).map((registry) => [flag, registry] as const),
+  );
+
+  it("asks only for the found-apps and visual first-run flags (scripts/demo-core-prerelease-contract.test.ts pins the Rust list)", () => {
+    expect([...DEMO_FLAG_DEFAULT_CANDIDATES]).toEqual(LISTED);
   });
 
-  it.each<Registry>(["false", "absent", "error"])(
-    "reads found-apps on when the demo list has it and the registry is %s",
-    async (registry) => {
-      const { adapter } = demoAdapter(registry, [FIRST_RUN_FOUND_APPS_FLAG]);
-      await expect(adapter.identity.hasFeature(FIRST_RUN_FOUND_APPS_FLAG)).resolves.toEqual({
+  it.each(CASES)(
+    "reads %s on when the demo list has it and the registry is %s",
+    async (flag, registry) => {
+      const { adapter } = demoAdapter(registry, LISTED);
+      await expect(adapter.identity.hasFeature(flag)).resolves.toEqual({
         ok: true,
         value: true,
       });
     },
   );
 
-  it.each<Registry>(["false", "absent", "error"])(
-    "keeps found-apps off when the demo list is empty and the registry is %s",
-    async (registry) => {
+  it.each(CASES)(
+    "keeps %s off when the demo list is empty and the registry is %s",
+    async (flag, registry) => {
       const { adapter } = demoAdapter(registry, []);
-      await expect(adapter.identity.hasFeature(FIRST_RUN_FOUND_APPS_FLAG)).resolves.toEqual({
+      await expect(adapter.identity.hasFeature(flag)).resolves.toEqual({
         ok: true,
         value: false,
       });

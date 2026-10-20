@@ -690,6 +690,25 @@ mod first_run_handoff_hint_tests {
         assert_eq!(handoff_flag_value(Ok(None)), None);
     }
 
+    /// Both hint flags are demo defaults, so a demo build sends them as on
+    /// whether `feature_flag_read` answers (it applies the default) or times
+    /// out (`bounded` applies it to `Err(())`). Without the switch a timed-out
+    /// read stays unknown.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn demo_build_hint_reads_both_flags_on_even_after_a_timeout() {
+        for flag in FIRST_RUN_HINT_FLAGS {
+            assert!(
+                crate::demo_build::DEMO_FLAG_DEFAULTS_ON.contains(&flag),
+                "{flag}"
+            );
+            let on = crate::demo_build::apply_flag_default(true, flag, Err(()));
+            assert_eq!(handoff_flag_value(on), Some(true), "{flag}");
+            let off = crate::demo_build::apply_flag_default(false, flag, Err(()));
+            assert_eq!(handoff_flag_value(off), None, "{flag}");
+        }
+    }
+
     fn payload(hint: &str) -> Value {
         let json = hint
             .strip_prefix(FIRST_RUN_HANDOFF_PREFIX)

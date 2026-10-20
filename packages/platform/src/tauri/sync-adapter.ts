@@ -224,6 +224,7 @@ function invokeError(err: unknown): ReturnType<typeof failure> {
  */
 export const DEMO_FLAG_DEFAULT_CANDIDATES: ReadonlySet<string> = new Set([
   FIRST_RUN_FOUND_APPS_FLAG,
+  VISUAL_FIRST_RUN_FLAG,
 ]);
 
 export function createSyncPlatformAdapter(

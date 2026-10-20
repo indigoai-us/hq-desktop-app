@@ -939,42 +939,50 @@ mod tests {
         })
     }
 
+    const DEMO_DEFAULT_FLAGS: [&str; 2] =
+        ["desktop.first-run-found-apps-v1", "desktop.visual-first-run"];
+
     #[tokio::test]
-    async fn demo_build_reads_found_apps_on_when_server_says_false() {
-        let flag = "desktop.first-run-found-apps-v1";
-        let read = feature_flag_read_for_build(true, flag, || async { flag_body(flag, false) }).await;
-        assert_eq!(read, Ok(Some(true)));
+    async fn demo_build_reads_listed_flags_on_when_server_says_false() {
+        for flag in DEMO_DEFAULT_FLAGS {
+            let read =
+                feature_flag_read_for_build(true, flag, || async { flag_body(flag, false) }).await;
+            assert_eq!(read, Ok(Some(true)), "{flag}");
+        }
     }
 
     #[tokio::test]
-    async fn demo_build_reads_found_apps_on_when_server_errors_or_has_no_answer() {
-        let flag = "desktop.first-run-found-apps-v1";
-        let error = feature_flag_read_for_build(true, flag, || async {
-            Err::<HqProHttpResponse, String>("offline".to_string())
-        })
-        .await;
-        assert_eq!(error, Ok(Some(true)));
-        let none = feature_flag_read_for_build(true, flag, || async { no_flags() }).await;
-        assert_eq!(none, Ok(Some(true)));
+    async fn demo_build_reads_listed_flags_on_when_server_errors_or_has_no_answer() {
+        for flag in DEMO_DEFAULT_FLAGS {
+            let error = feature_flag_read_for_build(true, flag, || async {
+                Err::<HqProHttpResponse, String>("offline".to_string())
+            })
+            .await;
+            assert_eq!(error, Ok(Some(true)), "{flag}");
+            let none = feature_flag_read_for_build(true, flag, || async { no_flags() }).await;
+            assert_eq!(none, Ok(Some(true)), "{flag}");
+        }
     }
 
     #[tokio::test]
-    async fn non_demo_build_keeps_found_apps_false_and_none() {
-        let flag = "desktop.first-run-found-apps-v1";
-        let off = feature_flag_read_for_build(false, flag, || async { flag_body(flag, false) }).await;
-        assert_eq!(off, Ok(Some(false)));
-        let none = feature_flag_read_for_build(false, flag, || async { no_flags() }).await;
-        assert_eq!(none, Ok(None));
-        let error = feature_flag_read_for_build(false, flag, || async {
-            Err::<HqProHttpResponse, String>("offline".to_string())
-        })
-        .await;
-        assert_eq!(error, Err(()));
+    async fn non_demo_build_keeps_listed_flags_false_and_none() {
+        for flag in DEMO_DEFAULT_FLAGS {
+            let off =
+                feature_flag_read_for_build(false, flag, || async { flag_body(flag, false) }).await;
+            assert_eq!(off, Ok(Some(false)), "{flag}");
+            let none = feature_flag_read_for_build(false, flag, || async { no_flags() }).await;
+            assert_eq!(none, Ok(None), "{flag}");
+            let error = feature_flag_read_for_build(false, flag, || async {
+                Err::<HqProHttpResponse, String>("offline".to_string())
+            })
+            .await;
+            assert_eq!(error, Err(()), "{flag}");
+        }
     }
 
     #[tokio::test]
     async fn demo_build_never_changes_other_flags() {
-        let flag = "desktop.visual-first-run";
+        let flag = "desktop.first-folder-sync-step-v1";
         let off = feature_flag_read_for_build(true, flag, || async { flag_body(flag, false) }).await;
         assert_eq!(off, Ok(Some(false)));
         let none = feature_flag_read_for_build(true, flag, || async { no_flags() }).await;
