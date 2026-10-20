@@ -13,6 +13,9 @@ import {
   type AdapterPromise,
   type AgentProvisionOptionsView,
   type ChannelSummary,
+  type CloudSwitchOutcome,
+  type VaultSwitchOutcome,
+  type VaultSyncSwitches,
   type Json,
   type NotifyPrefsResponse,
   type PlatformAdapter,
@@ -1627,6 +1630,13 @@ export function createSyncPlatformAdapter(
         return result;
       },
       cancelSync: () => call('cancel_sync'),
+      getCloudEnabled: () => call<boolean>('get_cloud_enabled'),
+      setCloudEnabled: (enabled) =>
+        call<CloudSwitchOutcome>('set_cloud_enabled', { enabled }),
+      getVaultSyncSwitches: () =>
+        call<VaultSyncSwitches>('get_vault_sync_switches'),
+      setVaultSyncEnabled: (vault, enabled) =>
+        call<VaultSwitchOutcome>('set_vault_sync_enabled', { vault, enabled }),
       getSyncStatus: () => call('get_sync_status'),
       getActivityLog: () => call('get_activity_log'),
       resolveConflict: (path, strategy) =>

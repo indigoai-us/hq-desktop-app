@@ -640,6 +640,11 @@
     syncStateFromLive,
     type LiveSyncStatus,
   } from "../settings/live-sync-status.js";
+  import {
+    loadCloudEnabled,
+    onCloudSwitchChanged,
+    readCachedCloudEnabled,
+  } from "../settings/cloud-switch.js";
   import type { SyncState } from "../common/sync-model.js";
   import {
     type ChannelStatusModel,
@@ -4777,6 +4782,17 @@
   let lastReplyRowId = $state<string | null>(null);
   let unreadCount = $state(initialUnreadCount);
   let liveSync = $state<LiveSyncStatus>({ ...EMPTY_LIVE_SYNC });
+  /**
+   * Settings Cloud switch (US-016). Painted from the last-known value, then
+   * read from the host with the sync poll and on every switch change, so the
+   * title bar's Core pill shows "Cloud off" instead of "All synced".
+   */
+  let cloudEnabled = $state<boolean>(readCachedCloudEnabled() ?? true);
+  function refreshCloudSwitch(): Promise<void> {
+    return loadCloudEnabled(adapter).then((value) => {
+      if (value !== null) cloudEnabled = value;
+    });
+  }
   /**
    * PL-02 — sync trouble the Core popover reports, read from the SAME
    * `list_syncable_workspaces` envelope the menubar used. The command never
@@ -13411,16 +13427,24 @@
 
     let stopSyncPoll: (() => void) | undefined;
     let stopHealthPoll: (() => void) | undefined;
+    let stopCloudSwitch: (() => void) | undefined;
     if (adapter.isAvailable("canSync")) {
       void readLiveSyncStatus(adapter).then((next) => {
         liveSync = next;
       });
+      void refreshCloudSwitch();
+      stopCloudSwitch = onCloudSwitchChanged((enabled) => {
+        cloudEnabled = enabled;
+      });
       stopSyncPoll = startJitteredPoll({
         intervalMs: 30_000,
         tick: () =>
-          readLiveSyncStatus(adapter).then((next) => {
-            liveSync = next;
-          }),
+          Promise.all([
+            readLiveSyncStatus(adapter).then((next) => {
+              liveSync = next;
+            }),
+            refreshCloudSwitch(),
+          ]).then(() => undefined),
       });
       // Workspace health hits the cloud, so it runs on a slower beat than the
       // local journal read above.
@@ -13552,6 +13576,7 @@
       if (focusCardTimer !== undefined) clearTimeout(focusCardTimer);
       overlayQuery.removeEventListener("change", syncOverlay);
       stopSyncPoll?.();
+      stopCloudSwitch?.();
       stopHealthPoll?.();
       window.removeEventListener("keydown", onKey);
       unregisterShortcuts();
@@ -13631,6 +13656,7 @@
     syncState={liveSyncState}
     {lastSyncLabel}
     uploadsPaused={liveSync.uploadsPaused ?? []}
+    cloudPaused={!cloudEnabled}
     {manifestError}
     {cloudReachable}
     {cloudError}
@@ -13714,6 +13740,12 @@
         anchorBottom={accountMenuAnchor.bottom}
         onclose={() => (accountMenuOpen = false)}
         onpage={openAccountPage}
+        onsync={adapter.isAvailable("canSync")
+          ? () => {
+              accountMenuOpen = false;
+              openSettings("sync");
+            }
+          : undefined}
         onsignout={() => {
           accountMenuOpen = false;
           void signOutWithImageCleanup();

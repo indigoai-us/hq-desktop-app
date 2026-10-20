@@ -97,6 +97,8 @@
     onopendrift?: () => void | Promise<void>;
     onopenLibrary?: () => void;
     onopenMarketplace?: () => void;
+    /** Opens Settings › Sync, where the Cloud switch lives (US-016). */
+    onopenCloudSettings?: () => void;
     /**
      * Companies whose uploads are paused by a plan limit (hard-stop US-019),
      * from the sync journal. Each renders a row with its upgrade link.
@@ -140,6 +142,7 @@
     onopendrift,
     onopenLibrary,
     onopenMarketplace,
+    onopenCloudSettings,
     uploadsPaused = null,
     onopenurl,
     usageCompany = null,
@@ -243,6 +246,7 @@
       lastSyncLabel,
       syncCaption,
       uploadsPaused: uploadsPaused ?? [],
+      workspaces,
       notices: {
         errorMessage,
         errorCompany,
@@ -368,6 +372,9 @@
       const flag = await adapter.identity.hasFeature(FIRST_WEEK_RETURN_NUDGE_FLAG);
       if (!flag.ok || flag.value !== true || disposed) return;
       for (const workspace of workspaces) {
+        // Sync switched off for this company on this computer (Settings ›
+        // Sync, US-016): do not offer a sync for it.
+        if (workspace.syncEnabled === false) continue;
         const companyUid = typeof workspace.cloudUid === "string"
           ? workspace.cloudUid
           : typeof workspace.uid === "string"
@@ -400,6 +407,21 @@
       });
     }
   }
+
+  // A nudge already on screen goes away when its company's sync is switched
+  // off on this computer (Settings › Sync, US-016).
+  $effect(() => {
+    const nudge = returnNudge;
+    if (!nudge || !workspaces?.length) return;
+    const off = workspaces.some((workspace) =>
+      workspace.syncEnabled === false &&
+      (workspace.cloudUid === nudge.companyUid ||
+        workspace.uid === nudge.companyUid ||
+        workspace.companyUid === nudge.companyUid ||
+        (nudge.slug !== undefined && workspace.slug === nudge.slug)),
+    );
+    if (off) returnNudge = null;
+  });
 
   async function runReturnNudgeSync(): Promise<void> {
     const nudge = returnNudge;
@@ -531,7 +553,7 @@
         {model.syncHeader.caption}
       </span>
     {/if}
-    {#if returnNudge}
+    {#if returnNudge && model.syncNowAllowed}
       <span class="core-return-nudge" data-testid="core-popover-return-nudge">
         Run a sync today to keep your company up to date.
       </span>
@@ -551,6 +573,7 @@
       companyName={usageCompany.name}
       role={usageCompany.role}
       {onopenurl}
+      onopensync={onopenCloudSettings}
     />
   {/if}
 
@@ -616,10 +639,48 @@
       data-kind="cloud-paused"
       role="status"
     >
-      <span class="core-paused-title">Cloud is off</span>
-      <span class="core-paused-body"
-        >Sync is paused on this device. Turn Cloud on to resume.</span
+      <span class="core-paused-title">Cloud sync is off</span>
+      <span class="core-paused-body" data-testid="core-popover-paused-body"
+        >{model.pausedNotice}</span
       >
+      {#if onopenCloudSettings}
+        <div class="core-uploads-paused-actions">
+          <button
+            type="button"
+            class="core-btn primary"
+            data-testid="core-popover-cloud-settings"
+            onclick={() => onopenCloudSettings?.()}
+          ><RailIcon name="arrow-right" />
+            Open Sync settings
+          </button>
+        </div>
+      {/if}
+    </div>
+  {/if}
+
+  {#if model.syncOffNotice}
+    <div
+      class="core-paused"
+      data-testid="core-popover-vault-off"
+      data-kind="vault-off"
+      role="status"
+    >
+      <span class="core-paused-title">{model.syncOffNotice}</span>
+      <span class="core-paused-body"
+        >To sync again, turn the vault back on in Settings › Sync.</span
+      >
+      {#if onopenCloudSettings}
+        <div class="core-uploads-paused-actions">
+          <button
+            type="button"
+            class="core-btn primary"
+            data-testid="core-popover-vault-off-settings"
+            onclick={() => onopenCloudSettings?.()}
+          ><RailIcon name="arrow-right" />
+            Open Sync settings
+          </button>
+        </div>
+      {/if}
     </div>
   {/if}
 

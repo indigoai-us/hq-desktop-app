@@ -957,6 +957,12 @@
               onopenMarketplace?.();
               coreOpen = false;
             }}
+            onopenCloudSettings={onopenSync
+              ? () => {
+                  onopenSync?.();
+                  coreOpen = false;
+                }
+              : undefined}
           />
         {/if}
       </div>
