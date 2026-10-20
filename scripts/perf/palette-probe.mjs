@@ -15,8 +15,8 @@
  *
  * A palette that never paints is a failure, not a missing sample: the probe
  * resolves with the elapsed time at the timeout (at least `readyTimeoutMs`
- * after the keydown, or `keyTimeoutMs` when no keydown arrives), which is far
- * over the 20 ms budget. It never resolves `null`.
+ * after the keydown, or at least `keyTimeoutMs` when no keydown arrives),
+ * which is far over the 20 ms budget. It never resolves `null`.
  *
  * @param {string} rowSelector
  * @param {{ readyTimeoutMs?: number, keyTimeoutMs?: number }} [options]
@@ -73,8 +73,11 @@ export function palettePaintedProbe(rowSelector, options) {
     };
     // Capture on window runs before the shell's own handler.
     window.addEventListener("keydown", onKey, true);
+    // A timer can fire a fraction of a millisecond before `performance.now()`
+    // shows `keyTimeoutMs` elapsed (the two clocks round differently), so the
+    // sample is floored at the timeout it stands for.
     setTimeout(() => {
-      if (!t0) finish(performance.now() - armed);
+      if (!t0) finish(Math.max(performance.now() - armed, keyTimeoutMs));
     }, keyTimeoutMs);
   });
 }
