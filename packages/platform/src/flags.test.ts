@@ -15,8 +15,8 @@ import {
   FLAG_REFRESH_INTERVAL_MS,
   HQ_ANYWHERE_RUNTIME_FLAG,
   LOGIN_RECEIPT_DURABILITY_FLAG,
+  LEGACY_TO_REGISTRY,
   MEETINGS_LEGACY_FLAG,
-  MEETINGS_REGISTRY_KEY,
   PERSONAL_WORKSPACE_BOARD_FLAG,
   PERSONAL_TRANSCRIPTS_FLAG,
   POST_READY_ACTION_TELEMETRY_FLAG,
@@ -73,12 +73,15 @@ describe("registry key mapping", () => {
     expect(registryKeyFor(COMPANY_NAME_PREFILL_FLAG)).toBe(COMPANY_NAME_PREFILL_FLAG);
   });
 
-  it("maps the meetings and Claude provider registry flags", () => {
-    expect(registryKeyFor("meetings")).toBe(MEETINGS_REGISTRY_KEY);
-    expect(registryKeyFor(MEETINGS_LEGACY_FLAG)).toBe("desktop.meetings");
+  it("maps the Claude provider registry flag", () => {
     expect(registryKeyFor(CLAUDE_PROVIDER_FLAG)).toBe(CLAUDE_PROVIDER_FLAG);
     expect(registryKeyFor("is_indigo_user")).toBeUndefined();
     expect(registryKeyFor("anything-else")).toBeUndefined();
+  });
+
+  it("does not map meetings to the retired desktop.meetings registry key", () => {
+    expect(registryKeyFor(MEETINGS_LEGACY_FLAG)).toBeUndefined();
+    expect(Object.values(LEGACY_TO_REGISTRY)).not.toContain("desktop.meetings");
   });
 
   it("registers the first-launch join-key rollout through the default-off hq-flags mapping", () => {
@@ -466,7 +469,7 @@ describe("createFeatureFlagGate", () => {
       createClient,
     });
 
-    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
+    await expect(gate.resolve("agents.claude-provider", fallback)).resolves.toEqual(ok(true));
     expect(createClient).toHaveBeenCalledTimes(1);
     expect(fallback).toHaveBeenCalledTimes(1);
     expect(isEnabled).not.toHaveBeenCalled();
@@ -487,7 +490,7 @@ describe("createFeatureFlagGate", () => {
         }),
     });
 
-    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
+    await expect(gate.resolve("agents.claude-provider", fallback)).resolves.toEqual(ok(true));
     expect(fallback).toHaveBeenCalledTimes(1);
     expect(isEnabled).not.toHaveBeenCalled();
   });
@@ -506,7 +509,7 @@ describe("createFeatureFlagGate", () => {
         }),
     });
 
-    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
+    await expect(gate.resolve("agents.claude-provider", fallback)).resolves.toEqual(ok(true));
     expect(isEnabled).not.toHaveBeenCalled();
     expect(fallback).toHaveBeenCalledTimes(1);
   });
@@ -522,14 +525,14 @@ describe("createFeatureFlagGate", () => {
           ready: async () => {},
           snapshot: () => ({
             version: 2,
-            flags: { "desktop.meetings": true },
+            flags: { "agents.claude-provider": true },
           }),
           isEnabled,
         }),
     });
 
-    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
-    expect(isEnabled).toHaveBeenCalledWith("desktop.meetings");
+    await expect(gate.resolve("agents.claude-provider", fallback)).resolves.toEqual(ok(true));
+    expect(isEnabled).toHaveBeenCalledWith("agents.claude-provider");
     expect(fallback).not.toHaveBeenCalled();
   });
 
@@ -544,16 +547,16 @@ describe("createFeatureFlagGate", () => {
           ready: async () => {},
           snapshot: () => ({
             version: 2,
-            flags: { "desktop.meetings": false },
+            flags: { "agents.claude-provider": false },
           }),
           isEnabled,
         }),
     });
 
-    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(
+    await expect(gate.resolve("agents.claude-provider", fallback)).resolves.toEqual(
       ok(false),
     );
-    expect(isEnabled).toHaveBeenCalledWith("desktop.meetings");
+    expect(isEnabled).toHaveBeenCalledWith("agents.claude-provider");
     expect(fallback).not.toHaveBeenCalled();
   });
 
@@ -576,7 +579,7 @@ describe("createFeatureFlagGate", () => {
         }),
     });
 
-    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
+    await expect(gate.resolve("agents.claude-provider", fallback)).resolves.toEqual(ok(true));
     expect(fallback).toHaveBeenCalledTimes(1);
   });
 
@@ -590,7 +593,7 @@ describe("createFeatureFlagGate", () => {
           ready: async () => {},
           snapshot: () => ({
             version: 1,
-            flags: { "desktop.meetings": true },
+            flags: { "agents.claude-provider": true },
           }),
           isEnabled: () => {
             throw new Error("client bug");
@@ -598,7 +601,7 @@ describe("createFeatureFlagGate", () => {
         }),
     });
 
-    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
+    await expect(gate.resolve("agents.claude-provider", fallback)).resolves.toEqual(ok(true));
     expect(fallback).toHaveBeenCalledTimes(1);
   });
 
@@ -633,7 +636,7 @@ describe("createFeatureFlagGate", () => {
     });
     const fallback = vi.fn(async () => failure("invoke", "Not signed in"));
 
-    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(
+    await expect(gate.resolve("agents.claude-provider", fallback)).resolves.toEqual(
       failure("invoke", "Not signed in"),
     );
   });
@@ -651,8 +654,8 @@ describe("createFeatureFlagGate", () => {
       getToken: () => "token",
       createClient,
     });
-    await gate.resolve("meetings", async () => ok(true));
-    await gate.resolve("meetings", async () => ok(true));
+    await gate.resolve("agents.claude-provider", async () => ok(true));
+    await gate.resolve("agents.claude-provider", async () => ok(true));
     expect(createClient).toHaveBeenCalledTimes(1);
   });
 
@@ -669,7 +672,7 @@ describe("createFeatureFlagGate", () => {
       getToken: () => "token",
       createClient,
     });
-    await gate.resolve("meetings", async () => ok(true));
+    await gate.resolve("agents.claude-provider", async () => ok(true));
     expect(FLAG_REFRESH_INTERVAL_MS).toBe(300_000);
     expect(createClient).toHaveBeenCalledWith(
       expect.objectContaining({ refreshIntervalMs: FLAG_REFRESH_INTERVAL_MS }),
@@ -681,7 +684,7 @@ describe("createFeatureFlagGate", () => {
     const refresh = vi.fn(async () => {
       snapshot = {
         version: 2,
-        flags: { "desktop.meetings": true },
+        flags: { "agents.claude-provider": true },
       };
     });
     const isEnabled = vi.fn(() => true);
@@ -698,17 +701,17 @@ describe("createFeatureFlagGate", () => {
         }),
     });
 
-    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(false));
+    await expect(gate.resolve("agents.claude-provider", fallback)).resolves.toEqual(ok(false));
     expect(refresh).not.toHaveBeenCalled();
     expect(fallback).toHaveBeenCalledTimes(1);
     expect(isEnabled).not.toHaveBeenCalled();
 
-    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
+    await expect(gate.resolve("agents.claude-provider", fallback)).resolves.toEqual(ok(true));
     expect(refresh).toHaveBeenCalledTimes(1);
-    expect(isEnabled).toHaveBeenCalledWith("desktop.meetings");
+    expect(isEnabled).toHaveBeenCalledWith("agents.claude-provider");
     expect(fallback).toHaveBeenCalledTimes(1);
 
-    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
+    await expect(gate.resolve("agents.claude-provider", fallback)).resolves.toEqual(ok(true));
     expect(refresh).toHaveBeenCalledTimes(1);
     expect(fallback).toHaveBeenCalledTimes(1);
   });
@@ -722,7 +725,7 @@ describe("createFeatureFlagGate", () => {
       await finish.promise;
       snapshot = {
         version: 1,
-        flags: { "desktop.meetings": true },
+        flags: { "agents.claude-provider": true },
       };
     });
     const isEnabled = vi.fn(() => true);
@@ -739,13 +742,13 @@ describe("createFeatureFlagGate", () => {
         }),
     });
 
-    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(false));
+    await expect(gate.resolve("agents.claude-provider", fallback)).resolves.toEqual(ok(false));
     expect(refresh).not.toHaveBeenCalled();
 
     const pending = [
-      gate.resolve("meetings", fallback),
-      gate.resolve("meetings", fallback),
-      gate.resolve("meetings", fallback),
+      gate.resolve("agents.claude-provider", fallback),
+      gate.resolve("agents.claude-provider", fallback),
+      gate.resolve("agents.claude-provider", fallback),
     ];
     await started.promise;
     expect(refresh).toHaveBeenCalledTimes(1);
@@ -777,18 +780,18 @@ describe("createFeatureFlagGate", () => {
         }),
     });
 
-    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
-    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
-    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
-    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
+    await expect(gate.resolve("agents.claude-provider", fallback)).resolves.toEqual(ok(true));
+    await expect(gate.resolve("agents.claude-provider", fallback)).resolves.toEqual(ok(true));
+    await expect(gate.resolve("agents.claude-provider", fallback)).resolves.toEqual(ok(true));
+    await expect(gate.resolve("agents.claude-provider", fallback)).resolves.toEqual(ok(true));
     expect(refresh).toHaveBeenCalledTimes(1);
 
     nowMs += FLAG_REFRESH_INTERVAL_MS - 1;
-    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
+    await expect(gate.resolve("agents.claude-provider", fallback)).resolves.toEqual(ok(true));
     expect(refresh).toHaveBeenCalledTimes(1);
 
     nowMs += 1;
-    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
+    await expect(gate.resolve("agents.claude-provider", fallback)).resolves.toEqual(ok(true));
     expect(refresh).toHaveBeenCalledTimes(2);
     expect(fallback).toHaveBeenCalledTimes(6);
   });
@@ -812,8 +815,8 @@ describe("createFeatureFlagGate", () => {
         }),
     });
 
-    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
-    await expect(gate.resolve("meetings", fallback)).resolves.toEqual(ok(true));
+    await expect(gate.resolve("agents.claude-provider", fallback)).resolves.toEqual(ok(true));
+    await expect(gate.resolve("agents.claude-provider", fallback)).resolves.toEqual(ok(true));
     expect(refresh).toHaveBeenCalledTimes(1);
     expect(fallback).toHaveBeenCalledTimes(2);
     // Vitest fails the file on an unhandled rejection. Extra ticks give a
@@ -827,7 +830,7 @@ describe("createHqProFlagFetch", () => {
   it("invokes hq_pro_fetch with the path FlagClient would request", async () => {
     const invoke = vi.fn(async () => ({
       status: 200,
-      body: JSON.stringify({ version: 1, flags: { "desktop.meetings": true } }),
+      body: JSON.stringify({ version: 1, flags: { "agents.claude-provider": true } }),
     }));
     const fetchFn = createHqProFlagFetch(invoke);
     const res = await fetchFn("https://unused.example/v1/flags/resolve");
@@ -839,7 +842,7 @@ describe("createHqProFlagFetch", () => {
     expect(res.ok).toBe(true);
     await expect(res.json()).resolves.toEqual({
       version: 1,
-      flags: { "desktop.meetings": true },
+      flags: { "agents.claude-provider": true },
     });
   });
 

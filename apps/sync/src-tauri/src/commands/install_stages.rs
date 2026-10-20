@@ -317,6 +317,15 @@ pub struct GitUser {
 fn git_command(git: &str, path_env: &str) -> Command {
     let mut cmd = Command::new(git);
     paths::no_window(&mut cmd);
+    // The portable Git binary needs GIT_EXEC_PATH and its templates dir when
+    // it is run directly instead of through its wrapper.
+    #[cfg(not(target_os = "windows"))]
+    if let Some(home) = paths::home_dir() {
+        cmd.envs(paths::managed_git_env_for_resolved_bin_in(
+            &home,
+            Path::new(git),
+        ));
+    }
     cmd.env("PATH", path_env);
     cmd
 }
@@ -566,12 +575,29 @@ fn read_global_git_config(
     Ok((!value.is_empty()).then_some(value))
 }
 
-fn git_would_prompt_for_tools(git: &str) -> bool {
-    crate::commands::command_line_tools::git_would_prompt(
-        &crate::commands::command_line_tools::RealShell,
-        cfg!(target_os = "macos"),
-        git,
-    )
+/// True when first-run must not run `git`: the shared resolver refused every
+/// candidate, or `git` is the macOS `/usr/bin/git` stub (or a bare `git` that
+/// would fall through to it). Decided from the path alone: running the stub on
+/// a Mac without Apple's developer tools opens Apple's install prompt.
+fn git_is_macos_shim(git: &str, is_macos: bool) -> bool {
+    git == paths::REFUSED_GIT_PROGRAM
+        || (is_macos
+            && ((git == "git" && paths::apple_tool_stubs_active())
+                || crate::commands::install_deps::is_macos_clt_shim("git", Path::new(git))))
+}
+
+/// The git first-run setup runs: HQ's managed wrapper, then the managed
+/// binary, then the first git on the child PATH that is not Apple's stub. A
+/// Claude settings `env.PATH` that starts with `/usr/bin` cannot select the
+/// stub. With no usable git this is [`paths::REFUSED_GIT_PROGRAM`].
+fn first_run_git() -> String {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let (program, _env) = paths::resolved_git_spawn_parts();
+        program.to_string_lossy().into_owned()
+    }
+    #[cfg(target_os = "windows")]
+    paths::resolve_bin("git")
 }
 
 fn git_init_path(
@@ -579,7 +605,7 @@ fn git_init_path(
     name: Option<&str>,
     email: Option<&str>,
 ) -> Result<(), StageCommandFailure> {
-    let git = paths::resolve_bin("git");
+    let git = first_run_git();
     let path_env = paths::child_path();
 
     run_git(
@@ -644,13 +670,12 @@ pub fn git_init(
                 message,
                 error_category: OnboardingErrorCategory::Unknown,
             })?;
-        let git = paths::resolve_bin("git");
-        // Never run the macOS git shim without Apple's developer tools: it pops
-        // Apple's install dialog and blocks. The wizard installs the tools
-        // first; this is the backstop for any caller that skipped that.
-        if git_would_prompt_for_tools(&git) {
+        let git = first_run_git();
+        // Never run the macOS git stub: it opens Apple's install prompt. The
+        // deps stage installs HQ's managed git before this stage runs.
+        if git_is_macos_shim(&git, cfg!(target_os = "macos")) {
             return Err(StageCommandFailure {
-                message: "Apple's developer tools are not installed yet".to_string(),
+                message: "managed git is not installed".to_string(),
                 error_category: OnboardingErrorCategory::NotFound,
             });
         }
@@ -687,8 +712,8 @@ pub fn git_init(
 /// Read global git user identity for legacy installer UI pre-fill.
 #[tauri::command]
 pub fn git_probe_user() -> Result<Option<GitUser>, String> {
-    let git = paths::resolve_bin("git");
-    if git_would_prompt_for_tools(&git) {
+    let git = first_run_git();
+    if git_is_macos_shim(&git, cfg!(target_os = "macos")) {
         return Ok(None);
     }
     let path_env = paths::child_path();
@@ -1216,6 +1241,254 @@ pub async fn start_initial_cloud_sync(app: tauri::AppHandle) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_shim_check_refuses_the_macos_shim_without_probing_apple_tools() {
+        let _stubs = paths::AppleToolStubsOverride::set(true);
+        assert!(git_is_macos_shim(paths::REFUSED_GIT_PROGRAM, true));
+        assert!(git_is_macos_shim("/usr/bin/git", true));
+        assert!(git_is_macos_shim("git", true));
+        assert!(!git_is_macos_shim(
+            "/Users/x/Library/Application Support/Indigo HQ/toolchain/git-shim/git",
+            true
+        ));
+        assert!(!git_is_macos_shim("/opt/homebrew/bin/git", true));
+        assert!(!git_is_macos_shim("/usr/bin/git", false));
+        assert!(!git_is_macos_shim("git", false));
+    }
+
+    // With Apple's developer tools installed, /usr/bin/git is a working git and
+    // git setup uses it when HQ's managed git is absent.
+    #[test]
+    fn git_shim_check_accepts_usr_bin_git_when_apple_tools_are_installed() {
+        let _stubs = paths::AppleToolStubsOverride::set(false);
+        assert!(!git_is_macos_shim("/usr/bin/git", true));
+        assert!(git_is_macos_shim(paths::REFUSED_GIT_PROGRAM, true));
+    }
+
+    #[cfg(not(windows))]
+    fn write_managed_git_wrapper(home: &Path) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let wrapper = paths::managed_git_shim_dir_in(home).join("git");
+        fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
+        fs::write(&wrapper, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+        wrapper
+    }
+
+    // Review finding: a Claude settings env.PATH that starts with /usr/bin made
+    // resolve_bin("git") return the Apple stub, so git-init failed even though
+    // the deps stage had installed HQ's git.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn first_run_git_uses_the_managed_git_when_settings_path_starts_with_usr_bin() {
+        let _guard = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let previous_xdg = std::env::var_os("XDG_DATA_HOME");
+        let previous_path = std::env::var_os("PATH");
+        std::env::remove_var("XDG_DATA_HOME");
+        std::env::set_var("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let hq = tmp.path().join("hq");
+        fs::create_dir_all(home.join(".hq")).unwrap();
+        fs::create_dir_all(hq.join(".claude")).unwrap();
+        fs::write(
+            home.join(".hq/menubar.json"),
+            serde_json::json!({ "hqPath": hq }).to_string(),
+        )
+        .unwrap();
+        fs::write(
+            hq.join(".claude/settings.local.json"),
+            r#"{"env":{"PATH":"/usr/bin:/bin"}}"#,
+        )
+        .unwrap();
+        let wrapper = write_managed_git_wrapper(&home);
+        let _home = crate::util::test_support::scoped_home(&home);
+
+        let resolved = paths::resolve_bin("git");
+        let chosen = first_run_git();
+
+        match previous_xdg {
+            Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
+        match previous_path {
+            Some(value) => std::env::set_var("PATH", value),
+            None => std::env::remove_var("PATH"),
+        }
+
+        assert_eq!(resolved, "/usr/bin/git", "fixture puts /usr/bin first");
+        assert_eq!(chosen, wrapper.display().to_string());
+    }
+
+    /// The archive HQ downloads extracts a git binary to
+    /// `toolchain/git/bin/git`. The fixture binary forwards to the test
+    /// machine's own git so `git init` really runs.
+    #[cfg(not(windows))]
+    fn write_extracted_managed_git(home: &Path) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let real_git =
+            paths::resolve_git_on_path(&std::env::var("PATH").unwrap_or_default(), false, None)
+                .expect("the test machine has a git");
+        let git = paths::managed_git_bin_in(home);
+        fs::create_dir_all(git.parent().unwrap()).unwrap();
+        fs::write(
+            &git,
+            format!(
+                "#!/bin/sh\nunset GIT_EXEC_PATH GIT_TEMPLATE_DIR\nexec '{}' \"$@\"\n",
+                real_git.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).unwrap();
+        git
+    }
+
+    // Gate-2 finding: on a Mac without Apple's tools the managed Git install
+    // left no wrapper, so git-init looked up /usr/bin/git, refused it, and the
+    // HQ folder never got a repository.
+    #[cfg(not(windows))]
+    #[test]
+    fn git_init_succeeds_right_after_the_managed_git_install_on_a_mac_without_apple_tools() {
+        let _guard = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let previous_xdg = std::env::var_os("XDG_DATA_HOME");
+        std::env::remove_var("XDG_DATA_HOME");
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let hq = tmp.path().join("hq");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&hq).unwrap();
+        // The fixture resolves the machine's real git before HOME moves.
+        write_extracted_managed_git(&home);
+        let _home = crate::util::test_support::scoped_home(&home);
+        let _stubs = paths::AppleToolStubsOverride::set(true);
+
+        let finished = crate::commands::install_deps::finish_managed_git_install(&home);
+        let result = git_init(
+            Some(hq.display().to_string()),
+            Some("HQ Test".to_string()),
+            Some("hq@example.invalid".to_string()),
+            None,
+        );
+
+        match previous_xdg {
+            Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
+        assert!(finished.is_ok(), "{finished:?}");
+        assert!(result.is_ok(), "{result:?}");
+        assert!(
+            hq.join(".git").is_dir(),
+            "the HQ folder must become a repository"
+        );
+        assert!(paths::managed_git_shim_dir_in(&home).join("git").is_file());
+    }
+
+    fn position_of(path: &str, dir: &Path) -> Option<usize> {
+        path.split(':').position(|entry| Path::new(entry) == dir)
+    }
+
+    // Every first-run child process gets one of two PATHs: the git and hq
+    // stages use `paths::child_path()` and the deps stage uses
+    // `extended_search_path_in`. Both must find HQ's own git and Node before
+    // the /usr/bin shims that open Apple's install prompt.
+    #[cfg(not(windows))]
+    #[test]
+    fn every_first_run_child_path_puts_the_managed_toolchain_ahead_of_usr_bin() {
+        let _guard = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let toolchain = hq_desktop_core::paths::managed_toolchain_dir_with(&home, None);
+        for subdir in ["node/bin", "npm-global/bin", "git/bin", "git-shim"] {
+            fs::create_dir_all(toolchain.join(subdir)).unwrap();
+        }
+        let previous_xdg = std::env::var_os("XDG_DATA_HOME");
+        let previous_path = std::env::var_os("PATH");
+        std::env::remove_var("XDG_DATA_HOME");
+        // A GUI app launched by launchd starts with /usr/bin first.
+        std::env::set_var("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+        let _home = crate::util::test_support::scoped_home(&home);
+
+        let stage_path = paths::child_path();
+        let git_cmd = git_command("git", &stage_path);
+        let git_path = git_cmd
+            .get_envs()
+            .find_map(|(key, value)| (key == "PATH").then_some(value))
+            .flatten()
+            .expect("git stages set PATH on the child")
+            .to_string_lossy()
+            .into_owned();
+        let deps_path = crate::commands::install_deps::extended_search_path_in(Some(&home));
+
+        match previous_xdg {
+            Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
+        match previous_path {
+            Some(value) => std::env::set_var("PATH", value),
+            None => std::env::remove_var("PATH"),
+        }
+
+        let usr_bin = Path::new("/usr/bin");
+        for (label, path, managed) in [
+            (
+                "git stage",
+                &git_path,
+                ["node/bin", "npm-global/bin", "git-shim"],
+            ),
+            (
+                "hq stages",
+                &stage_path,
+                ["node/bin", "npm-global/bin", "git-shim"],
+            ),
+            (
+                "deps stage",
+                &deps_path,
+                ["node/bin", "npm-global/bin", "git/bin"],
+            ),
+        ] {
+            let usr_bin_at = position_of(path, usr_bin)
+                .unwrap_or_else(|| panic!("{label}: /usr/bin stays on PATH: {path}"));
+            for subdir in managed {
+                let at = position_of(path, &toolchain.join(subdir))
+                    .unwrap_or_else(|| panic!("{label}: {subdir} missing from PATH: {path}"));
+                assert!(
+                    at < usr_bin_at,
+                    "{label}: {subdir} must come before /usr/bin: {path}"
+                );
+            }
+        }
+    }
+
+    // The stage spawners must keep taking PATH from `paths::child_path()`.
+    #[test]
+    fn install_stage_spawns_take_path_from_child_path() {
+        let source = include_str!("install_stages.rs");
+        let production = source.split("#[cfg(test)]\nmod tests").next().unwrap();
+        let path_env_lets: Vec<&str> = production
+            .lines()
+            .filter(|line| line.trim_start().starts_with("let path_env ="))
+            .collect();
+        assert!(!path_env_lets.is_empty());
+        for line in &path_env_lets {
+            assert_eq!(line.trim(), "let path_env = paths::child_path();");
+        }
+        for line in production
+            .lines()
+            .filter(|line| line.contains(".env(\"PATH\""))
+        {
+            assert!(
+                line.contains("path_env"),
+                "every stage spawn sets PATH from path_env: {line}"
+            );
+        }
+    }
     use tempfile::tempdir;
 
     fn not_installed_status() -> DaemonStatus {
@@ -1256,6 +1529,10 @@ mod tests {
 
     #[test]
     fn git_init_path_creates_git_directory() {
+        // The git lookup reads HOME, which other tests here move.
+        let _guard = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let dir = tempdir().unwrap();
 
         git_init_path(dir.path(), None, None).unwrap();

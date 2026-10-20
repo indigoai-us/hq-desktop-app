@@ -25,6 +25,7 @@
 // release-workflow.test.ts, so a regression fails the frontend job (which is
 // fast) instead of silently costing everyone minutes.
 
+import { readdirSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -258,18 +259,25 @@ describe("superseded runs are cancelled", () => {
   // A pull_request-triggered workflow with no concurrency group keeps running
   // after the branch moves on. Measured over 30 days, 153 of 689 windows-check
   // runs (22%) were still executing when a newer push superseded them.
-  for (const [label, get] of [
-    ["ci", () => ciWorkflow],
-    ["windows-check", () => windowsCheckWorkflow],
-  ] as const) {
-    it(`${label} declares a per-ref concurrency group that cancels in progress`, () => {
-      const head = preamble(get());
+  it("windows-check declares a per-ref concurrency group that cancels in progress", () => {
+    const head = preamble(windowsCheckWorkflow);
 
-      expect(head).toMatch(/\nconcurrency:\n/);
-      expect(head).toContain("group: ${{ github.workflow }}-${{ github.ref }}");
-      expect(head).toContain("cancel-in-progress: true");
-    });
-  }
+    expect(head).toMatch(/\nconcurrency:\n/);
+    expect(head).toContain("group: ${{ github.workflow }}-${{ github.ref }}");
+    expect(head).toContain("cancel-in-progress: true");
+  });
+
+  it("ci cancels superseded pull request runs but never a push to main", () => {
+    // ci.yml also runs on push to main. Cancelling there would leave a main
+    // commit with no result whenever two merges land close together.
+    const head = preamble(ciWorkflow);
+
+    expect(head).toMatch(/\nconcurrency:\n/);
+    expect(head).toContain("group: ${{ github.workflow }}-${{ github.ref }}");
+    expect(head).toContain(
+      "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+    );
+  });
 });
 
 describe("windows jobs cache Rust artifacts with rust-cache", () => {
@@ -438,7 +446,7 @@ describe("the windows check splits its suite across three jobs", () => {
       "name: cargo check (x86_64-pc-windows-msvc)",
     );
     expect(jobBody(windowsCheckWorkflow, "windows-check")).toContain(
-      "runs-on: ubuntu-latest",
+      'runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX || \'"ubuntu-latest"\') }}',
     );
   });
 
@@ -627,7 +635,7 @@ describe("only macOS-specific work runs on a macOS runner", () => {
     // pure Rust, so neither needs a 10x runner -- or anything but rustc.
     const linux = jobBody(ciWorkflow, "rust-linux");
 
-    expect(linux).toContain("runs-on: ubuntu-latest");
+    expect(linux).toContain('runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX || \'"ubuntu-latest"\') }}');
     expect(linux).toContain(
       "cargo test -p hq-desktop-core -p hq-telemetry --locked",
     );
@@ -636,7 +644,7 @@ describe("only macOS-specific work runs on a macOS runner", () => {
   it("keeps those crates' tests off the macOS runner", () => {
     const macos = jobBody(ciWorkflow, "rust-macos");
 
-    expect(macos).toContain("runs-on: macos-latest");
+    expect(macos).toContain('runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_MACOS || \'"macos-latest"\') }}');
     expect(macos).not.toContain("cargo test --workspace --locked");
     expect(macos).not.toContain("-p hq-desktop-core");
   });
@@ -692,12 +700,13 @@ describe("only macOS-specific work runs on a macOS runner", () => {
     // `continue-on-error` means it could never fail the required check, so at
     // PR time it gated nothing while compiling the app crate a third time, in
     // a third profile, on a 10x runner (38s / 47s measured). Push-only keeps
-    // the signal on main. If the `continue-on-error:` ever goes away, this
-    // `if:` has to go with it or the promoted gate would not run on PRs.
+    // the signal on main and manual runs. If the `continue-on-error:` ever
+    // goes away, this `if:` has to go with it or the promoted gate would not
+    // run on PRs.
     const macos = jobConfig(ciWorkflow, "rust-macos");
     const clippy = macos.slice(macos.indexOf("name: cargo clippy"));
 
-    expect(clippy).toContain("if: ${{ github.event_name == 'push' }}");
+    expect(clippy).toContain("if: ${{ github.event_name != 'pull_request' }}");
     expect(clippy).toContain("continue-on-error: true");
   });
 
@@ -726,27 +735,163 @@ describe("only macOS-specific work runs on a macOS runner", () => {
 });
 
 describe("Rust macOS path scope preserves the required check", () => {
-  it("fails open and keeps full coverage on main and edited PR events", () => {
+  // The required context "Rust tests (macOS)" is reported by a Linux gate job.
+  // The macOS runner only starts when a Rust or native path changed. GitHub
+  // reports a job skipped by `if:` as success, so a skipped macOS job never
+  // leaves the required context waiting, and the gate turns every other
+  // outcome into an explicit verdict.
+  it("decides relevance on Linux and fails closed when it cannot", () => {
     const scope = jobBody(ciWorkflow, "rust-macos-scope");
-    const macos = jobConfig(ciWorkflow, "rust-macos");
 
     expect(scope).toContain(
-      "if: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false }}",
+      "if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}",
+    );
+    expect(scope).toContain(
+      'runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX || \'"ubuntu-latest"\') }}',
     );
     expect(scope).toContain("fetch-depth: 0");
-    expect(scope).toContain("EVENT_ACTION: ${{ github.event.action }}");
-    expect(scope).toContain('if [ "$EVENT_ACTION" = "edited" ]; then');
-    expect(scope).toContain('echo "relevant=true" >>"$GITHUB_OUTPUT"');
-    expect(scope).toContain("git diff --name-only");
+    expect(scope).toContain("set -euo pipefail");
+    expect(scope).toContain('git diff --name-only "$BASE_SHA...$HEAD_SHA"');
     expect(scope).toContain("scripts/macos-check-relevant.mjs");
-    expect(scope).toContain("could not diff pull request — running the Rust macOS gate");
+    expect(scope).toContain("failing closed");
+    // No fail-open path: an error in the scope job must not fall through to
+    // "run everything" or "skip everything". The gate turns it red.
+    expect(scope).not.toContain("running the Rust macOS gate\n              exit 0\n              ;;\n            pull_request");
+    expect(jobConfig(ciWorkflow, "rust-macos-scope")).not.toContain("|| true");
+  });
 
-    expect(macos).toContain("needs: [rust-macos-scope]");
-    expect(macos).toContain("always()");
-    expect(macos).toContain("needs.rust-macos-scope.result != 'success'");
-    expect(macos).toContain("needs.rust-macos-scope.outputs.relevant != 'false'");
-    expect(macos).toContain("github.event_name != 'pull_request'");
-    expect(macos).toContain("name: Rust tests (macOS)");
+  it("skips the push-to-main rerun of a merged pull request", () => {
+    const scope = jobBody(ciWorkflow, "rust-macos-scope");
+
+    expect(scope).toContain('gh api "repos/$REPO/commits/$PUSH_SHA/pulls"');
+    expect(scope).toContain("select(.merged_at != null)");
+    expect(scope).toContain("pull-requests: read");
+    expect(scope).toContain('git diff --name-only "$BEFORE_SHA...$PUSH_SHA"');
+  });
+
+  it("starts the macOS runner only when relevant, without always()", () => {
+    const macos = jobConfig(ciWorkflow, "rust-macos");
+
+    expect(macos).toContain("needs: [rust-macos-scope, rust-macos-bundle]");
+    expect(macos).toContain(
+      "if: ${{ needs.rust-macos-scope.outputs.relevant == 'true' }}",
+    );
+    expect(macos).not.toContain("always()");
+    expect(macos).not.toContain("name: Rust tests (macOS)\n");
+  });
+
+  it("reports the required check from a Linux gate that fails closed", () => {
+    const gate = jobBody(ciWorkflow, "rust-macos-gate");
+
+    expect(gate).toContain("name: Rust tests (macOS)\n");
+    expect(gate).toContain(
+      "needs: [rust-macos-scope, rust-macos-bundle, rust-macos]",
+    );
+    expect(gate).toContain(
+      "if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}",
+    );
+    expect(gate).toContain(
+      'runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX || \'"ubuntu-latest"\') }}',
+    );
+    expect(gate).toContain('if [ "$SCOPE_RESULT" != "success" ]; then');
+    expect(gate).toContain(
+      'if [ "$BUNDLE_RESULT" != "success" ] || [ "$MACOS_RESULT" != "success" ]; then',
+    );
+    expect(gate).toContain("Unknown scope verdict");
+  });
+
+  it("builds the UI bundle on Linux and hands it to the macOS job", () => {
+    const bundle = jobBody(ciWorkflow, "rust-macos-bundle");
+    const macos = jobBody(ciWorkflow, "rust-macos");
+
+    expect(bundle).toContain(
+      'runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX || \'"ubuntu-latest"\') }}',
+    );
+    expect(bundle).toContain("NODE_OPTIONS: --max-old-space-size=6144");
+    expect(bundle).toContain("run: pnpm build");
+    expect(bundle).toContain("name: rust-macos-ui-dist");
+    expect(macos).toContain("name: rust-macos-ui-dist");
+    expect(macos).toContain("path: apps/sync/dist");
+    expect(macos).not.toContain("run: pnpm build");
+    expect(macos).not.toContain("max-old-space-size");
+  });
+});
+
+describe("every job reads its runner from a repo variable", () => {
+  // Self-hosted pools are switched on by setting a repo variable. Until it is
+  // set, each job must land on exactly the hosted label it used before, so
+  // nothing queues on a pool that does not exist.
+  const files = readdirSync(resolve(rootDir, ".github/workflows")).filter(
+    (name) => name.endsWith(".yml"),
+  );
+  const allowed: Record<string, string[]> = {
+    HQ_DESKTOP_RUNNER_LINUX: ["ubuntu-latest"],
+    HQ_DESKTOP_RUNNER_LINUX_2204: ["ubuntu-22.04"],
+    HQ_DESKTOP_RUNNER_MACOS: ["macos-latest", "macos-14"],
+    HQ_DESKTOP_RUNNER_MACOS_RELEASE: ["macos-14"],
+    HQ_DESKTOP_RUNNER_WINDOWS: ["windows-latest"],
+  };
+
+  for (const file of files) {
+    it(`${file} has no literal runs-on label`, () => {
+      const text = readFileSync(
+        resolve(rootDir, ".github/workflows", file),
+        "utf8",
+      );
+      const lines = text
+        .split("\n")
+        .filter((line) => /^\s+runs-on:/.test(line));
+
+      for (const line of lines) {
+        const match = line.match(
+          /^\s+runs-on: \$\{\{ fromJSON\(vars\.(HQ_DESKTOP_RUNNER_[A-Z0-9_]+) \|\| '"([a-z0-9.-]+)"'\) \}\}$/,
+        );
+        expect(match, line).not.toBeNull();
+        const [, variable, fallback] = match!;
+        expect(allowed[variable], line).toContain(fallback);
+        // The comment block at the top of the file lists every variable used.
+        expect(text).toContain(`#   ${variable} `);
+      }
+    });
+  }
+
+  it("keeps release macOS jobs on hosted macos-14 behind their own variable", () => {
+    const macosLines = releaseWorkflow
+      .split("\n")
+      .filter((line) => /^\s+runs-on:.*macos/.test(line));
+
+    expect(macosLines.length).toBeGreaterThan(0);
+    for (const line of macosLines) {
+      expect(line).toContain(
+        "fromJSON(vars.HQ_DESKTOP_RUNNER_MACOS_RELEASE || '\"macos-14\"')",
+      );
+    }
+    expect(releaseWorkflow).toContain("verified notarized");
+  });
+
+  it("skips the Actions target/ cache on self-hosted runners", () => {
+    for (const workflow of [ciWorkflow, windowsCheckWorkflow, releaseWorkflow]) {
+      const blocks = workflow.split(/\n\s+- uses: [Ss]watinem\/rust-cache@/).slice(1);
+      expect(blocks.length).toBeGreaterThan(0);
+      for (const block of blocks) {
+        const ifLine = block.split("\n")[1] ?? "";
+        expect(ifLine).toContain("runner.environment == 'github-hosted'");
+      }
+    }
+  });
+
+  it("removes the temporary signing keychain even when the job fails", () => {
+    const cleanups = releaseWorkflow.split(
+      "- name: Remove temporary signing keychain and notary key",
+    );
+
+    expect(cleanups.length - 1).toBe(2);
+    for (const block of cleanups.slice(1)) {
+      const step = block.slice(0, block.indexOf("\n      - ") >>> 0);
+      expect(step).toContain("if: always()");
+      expect(step).toContain('security delete-keychain "$KEYCHAIN_PATH"');
+      expect(step).toContain('"$RUNNER_TEMP/asc-api-key.p8"');
+    }
   });
 });
 
@@ -759,7 +904,7 @@ describe("the shell boot matrix is a cheap required PR gate", () => {
     const job = jobBody(ciWorkflow, "shell-boot-matrix");
 
     expect(ciWorkflow).toContain("name: Shell boot matrix");
-    expect(job).toContain("runs-on: ubuntu-latest");
+    expect(job).toContain('runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX || \'"ubuntu-latest"\') }}');
     expect(job).toContain("timeout-minutes: 15");
     expect(job).not.toContain("continue-on-error");
     expect(job).toContain(
@@ -797,7 +942,7 @@ describe("the frontend gate splits across four parallel jobs", () => {
       // No `needs:` at all -- any dependency between them rebuilds the serial
       // critical path this split exists to remove.
       expect(body).not.toContain("needs:");
-      expect(body).toContain("runs-on: ubuntu-latest");
+      expect(body).toContain('runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX || \'"ubuntu-latest"\') }}');
       expect(body).toContain(
         "if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}",
       );
