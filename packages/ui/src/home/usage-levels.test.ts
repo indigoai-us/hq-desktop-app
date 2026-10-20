@@ -31,7 +31,8 @@ describe("levels", () => {
   it("has seven levels at the owner's thresholds, each with a short name", () => {
     expect(USAGE_LEVELS.map((l) => l.cents)).toEqual([1_000, 5_000, 10_000, 50_000, 100_000, 500_000, 1_000_000]);
     expect(USAGE_LEVELS.map((l) => l.n)).toEqual([1, 2, 3, 4, 5, 6, 7]);
-    expect(new Set(USAGE_LEVELS.map((l) => l.name)).size).toBe(7);
+    // Owner pick, Corey, 2026-10-20 ("Build theme").
+    expect(USAGE_LEVELS.map((l) => l.name)).toEqual(["Sketch", "Prototype", "Launch", "Scale", "Engine", "Flagship", "Landmark"]);
     for (const l of USAGE_LEVELS) expect(l.name).not.toMatch(/—/);
     expect(MAX_LEVEL).toBe(7);
   });
@@ -59,11 +60,11 @@ describe("levels", () => {
   });
 
   it("names the level, the next one and the thresholds plainly", () => {
-    expect(levelLabel(4)).toBe("Level 4 · Momentum");
+    expect(levelLabel(4)).toBe("Level 4 · Scale");
     expect(levelLabel(0)).toBe("No level yet");
-    expect(nextLevel(4)?.name).toBe("Powerhouse");
+    expect(nextLevel(4)?.name).toBe("Engine");
     expect(nextLevel(7)).toBeNull();
-    expect(nextLevelLine(4)).toBe("Next: Level 5 Powerhouse at a $1k month");
+    expect(nextLevelLine(4)).toBe("Next: Level 5 Engine at a $1k month");
     expect(nextLevelLine(7)).toBe("Top level reached");
     expect(levelThresholdText(1_000)).toBe("$10");
     expect(levelThresholdText(50_000)).toBe("$500");

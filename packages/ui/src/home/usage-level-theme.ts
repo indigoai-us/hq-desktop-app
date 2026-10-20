@@ -39,15 +39,15 @@ export interface LevelTheme {
 const grad = (a: string, b: string) => `linear-gradient(90deg, ${a}, ${b})`;
 
 export const LEVEL_THEMES: readonly LevelTheme[] = [
-  // 1 Spark: sky.
+  // 1 Sketch: sky.
   { level: 1, finish: "flat", agents: "#0284c7", sync: "#38bdf8", storage: "#93d8f8", mark: "#0369a1", markInk: "#ffffff" },
-  // 2 Steady: emerald.
+  // 2 Prototype: emerald.
   { level: 2, finish: "flat", agents: "#047857", sync: "#10b981", storage: "#7fdcb9", mark: "#059669", markInk: "#ffffff" },
-  // 3 Rising: indigo.
+  // 3 Launch: indigo.
   { level: 3, finish: "flat", agents: "#4338ca", sync: "#6f78f0", storage: "#aab2fb", mark: "#4f46e5", markInk: "#ffffff" },
-  // 4 Momentum: fuchsia.
+  // 4 Scale: fuchsia.
   { level: 4, finish: "flat", agents: "#a21caf", sync: "#d946ef", storage: "#f0abfc", mark: "#c026d3", markInk: "#ffffff" },
-  // 5 Powerhouse: cyan to blue gradients.
+  // 5 Engine: cyan to blue gradients.
   {
     level: 5,
     finish: "gradient",
@@ -57,7 +57,7 @@ export const LEVEL_THEMES: readonly LevelTheme[] = [
     mark: grad("#0e7490", "#1d4ed8"),
     markInk: "#ffffff",
   },
-  // 6 Summit: violet to rose gradients, sheen on unlock and hover.
+  // 6 Flagship: violet to rose gradients, sheen on unlock and hover.
   {
     level: 6,
     finish: "sheen",
@@ -67,7 +67,7 @@ export const LEVEL_THEMES: readonly LevelTheme[] = [
     mark: grad("#7c3aed", "#db2777"),
     markInk: "#ffffff",
   },
-  // 7 Legend: the HQ brand gradient, split across the groups, sheen on unlock and hover.
+  // 7 Landmark: the HQ brand gradient, split across the groups, sheen on unlock and hover.
   {
     level: 7,
     finish: "sheen",

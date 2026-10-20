@@ -148,19 +148,19 @@ describe("UsageStackBar levels", () => {
 describe("UsageLevelChip", () => {
   it("shows the level, its progress to the next and the next threshold", () => {
     const el = render({ level: 4, bestCents: 75_000, bestMonth: "2026-10" }, UsageLevelChip);
-    expect(el.querySelector('[data-testid="usage-level-name"]')?.textContent).toBe("Level 4 Momentum");
+    expect(el.querySelector('[data-testid="usage-level-name"]')?.textContent).toBe("Level 4 Scale");
     expect(el.querySelector('[data-testid="usage-level-chip"]')?.getAttribute("data-progress")).toBe("50");
     // In a Settings line the chip sits inside the line's button: no nested progressbar role.
     expect(el.querySelector('[role="progressbar"]')).toBeNull();
     expect(el.querySelector('[data-testid="usage-level-next"]')?.textContent).toBe("$1k");
-    expect(el.querySelector('[data-testid="usage-level-chip"]')?.getAttribute("title")).toContain("Next: Level 5 Powerhouse at a $1k month");
+    expect(el.querySelector('[data-testid="usage-level-chip"]')?.getAttribute("title")).toContain("Next: Level 5 Engine at a $1k month");
   });
 
   it("is a labelled progressbar in the Core menu", () => {
     const el = render({ level: 2, bestCents: 7_500, variant: "menu" }, UsageLevelChip);
     const bar = el.querySelector('[data-testid="usage-level-progress"]');
     expect(bar?.getAttribute("role")).toBe("progressbar");
-    expect(bar?.getAttribute("aria-label")).toBe("Progress to Level 3 Rising");
+    expect(bar?.getAttribute("aria-label")).toBe("Progress to Level 3 Launch");
     expect(bar?.getAttribute("aria-valuenow")).toBe("50");
   });
 

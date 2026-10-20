@@ -46,7 +46,7 @@ describe("observeUsageLevel", () => {
     expect(state).toMatchObject({ level: 4, bestCents: 61_000, bestMonth: "2026-10" });
     expect(state?.freshAt).toEqual(expect.any(Number));
     expect(levelToasts()).toHaveLength(1);
-    expect(levelToasts()[0].title).toBe("Ridge reached Level 4: Momentum");
+    expect(levelToasts()[0].title).toBe("Ridge reached Level 4: Scale");
     expect(levelToasts()[0].detail).toBe("October 2026 passed $500. The team did 1,240 agent runs and 3,100 syncs.");
     expect(levelToasts()[0].look).toBe("holo");
 
@@ -77,7 +77,7 @@ describe("observeUsageLevel", () => {
     expect(observeUsageLevel("cmp_ridge", "Ridge", { periodStart: "2026-11-01", cents: 100 }, { storage })?.level).toBe(3);
     expect(levelToasts()).toHaveLength(0);
     observeUsageLevel("cmp_ridge", "Ridge", { periodStart: "2026-11-01", cents: 55_000 }, { storage });
-    expect(levelToasts().map((t) => t.title)).toEqual(["Ridge reached Level 4: Momentum"]);
+    expect(levelToasts().map((t) => t.title)).toEqual(["Ridge reached Level 4: Scale"]);
   });
 
   it("gives each signed-in person their own card for the same company", () => {
@@ -118,7 +118,7 @@ describe("observeUsageLevel", () => {
     setUsageLevelOpener(open);
     observeUsageLevel("personal", "Personal", { periodStart: "2026-10-01", cents: 5_200, counts: { "agent-run": 1 } }, { storage });
     const toast = levelToasts()[0];
-    expect(toast.title).toBe("You reached Level 2: Steady");
+    expect(toast.title).toBe("You reached Level 2: Prototype");
     expect(toast.detail).toContain("You did 1 agent run.");
     toast.actions?.[0].onAction();
     expect(open).toHaveBeenCalledWith("personal");
@@ -147,7 +147,7 @@ describe("observeUsageLevel", () => {
     setUsageLevelViewer("prs_owner");
     expect(usageLevelState("cmp_ridge")?.level).toBe(3);
     observeUsageLevel("cmp_ridge", "Ridge", { periodStart: "2026-10-01", cents: 12_000 }, { storage });
-    expect(levelToasts().map((t) => t.title)).toEqual(["Ridge reached Level 3: Rising"]);
+    expect(levelToasts().map((t) => t.title)).toEqual(["Ridge reached Level 3: Launch"]);
   });
 
   it("records a level without a card when told not to announce, and announces it later", () => {
@@ -156,7 +156,7 @@ describe("observeUsageLevel", () => {
     observeUsageLevel("cmp_ridge", "Ridge", { periodStart: "2026-10-01", cents: 6_000 }, { storage, announce: false });
     expect(levelToasts()).toHaveLength(0);
     observeUsageLevel("cmp_ridge", "Ridge", { periodStart: "2026-10-01", cents: 6_000 }, { storage });
-    expect(levelToasts().map((t) => t.title)).toEqual(["Ridge reached Level 2: Steady"]);
+    expect(levelToasts().map((t) => t.title)).toEqual(["Ridge reached Level 2: Prototype"]);
   });
 
   it("ignores a period it can't read", () => {
@@ -201,7 +201,7 @@ describe("usageLevelCardText", () => {
 
   it("leaves out the team line when no meter has a count", () => {
     expect(usageLevelCardText({ accountKey: "cmp", accountName: "Ridge", level: 7, month: "2026-10", counts: {} })).toEqual({
-      title: "Ridge reached Level 7: Legend",
+      title: "Ridge reached Level 7: Landmark",
       detail: "October 2026 passed $10k.",
     });
   });

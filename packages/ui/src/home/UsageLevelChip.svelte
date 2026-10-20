@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
    * An account's company level with its progress to the next (US-019): the
-   * level coin, "Level 4 Momentum", a thin track filled toward the next
+   * level coin, "Level 4 Scale", a thin track filled toward the next
    * threshold by the best month, and the next threshold ("$1k"). Shown on
    * each Settings > Usage line and in the Core menu meter.
    *

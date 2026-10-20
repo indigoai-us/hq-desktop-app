@@ -22,20 +22,20 @@
 export interface UsageLevel {
   /** 1..7. Level 0 is "no level yet" and has no entry here. */
   n: number;
-  /** Short plain name (proposed in the PR for owner approval). */
+  /** Short plain name (owner pick, Corey, 2026-10-20: "Build theme"). */
   name: string;
   /** The month total that unlocks it, in cents. */
   cents: number;
 }
 
 export const USAGE_LEVELS: readonly UsageLevel[] = [
-  { n: 1, name: "Spark", cents: 1_000 },
-  { n: 2, name: "Steady", cents: 5_000 },
-  { n: 3, name: "Rising", cents: 10_000 },
-  { n: 4, name: "Momentum", cents: 50_000 },
-  { n: 5, name: "Powerhouse", cents: 100_000 },
-  { n: 6, name: "Summit", cents: 500_000 },
-  { n: 7, name: "Legend", cents: 1_000_000 },
+  { n: 1, name: "Sketch", cents: 1_000 },
+  { n: 2, name: "Prototype", cents: 5_000 },
+  { n: 3, name: "Launch", cents: 10_000 },
+  { n: 4, name: "Scale", cents: 50_000 },
+  { n: 5, name: "Engine", cents: 100_000 },
+  { n: 6, name: "Flagship", cents: 500_000 },
+  { n: 7, name: "Landmark", cents: 1_000_000 },
 ];
 
 export const MAX_LEVEL = USAGE_LEVELS.length;
@@ -63,7 +63,7 @@ export function levelThresholdText(cents: number): string {
   return usd >= 1000 ? `$${(usd / 1000).toLocaleString("en-US")}k` : `$${usd.toLocaleString("en-US")}`;
 }
 
-/** "Level 4 · Momentum". */
+/** "Level 4 · Scale". */
 export function levelLabel(n: number): string {
   const info = levelInfo(n);
   return info ? `Level ${info.n} · ${info.name}` : "No level yet";
@@ -82,7 +82,7 @@ export function levelProgress(bestCents: number, level: number): number {
   return Math.max(0, Math.min(1, (bestCents - from) / span));
 }
 
-/** "Level 5 Powerhouse at a $1k month", or the top-level line. */
+/** "Level 5 Engine at a $1k month", or the top-level line. */
 export function nextLevelLine(level: number): string {
   const next = nextLevel(level);
   if (!next) return "Top level reached";
