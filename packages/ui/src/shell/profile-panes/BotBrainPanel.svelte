@@ -76,7 +76,7 @@
     {#if actionError}<p class="notice" role="alert">{actionError}</p>{/if}
     {#if switching}<p class="muted" role="status">A switch is already running. Wait for it to finish.</p>{/if}
     {#if confirming}
-      <div class="confirm" role="group" aria-label="Confirm brain switch"><p>Switch this bot to {current.name}? It restarts and answers a test message first{active ? `. ${active.name} stays signed in.` : '.'}</p><footer><button type="button" disabled={busy} onclick={() => { confirming = false; }}>Cancel</button><button type="button" class="primary" disabled={busy || !model} onclick={() => { void confirmSwitch(); }}>{busy ? 'Switching…' : 'Switch'}</button></footer></div>
+      <div class="confirm" role="group" aria-label="Confirm brain switch"><p>Switch this bot to {current.name}? It restarts and answers a test message first{active ? `. ${active.name} stays signed in.` : '.'}</p><footer><button type="button" disabled={busy} onclick={() => { confirming = false; }}>Cancel</button><button type="button" class="primary" disabled={busy || !model || !!switching} onclick={() => { void confirmSwitch(); }}>{busy ? 'Switching…' : 'Switch'}</button></footer></div>
     {:else}
       <footer><button type="button" disabled={busy} onclick={close}>Cancel</button><button type="button" class="primary" disabled={busy || !model || !!switching} onclick={() => { confirming = true; }}>Use this brain</button></footer>
     {/if}

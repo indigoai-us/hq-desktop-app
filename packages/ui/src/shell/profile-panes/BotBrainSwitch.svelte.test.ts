@@ -106,6 +106,85 @@ it('confirms in place, starts the switch with the chosen model and thinking leve
   expect(target.querySelector('[data-testid="brain-claude"] button')?.textContent).toContain('Use this brain');
 });
 
+it('stops waiting after repeated failed status checks and says to refresh', async () => {
+  let started = false;
+  const { calls } = await setup({ onFetch: (path, init) => {
+    if (path.endsWith('/brain-switch') && init?.method === 'POST') { started = true; return { status: 202, body: { uid: 'agt_a', switch: { switchId: 'sw-1', status: 'running', step: 'import', from: 'claude', to: 'codex', model: 'gpt-6-astra', startedAt: new Date().toISOString() } } }; }
+    if (path.endsWith('/brain-switch')) return started ? { status: 500, body: { error: 'upstream stack trace' } } : { status: 200, body: { uid: 'agt_a', switch: null } };
+    return { status: 404, body: {} };
+  } });
+  await openRow('codex');
+  await click('Use this brain');
+  await click('Switch');
+  expect(target.querySelector('[data-testid="brain-switching"]')).toBeTruthy();
+  for (let i = 0; i < 4; i++) { await vi.advanceTimersByTimeAsync(3100); await settle(); }
+  expect(target.querySelector('[data-testid="brain-switching"]')).toBeTruthy();
+  await vi.advanceTimersByTimeAsync(3100); await settle();
+  expect(target.querySelector('[data-testid="brain-switching"]')).toBeNull();
+  expect(target.textContent).toContain('Could not confirm whether the switch finished. Refresh to see which brain the bot is using.');
+  expect(target.textContent).not.toContain('upstream stack trace');
+  const polls = calls.filter(c => c.method === 'GET' && c.path.endsWith('/brain-switch')).length;
+  await vi.advanceTimersByTimeAsync(10_000); await settle();
+  expect(calls.filter(c => c.method === 'GET' && c.path.endsWith('/brain-switch')).length).toBe(polls);
+});
+
+it('stops waiting when a switch has been running longer than the time limit', async () => {
+  const startedAt = new Date(Date.now() - 21 * 60_000).toISOString();
+  const longRunning = { switchId: 'sw-1', status: 'running', step: 'apply', from: 'claude', to: 'codex', model: 'gpt-6-astra', startedAt };
+  let started = false;
+  await setup({ onFetch: (path, init) => {
+    if (path.endsWith('/brain-switch') && init?.method === 'POST') { started = true; return { status: 202, body: { uid: 'agt_a', switch: longRunning } }; }
+    if (path.endsWith('/brain-switch')) return { status: 200, body: { uid: 'agt_a', switch: started ? longRunning : null } };
+    return { status: 404, body: {} };
+  } });
+  await openRow('codex');
+  await click('Use this brain');
+  await click('Switch');
+  await vi.advanceTimersByTimeAsync(3100); await settle();
+  expect(target.querySelector('[data-testid="brain-switching"]')).toBeNull();
+  expect(target.textContent).toContain('Could not confirm whether the switch finished.');
+});
+
+it('shows a switch that is already running when the tab opens, and blocks a second start until it ends', async () => {
+  const { state } = await setup({ onFetch: (path, init) => {
+    if (path.endsWith('/brain-switch') && init?.method === 'POST') return { status: 409, body: { code: 'BRAIN_SWITCH_IN_PROGRESS' } };
+    if (path.endsWith('/brain-switch')) return { status: 200, body: { uid: 'agt_a', switch: state.switch } };
+    return { status: 404, body: {} };
+  } });
+  expect(target.querySelector('[data-testid="brain-switching"]')).toBeNull();
+  state.switch = { switchId: 'sw-9', status: 'waiting', step: 'waiting-for-idle', from: 'claude', to: 'codex', model: 'gpt-6-astra', startedAt: new Date().toISOString() };
+  target.querySelector<HTMLButtonElement>('[aria-label="Refresh brain"]')!.click(); await settle();
+  expect(target.querySelector('[data-testid="brain-switching"]')?.textContent).toContain('Switching to OpenAI once the bot finishes its current reply');
+  await openRow('codex');
+  expect(button('Use this brain')?.disabled).toBe(true);
+  await click('Cancel');
+  state.switch = { ...state.switch, status: 'done', step: 'test', finishedAt: new Date().toISOString() };
+  state.provider = 'codex'; state.model = 'gpt-6-astra';
+  await vi.advanceTimersByTimeAsync(3100); await settle();
+  expect(target.querySelector('[data-testid="brain-switching"]')).toBeNull();
+  expect(target.textContent).toContain('Now using OpenAI. The bot answered a test message on it.');
+  expect(target.querySelector('[data-testid="brain-codex"] button')?.textContent).toContain('Configure');
+});
+
+it('shows how a recent switch ended when the tab opens, but not an old one, and never internal text', async () => {
+  const recent = { switchId: 'sw-2', status: 'rolled-back', step: 'rollback', from: 'claude', to: 'codex', model: 'gpt-6-astra', code: 'TEST_REPLY_FAILED', error: 'OpenAI did not answer a test message. The bot is back on Claude.', startedAt: new Date(Date.now() - 300_000).toISOString(), finishedAt: new Date(Date.now() - 60_000).toISOString() };
+  await setup({ onFetch: path => path.endsWith('/brain-switch') ? { status: 200, body: { uid: 'agt_a', switch: recent } } : { status: 404, body: {} } });
+  expect(target.textContent).toContain('OpenAI did not answer a test message. The bot is back on Claude.');
+  expect(target.querySelector('[data-testid="brain-switching"]')).toBeNull();
+  await unmount(component!); component = undefined; target.remove();
+
+  const old = { ...recent, finishedAt: new Date(Date.now() - 2 * 60 * 60_000).toISOString() };
+  await setup({ onFetch: path => path.endsWith('/brain-switch') ? { status: 200, body: { uid: 'agt_a', switch: old } } : { status: 404, body: {} } });
+  expect(target.textContent).not.toContain('did not answer a test message');
+  await unmount(component!); component = undefined; target.remove();
+
+  const leaky = { ...recent, error: 'TypeError: Cannot read properties of undefined\n    at /var/task/index.js:12:3' };
+  await setup({ onFetch: path => path.endsWith('/brain-switch') ? { status: 200, body: { uid: 'agt_a', switch: leaky } } : { status: 404, body: {} } });
+  expect(target.textContent).toContain('The switch to OpenAI did not work. The bot is back on its previous brain.');
+  expect(target.textContent).not.toContain('TypeError');
+  expect(target.textContent).not.toContain('/var/task');
+});
+
 it('leaves the thinking level to the brain default when none is chosen', async () => {
   const { calls } = await setup();
   await openRow('codex');
