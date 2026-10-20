@@ -1267,6 +1267,48 @@ describe('first-run sign-in screen', () => {
     expect(providerButtons().every((button) => !button.disabled)).toBe(true);
   });
 
+  it('logs each sign-in timeout and the retry after it to the first-run timing log', async () => {
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
+    const attempts = stubOAuthAttempts('Timed out waiting for sign-in (5 minutes).');
+    const accountSignInLines = () =>
+      tauri.invoke.mock.calls
+        .filter(([command, args]) => command === 'frontend_log' && (args as { tag?: string })?.tag === 'first-run')
+        .map(([, args]) => String((args as { message: string }).message))
+        .filter((message) => message.startsWith('kind=account-signin'))
+        .map((message) => message.replace(/ elapsed_ms=\d+$/, ''));
+
+    await clickGoogleSignIn();
+    await flushUntil(
+      () =>
+        attempts.starts() === 2 &&
+        host.textContent?.includes('Sign-in took too long. Choose a provider to try again.') === true &&
+        providerButtons().every((button) => !button.disabled),
+    );
+    await flushUntil(() => accountSignInLines().length === 3);
+    expect(accountSignInLines()).toEqual([
+      'kind=account-signin event=timeout provider=google next=auto-retry',
+      'kind=account-signin event=retry provider=google trigger=auto',
+      'kind=account-signin event=timeout provider=google next=shown',
+    ]);
+
+    // The person tries again after "Sign-in took too long".
+    providerButtons()[0]?.click();
+    // That attempt gets its own automatic retry, as the first one did.
+    await flushUntil(() => attempts.starts() === 4 && accountSignInLines().length === 7);
+    expect(accountSignInLines().slice(3)).toEqual([
+      'kind=account-signin event=retry provider=google trigger=person',
+      'kind=account-signin event=timeout provider=google next=auto-retry',
+      'kind=account-signin event=retry provider=google trigger=auto',
+      'kind=account-signin event=timeout provider=google next=shown',
+    ]);
+    for (const message of tauri.invoke.mock.calls
+      .filter(([command]) => command === 'frontend_log')
+      .map(([, args]) => String((args as { message: string }).message))
+      .filter((message) => message.startsWith('kind=account-signin'))) {
+      expect(message).not.toMatch(/state|code|@|authorize/);
+    }
+  });
+
   it('restarts sign-in once after an OAuth state mismatch', async () => {
     stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
     const attempts = stubOAuthAttempts('OAuth state mismatch — possible CSRF, aborting.');
@@ -3788,7 +3830,7 @@ describe('invite teammate onboarding step', () => {
       host.querySelector('[data-testid="onboarding-invite-error"]') !== null,
     );
 
-    expect(host.textContent).toContain('Your plan has no free seats for another teammate.');
+    expect(host.textContent).toContain("This company's plan does not allow another teammate right now.");
     expect(host.textContent).not.toContain('HQ could not send the invitation.');
     expect(inviteRequestBodies()).toHaveLength(1);
     expect(
@@ -4460,7 +4502,6 @@ describe('company onboarding step', () => {
     /** Delay, in ms, before GET /membership/me answers. */
     membershipDelayMs?: number;
     pendingInvites?: Array<{ slug: string; displayName: string }>;
-    checkout?: { status: number; body: unknown };
     /** Whether GET /entity/cmp_new reports the new company provisioned. */
     provisioned?: boolean;
     /** Polls of GET /entity/cmp_new that answer "provisioning" before it is ready. */
@@ -4670,13 +4711,6 @@ describe('company onboarding step', () => {
                 },
               }),
             };
-          }
-          if (args?.url === '/v1/billing/checkout/team') {
-            const answer = options.checkout ?? {
-              status: 200,
-              body: { url: 'https://checkout.stripe.com/c/pay/cs_test' },
-            };
-            return { status: answer.status, body: JSON.stringify(answer.body) };
           }
           return { status: 200, body: '{}' };
         }

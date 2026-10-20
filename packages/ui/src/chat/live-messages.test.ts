@@ -7,6 +7,7 @@ import {
   withThreadAnswers,
   isAppRequestRow,
   isReplyMessage,
+  missingBotDmRootIds,
   mergeFetchedTimeline,
   mergeTimelineMessages,
   messagesForDisplay,
@@ -15,6 +16,7 @@ import {
   sinceForChannelWake,
   timelineHasEvent,
   timelinePageFromPayload,
+  withFetchedTimelineRoots,
   HUMAN_HISTORY_VIEW,
   TIMELINE_ROOT_PAGE_SIZE,
 } from "./live-messages.js";
@@ -589,6 +591,72 @@ describe("a one-to-one conversation with a bot", () => {
   it("hands back the same array when there is nothing to change", () => {
     const shown = messagesForDisplay(PAGE, { botDm: true });
     expect(botDmRows(shown)).toBe(shown);
+  });
+
+  it("renders roots for a newest-50 page whose replies arrived without them", () => {
+    const longRoot = {
+      eventId: "root-long",
+      fromPersonUid: "prs_me",
+      body: "Long thread prompt",
+      createdAt: "2026-10-14T11:47:00.000Z",
+      replyCount: 46,
+    };
+    const shortRoot = {
+      eventId: "root-short",
+      fromPersonUid: "prs_me",
+      body: "Short thread prompt",
+      createdAt: "2026-10-14T12:02:00.000Z",
+      replyCount: 4,
+    };
+    const messages = Array.from({ length: 50 }, (_, index) => {
+      const long = index < 46;
+      return {
+        eventId: `reply-${index + 1}`,
+        fromPersonUid: "agt_nova",
+        fromDisplayName: "Nova",
+        body: `Reply ${index + 1}`,
+        createdAt: new Date(Date.UTC(2026, 9, 14, 12, 3, index)).toISOString(),
+        rootEventId: long ? longRoot.eventId : shortRoot.eventId,
+      };
+    }).reverse();
+    const page = { messages, nextCursor: "older" };
+
+    expect(missingBotDmRootIds(page)).toEqual(["root-short", "root-long"]);
+    const hydrated = withFetchedTimelineRoots(page, [longRoot, shortRoot]);
+    const rows = mergeFetchedTimeline([], hydrated, { botDm: true });
+
+    expect(rows.map((row) => row.eventId)).toEqual(["root-long", "root-short"]);
+    expect(rows.some((row) => row.eventId.startsWith("reply-"))).toBe(false);
+    expect(rows[0]).toEqual(expect.objectContaining({
+      replyCount: 46,
+      lastReplyAt: "2026-10-14T12:03:45.000Z",
+      replyAuthors: [expect.objectContaining({ personUid: "agt_nova", displayName: "Nova" })],
+    }));
+    expect(rows[1]).toEqual(expect.objectContaining({
+      replyCount: 4,
+      lastReplyAt: "2026-10-14T12:03:49.000Z",
+      replyAuthors: [expect.objectContaining({ personUid: "agt_nova", displayName: "Nova" })],
+    }));
+  });
+
+  it("keeps a reply visible when its missing root cannot be fetched", () => {
+    const page = {
+      messages: [
+        {
+          eventId: "reply-visible",
+          fromPersonUid: "agt_nova",
+          body: "The answer is still visible.",
+          createdAt: "2026-10-14T12:03:49.000Z",
+          rootEventId: "root-unavailable",
+        },
+      ],
+    };
+
+    expect(missingBotDmRootIds(page)).toEqual(["root-unavailable"]);
+    const rows = mergeFetchedTimeline([], page, { botDm: true });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.eventId).toBe("reply-visible");
+    expect(rows[0]).not.toHaveProperty("rootEventId");
   });
 });
 

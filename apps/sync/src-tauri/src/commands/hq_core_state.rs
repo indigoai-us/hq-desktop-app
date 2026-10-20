@@ -3439,6 +3439,22 @@ async fn check_once_observed(
 #[derive(Debug, Deserialize)]
 struct GhRelease {
     tag_name: String,
+    #[serde(default)]
+    prerelease: bool,
+    #[serde(default)]
+    draft: bool,
+}
+
+impl crate::demo_build::CoreRelease for GhRelease {
+    fn tag(&self) -> &str {
+        &self.tag_name
+    }
+    fn prerelease(&self) -> bool {
+        self.prerelease
+    }
+    fn draft(&self) -> bool {
+        self.draft
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -3684,27 +3700,65 @@ fn github_transport_fetch_failure_class(error: &reqwest::Error) -> &'static str 
     )
 }
 
+/// `/releases/latest` never returns a prerelease, so a demo build
+/// (`HQ_CORE_PRERELEASE`, see `demo_build.rs`) reads the full list instead.
+fn release_feed_path(allow_prerelease: bool) -> &'static str {
+    if allow_prerelease {
+        "releases"
+    } else {
+        "releases/latest"
+    }
+}
+
+/// The raw tag from a [`release_feed_path`] body. Off: the one
+/// `/releases/latest` object, as before. On: the releases list through
+/// `demo_build::select_core_release`, so a demo build never offers a release
+/// below `demo_build::MIN_CORE_VERSION` (stable 16.0.30 over a beta).
+fn release_tag_from_body(body: &[u8], allow_prerelease: bool) -> Result<String, String> {
+    let tag = if allow_prerelease {
+        let releases: Vec<GhRelease> = serde_json::from_slice(body).map_err(|error| {
+            github_fetch_failure("invalid_response", format!("parse releases JSON: {error}"))
+        })?;
+        crate::demo_build::select_core_release(releases, true)
+            .ok_or_else(|| {
+                github_fetch_failure(
+                    "not_found",
+                    format!(
+                        "no hq-core release at or above {}",
+                        crate::demo_build::MIN_CORE_VERSION
+                    ),
+                )
+            })?
+            .tag_name
+    } else {
+        let parsed: GhRelease = serde_json::from_slice(body).map_err(|error| {
+            github_fetch_failure("invalid_response", format!("parse release JSON: {error}"))
+        })?;
+        parsed.tag_name
+    };
+    Ok(tag.trim().to_string())
+}
+
 /// Fetch the latest release tag from `indigoai-us/hq-core`. Returns the
 /// raw `tag_name` (e.g. `"v14.2.0"`) — caller strips the `v` for display.
 async fn fetch_latest_release_tag(
     client: &reqwest::Client,
     scope: crate::commands::github_api::ApiScope,
 ) -> Result<String, String> {
-    let url = "https://api.github.com/repos/indigoai-us/hq-core/releases/latest";
-    let resp = crate::commands::github_api::get(client, url, scope)
+    let allow_prerelease = crate::demo_build::core_prerelease();
+    let path = release_feed_path(allow_prerelease);
+    let url = format!("https://api.github.com/repos/indigoai-us/hq-core/{path}");
+    let resp = crate::commands::github_api::get(client, &url, scope)
         .await
         .map_err(github_api_fetch_failure)?;
     if !resp.status().is_success() {
         return Err(github_http_fetch_failure(
             resp.status(),
             &resp.headers,
-            "releases/latest",
+            path,
         ));
     }
-    let parsed: GhRelease = serde_json::from_slice(&resp.body).map_err(|error| {
-        github_fetch_failure("invalid_response", format!("parse release JSON: {error}"))
-    })?;
-    Ok(parsed.tag_name.trim().to_string())
+    release_tag_from_body(&resp.body, allow_prerelease)
 }
 
 /// Fetch the commit SHA a ref points to (branch name, tag, or short SHA).
@@ -4296,6 +4350,19 @@ fn semver_lt(local: &str, latest: &str) -> bool {
             .collect()
     };
     parse(local) < parse(latest)
+}
+
+/// The version compare the update check uses. A shipped build keeps
+/// [`semver_lt`]. A demo build (`HQ_CORE_PRERELEASE`) orders prereleases
+/// properly (`16.0.31-beta.6 < 16.0.31-beta.7 < 16.0.31`), falling back to
+/// [`semver_lt`] when a version is not valid semver.
+fn core_version_lt(allow_prerelease: bool, local: &str, latest: &str) -> bool {
+    if allow_prerelease {
+        if let Some(lt) = crate::demo_build::version_lt(local, latest) {
+            return lt;
+        }
+    }
+    semver_lt(local, latest)
 }
 
 // ─── Core check ──────────────────────────────────────────────────────────────
@@ -4916,7 +4983,11 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
                     false
                 } else {
                     match local_version.as_deref() {
-                        Some(v) => semver_lt(v, &target_version),
+                        Some(v) => core_version_lt(
+                            crate::demo_build::core_prerelease(),
+                            v,
+                            &target_version,
+                        ),
                         None => false,
                     }
                 }
@@ -5306,9 +5377,13 @@ fn skip_automatic_core_update_for_ineligible_target(
 
 fn automatic_core_update_target_already_installed(state: &CoreState) -> bool {
     match state.channel {
-        Channel::Release => get_local_version()
-            .as_deref()
-            .is_some_and(|local_version| !semver_lt(local_version, &state.target_version)),
+        Channel::Release => get_local_version().as_deref().is_some_and(|local_version| {
+            !core_version_lt(
+                crate::demo_build::core_prerelease(),
+                local_version,
+                &state.target_version,
+            )
+        }),
         Channel::Staging => {
             let hq_folder = hq_core_staging::resolve_hq_folder();
             local_source_stamp(&hq_folder).is_some_and(|(source, commit)| {
@@ -10697,6 +10772,81 @@ error: clone failed";
         // pre-release ordering — just confirm the parser doesn't crash on
         // suffixed forms and treats them by their numeric prefix.
         assert!(!semver_lt("14.1.0", "14.0.0-rc1"));
+    }
+
+    #[test]
+    fn core_version_lt_keeps_the_shipped_compare_when_the_switch_is_off() {
+        for (local, latest) in [
+            ("14.0.0", "14.2.0"),
+            ("14.2.0", "14.2.0"),
+            ("16.0.31-beta.6", "16.0.30"),
+            ("16.0.31-beta.6", "16.0.31-beta.7"),
+            ("16.0.31-beta.6", "16.0.31"),
+            ("garbage", "16.0.31"),
+        ] {
+            assert_eq!(
+                core_version_lt(false, local, latest),
+                semver_lt(local, latest),
+                "{local} vs {latest}"
+            );
+        }
+    }
+
+    #[test]
+    fn core_version_lt_orders_betas_when_the_switch_is_on() {
+        assert!(!core_version_lt(true, "16.0.31-beta.6", "16.0.30"));
+        assert!(core_version_lt(true, "16.0.31-beta.6", "16.0.31-beta.7"));
+        assert!(core_version_lt(true, "16.0.31-beta.9", "16.0.31-beta.10"));
+        assert!(core_version_lt(true, "16.0.31-beta.6", "16.0.31"));
+        assert!(!core_version_lt(true, "16.0.31", "16.0.31"));
+        // Not semver: falls back to the shipped compare.
+        assert_eq!(
+            core_version_lt(true, "14.1", "14.2"),
+            semver_lt("14.1", "14.2")
+        );
+    }
+
+    #[test]
+    fn core_update_check_feed_follows_the_prerelease_switch() {
+        assert_eq!(release_feed_path(false), "releases/latest");
+        assert_eq!(release_feed_path(true), "releases");
+
+        let latest = br#"{"tag_name":"v16.0.30","prerelease":false,"draft":false}"#;
+        assert_eq!(release_tag_from_body(latest, false).unwrap(), "v16.0.30");
+
+        let list = br#"[
+            {"tag_name":"v16.0.30","prerelease":false,"draft":false},
+            {"tag_name":"v16.0.32-beta.1","prerelease":true,"draft":true},
+            {"tag_name":"v16.0.31-beta.7","prerelease":true,"draft":false},
+            {"tag_name":"v16.0.31-beta.6","prerelease":true,"draft":false}
+        ]"#;
+        assert_eq!(
+            release_tag_from_body(list, true).unwrap(),
+            "v16.0.31-beta.7"
+        );
+
+        // A lower accepted entry listed first must not win.
+        let stable_first = br#"[
+            {"tag_name":"v16.0.31","prerelease":false,"draft":false},
+            {"tag_name":"v16.0.32-beta.1","prerelease":true,"draft":false}
+        ]"#;
+        assert_eq!(
+            release_tag_from_body(stable_first, true).unwrap(),
+            "v16.0.32-beta.1"
+        );
+        let beta6_first = br#"[
+            {"tag_name":"v16.0.31-beta.6","prerelease":true,"draft":false},
+            {"tag_name":"v16.0.31-beta.10","prerelease":true,"draft":false}
+        ]"#;
+        assert_eq!(
+            release_tag_from_body(beta6_first, true).unwrap(),
+            "v16.0.31-beta.10"
+        );
+
+        let stable_only = br#"[{"tag_name":"v16.0.30","prerelease":false,"draft":false}]"#;
+        let err = release_tag_from_body(stable_only, true).unwrap_err();
+        assert!(err.contains("16.0.31-beta.6"), "{err}");
+        assert_eq!(github_fetch_failure_class_from_detail(&err), "not_found");
     }
 
     #[test]

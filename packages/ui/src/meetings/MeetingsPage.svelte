@@ -955,6 +955,7 @@
           <Dropdown
             testid="url-invite-company"
             label="Save bot to"
+            floating
             value={urlInputCompanyId ?? ""}
             onchange={(v) => (urlInputCompanyId = v || null)}
             disabled={urlInviting}

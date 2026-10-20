@@ -2421,6 +2421,11 @@ impl ProvisionAttempt {
     }
 }
 
+/// `start_sync`'s bail when another lane holds the Node install. The
+/// first-launch sync matches it to wait for that install and retry.
+pub(crate) const NODE_PROVISIONING_DEFERRED_MESSAGE: &str =
+    "HQ skipped Node provisioning because an attempt was already made recently";
+
 static LAST_TOOLCHAIN_REPAIR: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
 
 /// Pure cooldown decision, extracted so it is testable without a clock.
@@ -2506,6 +2511,41 @@ pub(crate) async fn provision_unprovisioned_node<R: tauri::Runtime>(
 pub(crate) async fn provision_unprovisioned_node_with_major<R: tauri::Runtime>(
     app: &AppHandle<R>,
 ) -> (ProvisionAttempt, Option<u32>) {
+    provision_unless_queue_installs_node(
+        crate::commands::install_queue::node_install_running(),
+        || provision_managed_node_now(app),
+    )
+    .await
+}
+
+/// The background install queue installs Node itself, outside the repair
+/// slot. While it does, a second install beside it would download the same
+/// runtime into the same folder, so defer instead and let the caller retry
+/// once the queue's install has ended.
+async fn provision_unless_queue_installs_node<F, Fut>(
+    queue_installing_node: bool,
+    provision: F,
+) -> (ProvisionAttempt, Option<u32>)
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = (ProvisionAttempt, Option<u32>)>,
+{
+    if queue_installing_node {
+        log(
+            "sync",
+            "managed Node provisioning deferred — the install queue is installing Node",
+        );
+        return (
+            ProvisionAttempt::Deferred(NODE_PROVISIONING_DEFERRED_MESSAGE.to_string()),
+            None,
+        );
+    }
+    provision().await
+}
+
+async fn provision_managed_node_now<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> (ProvisionAttempt, Option<u32>) {
     let repair = repair_managed_node(app).await;
     // Only re-probe when something was actually installed: the preflight costs
     // two spawns and cannot have changed for Skipped or Failed. Reuse that same
@@ -2539,16 +2579,16 @@ fn provision_attempt(repair: ToolchainRepair, usable_after: bool) -> ProvisionAt
             "HQ installed its Node runtime, but it still is not usable by the sync engine"
                 .to_string(),
         ),
-        ToolchainRepair::Skipped => ProvisionAttempt::Deferred(
-            "HQ skipped Node provisioning because an attempt was already made recently".to_string(),
-        ),
+        ToolchainRepair::Skipped => {
+            ProvisionAttempt::Deferred(NODE_PROVISIONING_DEFERRED_MESSAGE.to_string())
+        }
         ToolchainRepair::Failed(reason) => {
             ProvisionAttempt::Failed(unprovisioned_node_repair_failed_message(&reason))
         }
     }
 }
 
-fn unprovisioned_node_repair_failed_message(reason: &str) -> String {
+pub(crate) fn unprovisioned_node_repair_failed_message(reason: &str) -> String {
     format!("HQ tried to install its Node runtime and could not: {reason}")
 }
 
@@ -7718,6 +7758,33 @@ mod tests {
                 .into_start_sync_result(),
             Err(unprovisioned_node_repair_failed_message("no disk"))
         );
+    }
+
+    #[tokio::test]
+    async fn no_second_node_install_runs_while_the_queue_installs_node() {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let provision = || async {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            (ProvisionAttempt::Provisioned, Some(22))
+        };
+
+        let deferred = provision_unless_queue_installs_node(true, provision).await;
+        assert_eq!(
+            deferred,
+            (
+                ProvisionAttempt::Deferred(NODE_PROVISIONING_DEFERRED_MESSAGE.to_string()),
+                None
+            )
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the queue's install must be the only Node install in flight"
+        );
+
+        let provisioned = provision_unless_queue_installs_node(false, provision).await;
+        assert_eq!(provisioned, (ProvisionAttempt::Provisioned, Some(22)));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]

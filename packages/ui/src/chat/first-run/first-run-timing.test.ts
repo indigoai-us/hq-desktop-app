@@ -4,9 +4,13 @@ import {
   FIRST_RUN_TIMING_TAG,
   createRouteLogger,
   createScreenTimer,
+  formatAccountSignInRetry,
+  formatAccountSignInTimeout,
   formatFlagLookup,
   formatRoute,
   formatSetupRunSet,
+  formatShell,
+  formatWelcomeNav,
   formatWelcomeReport,
   formatSignIn,
   formatInstallEnd,
@@ -211,11 +215,41 @@ describe("route, flag and setup-run lines", () => {
     expect(formatWelcomeReport("blocked", "")).toBe("kind=welcome-report event=blocked reason=unknown");
   });
 
+  it("formats shell lines with a reason word and no free text", () => {
+    expect(formatShell("mount", "report-open")).toBe("kind=shell event=mount reason=report-open");
+    expect(formatShell("remount", "auth-session")).toBe("kind=shell event=remount reason=auth-session");
+    expect(formatShell("reload", "error-boundary")).toBe("kind=shell event=reload reason=error-boundary");
+    expect(formatShell("reload", "Pat /Users/x a@b.c")).toBe("kind=shell event=reload reason=patusersxabc");
+    expect(formatShell("remount", "")).toBe("kind=shell event=remount reason=unknown");
+  });
+
+  it("formats automatic #welcome navigation lines with a reason word", () => {
+    expect(formatWelcomeNav("boot-welcome-first")).toBe("kind=nav event=auto-welcome reason=boot-welcome-first");
+    expect(formatWelcomeNav("setup-checkout-link")).toBe("kind=nav event=auto-welcome reason=setup-checkout-link");
+    expect(formatWelcomeNav(undefined)).toBe("kind=nav event=auto-welcome reason=unknown");
+    expect(formatWelcomeNav("x".repeat(60))).toBe(`kind=nav event=auto-welcome reason=${"x".repeat(40)}`);
+  });
+
   it("formats sign-in lines with the tool", () => {
     expect(formatSignIn("start", "claude")).toBe("kind=signin event=start tool=claude");
     expect(formatSignIn("done", "codex")).toBe("kind=signin event=done tool=codex");
     expect(formatSignIn("failed", "claude")).toBe("kind=signin event=failed tool=claude");
     expect(formatSignIn("skipped", "codex")).toBe("kind=signin event=skipped tool=codex");
+  });
+
+  it("formats account sign-in timeout and retry lines with the provider only", () => {
+    expect(formatAccountSignInTimeout("google", "auto-retry", 300000.4)).toBe(
+      "kind=account-signin event=timeout provider=google next=auto-retry elapsed_ms=300000",
+    );
+    expect(formatAccountSignInTimeout("microsoft", "shown", -5)).toBe(
+      "kind=account-signin event=timeout provider=microsoft next=shown elapsed_ms=0",
+    );
+    expect(formatAccountSignInRetry("google", "auto")).toBe(
+      "kind=account-signin event=retry provider=google trigger=auto",
+    );
+    expect(formatAccountSignInRetry("micro soft", "person")).toBe(
+      "kind=account-signin event=retry provider=micro_soft trigger=person",
+    );
   });
 
   it("adds late= only for an answer that landed after its wait", () => {

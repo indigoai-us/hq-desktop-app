@@ -14,10 +14,12 @@ import {
 import {
   REPLAY_SCENES,
   STORY_SCENES,
+  createBlockingRetryGate,
   forwardLabel,
   installCardModel,
   installCardActivityLines,
   readyProgressLine,
+  readyRequiredFailureHeading,
   nextScene,
   previousScene,
   sceneForStep,
@@ -276,6 +278,24 @@ describe('ready progress line', () => {
     expect(readyProgressLine({ itemId: 'deps', retrying: false, elapsedMs: 20_000 })).toBe('Still installing your tools');
   });
 
+  it('names a failed required step in one sentence and ignores an unknown id', () => {
+    expect(readyRequiredFailureHeading(['content'])).toBe(
+      'Setting up your workspace did not finish.',
+    );
+    expect(readyRequiredFailureHeading(['git-init'])).toBe(
+      'Setting up file history did not finish.',
+    );
+    expect(readyRequiredFailureHeading(['personalize'])).toBe(
+      'Personalizing your workspace did not finish.',
+    );
+    expect(readyRequiredFailureHeading(['content', 'git-init'])).toBe(
+      'Setting up your workspace and setting up file history did not finish.',
+    );
+    expect(readyRequiredFailureHeading([])).toBeNull();
+    expect(readyRequiredFailureHeading(['future-item'])).toBeNull();
+    expect(readyRequiredFailureHeading(['content'])).not.toMatch(/[!—]/);
+  });
+
   it('keeps every line in sentence case with no em dash or exclamation mark', () => {
     for (const itemId of ['content', 'git-init', 'personalize', 'deps', null]) {
       for (const retrying of [false, true]) {
@@ -285,6 +305,59 @@ describe('ready progress line', () => {
           expect(line).not.toMatch(/[!—…]|Step/);
         }
       }
+    }
+  });
+});
+
+// Review of PR 1690 (C3): the Try again flag must not stay set. A retry that
+// ends after it was superseded leaves the newer state alone.
+describe('blocking retry gate', () => {
+  it('stops the run when the current retry ends', () => {
+    const gate = createBlockingRetryGate();
+    const token = gate.begin();
+    expect(gate.running).toBe(true);
+    expect(gate.end(token)).toBe(true);
+    expect(gate.running).toBe(false);
+  });
+
+  it('ignores a retry that ends after the gate was cleared', () => {
+    const gate = createBlockingRetryGate();
+    const stale = gate.begin();
+    gate.clear();
+    expect(gate.running).toBe(false);
+    expect(gate.end(stale)).toBe(false);
+    expect(gate.running).toBe(false);
+  });
+
+  it('ignores a retry that ends after a newer retry began', () => {
+    const gate = createBlockingRetryGate();
+    const stale = gate.begin();
+    gate.clear();
+    const fresh = gate.begin();
+    expect(gate.end(stale)).toBe(false);
+    expect(gate.running).toBe(true);
+    expect(gate.end(fresh)).toBe(true);
+    expect(gate.running).toBe(false);
+  });
+
+  it('is not left running once every retry has ended or been cleared', () => {
+    const orders: Array<Array<'endA' | 'clear' | 'beginB' | 'endB'>> = [
+      ['endA', 'clear', 'beginB', 'endB'],
+      ['clear', 'endA', 'beginB', 'endB'],
+      ['clear', 'beginB', 'endA', 'endB'],
+      ['clear', 'beginB', 'endB', 'endA'],
+    ];
+    for (const order of orders) {
+      const gate = createBlockingRetryGate();
+      const a = gate.begin();
+      let b = -1;
+      for (const step of order) {
+        if (step === 'endA') gate.end(a);
+        if (step === 'clear') gate.clear();
+        if (step === 'beginB') b = gate.begin();
+        if (step === 'endB') gate.end(b);
+      }
+      expect(gate.running, order.join(' ')).toBe(false);
     }
   });
 });

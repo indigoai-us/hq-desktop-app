@@ -66,3 +66,81 @@ export function bloomAt(ms: number): number {
 export function clamp01(v: number): number {
   return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0;
 }
+
+/**
+ * The welcome edition's sky (round 11b): a fixed horizon under the hero, the
+ * sun to the right of the headline, and a striped sea down to the progress
+ * block. Pixel values, so the page overlays line up with the canvas.
+ */
+export const WELCOME_HORIZON_Y = 320;
+export const WELCOME_SEA_BOTTOM = 544;
+/** Sun radius in 8 px cells. */
+export const WELCOME_SUN_R = 10.5;
+
+/** The sun's centre column, in px, snapped to the 8 px pitch. Right of the hero at any width. */
+export function welcomeSunX(width: number): number {
+  const w = Number.isFinite(width) ? Math.max(0, width) : 0;
+  return Math.round(Math.max(w * 0.73, 600) / 8) * 8;
+}
+
+/** Sun centre row (cells) for an elevation of 0 (cresting) to 1 (clear of the water). Round 11b easing. */
+export function welcomeSunRow(horizonRow: number, elevation: number): number {
+  const e = 1 - Math.pow(1 - clamp01(elevation), 2.2);
+  return horizonRow + WELCOME_SUN_R * 0.47 - WELCOME_SUN_R * 1.67 * e;
+}
+
+/** Run progress at which the rise holds until the brief is ready (see riseDawnProgress). */
+export const WELCOME_HOLD = 0.62;
+
+/**
+ * Elevation for the welcome page. While sources are read the sun sits on the
+ * horizon and only creeps; it clears the water once the brief is ready.
+ */
+export function welcomeElevation(progress: number): number {
+  const p = Number.isFinite(progress) ? progress : 0;
+  return clamp01((p - WELCOME_HOLD) / (1 - WELCOME_HOLD));
+}
+
+/** The diagonal sky, from the dim open to full light. Returns three rgb stops. */
+export function welcomeSky(theme: "dark" | "light", light: number): [number[], number[], number[]] {
+  const t = clamp01(light);
+  const mixc = (a: number[], b: number[]) => a.map((v, i) => Math.round(v + (b[i]! - v) * t));
+  return theme === "light"
+    ? [mixc([251, 235, 216], [255, 247, 231]), mixc([248, 216, 188], [250, 220, 192]), mixc([251, 233, 214], [255, 245, 228])]
+    : [mixc([29, 17, 34], [20, 18, 25]), mixc([61, 32, 42], [65, 34, 44]), mixc([29, 17, 34], [18, 17, 22])];
+}
+
+/** Cells in the progress strip before it has been measured (and in tests without layout). */
+export const DAWN_CELLS = 24;
+/** One strip cell and the least gap after it, in px (8 px cells, 3 px apart). */
+const CELL = 8;
+const GAP = 3;
+
+/**
+ * How many cells fill a strip this wide: as many whole 8 px cells as fit with
+ * at least 3 px between them, so the row runs the full width (the leftover is
+ * shared out between the gaps and both ends sit flush). Unmeasured: DAWN_CELLS.
+ */
+export function stripCells(width: number): number {
+  if (!Number.isFinite(width) || width <= 0) return DAWN_CELLS;
+  return Math.max(2, Math.floor((width + GAP) / (CELL + GAP)));
+}
+
+/**
+ * How many cells of the progress strip are lit: the run's real progress,
+ * rounded down so the strip never claims more than the run reported. Ready
+ * lights them all; idle lights none; failed keeps what was lit when it stopped.
+ */
+export function litCells(progress: number, phase: DawnPhase, count = DAWN_CELLS): number {
+  if (phase === "ready") return count;
+  if (phase === "idle") return 0;
+  return Math.min(count, Math.floor(clamp01(progress) * count + 1e-9));
+}
+
+/** The strip's mono readout: the percent while running, then READY, or where it stopped. (Waiting shows no strip.) */
+export function dawnReadout(progress: number, phase: DawnPhase): string {
+  const pct = `${Math.round(clamp01(progress) * 100)}%`;
+  if (phase === "ready") return "Ready";
+  if (phase === "failed") return `Stopped at ${pct}`;
+  return pct;
+}

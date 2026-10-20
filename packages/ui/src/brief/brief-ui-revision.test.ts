@@ -38,7 +38,8 @@ it("renders getting-started content and one plain welcome error line", async () 
   expect(target.textContent).toContain("Begin with a personal task.");
   const errors = target.querySelectorAll('[data-testid="brief-welcome-error"]');
   expect(errors).toHaveLength(1);
-  expect(errors[0]!.textContent).toBe("Import unavailable");
+  expect(errors[0]!.textContent).toBe("Some of your welcome details could not be loaded this time.");
+  expect(target.textContent).not.toContain("Import unavailable");
 });
 
 it("renders the failed company notice without an empty company section", async () => {
@@ -78,7 +79,8 @@ it("updates the aggregate sunrise after launching a company action", async () =>
     expect(target.querySelector('[data-testid="brief-action-launched"]')).not.toBeNull();
     expect(meter()?.getAttribute("aria-valuenow")).toBe("1");
   });
-  target.querySelector<HTMLButtonElement>('[data-testid="brief-older"]')!.click();
+  // The run bar's squares (main's design pass) replace the older-brief arrow.
+  target.querySelector<HTMLButtonElement>('[data-testid="brief-run-cell"][data-run="brief-20261016-090000"]')!.click();
   await vi.waitFor(async () => {
     await tick();
     expect(target.querySelector('[data-testid="brief-viewing"]')).not.toBeNull();

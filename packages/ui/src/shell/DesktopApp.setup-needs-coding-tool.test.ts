@@ -167,7 +167,7 @@ describe("no coding tool on this computer", () => {
 
     await vi.waitFor(() => expect(q('[data-testid="setup-install-guide"]')).toBeTruthy());
     expect(q('[data-testid="setup-bot-error"]')?.textContent).toContain("needs a coding tool signed in");
-    // The guide owns the next step: no "Open Setup Agent" that would only fail.
+    // The guide owns the next step: no "Open your assistant" that would only fail.
     expect(q('[data-testid="setup-run"]')).toBeNull();
     await settle(20);
     expect(create).not.toHaveBeenCalled();

@@ -130,7 +130,16 @@ describe('Auto-sync self-provisions HQ-managed Node instead of blaming the user 
     expect(syncRs).toContain('enum ProvisionAttempt');
     expect(syncRs).toContain('Deferred(String)');
     expect(syncRs).toContain('fn provision_attempt(');
-    expect(syncRs).toContain('ToolchainRepair::Skipped => ProvisionAttempt::Deferred');
+    // Match the arm whether rustfmt keeps it on one line or wraps it in a
+    // block, and pin its payload to the shared deferral message so the arm
+    // cannot drift to Failed or to a different message.
+    expect(syncRs).toMatch(
+      /ToolchainRepair::Skipped\s*=>\s*\{?\s*ProvisionAttempt::Deferred\(\s*NODE_PROVISIONING_DEFERRED_MESSAGE\.to_string\(\),?\s*\)/,
+    );
+    expect(syncRs).not.toMatch(/ToolchainRepair::Skipped\s*=>\s*\{?\s*ProvisionAttempt::Failed/);
+    expect(syncRs).toMatch(
+      /const NODE_PROVISIONING_DEFERRED_MESSAGE: &str =\s*"HQ skipped Node provisioning because an attempt was already made recently";/,
+    );
     expect(syncRs).toContain('fn into_start_sync_result');
     expect(syncRs).toContain(
       'fn the_three_repair_arms_map_to_three_distinct_provision_attempts',

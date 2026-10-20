@@ -3,7 +3,10 @@
   import {
     FIRST_RUN_TIMING_TAG,
     createScreenTimer,
+    formatAccountSignInRetry,
+    formatAccountSignInTimeout,
     startInstallTimer,
+    writeFirstRunLine,
     type InstallTimer,
   } from '@hq/ui/first-run-timing';
   import {
@@ -37,10 +40,12 @@
     SCENE_HOLD_MS,
     forwardLabel,
     installCardModel,
+    createBlockingRetryGate,
     installCardActivityLines,
     isStoryScene,
     previousScene,
     readyProgressLine,
+    readyRequiredFailureHeading,
     readyTimings,
     sceneForStep,
     stepForScene,
@@ -62,7 +67,7 @@
     friendlyPath,
     homeDirFromDefaultHqPath,
   } from '../../lib/onboarding-path';
-  import { mapSignInError, type SignInProvider } from '../../lib/onboarding-signin';
+  import { isSignInTimeout, mapSignInError, type SignInProvider } from '../../lib/onboarding-signin';
   import {
     continuationDeps,
     loadContinuationContext,
@@ -115,6 +120,7 @@
     SETUP_TIMEOUT_NATIVE_SETTLE_TIMEOUT_MS,
     withProgressTimeout,
     partitionStages,
+    BLOCKING_STAGES,
     STAGE_ORDER,
     withTimeout,
     type InstallManifest,
@@ -170,13 +176,6 @@
   } from '../../lib/onboarding-wizard';
   import { TELEMETRY_CONSENT_VERSION } from '../../lib/consent-version';
   import { startTraySync } from '../../lib/traySync';
-  import {
-    CLT_CARD_COPY,
-    CLT_GATED_STAGES,
-    commandLineToolsMissing,
-    runCommandLineToolsGate,
-    type CommandLineToolsPhase,
-  } from '../../lib/command-line-tools-gate';
   import ConnectorImportStep from './ConnectorImportStep.svelte';
   import {
     companyUidFromMissingBucket,
@@ -561,13 +560,6 @@
   /** Real backend progress text for the running stage, when one was reported. */
   let stageDetail = $state<string | null>(null);
   /** Set while the active stage waits for its automatic next attempt. */
-  // Apple's developer tools gate (macOS). null = no card on screen.
-  let cltPhase = $state<CommandLineToolsPhase | null>(null);
-  let cltReady = false;
-  let cltShowPending = $state(false);
-  let cltRetryPending = $state(false);
-  let cltRetryResolve: (() => void) | null = null;
-
   let setupRetry = $state<{ stageId: StageId; attempt: SetupRetryAttempt } | null>(
     null,
   );
@@ -590,6 +582,15 @@
   // entity) is done. The ready screen stops waiting on the install here;
   // tools, sync and indexing keep running in the background.
   let blockingPhaseDone = $state(false);
+  /** Try again is re-running a required step that already failed. */
+  let blockingRetryRunning = $state(false);
+  /** The required step Try again is running now, named by the Ready line. */
+  let retryingStageId = $state<StageId | null>(null);
+  // Each Try again takes a token, and every new or cancelled run clears the
+  // gate, so a retry that ends after it was superseded does not clear a newer
+  // retry's state.
+  const blockingRetryGate = createBlockingRetryGate();
+  let retryFailedBlocking: (() => Promise<void>) | null = null;
   // True while the background phase of backgroundRunId is still running, so
   // unmounting the wizard does not cancel it.
   let backgroundPhaseRunning = $state(false);
@@ -624,6 +625,11 @@
   // that never comes back) shows the finish-error note's Finish setup button.
   let readyWatchdogFired = $state(false);
   let backgroundRunId = 0;
+  // The run whose background phase finished with every stage ok. Try again
+  // completes setup for it when the retried step settles after that phase.
+  let backgroundOkRunId = 0;
+  // Settles when backgroundRunId's background phase ends.
+  let backgroundPhaseDone: Promise<void> = Promise.resolve();
   const loggedFirstRunPhases = new Set<string>();
   let currentSetupRunId = '';
   let currentDepsAttemptId = '';
@@ -877,10 +883,28 @@
     (setupStarted && !setupCompleted && (!blockingPhaseDone || backgroundPhaseRunning)) ||
       hostQueueRunning,
   );
+  // Try again names its own step, not a background step running beside it.
   const currentInstallItemId = $derived(
-    installPending && currentStageId
-      ? currentStageId
-      : hostQueueRunning && hostQueue?.currentId ? hostQueue.currentId : currentStageId,
+    blockingRetryRunning && retryingStageId
+      ? retryingStageId
+      : installPending && currentStageId
+        ? currentStageId
+        : hostQueueRunning && hostQueue?.currentId ? hostQueue.currentId : currentStageId,
+  );
+  const failedBlockingStageIds = $derived(
+    stages
+      .filter(
+        (stage) =>
+          stage.status === 'failed' &&
+          (BLOCKING_STAGES as readonly StageId[]).includes(stage.id),
+      )
+      .map((stage) => stage.id),
+  );
+  /** Set only after a required step has failed and is not running again. */
+  const requiredFailureHeading = $derived(
+    installPending || blockingRetryRunning
+      ? null
+      : readyRequiredFailureHeading(failedBlockingStageIds),
   );
   const currentInstallActivity = $derived(setupActivityPhrase(currentInstallItemId));
   // While blocking setup runs, the Ready line names the step and says so when
@@ -889,9 +913,9 @@
   const readyLine = $derived(
     readyProgressLine({
       itemId: currentInstallItemId,
-      retrying: Boolean(
-        setupRetry && setupRetry.stageId === currentStageId && currentInstallItemId === currentStageId,
-      ),
+      retrying: Boolean(setupRetry && setupRetry.stageId === currentInstallItemId),
+      // The clock follows the first active stage, so a step Try again runs
+      // beside a background step shows no elapsed time.
       elapsedMs: currentInstallItemId !== null && currentInstallItemId === currentStageId ? stageElapsedMs : 0,
     }),
   );
@@ -1209,6 +1233,10 @@
     }
   }
 
+  // Set when the last sign-in attempt ran out of time, so the next attempt
+  // writes a retry line saying whether the wizard or the person started it.
+  let signInTimedOut = false;
+
   async function handleSignIn(provider: SignInProvider, stateRecoveryAttempt = false) {
     if (provider === 'Microsoft' && microsoftEmail.trim() === '') {
       microsoftEmailPrompt = true;
@@ -1222,6 +1250,14 @@
     loadingProvider = provider;
     signInError = '';
     const telemetryProvider = provider === 'Google' ? 'google' : 'microsoft';
+    if (signInTimedOut) {
+      signInTimedOut = false;
+      writeFirstRunLine(
+        firstRunTimingLog,
+        formatAccountSignInRetry(telemetryProvider, stateRecoveryAttempt ? 'auto' : 'person'),
+      );
+    }
+    const attemptStartedAt = Date.now();
     const progressSessionId = crypto.randomUUID();
     let authStep: DesktopAuthProgressStep = 'sign_in_started';
     void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep, sessionId: progressSessionId });
@@ -1294,7 +1330,15 @@
       );
       void emitDesktopAuthFailure({ provider: telemetryProvider, step: authStep, error: err });
       console.error('[onboarding-signin] sign-in failed:', err);
-      if (!stateRecoveryAttempt && (errorKind === 'expired' || errorKind === 'state_mismatch')) {
+      const autoRetry = !stateRecoveryAttempt && (errorKind === 'expired' || errorKind === 'state_mismatch');
+      if (isSignInTimeout(errorMessage(err))) {
+        signInTimedOut = true;
+        writeFirstRunLine(
+          firstRunTimingLog,
+          formatAccountSignInTimeout(telemetryProvider, autoRetry ? 'auto-retry' : 'shown', Date.now() - attemptStartedAt),
+        );
+      }
+      if (autoRetry) {
         console.warn('[onboarding-signin] restarting once after an expired or mismatched attempt');
         void handleSignIn(provider, true);
         return;
@@ -2185,6 +2229,7 @@
     // Supersession: the previous run may have left a stage mid-retry. This
     // run owns the list now, so nothing may still be waiting on that retry.
     stages = resetRetryingStages(stages);
+    clearBlockingRetry();
     activeDepsLockWaitTimeoutProgress = null;
     activeDepsOutputTimeoutProgress = null;
     activeContentTimeoutProgress = null;
@@ -2192,6 +2237,13 @@
     activeInstallHandles.clear();
     activeContentHandles.clear();
     return currentRunId;
+  }
+
+  /** Ends any Try again state; a retry still in flight can no longer clear it. */
+  function clearBlockingRetry(): void {
+    blockingRetryGate.clear();
+    blockingRetryRunning = false;
+    retryingStageId = null;
   }
 
   function isCurrentRun(runId: number): boolean {
@@ -2429,7 +2481,10 @@
     failureScope: OnboardingFailureScope,
     depsTimeoutRetryEnabled: boolean,
   ): Promise<void> {
-    const invocations = stageCommandInvocations(id, { installPath: effectiveInstallPath });
+    const invocations = stageCommandInvocations(id, {
+      installPath: effectiveInstallPath,
+      hostOs: setupHostOs,
+    });
     if (invocations.length === 0) return;
     if (typeof invoke !== 'function') {
       throw new Error('The desktop bridge is not available in this environment.');
@@ -2880,66 +2935,6 @@
     }
   }
 
-  // Wait for Apple's developer tools before a stage that runs git. Holds the
-  // setup run in place, so it resumes at the same stage. False when the run
-  // was replaced or cancelled while waiting.
-  async function ensureCommandLineTools(runId: number): Promise<boolean> {
-    if (cltReady) return true;
-    const gateInvoke = <T,>(command: string, args?: Record<string, unknown>) =>
-      (args === undefined ? invoke<T>(command) : invoke<T>(command, args));
-    if (!(await commandLineToolsMissing({ invoke: gateInvoke }))) {
-      cltReady = true;
-      return isCurrentRun(runId);
-    }
-    for (;;) {
-      if (!isCurrentRun(runId)) return false;
-      const outcome = await runCommandLineToolsGate({
-        invoke: gateInvoke,
-        now: () => Date.now(),
-        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-        isActive: () => isCurrentRun(runId),
-        onPhase: async (phase) => {
-          cltPhase = phase;
-          cltRetryPending = false;
-          // The card is painted before macOS is asked to install anything.
-          await tick();
-        },
-      });
-      if (outcome === 'ready') {
-        cltReady = true;
-        cltPhase = null;
-        return isCurrentRun(runId);
-      }
-      if (outcome === 'inactive') {
-        cltPhase = null;
-        return false;
-      }
-      await new Promise<void>((resolve) => {
-        cltRetryResolve = resolve;
-      });
-      cltRetryResolve = null;
-    }
-  }
-
-  function retryCommandLineTools() {
-    if (cltRetryPending || !cltRetryResolve) return;
-    cltRetryPending = true;
-    cltRetryResolve();
-  }
-
-  async function showAppleInstaller() {
-    if (cltShowPending) return;
-    cltShowPending = true;
-    try {
-      await invoke('command_line_tools_show_installer');
-    } catch (error) {
-      // Nothing to show; the card keeps waiting.
-      console.warn('[clt] show installer failed', error);
-    } finally {
-      cltShowPending = false;
-    }
-  }
-
   async function runSetup(
     runId: number,
     startStage: StageId = STAGE_ORDER[0],
@@ -2991,17 +2986,11 @@
       if (failure.flagStatus === 'disabled') return 'skipped-flag-off';
       return 'not-eligible';
     };
-    // Runs `ids` in order. False means the run stopped (superseded, cancelled
-    // or Command Line Tools missing) and nothing after it may run.
+    // Runs `ids` in order. False means the run stopped (superseded or
+    // cancelled) and nothing after it may run.
     const runStageList = async (ids: readonly StageId[]): Promise<boolean> => {
     for (const id of ids) {
       if (!isCurrentRun(runId)) return false;
-      if (
-        (CLT_GATED_STAGES as readonly StageId[]).includes(id) &&
-        !(await ensureCommandLineTools(runId))
-      ) {
-        return false;
-      }
       while (isCurrentRun(runId)) {
         const attemptCount = (retryCounts.get(id) ?? 0) + 1;
         const result = await runStage(
@@ -3072,6 +3061,50 @@
     return isCurrentRun(runId);
     };
 
+    retryFailedBlocking = async () => {
+      if (!isCurrentRun(runId) || blockingRetryRunning) return;
+      const ids = stages
+        .filter(
+          (stage) =>
+            stage.status === 'failed' &&
+            (BLOCKING_STAGES as readonly StageId[]).includes(stage.id),
+        )
+        .map((stage) => stage.id);
+      if (ids.length === 0) return;
+      const token = blockingRetryGate.begin();
+      blockingRetryRunning = true;
+      retryingStageId = ids[0];
+      readyDwellElapsed = false;
+      for (const id of ids) {
+        retryCounts.delete(id);
+        stages = setStageStatus(stages, id, 'pending', null);
+      }
+      try {
+        // The workspace step rewrites the files the background upload and
+        // index read, so it waits for this run's background phase to end.
+        if (ids.includes('content') && backgroundRunId === runId && backgroundPhaseRunning) {
+          await backgroundPhaseDone;
+        }
+        for (const id of ids) {
+          if (!isCurrentRun(runId)) break;
+          retryingStageId = id;
+          if (!(await runStageList([id]))) break;
+        }
+      } finally {
+        if (blockingRetryGate.end(token)) {
+          blockingRetryRunning = false;
+          retryingStageId = null;
+        }
+      }
+      // The background phase may have ended while this retry ran; its own
+      // completion check saw the retried step still running and passed. A
+      // background phase that ended before Try again already completed setup
+      // with the failed step, and this call does nothing.
+      if (isCurrentRun(runId) && backgroundOkRunId === runId && !backgroundPhaseRunning) {
+        await completeSetup(runId);
+      }
+    };
+
     // US-004: the person waits only on the blocking phase (local files, git,
     // personalize, person entity). Tool installs, the vault upload and
     // indexing run after the decision screen opens.
@@ -3079,9 +3112,8 @@
     const blockingOk = await runStageList(blocking);
     if (!isCurrentRun(runId)) return;
     if (!blockingOk) {
-      // Command Line Tools are missing; their prompt owns the screen and the
-      // install stays pending until they are installed and the run resumes,
-      // so the phase line is written by the resumed run.
+      // A blocking stage was cancelled; the run stops here and a resumed
+      // run writes the phase line.
       return;
     }
     // The consent answer and the first upload both need the person entity,
@@ -3135,6 +3167,10 @@
   ): Promise<void> {
     backgroundRunId = runId;
     backgroundPhaseRunning = true;
+    let markBackgroundPhaseDone = () => {};
+    backgroundPhaseDone = new Promise<void>((resolve) => {
+      markBackgroundPhaseDone = resolve;
+    });
     setBackgroundSetupFlag(true);
     let backgroundOk = false;
     try {
@@ -3145,9 +3181,11 @@
       // A retry or resume starts a new run; only the run that set the flag
       // clears it, so a superseded run cannot release the newer run's hold.
       if (backgroundRunId === runId) {
+        if (backgroundOk) backgroundOkRunId = runId;
         backgroundPhaseRunning = false;
         setBackgroundSetupFlag(false);
       }
+      markBackgroundPhaseDone();
     }
     if (isCurrentRun(runId)) {
       logFirstRunPhaseOnce('background', backgroundOk ? 'ok' : 'failed');
@@ -3698,6 +3736,7 @@
     // next run owns it again.
     stages = resetRetryingStages(stages);
     setupRetry = null;
+    clearBlockingRetry();
     void cancelForegroundWork(currentRunId, { leaveHostInstalls });
   }
 
@@ -4155,7 +4194,14 @@
   function restartReadyDwell(): void {
     clearReadyDwell();
     readyDwellElapsed = false;
-    if (installPending || scene !== 'ready' || !navRevealed || !consentOnReady) return;
+    if (
+      installPending ||
+      blockingRetryRunning ||
+      requiredFailureHeading ||
+      scene !== 'ready' ||
+      !navRevealed ||
+      !consentOnReady
+    ) return;
     readyDwellTimer = setTimeout(() => {
       readyDwellTimer = null;
       readyDwellElapsed = true;
@@ -4164,7 +4210,14 @@
 
   // Count the full dwell only while the ready heading and usage-data choice are visible.
   $effect(() => {
-    if (scene !== 'ready' || !navRevealed || !consentOnReady || installPending) return;
+    if (
+      scene !== 'ready' ||
+      !navRevealed ||
+      !consentOnReady ||
+      installPending ||
+      blockingRetryRunning ||
+      requiredFailureHeading
+    ) return;
     untrack(restartReadyDwell);
     return clearReadyDwell;
   });
@@ -4295,7 +4348,7 @@
   $effect(() => {
     if (consentOnly || replay || currentStep !== READY_STEP_INDEX || scene !== 'ready') return;
     if (!navRevealed || !hostQueueChecked) return;
-    if (installPending) return;
+    if (installPending || blockingRetryRunning || requiredFailureHeading) return;
     if (consentOnReady && !readyDwellElapsed) return;
     if (consentGate !== 'clear' || consentFailure !== null || finishing || autoFinishAttempted) return;
     if (setupStarted) {
@@ -5002,14 +5055,27 @@
       <canvas bind:this={refs.readyCanvas} aria-hidden="true"></canvas>
       <div class="copy" bind:this={refs.readyCopy}>
         <h2 class="h h-lg" id="onboarding-title-ready" tabindex="-1" data-scene-heading>
-          {installPending ? 'Almost ready.' : 'HQ is ready.'}
+          {installPending || blockingRetryRunning
+            ? 'Almost ready.'
+            : requiredFailureHeading ?? 'HQ is ready.'}
         </h2>
-        <p class="body">
-          HQ lives in your {setupHostOs === 'macos' ? 'menu bar' : 'system tray'} now and keeps everything in sync.
-        </p>
+        <!-- The menu-bar sentence says setup is done, so it waits for Try again. -->
+        {#if !requiredFailureHeading}
+          <p class="body">
+            HQ lives in your {setupHostOs === 'macos' ? 'menu bar' : 'system tray'} now and keeps everything in sync.
+          </p>
+        {/if}
+        {#if requiredFailureHeading}
+          <button
+            class="btn btn-secondary ready-retry"
+            type="button"
+            data-testid="ready-required-retry"
+            onclick={() => void retryFailedBlocking?.()}
+          >Try again</button>
+        {/if}
       </div>
-      <div class="prog" class:done={!installPending} bind:this={refs.readyProg} aria-live="polite">
-        {#if installPending}
+      <div class="prog" class:done={!installPending && !blockingRetryRunning} bind:this={refs.readyProg} aria-live="polite">
+        {#if installPending || blockingRetryRunning}
           <div class="pwrap">
             <i class="pi" data-testid="onboarding-completion-success-indicator" aria-hidden="true"></i>
             <span class="pl">{readyLine}</span>
@@ -5019,10 +5085,10 @@
           <span class="pl finishing-activity">Finishing setup: {currentInstallActivity}</span>
         {/if}
       </div>
-      <!-- The ready screen has no buttons: it shows the install's progress and
-           finishes by itself once the blocking phase is done (the AUTO-FINISH
-           effect); the rest of the install keeps running in the background. This element stays because the ready engine measures it
-           (refs.navReady) when it lays out the scene. -->
+      <!-- Nav stays empty. The screen finishes by itself once blocking setup
+           is done (the AUTO-FINISH effect), unless a required step failed:
+           then Try again sits in the copy block. This element stays because
+           the ready engine measures it (refs.navReady). -->
       <div class="nav ready-options" class:on={scene === 'ready' && navRevealed} bind:this={refs.navReady} data-testid="onboarding-launchers"></div>
       <div class="alt-block" bind:this={refs.readyAlt}>
         {#if deferredConsent?.phase === 'failed'}
@@ -5050,7 +5116,7 @@
           </div>
         {/if}
         <div class="ready-notes">
-          {#if finishError || readyWatchdogFired}
+          {#if (finishError || readyWatchdogFired) && !blockingRetryRunning}
             <div class="note finish-action" role="status" data-testid="launcher-finish-error">
               <p>Finish HQ setup here when you’re ready.</p>
               <div class="note-actions">
@@ -5259,44 +5325,6 @@
     </button>
   {/if}
 
-  {#if !replay && !consentOnly && cltPhase}
-    <!-- Apple's developer tools install. macOS shows its own windows; this
-         card explains them and waits. -->
-    <div
-      class="clt-card"
-      role="status"
-      aria-live="polite"
-      data-phase={cltPhase}
-      data-testid="onboarding-clt-card"
-    >
-      {#if cltPhase === 'installing'}
-        <p class="clt-title">{CLT_CARD_COPY.title}</p>
-        <p class="clt-line">{CLT_CARD_COPY.body}</p>
-        <span class="clt-bar" role="progressbar" aria-label={CLT_CARD_COPY.title} data-testid="onboarding-clt-progress"><i></i></span>
-        <p class="clt-line clt-muted">{CLT_CARD_COPY.duration} {CLT_CARD_COPY.resume}</p>
-        <button
-          type="button"
-          class="clt-action"
-          data-testid="onboarding-clt-show"
-          disabled={cltShowPending}
-          aria-busy={cltShowPending}
-          onclick={showAppleInstaller}
-        >{cltShowPending ? CLT_CARD_COPY.showingWindow : CLT_CARD_COPY.showWindow}</button>
-      {:else if cltPhase === 'cancelled' || cltPhase === 'timeout'}
-        <p class="clt-title">{CLT_CARD_COPY.retryTitle}</p>
-        <p class="clt-line">{cltPhase === 'timeout' ? CLT_CARD_COPY.timeoutBody : CLT_CARD_COPY.cancelledBody}</p>
-        <button
-          type="button"
-          class="clt-action"
-          data-testid="onboarding-clt-retry"
-          disabled={cltRetryPending}
-          aria-busy={cltRetryPending}
-          onclick={retryCommandLineTools}
-        >{cltRetryPending ? CLT_CARD_COPY.retrying : CLT_CARD_COPY.retry}</button>
-      {/if}
-    </div>
-  {/if}
-
   {#if !replay && !consentOnly}
     <!-- The install, running in the background behind screens 2-4. The visible
          card is a one-line summary; the full checklist is for screen readers. -->
@@ -5470,46 +5498,6 @@
 {/snippet}
 
 <style>
-  /* Apple developer tools waiting card: square, monochrome, weight <= 500. */
-  .clt-card {
-    position: absolute;
-    left: 50%;
-    top: 56px;
-    transform: translateX(-50%);
-    z-index: 60;
-    width: min(420px, calc(100% - 44px));
-    padding: 16px 18px;
-    border-radius: 0;
-    background: #141414;
-    box-shadow: 0 18px 48px -12px rgba(0, 0, 0, 0.6);
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    color: #fff;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .clt-title { margin: 0; font-family: 'Fraunces', Georgia, serif; font-size: 17px; font-weight: 400; }
-  .clt-line { margin: 0; font-size: 12.5px; font-weight: 400; line-height: 1.45; color: rgba(255, 255, 255, 0.82); }
-  .clt-muted { color: rgba(255, 255, 255, 0.55); }
-  .clt-bar { position: relative; display: block; height: 2px; overflow: hidden; background: rgba(255, 255, 255, 0.14); }
-  .clt-bar i { position: absolute; top: 0; left: -40%; width: 40%; height: 100%; background: #fff; animation: clt-indeterminate 1.6s ease-in-out infinite; }
-  @keyframes clt-indeterminate { from { left: -40%; } to { left: 100%; } }
-  @media (prefers-reduced-motion: reduce) { .clt-bar i { animation: none; left: 0; width: 100%; opacity: 0.4; } }
-  .clt-action {
-    align-self: flex-start;
-    margin-top: 2px;
-    padding: 6px 12px;
-    border-radius: 0;
-    border: 1px solid rgba(255, 255, 255, 0.4);
-    background: transparent;
-    color: #fff;
-    font: inherit;
-    font-size: 12.5px;
-    font-weight: 500;
-    cursor: pointer;
-  }
-  .clt-action:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); }
-  .clt-action:disabled { opacity: 0.55; cursor: default; }
   .link-inline {
     background: none;
     border: 0;

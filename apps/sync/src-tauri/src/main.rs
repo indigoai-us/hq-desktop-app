@@ -46,6 +46,7 @@ mod launchd_task;
 mod meet_native;
 
 mod boot_watchdog;
+mod first_run_log;
 mod commands;
 mod app_version;
 mod deep_link;
@@ -64,6 +65,7 @@ mod ui_protocol;
 mod tray_helper;
 mod updater;
 mod scratch_build;
+mod demo_build;
 mod toolchain;
 mod updater_outcome;
 mod util;
@@ -264,6 +266,37 @@ fn surface_existing_instance(app: &tauri::AppHandle) {
     );
 }
 
+fn open_desktop_on_cold_launch(app: &tauri::AppHandle) {
+    tray::activate_primary_surface(app);
+    util::logfile::log("app", "cold launch: opened primary surface");
+}
+
+/// True when the login item (or a launchd KeepAlive relaunch) started HQ.
+/// macOS marks those launches with `--from-launch-agent`. The Windows Run
+/// value carries no marker, so every Windows/Linux launch counts as one and
+/// keeps the menu-bar-only start it always had.
+fn launched_by_login_item(argv: &[String]) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        hq_platform::launchagent::argv_is_launch_agent_relaunch(argv)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = argv;
+        true
+    }
+}
+
+/// True when the launch carries a link or file that opens its own surface.
+fn launch_carries_target(argv: &[String]) -> bool {
+    let has_link = commands::hq_work::hqwork_url_from_argv(argv).is_some()
+        || crate::deep_link::hq_desktop_url_from_argv(argv).is_some()
+        || crate::deep_link::hq_url_from_argv(argv).is_some();
+    #[cfg(not(target_os = "macos"))]
+    let has_link = has_link || !commands::cloud_file::placeholders_from_argv(argv).is_empty();
+    has_link
+}
+
 fn handle_window_close_requested_hide<F>(should_hide: bool, hide_action: F)
 where
     F: FnOnce(),
@@ -357,6 +390,11 @@ fn main() {
     #[cfg(target_os = "windows")]
     windows_update::run_helper_if_requested();
 
+    // A build whose updater is off must not be replaced by the HQ hook that
+    // updates the desktop app from inside a Claude run this app starts
+    // (PR #1670). Set before any thread exists; children inherit it.
+    updater::export_ensure_desktop_hook_off_env();
+
     // CI-only probe entrypoint, gated on the non-default `sync-cancel-probe`
     // feature. The dispatch — including its process termination — lives in
     // `commands::process` so the only process exit in this file stays the Windows
@@ -412,6 +450,7 @@ fn main() {
         "startup",
         &format!("app version {} (source: {:?})", app_version::current(), app_version::source()),
     );
+    first_run_log::shell(first_run_log::ShellEvent::Launch, "process-start");
     util::feature_gate::set_email_claim_fetcher(|| {
         Box::pin(async {
             let tokens = commands::cognito::get_tokens().await.ok().flatten()?;
@@ -737,9 +776,12 @@ fn main() {
             commands::ai_tools::import_claude_desktop_connectors,
             commands::work_apps::detect_work_apps,
             commands::local_sessions::scan_local_sessions,
+            commands::import_report::import_report_write,
+            commands::import_report::import_report_latest,
             commands::launch::launch_claude_code,
             commands::launch::launch_cli_in_terminal,
             commands::launch::launch_codex_workspace,
+            commands::launch::launch_cursor_workspace,
             commands::launch::reveal_folder,
             commands::new_files::open_new_files_detail,
             commands::new_files::detail_window_ready,
@@ -857,9 +899,6 @@ fn main() {
             commands::install_manifest::record_install_complete,
             commands::install_stages::git_init,
             commands::install_stages::git_probe_user,
-            commands::command_line_tools::command_line_tools_status,
-            commands::command_line_tools::command_line_tools_start_install,
-            commands::command_line_tools::command_line_tools_show_installer,
             commands::install_stages::take_onboarding_failure_detail,
             commands::install_stages::register_search_index,
             commands::install_stages::install_default_packages,
@@ -1199,6 +1238,9 @@ fn main() {
             commands::compat::keychain_get,
             commands::compat::keychain_delete,
             commands::oauth::oauth_cancel_listen,
+            commands::personal_apps_signin::personal_apps_signin_listen,
+            commands::personal_apps_signin::personal_apps_signin_wait,
+            commands::personal_apps_signin::personal_apps_signin_cancel,
             commands::compat::write_menubar_hq_path,
             commands::compat::home_dir,
             commands::compat::write_file,
@@ -1438,6 +1480,15 @@ fn main() {
                 prepare_first_run_welcome_window(app.handle(), true);
             }
 
+            // Opening HQ shows the desktop view. A launch that setup owns, one
+            // the login item started, or one carrying a link or file stays as
+            // it was (see `should_open_desktop_on_launch`).
+            let open_desktop_on_launch = commands::first_run::should_open_desktop_on_launch(
+                first_run,
+                launched_by_login_item(&startup_args),
+                launch_carries_target(&startup_args),
+            );
+
             // The very first launch opens the welcome flow, which fills the
             // work area of the current monitor (no rounded card, no native
             // window shadow, no frosted popover material) rather than the
@@ -1478,6 +1529,8 @@ fn main() {
                         setup_notification_producers(&startup_app);
                         if webview_asset_cache::take_deferred_activation() {
                             surface_existing_instance(&startup_app);
+                        } else if open_desktop_on_launch {
+                            open_desktop_on_cold_launch(&startup_app);
                         }
                     },
                 );
@@ -1485,6 +1538,10 @@ fn main() {
 
             #[cfg(not(target_os = "macos"))]
             setup_startup_surfaces(app.handle(), first_run)?;
+            #[cfg(not(target_os = "macos"))]
+            if open_desktop_on_launch {
+                open_desktop_on_cold_launch(app.handle());
+            }
 
             // A staged updater package is owned by the current process. Clear
             // persisted deferral markers before the updater can stage a new
@@ -1614,6 +1671,10 @@ fn main() {
 
             commands::hq_cli_update::setup_hq_cli_update_checker(app.handle());
             commands::install_deps::setup_qmd_abi_repair(app.handle());
+            // Older managed cwRsync installs have no etc/fstab, so rsync
+            // reads Windows ACLs and every Core update exits 23.
+            #[cfg(windows)]
+            commands::install_deps::setup_cwrsync_fstab_repair();
             commands::packages::setup_pack_update_checker(app.handle());
             commands::hq_core_state::setup_core_state_checker(app.handle());
 

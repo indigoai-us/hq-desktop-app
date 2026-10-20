@@ -83,7 +83,7 @@ export function readSlackRow(config: unknown): SlackRow | null {
     tokenPending: tokenUrl !== "" || accessFlag,
     // Once the page link is here the wait for access is over.
     accessPending: accessFlag && tokenUrl === "",
-    appPageUrl: slackAppPageUrl(tokenUrl),
+    appPageUrl: slackAppPageUrl(tokenUrl) ?? (!accessFlag && /^A[A-Z0-9]+$/.test(text(config.appId)) ? `https://api.slack.com/apps/${text(config.appId)}/general` : null),
     usesToken: tokenUrl !== "" || accessFlag || text(config.connectionMode) === "socket",
   };
 }

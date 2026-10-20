@@ -4,7 +4,7 @@
     ensureHqAnywhereGlobalRuntime,
     HQ_ANYWHERE_RUNTIME_FLAG,
     getHqAnywherePersonSetting,
-    hqAnywhereRuntimeEnabled,
+    hqAnywhereGlobalRuntimeAllowed,
     isHqAnywhereSetupPending,
     putHqAnywherePersonSetting,
     setHqAnywhereGlobalRuntime,
@@ -20,6 +20,7 @@
   }
 
   let { adapter = null }: Props = $props();
+  let signedIn = $state(false);
   let available = $state(false);
   // The kill switch is set: the flag read back an explicit false. A missing or
   // unreadable flag leaves HQ Anywhere on (owner decision: HQ Anywhere is GA).
@@ -44,7 +45,22 @@
     let flagRevision = 0;
     const refreshAvailability = async (): Promise<void> => {
       const revision = ++flagRevision;
-      const enabled = await hqAnywhereRuntimeEnabled(identity);
+      let authenticated = false;
+      try {
+        const person = await identity.whoami();
+        authenticated = person.ok && Boolean(person.value.personUid);
+      } catch {
+        // Without an authenticated person, the setting must remain hidden.
+      }
+      if (!active || revision !== flagRevision) return;
+      signedIn = authenticated;
+      if (!signedIn) {
+        available = false;
+        switchedOff = false;
+        loaded = false;
+        return;
+      }
+      const enabled = await hqAnywhereGlobalRuntimeAllowed(identity);
       if (!active || revision !== flagRevision) return;
 
       const wasAvailable = available;
@@ -125,7 +141,7 @@
   }
 
   async function saveSetting(value: boolean): Promise<void> {
-    if (!adapter || !loaded || loading || saving || setupRunning) return;
+    if (!adapter || !signedIn || !available || !loaded || loading || saving || setupRunning) return;
     const previous = enabled;
     enabled = value;
     saving = true;

@@ -1,10 +1,12 @@
 // @vitest-environment happy-dom
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import DailyBrief from "./DailyBrief.svelte";
 import { octoberEightBrief } from "./brief-fixture.js";
 import { generateBrief } from "./brief-generate.js";
-import { isGenericStatus, plainStatus, teamFooter, teamLimit, teamStatus, thanksPrompt, toneTag } from "./brief-team.js";
+import { isGenericStatus, plainStatus, teamFooter, teamGroup, teamGroups, teamHero, teamLimit, teamLine, teamOrder, teamStatus, thanksPrompt, toneTag } from "./brief-team.js";
 import type { BriefInput, BriefTeammate } from "./brief-types.js";
 
 const mate = (over: Partial<BriefTeammate> & { id: string; name: string }): BriefTeammate => ({ doing: "Messaged you", tone: "ok", ...over });
@@ -43,6 +45,48 @@ describe("team rows", () => {
     expect(teamStatus(generic, "x".repeat(80)).text.length).toBe(56);
     expect(teamStatus(generic, null)).toEqual({ text: "Messaged you", fromDm: false });
     expect(teamStatus(mate({ id: "agt_i", name: "Izzy", doing: "Agent", isAgent: true }), null)).toEqual({ text: "Agent", fromDm: false });
+  });
+
+  it("groups by what each person asks of you and orders the most actionable first, stable within a group", () => {
+    expect(teamGroup("decision")).toBe("need");
+    expect(teamGroup("warn")).toBe("wait");
+    expect(teamGroup("ok")).toBe("on");
+    expect(teamGroup("neutral")).toBe("on");
+    expect(teamGroup("red")).toBe("on");
+    const team = [
+      mate({ id: "a", name: "A" }),
+      mate({ id: "b", name: "B", tone: "warn" }),
+      mate({ id: "c", name: "C", tone: "decision" }),
+      mate({ id: "d", name: "D", thanks: "Shipped it" }),
+      mate({ id: "e", name: "E", tone: "decision" }),
+      mate({ id: "f", name: "F", isAgent: true, tone: "neutral" }),
+    ];
+    const ordered = teamOrder(team);
+    expect(ordered.map((t) => t.name)).toEqual(["C", "E", "B", "D", "A", "F"]);
+    expect(teamGroups(ordered).map((g) => [g.label, g.rows.map((t) => t.name).join("")])).toEqual([
+      ["Needs you", "CE"],
+      ["You're waiting", "B"],
+      ["On it", "DAF"],
+    ]);
+    expect(teamGroups([])).toEqual([]);
+  });
+
+  it("leads with who needs you, else who you wait on, else how many are active", () => {
+    const need = [mate({ id: "a", name: "A", tone: "decision" }), mate({ id: "b", name: "B", tone: "decision" }), mate({ id: "c", name: "C", tone: "warn" })];
+    expect(teamHero(need)).toEqual({ n: 2, key: "need", line: "need you", sub: "of 3 on the team" });
+    expect(teamHero(need.slice(1)).line).toBe("needs you");
+    expect(teamHero([mate({ id: "c", name: "C", tone: "warn" }), mate({ id: "d", name: "D" })])).toEqual({ n: 1, key: "wait", line: "you're waiting on", sub: "of 2 on the team" });
+    expect(teamHero([mate({ id: "d", name: "D" }), mate({ id: "e", name: "E", isAgent: true })])).toEqual({ n: 2, key: "all", line: "on the team", sub: "Nobody waiting on you" });
+  });
+
+  it("replaces the adapter's filler with something real, or says nothing", () => {
+    const izzy = mate({ id: "agt_i", name: "Izzy", doing: "Agent", isAgent: true, dmCount: 3 });
+    expect(teamLine(izzy, null)).toEqual({ text: "", fromDm: false });
+    expect(teamLine(izzy, "Can you reply to the X mention?")).toEqual({ text: "Can you reply to the X mention?", fromDm: true });
+    expect(teamLine({ ...izzy, owes: ["", "Pricing page numbers"] }, null)).toEqual({ text: "Owes you: Pricing page numbers", fromDm: false });
+    expect(teamLine({ ...izzy, thanks: "Shipped PR 88." }, null)).toEqual({ text: "Shipped a change", fromDm: false });
+    expect(teamLine(mate({ id: "prs_h", name: "Hassaan", doing: "Messaged you" }), null).text).toBe("");
+    expect(teamLine(mate({ id: "prs_g", name: "Geoff", doing: "PR 1201 in review", owes: ["x"] }), null)).toEqual({ text: "A change in review", fromDm: false });
   });
 
   it("tags the tones for the +N more peek", () => {
@@ -176,6 +220,61 @@ describe("Team card", () => {
     expect(row.textContent).toContain("Started in Claude.");
   });
 
+  it("leads with the count who need you and groups the rows by meaning, needs-you first", async () => {
+    render(day());
+    await settle();
+    const hero = q('[data-testid="brief-team-hero"]')!;
+    expect(hero.querySelector(".num")?.textContent).toBe("2");
+    expect(hero.textContent).toContain("need you");
+    expect(hero.textContent).toContain("of 7 on the team");
+    const groups = qa('[data-testid="brief-team-group"]');
+    const shape = groups.map((g) => [g.getAttribute("data-group"), [...g.querySelectorAll('[data-testid="brief-team-row"]')].map((r) => r.getAttribute("aria-label")).join(",")]);
+    const names = shape.map(([, n]) => n).join(",").split(",");
+    // The two who need you lead, then who you wait on; the rest follow, a thank-you due first.
+    expect(shape[0]).toEqual(["need", "Geoff,Jonathan"]);
+    expect(shape[1]).toEqual(["wait", "Hassaan"]);
+    expect(names.slice(0, 4)).toEqual(["Geoff", "Jonathan", "Hassaan", "Jacob"]);
+    expect(groups.map((g) => g.querySelector(".gl")?.textContent)).toEqual(["Needs you", "You're waiting", "On it"].slice(0, groups.length));
+    // The rows the card hides are the least actionable ones.
+    const more = q('[data-testid="brief-team-more"]');
+    if (more) expect(names).not.toContain("Izzy");
+  });
+
+  it("the strip shows the whole team, rings who needs you, squares agents, and lights the hovered row's circle", async () => {
+    render(day());
+    await settle();
+    const strip = q('[data-testid="brief-team-strip"]')!;
+    expect(strip.getAttribute("aria-hidden")).toBe("true");
+    const faces = [...strip.querySelectorAll<HTMLElement>(".av:not(.plus)")];
+    // Seven on the team: five circles and a "+2".
+    expect(faces.map((f) => f.textContent)).toEqual(["G", "J", "H", "J", "S"]);
+    expect(strip.querySelector(".plus")?.textContent).toBe("+2");
+    expect(faces.filter((f) => f.classList.contains("need")).map((f) => f.getAttribute("title"))).toEqual(["Geoff", "Jonathan"]);
+    expect(strip.classList.contains("lit")).toBe(false);
+    q('[aria-label="Hassaan"]')!.dispatchEvent(new MouseEvent("mouseenter"));
+    flushSync();
+    expect(strip.classList.contains("lit")).toBe(true);
+    expect(strip.querySelector(".av.on")?.getAttribute("title")).toBe("Hassaan");
+    q('[aria-label="Hassaan"]')!.dispatchEvent(new MouseEvent("mouseleave"));
+    flushSync();
+    expect(strip.classList.contains("lit")).toBe(false);
+  });
+
+  it("an agent with only filler shows its name, chip and DM count, never the word Agent as a status", async () => {
+    const input = { ...day(), team: [mate({ id: "prs_geoff", name: "Geoff", doing: "Needs your call on pricing", tone: "decision" }), mate({ id: "agt_izzy", name: "Izzy", doing: "Agent", tone: "neutral", isAgent: true, dmCount: 3 })] };
+    render(input);
+    await settle();
+    const izzy = q('[aria-label="Izzy"]')!;
+    expect(izzy.querySelector('[data-testid="brief-team-agent"]')).not.toBeNull();
+    expect(izzy.querySelector('[data-testid="brief-team-status"]')).toBeNull();
+    expect(izzy.querySelector('[data-testid="brief-team-count"]')?.textContent).toBe("3");
+    expect(izzy.querySelector(".meta")?.textContent?.trim()).toBe("3 DMs");
+    expect(izzy.textContent?.replace(/agent/, "")).not.toMatch(/\bAgent\b/);
+    // The DM button shares the count's place on the row.
+    expect(izzy.querySelector(".side .acts button")?.textContent).toBe("DM");
+    expect(q('[data-testid="brief-team-hero"] .num')?.textContent).toBe("1");
+  });
+
   it("a teammate's peek lists what they owe you and what is between you", async () => {
     render(day());
     await settle();
@@ -184,5 +283,15 @@ describe("Team card", () => {
     expect(peek.textContent).toContain("Owes you");
     expect(peek.textContent).toContain("Pricing page numbers");
     expect(peek.textContent).toContain("Finance dashboard live; waiting on your signed-in check.");
+  });
+
+});
+
+describe("BriefTeam layout", () => {
+  it("every face is a circle (agents too), and the count/buttons sit level with the whole text block", () => {
+    const src = readFileSync(resolve(process.cwd(), "src/brief/BriefTeam.svelte"), "utf8");
+    const style = src.match(/<style>([\s\S]*)<\/style>/)?.[1] ?? "";
+    expect(style).not.toMatch(/\.av\.bot/);
+    expect(style).toMatch(/\.side \{[^}]*grid-row:\s*1 \/ span 2[^}]*align-self:\s*center/);
   });
 });

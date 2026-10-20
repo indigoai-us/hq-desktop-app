@@ -53,6 +53,7 @@ describe("US-029 FilesConnectPage", () => {
           openFileInClaude: vi.fn(async () => ok(undefined)),
           launchClaudeCode: vi.fn(async () => ok(undefined)),
           launchCodexWorkspace: vi.fn(async () => ok(undefined)),
+          launchCursorWorkspace: vi.fn(async () => ok(undefined)),
           launchCliInTerminal: vi.fn(async () => ok(undefined)),
           detectAiTools: vi.fn(async () => ok({})),
           pickFolder: vi.fn(async () => ok(null)),

@@ -46,6 +46,7 @@
   import FinishingSetupChip from "./FinishingSetupChip.svelte";
   import { installQueueAttentionNotice, parseInstallQueueStatus } from "./finishing-setup.js";
   import type { InstallQueueHost } from "./finishing-setup.js";
+  import { resolveUsageCompany } from "../home/core-usage-model.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
@@ -74,11 +75,14 @@
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import BriefRailHost from "./BriefRailHost.svelte";
   import WelcomeReport from "../brief/WelcomeReport.svelte";
+  import { finishNavigatesToCompany } from "../brief/welcome-finish.js";
   import { welcomeMadeBy } from "../brief/welcome-made-by.js";
   import { briefActionsFor } from "../brief/brief-action-cards.js";
-  import type { WelcomeConnectMemory } from "../chat/first-run/WelcomeConnectCard.svelte";
-  import { BRIEF_CLAUDE_PERMISSION_MODE, BRIEF_FIX_LABEL, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
+  import { welcomeAppsCompanyFor } from "../brief/welcome-ai-apps.js";
+  import { WelcomeConnectSession } from "../brief/welcome-connect-session.svelte.js";
+  import { BRIEF_CLAUDE_PERMISSION_MODE, BRIEF_FIX_LABEL, BRIEF_STARTING_STEP, briefBotLabel, briefSkillInstalled, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
   import { BriefCreateRun, type BriefCreator } from "../brief/brief-create.svelte.js";
+  import { briefBotFailure } from "../brief/brief-bot-failure.js";
   import {
     RAIL_ATLAS_FLAG,
     RAIL_BRIEF_FLAG,
@@ -101,10 +105,19 @@
   import ActivityRailHost from "./ActivityRailHost.svelte";
   import BotsPage from "../company/BotsPage.svelte";
   import { botSubjectName, profileViewingCompanyUid } from "./profile-panes/bot-subject-name.js";
-  import { badgesFor } from "../badges/badge-source.js";
+  import { badgeProgressFor, badgesEnabledFor, badgesFor, type BadgeSubject } from "../badges/badge-source.js";
+  import BadgeLaunchAnnouncement from "../badges/BadgeLaunchAnnouncement.svelte";
+  import {
+    LAUNCH_OPEN_DELAY_MS,
+    hasSeenLaunch,
+    launchPreview,
+    markLaunchSeen,
+    setLaunchPreview,
+    shouldShowLaunch,
+  } from "../badges/badge-launch.js";
   import { installBadgeLoader } from "../badges/badge-loader.svelte.js";
   import { topBadge } from "../badges/badge-tier.js";
-  import type { ResolvedBadge } from "../badges/badge-catalog.js";
+  import { resolveEarned, type ResolvedBadge } from "../badges/badge-catalog.js";
   import CompanySettingsHost from "./CompanySettingsHost.svelte";
   import {
     atlasLiveActors,
@@ -342,7 +355,7 @@
   import FirstRunHeldBackdrop from "../chat/first-run/FirstRunHeldBackdrop.svelte";
   import type { FirstRunHandoffHint } from "../chat/first-run/first-run-handoff.js";
   import { mostUsedTool } from "../chat/first-run/visual-first-run.js";
-  import { continueInTool, openPreparedCodingTool } from "../chat/first-run/continue-in-tool.js";
+  import { continueInTool, openPreparedCodingTool, openWelcomeHarness, WELCOME_OPENABLE_HARNESSES } from "../chat/first-run/continue-in-tool.js";
   import {
     briefOpenToolConnectorId,
     briefInstallAfterCheck,
@@ -396,6 +409,8 @@
     createRouteLogger,
     formatFlagLookup,
     formatSetupRunSet,
+    formatShell,
+    formatWelcomeNav,
     formatWelcomeReport,
     writeFirstRunLine,
     type FlagLateOutcome,
@@ -404,6 +419,7 @@
   import { runFirstRunSignIn, waitForToolInstall, type FirstRunSignInHost } from "../chat/first-run/first-run-signin.js";
   import { createImportScanHost } from "../chat/first-run/knowledge-tree/import-host.js";
   import { createNativeScanHost } from "../chat/first-run/knowledge-tree/native-scan-host.js";
+  import { importReportInputFromEvents, importReportInputFromScan, tapImportHost } from "../chat/first-run/knowledge-tree/import-report.js";
   import { createYourAppsHost } from "../chat/first-run/your-apps-host.js";
   import { FIRST_RUN_DEV_SWITCHES, FIRST_RUN_DRY_DELAY_MS } from "../chat/first-run/dev-switches.js";
   import type { FirstRunSettled } from "../chat/first-run/first-run-hosts.js";
@@ -684,6 +700,8 @@
     type NavigationScrollState,
     type ProjectsFocusTab,
   } from "./navigation-history.js";
+  import { settleThreadSidebarClose } from "./thread-sidebar-close.js";
+  import { resetThreadComposerDrafts } from "../chat/messaging/thread-composer-draft.js";
   import {
     createNavigationScrollTracker,
     scheduleNavigationScrollRestore,
@@ -705,8 +723,10 @@
   import {
     applyUiSize,
     applyWindowOpacity,
+    currentColorTheme,
     hasAppearanceHost,
   } from "../settings/shell-settings-model.js";
+  import { APPEARANCE_CHANGE_EVENT } from "../settings/appearance-seam.js";
   import { restoreStoredColorTheme } from "../settings/settings-theme-seam.js";
   import {
     readSettingsPrefs,
@@ -923,6 +943,7 @@
   import RuntimeRepairCard from "../chat/messaging/RuntimeRepairCard.svelte";
   import type {
     BotRestoreResult,
+    ImportReportInput,
     LocalBotCreateInput,
     LocalBotRow,
     LocalBotWorkerOption,
@@ -1007,6 +1028,7 @@
   } from "../chat/conversation-title.js";
   import {
     botDmRows,
+    missingBotDmRootIds,
     mergeFetchedTimeline,
     mergeTimelineMessages,
     messagesForDisplay,
@@ -1017,6 +1039,7 @@
     withThreadAnswers,
     type TimelineDisplayOptions,
     timelinePageFromPayload,
+    withFetchedTimelineRoots,
     HUMAN_HISTORY_VIEW,
   } from "../chat/live-messages.js";
   import {
@@ -4192,11 +4215,25 @@
    * Without either the flow has no context step. The desktop host's native
    * launch scan (`adapter.localScan`, counts and names only) comes first, so
    * hq-cli is not on the critical path; the hq-cli import is the fallback.
+   * Whichever scan ran writes the import report the first view reads.
    */
   const firstRunImportHost =
     createNativeScanHost(adapter.localScan, (scan) => {
       firstRunScanTools = scan.tools;
-    }) ?? createImportScanHost(adapter.contextImport, syncEvents);
+      writeFirstRunImportReport(importReportInputFromScan(scan));
+    }) ??
+    tapImportHost(createImportScanHost(adapter.contextImport, syncEvents), (events) =>
+      writeFirstRunImportReport(importReportInputFromEvents(events)),
+    );
+  /** Saves the scan's import report; a failed write only costs the first view its numbers. */
+  function writeFirstRunImportReport(input: ImportReportInput): void {
+    void adapter.importReport
+      ?.write(input)
+      .then((result) => {
+        if (!result.ok) console.warn("[first-run] import report not written:", result.message ?? result.code);
+      })
+      .catch((err: unknown) => console.warn("[first-run] import report not written:", err));
+  }
   /** Per-tool session counts from the launch scan: picks the most-used tool for the decision. */
   let firstRunScanTools = $state<FirstRunToolUsage[] | null>(null);
   /** Skip sign-in: create the assistant and show the held welcome report only. */
@@ -4301,6 +4338,13 @@
     return null;
   }
   /** Open on the welcome edition, and the same action later on the Daily Brief. */
+  /** The welcome edition's "Open HQ in <harness>": opens the harness the button names (US-019). */
+  const welcomeOpenHarness = {
+    harnesses: WELCOME_OPENABLE_HARNESSES,
+    open: (harness: "claude-code" | "codex" | "cursor", prompt: string) =>
+      openWelcomeHarness({ harness, prompt, settings: adapter.settings, shell: adapter.shell }),
+  };
+
   async function openRememberedCodingTool(): Promise<void> {
     const runtime = briefOpenTool;
     if (!runtime || briefOpenToolBusy) return;
@@ -4389,7 +4433,7 @@
         }
       : null;
   /** The finished scan's counts and report path, for the setup bot's handoff. */
-  let firstRunImport: FirstRunImportHandoff | null = null;
+  let firstRunImport = $state<FirstRunImportHandoff | null>(null);
   function recordFirstRunImport(result: FirstRunImportHandoff): void {
     firstRunImport = result;
   }
@@ -4566,11 +4610,63 @@
    * US-009: every way out of the visual first run lands on the welcome
    * report (the Daily Brief view), never the bare shell or #welcome. Set for
    * the rest of the session, so the view stays open to this person even where
-   * the rail keeps the Daily Brief hidden (`briefVisible`).
+   * the rail keeps the Daily Brief hidden (`briefVisible`). Kept in
+   * sessionStorage, so a reload of the window keeps the Daily Brief in the
+   * rail, and puts the report back on screen if the person had not left it.
    */
-  let welcomeReportOwed = $state(false);
+  const WELCOME_REPORT_SESSION_KEY = "hq.welcome-report.session";
+  function welcomeReportSession(): "open" | "left" | null {
+    const uid = self?.uid;
+    if (!uid || typeof window === "undefined") return null;
+    try {
+      const value = window.sessionStorage.getItem(WELCOME_REPORT_SESSION_KEY);
+      if (value === `open:${uid}`) return "open";
+      if (value === `left:${uid}`) return "left";
+    } catch (err) {
+      console.warn("[hq-desktop] welcome report: could not read the session marker", err);
+    }
+    return null;
+  }
+  function keepWelcomeReportSession(state: "open" | "left"): void {
+    const uid = self?.uid;
+    if (!uid || firstRunDev.dry || typeof window === "undefined") return;
+    try {
+      window.sessionStorage.setItem(WELCOME_REPORT_SESSION_KEY, `${state}:${uid}`);
+    } catch (err) {
+      // The in-memory state still holds until the window reloads.
+      console.warn("[hq-desktop] welcome report: could not keep the session marker", err);
+    }
+  }
+  /** Sign-out ends the session, so the next sign-in starts without the marker. */
+  function forgetWelcomeReportSession(): void {
+    if (typeof window === "undefined") return;
+    try {
+      window.sessionStorage.removeItem(WELCOME_REPORT_SESSION_KEY);
+    } catch (err) {
+      console.warn("[hq-desktop] welcome report: could not clear the session marker", err);
+    }
+  }
+  const welcomeReportAtMount = welcomeReportSession();
+  // One line per shell mount, so a reload or remount mid-first-run shows in
+  // the log with what the session marker restored.
+  firstRunTimingLog(
+    formatShell(
+      "mount",
+      welcomeReportAtMount === "open" ? "report-open" : welcomeReportAtMount === "left" ? "report-left" : "none",
+    ),
+  );
+  let welcomeReportOwed = $state(welcomeReportAtMount !== null);
+  // The takeover was left in this session, so the reload must not set off
+  // the automatic start either (`closeVisualFirstRun`).
+  if (welcomeReportAtMount !== null) setupBotAutoStarted = true;
+  /** The report was on screen when the window reloaded: open it again once the shell is up. */
+  let welcomeReportReopen = welcomeReportAtMount === "open";
+  /** The report has been on screen since it was opened, so another page means the person left it. */
+  let welcomeReportShown = false;
   /** The assistant the welcome report's brief job reached (one job per assistant). */
   const WELCOME_REPORT_SENT_KEY = "hq.welcome-report.sent";
+  /** The welcome report's name in the brief's slow-start line. The job itself is a plain brief: the skill picks the welcome edition. */
+  const WELCOME_BRIEF_LABEL = "welcome brief";
   function welcomeReportSentTo(uid: string): boolean {
     try {
       return window.localStorage.getItem(WELCOME_REPORT_SENT_KEY) === uid;
@@ -4621,12 +4717,12 @@
         if (welcomeReportBlockedOn === null) welcomeReportBlockedOn = botState;
         else if (welcomeReportBlockedOn !== botState) {
           welcomeReportBlockedOn = botState;
-          void run.start({ welcome: true });
+          void run.start({ label: WELCOME_BRIEF_LABEL });
         }
         return;
       }
       welcomeReportBlockedOn = null;
-      void run.start({ welcome: true });
+      void run.start({ label: WELCOME_BRIEF_LABEL });
     });
   });
   // A job held back on the assistant (a terminal or browser sign-in, the
@@ -4640,7 +4736,7 @@
     if (!welcomeReportUnsent(uid)) return;
     const onBack = (): void => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-      if (run.phase.kind === "blocked") void run.start({ welcome: true });
+      if (run.phase.kind === "blocked") void run.start({ label: WELCOME_BRIEF_LABEL });
     };
     window.addEventListener("focus", onBack);
     document.addEventListener("visibilitychange", onBack);
@@ -4673,32 +4769,22 @@
   });
   /**
    * The company the welcome report's connect card connects apps to: the
-   * tenant company, else the takeover's own default (the person's only
-   * company, `defaultTeamChoice`). With neither there is no card; apps never
-   * land in a company the person did not pick. (The visual takeover settles no
-   * team here, so `firstRunSettled.team` is never read.)
+   * tenant company, else the most recently used one, else the only one, else
+   * the first in the roster. Null only with no company at all, where Connect
+   * asks for a new company first. (The visual takeover settles no team here,
+   * so `firstRunSettled.team` is never read.)
    */
   const welcomeAppsCompany = $derived.by(() => {
-    const company =
-      railCompanyRoster.find((c) => c.uid === tenantCompanyId) ??
-      (railCompanyRoster.length === 1 ? railCompanyRoster[0] : undefined) ??
-      null;
+    const company = welcomeAppsCompanyFor(railCompanyRoster, tenantCompanyId, companyRecentIds);
     return company ? { uid: company.uid, name: company.label } : null;
   });
   /**
-   * What the connect card already did per company (the auto-connect ran, the
-   * apps the person undid). Held by the shell so a later Daily Brief visit
-   * never re-installs an app the person took back out.
+   * The connect card's session (the scan, the sign-ins running, the Connect
+   * waiting on a new company, what it did per company). Held by the shell so
+   * the report turning ready or a later Daily Brief visit keeps it.
    */
-  const welcomeConnectMemory = new Map<string, WelcomeConnectMemory>();
-  function welcomeConnectMemoryFor(companyUid: string): WelcomeConnectMemory {
-    let memory = welcomeConnectMemory.get(companyUid);
-    if (!memory) {
-      memory = { autoRan: false, undone: new Set<string>() };
-      welcomeConnectMemory.set(companyUid, memory);
-    }
-    return memory;
-  }
+  const welcomeConnectSession = new WelcomeConnectSession();
+  onDestroy(() => welcomeConnectSession.dispose());
   /** Detection and connects for the connect card: the shared "Your apps" host. */
   // svelte-ignore state_referenced_locally
   const welcomeAppsHost = adapter.integrations
@@ -4720,18 +4806,36 @@
         dry: firstRunDev.dry,
       })
     : null;
-  /** The connect card's inputs; `desktop.first-run-found-apps-v1` is its kill switch. */
+  /**
+   * The suggested integrations' inputs; `desktop.first-run-found-apps-v1` is
+   * its kill switch. With no company the suggestions still show, and Connect
+   * opens the new-company sheet first: integrations always belong to a company.
+   */
   const welcomeConnect = $derived(
-    foundAppsFlag && welcomeAppsHost && welcomeAppsCompany
+    foundAppsFlag && welcomeAppsHost
       ? {
           host: welcomeAppsHost,
           company: welcomeAppsCompany,
-          assistantName: assistantLabel,
           onopenintegrations: openCompanyIntegrations,
-          memory: welcomeConnectMemoryFor(welcomeAppsCompany.uid),
+          onnewcompany: openNewCompanyFromWelcome,
         }
       : null,
   );
+  /** Set while the new-company sheet is open for a welcome report Connect; answers with the new company's uid. */
+  let welcomeNewCompanyResolve: ((companyUid: string | null) => void) | null = null;
+  function openNewCompanyFromWelcome(): Promise<string | null> {
+    welcomeNewCompanyResolve?.(null);
+    return new Promise((resolve) => {
+      welcomeNewCompanyResolve = resolve;
+      newCompanyOpen = true;
+    });
+  }
+  function answerWelcomeNewCompany(companyUid: string | null): boolean {
+    const resolve = welcomeNewCompanyResolve;
+    welcomeNewCompanyResolve = null;
+    resolve?.(companyUid);
+    return resolve !== null;
+  }
   /**
    * No assistant to write the welcome report (none here yet, the create
    * failed, or a dry walk's pretend one): the report offers #welcome, where
@@ -4750,9 +4854,31 @@
           detect: () => welcomeAppsHost.detect(),
           cli: { claudeCode: Boolean(aiTools?.claude_cli), codex: Boolean(aiTools?.codex_cli) },
           anywhereOnId: briefInstallView === "installed" ? briefOpenToolConnectorId(briefOpenTool) : null,
+          onopenaiapps: () => openSettings("agents"),
         }
       : null,
   );
+  /**
+   * The app theme for the welcome report: the appearance setting, with
+   * "system" resolved here so the report never reads the OS scheme itself.
+   * Follows every appearance change and, on "system", the OS switching.
+   */
+  let welcomeTheme = $state<"dark" | "light">("dark");
+  $effect(() => {
+    const root = document.documentElement;
+    const scheme = typeof window.matchMedia === "function" ? window.matchMedia("(prefers-color-scheme: light)") : null;
+    const read = (): void => {
+      const chosen = currentColorTheme(root);
+      welcomeTheme = chosen === "system" ? (scheme?.matches ? "light" : "dark") : chosen;
+    };
+    read();
+    window.addEventListener(APPEARANCE_CHANGE_EVENT, read);
+    scheme?.addEventListener?.("change", read);
+    return () => {
+      window.removeEventListener(APPEARANCE_CHANGE_EVENT, read);
+      scheme?.removeEventListener?.("change", read);
+    };
+  });
   // The cards and the AI apps card need launch detection; ask for it once the report shows.
   // The call is untracked: a host whose request reads its own state (a probing flag) would
   // otherwise re-run this effect when that state changes and probe forever after a failure.
@@ -4761,8 +4887,25 @@
   });
   function openWelcomeReport(): void {
     welcomeReportOwed = true;
+    keepWelcomeReportSession("open");
     void navigate({ kind: "extra", page: railPlaceholderPage("brief") });
   }
+  $effect(() => {
+    if (!welcomeReportReopen || !tourShellReady) return;
+    welcomeReportReopen = false;
+    untrack(() => void navigate({ kind: "extra", page: railPlaceholderPage("brief") }));
+  });
+  $effect(() => {
+    if (!welcomeReportOwed) return;
+    const onReport = railPlaceholder?.id === "brief";
+    untrack(() => {
+      if (onReport) welcomeReportShown = true;
+      else if (welcomeReportShown && !welcomeReportReopen) {
+        welcomeReportShown = false;
+        keepWelcomeReportSession("left");
+      }
+    });
+  });
   /** The takeover is done on this computer: it never opens again. */
   function closeVisualFirstRun(): void {
     // The report view is selected before the takeover goes, so the empty
@@ -6585,6 +6728,14 @@
       ""
     );
   });
+  /**
+   * Company for the Core menu's usage panel: the company on screen, else the
+   * branded company. A local-only company shows "No usage", never another
+   * company's spend (resolveUsageCompany).
+   */
+  const usageCompany = $derived(
+    resolveUsageCompany(companies, selectedCompanySlug, brandState?.companySlug),
+  );
   const activeCompanyPane = $derived.by(() => {
     if (view !== "conversation" || selectedRow?.kind !== "channel") return null;
     const scope = (selectedRow.channelScope ?? "").trim();
@@ -6792,11 +6943,30 @@
           await loadLocalBotRuntimeReady(true);
           return checkBriefBot(localBots, localBotRuntimeReady);
         },
+        // Null until the roster has loaded (the shell starts it as an empty list):
+        // only a loaded roster with no company sends the personal brief.
+        hasCompanies: () => {
+          if (memberCompanies(companies).length > 0 || localCompanies.length > 0) return true;
+          if (companies == null || (rosterStatus != null && rosterStatus !== "ready")) return null;
+          return false;
+        },
+        async skillInstalled() {
+          const files = adapter.files;
+          if (!files?.getFileContent) return null;
+          // Core skill or the personal overlay: missing only when both are.
+          return briefSkillInstalled(
+            async (path) => {
+              const res = await files.getFileContent(path);
+              return res.ok ? { ok: true } : { ok: false, why: res.message ?? res.reason };
+            },
+            (msg, why) => console.warn(msg, why),
+          );
+        },
         async dispatch(bot, body, idempotencyKey) {
           const res = await adapter.messaging.sendDm(bot.agentUid, body, { audience: "agent", idempotencyKey });
           if (res.ok) return null;
           console.warn("[daily-brief] job send failed", res.reason, res.code ?? "", res.message ?? "");
-          return `Could not send the brief job to ${bot.displayName?.trim() || bot.name}. Try again in a moment.`;
+          return "Could not start your brief. Try again in a moment.";
         },
         async fix(fix, bot) {
           if (fix === "create-bot") {
@@ -6811,6 +6981,17 @@
           // Sign-in and model setup live in the bot's conversation.
           openSetupBotDm({ agentUid: bot.agentUid, handle: bot.name });
           return null;
+        },
+        async botFailure(bot, sinceMs) {
+          const res = await adapter.messaging.fetchDmThread({ withPersonUid: bot.agentUid, limit: 20 });
+          if (!res.ok) return null;
+          const label = briefBotLabel(bot);
+          return briefBotFailure(normalizeConversationMessages(res.value), {
+            agentUid: bot.agentUid,
+            sinceMs,
+            bot: label,
+            runtime: bot.runtime,
+          });
         },
         notify(title, body) {
           pushToast({ title, detail: body, tone: "ok" });
@@ -6875,7 +7056,7 @@
   const briefRailRun = $derived.by(() => {
     const p = briefRun?.phase;
     if (!p) return null;
-    if (p.kind === "dispatching") return { progress: 0, step: "Waking your bot…" };
+    if (p.kind === "dispatching") return { progress: 0, step: `${BRIEF_STARTING_STEP}…` };
     if (p.kind === "waiting") return { progress: 0, step: waitingStep(p.bot) };
     if (p.kind === "running") {
       const latest = p.activity?.at(-1)?.label;
@@ -7370,7 +7551,7 @@
       : inSetupChannelWithAgent && setupAgent.listening
       ? setupAgent.state?.question?.kind === "choice"
         ? "Type your answer…"
-        : "Reply to Setup bot…"
+        : `Reply to ${SETUP_AGENT_NAME}…`
       : agentSetupPending
         ? agentComposerPlaceholder(provisioning.agentName || headerTitle)
         : composerPlaceholderFor(selectedRow, headerTitle),
@@ -7791,6 +7972,56 @@
     return isBotDmRow(row) ? normalizeConversationMessages(raw) : shown;
   }
 
+  async function hydrateBotDmRoots(
+    row: ConversationRow,
+    raw: unknown,
+    knownRoots: readonly ConversationMessageWire[],
+  ): Promise<unknown> {
+    const peerUid = (row.personUid ?? "").trim();
+    if (!isBotDmRow(row) || !peerUid) return raw;
+    const rootEventIds = missingBotDmRootIds(raw, knownRoots);
+    if (rootEventIds.length === 0) return raw;
+    const fetchedRoots = await Promise.all(
+      rootEventIds.map(async (rootEventId) => {
+        try {
+          const result = await adapter.messaging.fetchReplyThread({
+            scope: "dm",
+            rootEventId,
+            withPersonUid: peerUid,
+          });
+          if (!result.ok) {
+            console.warn("[hq-desktop]", {
+              event: "bot-dm-root-fetch-failure",
+              id: row.id,
+              rootEventId,
+              reason: result.reason,
+              code: result.code,
+              error: result.message,
+            });
+            return null;
+          }
+          if (!result.value.root) return null;
+          const root = normalizeConversationMessages([result.value.root], {
+            keepAudience: true,
+          })[0];
+          return root?.eventId === rootEventId ? result.value.root : null;
+        } catch (error) {
+          console.warn("[hq-desktop]", {
+            event: "bot-dm-root-fetch-error",
+            id: row.id,
+            rootEventId,
+            error: String(error),
+          });
+          return null;
+        }
+      }),
+    );
+    return withFetchedTimelineRoots(
+      raw,
+      fetchedRoots.filter((root): root is NonNullable<typeof root> => root !== null),
+    );
+  }
+
   /** Same messages (by reference) in the same order — nothing to repaint. */
   function sameTimeline(
     a: ConversationMessageWire[],
@@ -7890,7 +8121,11 @@
           // The timeline leaves the app's notices to the bot out; the page does not.
           noteConnectionNotice(row.personUid, fetched);
         }
-        return res.ok ? res.value : null;
+        if (!res.ok) return null;
+        const knownRoots = liveTimelineId === row.id
+          ? liveTimeline
+          : (timelineCache.get(row.id) ?? []);
+        return hydrateBotDmRoots(row, res.value, knownRoots);
       }
       if (row.channelId) {
         const res = await adapter.messaging.fetchChannel({
@@ -7984,7 +8219,11 @@
     const raw = row.channelId
       ? unwrapAdapter(await adapter.messaging.fetchChannel({ channelId: row.channelId, cursor, limit: 50, ...view }))
       : row.kind === "dm" && row.personUid
-        ? unwrapAdapter(await adapter.messaging.fetchDmThread({ withPersonUid: row.personUid, cursor, limit: 50, ...view }))
+        ? await hydrateBotDmRoots(
+            row,
+            unwrapAdapter(await adapter.messaging.fetchDmThread({ withPersonUid: row.personUid, cursor, limit: 50, ...view })),
+            liveTimeline,
+          )
         : null;
     if (selectedRow?.id !== row.id || tenantGeneration !== generation || raw === null) return;
     recordHistoryPage(row, raw, cursor);
@@ -11215,7 +11454,10 @@
       const pinned = pinCompany(pinnedCompanyIds ?? [], result.companyUid);
       if (pinned.status === "pinned") setPinnedCompanies(pinned.ids);
     }
-    if (!result.companyUid) return;
+    if (!result.companyUid) {
+      answerWelcomeNewCompany(null);
+      return;
+    }
     if (result.invites.length > 0) {
       void sendCompanyInvites(
         conversationApi,
@@ -11226,6 +11468,12 @@
     const nextRecent = rememberCompanyId(companyRecentIds, result.companyUid);
     companyRecentIds = nextRecent;
     writeSettingsPrefs({ companyRecentIds: nextRecent });
+    if (!finishNavigatesToCompany(welcomeNewCompanyResolve != null)) {
+      // From a welcome report Connect: stay on the report. Do not open the company sidepane.
+      setTenantScope(result.companyUid);
+      answerWelcomeNewCompany(result.companyUid);
+      return;
+    }
     companyPaneOpen = true;
     changeTenantCompany(result.companyUid);
     void navigate(companyRowDestination("atlas", result.companyUid));
@@ -11266,13 +11514,16 @@
               createCompanyRequested = true;
               const uid = result.company.companyUid;
               const channelId = result.company.companyChannelId;
-              if (uid) changeTenantCompany(uid);
-              if (channelId) {
-                requestChannelOpen(channelId, {
-                  companyUid: uid,
-                  focusCardId: null,
-                  focusCardKind: null,
-                });
+              // Welcome Connect finishes on the report. Switching here would leave that page.
+              if (finishNavigatesToCompany(welcomeNewCompanyResolve != null)) {
+                if (uid) changeTenantCompany(uid);
+                if (channelId) {
+                  requestChannelOpen(channelId, {
+                    companyUid: uid,
+                    focusCardId: null,
+                    focusCardKind: null,
+                  });
+                }
               }
             }
             return result;
@@ -11704,7 +11955,37 @@
     pendingReplyRootId = null;
     pendingReplyForRowId = null;
     replyApplyInFlight = null;
-    void leaveCurrentDestination();
+    const row = selectedRow;
+    if (!row) {
+      openReplyRootId = null;
+      return;
+    }
+    // X and Escape both call this. Replace the open thread with the same
+    // conversation, then drop every earlier thread in that conversation.
+    // Going back would show the previous thread, so the sidebar looks stuck.
+    // The thread is captured now. If a newer thread wins before this
+    // navigation settles, the fallback must not overwrite it.
+    const closingThread = navigationHistory.current()?.destination ?? null;
+    const closed = destinationFromConversation(row, {
+      ...currentConversationNested(),
+      replyRootEventId: null,
+    });
+    openReplyRootId = null;
+    const settled = navigate(closed, "replace");
+    const finish = (result: { committed: boolean }): void => {
+      settleThreadSidebarClose(
+        navigationHistory,
+        closed,
+        result.committed,
+        closingThread,
+      );
+      syncNavigationChrome();
+    };
+    if (settled instanceof Promise) {
+      void settled.then(finish);
+      return;
+    }
+    finish(settled);
   }
 
   function queueReplyForRow(
@@ -12528,6 +12809,7 @@
         settingsSection = null;
         extraPageId = null;
         extraPageParam = null;
+        firstRunTimingLog(formatWelcomeNav("setup-checkout-link"));
         requestChannelOpen(SETUP_CHANNEL_ID, { companyUid: next.companyUid });
         const row = selectedRow;
         if (alreadySetup && row) void catchUpTimeline(row);
@@ -13314,9 +13596,11 @@
     }
     if (!res.ok) return;
     if (selectedRow?.id !== row.id) return;
-    const incoming = messagesForDisplay(res.value, timelineDisplayFor(row));
-    commitTimeline(row, mergeFetchedTimeline(liveTimeline, res.value, timelineDisplayFor(row)));
-    clearThinkingFromIncoming(thinkingRowsFrom(row, res.value, incoming), row.id);
+    const raw = await hydrateBotDmRoots(row, res.value, liveTimeline);
+    if (selectedRow?.id !== row.id) return;
+    const incoming = messagesForDisplay(raw, timelineDisplayFor(row));
+    commitTimeline(row, mergeFetchedTimeline(liveTimeline, raw, timelineDisplayFor(row)));
+    clearThinkingFromIncoming(thinkingRowsFrom(row, raw, incoming), row.id);
   }
 
   /**
@@ -13839,9 +14123,11 @@
   });
 
   async function signOutWithImageCleanup(): Promise<void> {
+    resetThreadComposerDrafts();
     navigation.clear();
     stopScrollRestore();
     pendingRestoreScroll = null;
+    forgetWelcomeReportSession();
     const cache = imagePreviewCache;
     await onsignout?.();
     clearAccountCaches();
@@ -14379,10 +14665,41 @@
    */
   onDestroy(installBadgeLoader(untrack(() => adapter.identity)));
 
+  const youSubject = $derived<BadgeSubject>({
+    kind: "person",
+    name: resolvedAccountLabel ?? "",
+    email: self?.email ?? null,
+    uid: self?.uid ?? null,
+  });
   /** Your earned badges, for the hover card on the rail's You button. */
-  const youBadges = $derived(
-    badgesFor({ kind: "person", name: resolvedAccountLabel ?? "", email: self?.email ?? null, uid: self?.uid ?? null }),
-  );
+  const youBadges = $derived(badgesFor(youSubject));
+
+  /**
+   * hq-accomplishment-badges US-016: the launch announcement, once, over the
+   * whole window, when the server has badges on for you (badge-launch.ts).
+   * It waits for first-run setup and the guided tour, which own the window.
+   */
+  let launchOpen = $state(false);
+  const youBadgesEnabled = $derived(badgesEnabledFor(youSubject));
+  $effect(() => {
+    const uid = self?.uid?.trim() || null;
+    const busy = launchOpen || visualFirstRunOpen || Boolean(tourStep);
+    const show = launchPreview()
+      ? !busy
+      : shouldShowLaunch({ uid, enabled: youBadgesEnabled, seen: uid ? hasSeenLaunch(uid) : true, busy });
+    if (!show) return;
+    const timer = window.setTimeout(() => (launchOpen = true), LAUNCH_OPEN_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  });
+  function closeLaunch(): void {
+    launchOpen = false;
+    if (launchPreview()) {
+      setLaunchPreview(false);
+      return;
+    }
+    const uid = self?.uid?.trim();
+    if (uid) markLaunchSeen(uid);
+  }
   /** The badge behind your tier mark, on your picture in the account menu. */
   const youTopBadge = $derived(topBadge(youBadges));
 
@@ -14506,6 +14823,13 @@
   function toggleNotifications(): void {
     notificationsPopoverOpen = !notificationsPopoverOpen;
   }
+
+  /**
+   * Local refetch trigger for the notifications feed, added to the mesh
+   * `notificationWakeSeq` so "Mark all read" in the titlebar popover reloads
+   * the Inbox view (and the titlebar dot) from the server.
+   */
+  let notificationRefreshSeq = $state(0);
 
   async function acceptCompanyInviteFromBell(
     item: NotificationItem,
@@ -15255,6 +15579,7 @@
     {cloudReachable}
     {cloudError}
     workspaces={syncWorkspaces}
+    {usageCompany}
     hqFolderPath={hqFolderPath ?? liveSync.hqFolderPath}
     watchedCount={watched}
     {unreadCount}
@@ -15292,6 +15617,9 @@
         onacceptcompany: acceptCompanyInviteFromBell,
         onclose: () => (notificationsPopoverOpen = false),
         onopen: openNotification,
+        onmarkedallread: () => {
+          notificationRefreshSeq += 1;
+        },
         onopensettings: () => {
           notificationsPopoverOpen = false;
           openSettings("notifications");
@@ -15367,7 +15695,10 @@
             .map((id) => railCompanyRoster.find((company) => company.uid === id)?.label ?? "")
             .filter(Boolean)
             .map((label) => label.slice(0, 2).toUpperCase()),
-          onclose: () => (newCompanyOpen = false),
+          onclose: () => {
+            newCompanyOpen = false;
+            answerWelcomeNewCompany(null);
+          },
           oncheckout: (url: string) => onopenurl?.(url),
           oncreate: createCompanyFromSheet,
           onfinish: finishNewCompany,
@@ -15685,6 +16016,9 @@
               preserveView: options?.automatic === true && view !== "conversation",
               automatic: options?.automatic === true,
             });
+            if (options?.automatic === true && isSetupChannel(row.channelId)) {
+              firstRunTimingLog(formatWelcomeNav(options.reason));
+            }
           }}
           oncompanyscopechange={changeTenantCompany}
           oncommand={() => (paletteOpen = true)}
@@ -15776,7 +16110,7 @@
         >
           <NotificationsView
             api={notificationsApi}
-            wakeSeq={notificationWakeSeq}
+            wakeSeq={notificationWakeSeq + notificationRefreshSeq}
             signedIn={Boolean(self)}
             onback={() => {
               void leaveCurrentDestination();
@@ -15915,6 +16249,7 @@
               messagePersonByUid(uid, { name, companyUid: companyPaneCompany?.uid });
             }}
             onaddbot={addAgentFromTeam}
+            {onopenurl}
           />
         {:else if railPlaceholder?.id === "activity" && companyPaneCompany}
           <ActivityRailHost
@@ -16037,8 +16372,12 @@
               onsetup={welcomeReportNeedsAssistant ? openWelcomeSetup : null}
               madeBy={welcomeMadeByLine}
               aiApps={welcomeAiApps}
+              theme={welcomeTheme}
+              session={welcomeConnectSession}
               blocked={welcomeReportBlocked}
               openTool={briefOpenToolAction}
+              openHarness={welcomeOpenHarness}
+              companies={railCompanyRoster.map((company) => ({ id: company.uid, name: company.label }))}
             >
               {@render briefPage(false)}
             </WelcomeReport>
@@ -16574,6 +16913,10 @@
               displayName={headerTitle}
               avatarUrl={avatarByUid[agentChannelUid] ?? null}
               companyUid={promotedBotCompany(localBotRecords, agentChannelUid) ?? selectedRow?.companyUid}
+              companySlug={companySlugForUid(
+                promotedBotCompany(localBotRecords, agentChannelUid) ?? selectedRow?.companyUid,
+              )}
+              {avatarByUid}
               {companyNames}
               {self}
               {isAdmin}
@@ -17082,7 +17425,7 @@
                 </div>
               {:else if openAgentMember && openLocalBot}
                 <div
-                  class="reply-column profile-column inspector-pane"
+                  class="reply-column profile-column inspector-pane bot-management-column"
                   class:overlay={narrowViewport}
                   data-testid="local-bot-detail-column"
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
@@ -17100,6 +17443,8 @@
                       runtimeKind: "local",
                       companyUid: profileCompanyUid,
                       agents: adapter.agents ?? null,
+                      adapter,
+                      onopenurl,
                       onclose: closeAgentDetail,
                       onmessage: () => messageMemberDirectly(openAgentMember!),
                     }}
@@ -17125,7 +17470,7 @@
                 </div>
               {:else if openAgentMember}
                 <div
-                  class="reply-column profile-column inspector-pane"
+                  class="reply-column profile-column inspector-pane bot-management-column"
                   class:overlay={narrowViewport}
                   data-testid="agent-detail-column"
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
@@ -17143,6 +17488,8 @@
                       runtimeKind: "cloud",
                       companyUid: promotedBotCompany(localBotRecords, openAgentMember.personUid) ?? profileCompanyUid,
                       agents: adapter.agents ?? null,
+                      adapter,
+                      onopenurl,
                       onclose: closeAgentDetail,
                       onmessage: () => messageMemberDirectly(openAgentMember!),
                     }}
@@ -17162,6 +17509,10 @@
                       null}
                     description={openAgentMember.description}
                     companyUid={promotedBotCompany(localBotRecords, openAgentMember.personUid) ?? selectedRow.companyUid}
+                    companySlug={companySlugForUid(
+                      promotedBotCompany(localBotRecords, openAgentMember.personUid) ?? selectedRow.companyUid,
+                    )}
+                    {avatarByUid}
                     {companyNames}
                     {self}
                     {isAdmin}
@@ -17263,6 +17614,7 @@
                     withPersonUid={selectedRow.personUid}
                     withPersonName={selectedRow.title}
                     channelName={selectedRow.kind === "channel" ? selectedRow.title : null}
+                    accountId={self?.uid ?? tenantAccountId ?? null}
                     companyUid={selectedRow.companyUid}
                     {seedRoot}
                     {wakes}
@@ -17359,6 +17711,18 @@
 
   {#if cheatSheetOpen}
     <ShortcutCheatSheet onclose={() => (cheatSheetOpen = false)} />
+  {/if}
+
+  {#if launchOpen}
+    <BadgeLaunchAnnouncement
+      badges={resolveEarned(youBadges)}
+      progress={badgeProgressFor(youSubject)}
+      onclose={closeLaunch}
+      onopenbadges={() => {
+        closeLaunch();
+        void openSelfProfile({ view: "badges" });
+      }}
+    />
   {/if}
 
   <!-- Visual first-run setup (desktop.visual-first-run). Over the whole window. -->
@@ -17760,6 +18124,12 @@
     flex: 0 0 340px;
     background: var(--v4-secondary-sidebar, var(--side-bg));
   }
+
+  .reply-column.inspector-pane.bot-management-column {
+    width: min(680px, 60%);
+    flex: 0 0 min(680px, 60%);
+  }
+  .reply-column.inspector-pane.bot-management-column.overlay { width: 100%; max-width: 680px; }
 
   /* First frame of a profile pane while its chunk loads (lazy-doors.ts). */
   .profile-pane-loading {

@@ -95,8 +95,8 @@ export function tourSteps(ctx: TourContext = {}): TourStep[] {
   return [
     {
       id: "setup-bot",
-      title: "Talk to your setup bot",
-      body: "It asks a few questions about your company and sets up HQ for you. Reply here any time.",
+      title: "Talk to your assistant",
+      body: "It asks a few questions about your company and finishes setting up HQ for you. Reply here any time.",
       targets: setupTargets,
       placement: "top",
       onEnter: "none",

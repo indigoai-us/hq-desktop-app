@@ -89,7 +89,8 @@
     transform: translateX(-50%);
     box-sizing: border-box; width: max-content; max-width: 180px; padding: 6px 9px;
     border: 1px solid var(--panel-border, var(--line2)); border-radius: 7px;
-    background: var(--overlay-bg, var(--v4-popover, var(--v4-surface-solid)));
+    /* Solid at every window-transparency setting: it sits over other badges. */
+    background: var(--overlay-bg-solid, var(--overlay-bg, var(--v4-popover, var(--v4-surface-solid))));
     box-shadow: var(--panel-shadow, 0 4px 12px rgba(0, 0, 0, 0.22));
     color: var(--v4-text-1); font: 400 12px/1.4 var(--font-ui, var(--font-sans)); text-align: left;
     opacity: 0; visibility: hidden; pointer-events: none;

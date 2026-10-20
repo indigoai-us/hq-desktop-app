@@ -12,6 +12,9 @@ export * from "./library-shelf.js";
 export * from "./plan-limit.js";
 // Plain-language API error copy (QA-080).
 export * from "./api-error.js";
+// Local test bridge for cloud bots' personal apps (dev builds only).
+export * from "./personal-apps-bridge.js";
+export * from "./personal-apps.js";
 export {
   CLAUDE_PROVIDER_FLAG,
   COMPANY_NAME_PREFILL_FLAG,
@@ -48,6 +51,7 @@ export {
   getHqAnywherePersonSetting,
   hqAnywhereRuntimeEnabled,
   isHqAnywhereSetupPending,
+  hqAnywhereGlobalRuntimeAllowed,
   putHqAnywherePersonSetting,
   retryHqAnywhereRequest,
   setHqAnywhereGlobalRuntime,

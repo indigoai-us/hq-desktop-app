@@ -12,6 +12,9 @@ import {
   MeshClient,
   PresenceStore,
   createWebCredentialProvider,
+  fetchWorkFeedPages,
+  isWorkFeedPath,
+  workFeedPagePath,
   type PresenceSnapshot,
 } from '@hq/core';
 import {
@@ -48,6 +51,51 @@ export interface DesktopMeshPresenceHandle {
 }
 
 /**
+ * REST fetcher for MeshClient wakes over the native hq-pro fetch seam.
+ * GET /v1/work-mesh/work is read across every page (hq-pro #5004).
+ */
+export function createDesktopReconcileFetcher(
+  fetchImpl: FetchLike,
+): (route: { path: string }, cursor?: string) => Promise<{ state: unknown; cursor?: string }> {
+  return async (route, cursor) => {
+    const fetchJson = async (path: string): Promise<unknown> => {
+      const res = await fetchImpl(path);
+      if (!res.ok) {
+        throw new Error(`reconcile ${route.path} failed (${res.status})`);
+      }
+      return res.json().catch((error: unknown) => {
+        // Name only. A JSON parse message can quote the response body.
+        console.warn(
+          'mesh presence reconcile body was not JSON',
+          error instanceof Error ? error.name : typeof error,
+        );
+        return null;
+      });
+    };
+    const cursorOf = (state: unknown): string | undefined => {
+      const rec =
+        state && typeof state === 'object'
+          ? (state as { cursor?: unknown })
+          : null;
+      return typeof rec?.cursor === 'string' ? rec.cursor : undefined;
+    };
+    if (isWorkFeedPath(route.path)) {
+      // GET /v1/work-mesh/work pages large feeds (hq-pro #5004). A
+      // later-page failure throws and a capped walk keeps the old cursor, so
+      // the sync cursor never moves past rows that were not read.
+      const { state, truncated } = await fetchWorkFeedPages((pageCursor) =>
+        fetchJson(workFeedPagePath(route.path, cursor, pageCursor)),
+      );
+      return { state, cursor: truncated ? undefined : cursorOf(state) };
+    }
+    const url = new URL(route.path, 'http://local.invalid');
+    if (cursor) url.searchParams.set('cursor', cursor);
+    const state = await fetchJson(`${url.pathname}${url.search}`);
+    return { state, cursor: cursorOf(state) };
+  };
+}
+
+/**
  * Start MeshClient for the embedded desktop shell and wire presence onto the
  * shared chat bus + runes snapshot.
  */
@@ -62,31 +110,7 @@ export function startDesktopMeshPresence(
       url: opts.credentialsUrl ?? '/v1/realtime/credentials',
       fetchImpl: fetchImpl as never,
     }),
-    fetcher: async (route, cursor) => {
-      const url = new URL(route.path, 'http://local.invalid');
-      if (cursor) url.searchParams.set('cursor', cursor);
-      const path = `${url.pathname}${url.search}`;
-      const res = await fetchImpl(path);
-      if (!res.ok) {
-        throw new Error(`reconcile ${route.path} failed (${res.status})`);
-      }
-      const state = await res.json().catch((error: unknown) => {
-        // Name only. A JSON parse message can quote the response body.
-        console.warn(
-          'mesh presence reconcile body was not JSON',
-          error instanceof Error ? error.name : typeof error,
-        );
-        return null;
-      });
-      const rec =
-        state && typeof state === 'object'
-          ? (state as { cursor?: unknown })
-          : null;
-      return {
-        state,
-        cursor: typeof rec?.cursor === 'string' ? rec.cursor : undefined,
-      };
-    },
+    fetcher: createDesktopReconcileFetcher(fetchImpl),
     presenceStore,
     liveReadStore,
   });

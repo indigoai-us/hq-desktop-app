@@ -77,6 +77,19 @@ export async function hqAnywhereRuntimeEnabled(
   }
 }
 
+/** HQ Anywhere is GA; only a configured, explicitly false flag kills the runtime. */
+export async function hqAnywhereGlobalRuntimeAllowed(
+  identity: IdentityApi,
+): Promise<boolean> {
+  try {
+    const result = await identity.resolveFeatureFlagStatus?.(HQ_ANYWHERE_RUNTIME_FLAG);
+    return !(result?.ok === true && result.value.configured === true && result.value.enabled === false);
+  } catch (error) {
+    console.warn("[hq-anywhere] runtime flag lookup failed:", error);
+    return true;
+  }
+}
+
 /** Retry one person-setting request, preserving the final adapter failure for diagnostics. */
 export async function retryHqAnywhereRequest<T>(
   request: () => AdapterPromise<T>,
@@ -143,7 +156,7 @@ export async function setHqAnywhereGlobalRuntime(
   enabled: boolean,
   options?: HqAnywhereGlobalRuntimeOptions,
 ): Promise<AdapterResult<void>> {
-  if (!(await hqAnywhereRuntimeEnabled(identity))) {
+  if (!(await hqAnywhereGlobalRuntimeAllowed(identity))) {
     publishGlobalRuntimeStatus(IDLE_RUNTIME_STATUS);
     return ok(undefined);
   }
@@ -153,7 +166,9 @@ export async function setHqAnywhereGlobalRuntime(
   try {
     result = settings.syncHqAnywhereGlobal
       ? await retryHqAnywhereRequest(
-          () => settings.syncHqAnywhereGlobal!(enabled, explicit),
+          async () => (await hqAnywhereGlobalRuntimeAllowed(identity))
+            ? settings.syncHqAnywhereGlobal!(enabled, explicit)
+            : ok(undefined),
           options,
         )
       : unavailable("hq-anywhere-global-runtime-unavailable");
@@ -173,20 +188,24 @@ export async function setHqAnywhereGlobalRuntime(
   return result;
 }
 
-/** Reconcile the local setup after sign-in without changing a saved opt-out. */
+/** Launch reconciliation installs opted-in runtimes; it never removes a manual setup. */
 export async function ensureHqAnywhereGlobalRuntime(
   identity: IdentityApi,
   settings: SettingsApi,
   options?: HqAnywhereRetryOptions,
 ): Promise<AdapterResult<void>> {
-  if (!(await hqAnywhereRuntimeEnabled(identity))) return ok(undefined);
+  if (!(await hqAnywhereGlobalRuntimeAllowed(identity))) return ok(undefined);
   publishGlobalRuntimeStatus({ state: "running", enabled: null, explicit: false });
   const setting = await getHqAnywherePersonSetting(settings, options);
   if (!setting.ok) {
     publishGlobalRuntimeStatus({ state: "failed", enabled: null, explicit: false });
     return setting;
   }
-  return setHqAnywhereGlobalRuntime(identity, settings, setting.value, {
+  if (!setting.value) {
+    publishGlobalRuntimeStatus(IDLE_RUNTIME_STATUS);
+    return ok(undefined);
+  }
+  return setHqAnywhereGlobalRuntime(identity, settings, true, {
     pause: options?.pause,
     explicit: false,
   });

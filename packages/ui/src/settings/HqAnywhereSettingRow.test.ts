@@ -15,6 +15,7 @@ type ResolveFeatureFlag = NonNullable<PlatformAdapter["identity"]["resolveFeatur
 type SubscribeFeature = NonNullable<PlatformAdapter["identity"]["subscribeFeature"]>;
 
 function createAdapter(options: {
+  signedIn?: boolean;
   enabled?: boolean;
   configured?: boolean;
   resolveFlag?: ResolveFeatureFlag;
@@ -38,12 +39,13 @@ function createAdapter(options: {
       (async () => ok({ enabled: options.enabled ?? true, configured: options.configured ?? true })),
   );
   const adapter = {
-    identity: { resolveFeatureFlagStatus, subscribeFeature: options.subscribeFeature },
-    settings: {
-      getHqAnywherePersonSetting,
-      putHqAnywherePersonSetting,
-      syncHqAnywhereGlobal,
+    identity: {
+      whoami: vi.fn(async () => options.signedIn === false
+        ? failure("unauthenticated", "Not signed in")
+        : ok({ personUid: "prs_test", email: "person@example.test" })),
+      resolveFeatureFlagStatus, subscribeFeature: options.subscribeFeature,
     },
+    settings: { getHqAnywherePersonSetting, putHqAnywherePersonSetting, syncHqAnywhereGlobal },
   } as unknown as PlatformAdapter;
   return {
     adapter,
@@ -78,12 +80,30 @@ const toggle = () =>
   host.querySelector<HTMLButtonElement>('[data-testid="hq-anywhere-setting-toggle"]');
 
 describe("Settings > HQ Anywhere", () => {
+  it.each(["missing", "failed", "true"])("shows an operable switch for a %s flag", async (state) => {
+    const { adapter } = createAdapter({ resolveFlag: async () => {
+      if (state === "failed") throw new Error("flag lookup failed");
+      return ok({ enabled: state === "true", configured: state !== "missing" });
+    } });
+    render(adapter);
+    await vi.waitFor(() => expect(toggle()?.disabled).toBe(false));
+  });
+
   it("hides the row when the adapter has no identity capability", async () => {
     const adapterWithoutIdentity = { settings: {} } as unknown as PlatformAdapter;
     render(adapterWithoutIdentity);
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(host.querySelector('[data-testid="hq-anywhere-setting-row"]')).toBeNull();
+  });
+
+  it("hides the row and never reads settings or installs while signed out", async () => {
+    const { adapter, getHqAnywherePersonSetting, syncHqAnywhereGlobal } = createAdapter({ signedIn: false });
+    render(adapter);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(toggle()).toBeNull();
+    expect(getHqAnywherePersonSetting).not.toHaveBeenCalled();
+    expect(syncHqAnywhereGlobal).not.toHaveBeenCalled();
   });
 
   it("loads the signed-in person's current setting", async () => {
@@ -248,7 +268,7 @@ describe("Settings > HQ Anywhere", () => {
     const syncRuntime = vi.fn<(enabled: boolean, explicit?: boolean) => Promise<AdapterResult<void>>>(
       async () => failure("network", "raw startup setup detail"),
     );
-    const { adapter } = createAdapter({ initialValue: false, syncRuntime });
+    const { adapter } = createAdapter({ initialValue: true, syncRuntime });
     render(adapter);
     await vi.waitFor(() => expect(toggle()?.disabled).toBe(false));
 
@@ -261,7 +281,7 @@ describe("Settings > HQ Anywhere", () => {
     syncRuntime.mockResolvedValue(ok(undefined));
     host.querySelector<HTMLButtonElement>('[data-testid="hq-anywhere-setting-retry"]')!.click();
     await vi.waitFor(() => expect(syncRuntime).toHaveBeenCalledTimes(4));
-    expect(syncRuntime).toHaveBeenLastCalledWith(false, false);
+    expect(syncRuntime).toHaveBeenLastCalledWith(true, false);
   });
 
   it("shows one unavailable line and skips every setting call when the kill switch is explicitly false", async () => {

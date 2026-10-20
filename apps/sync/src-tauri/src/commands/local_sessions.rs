@@ -80,6 +80,10 @@ pub struct LocalScan {
     pub sources: Vec<ScanOutcome>,
     pub truncated: bool,
     pub elapsed_ms: u64,
+    /// Distinct UTC days with at least one session, across every tool.
+    pub days_seen: u32,
+    /// Milliseconds since the epoch of the oldest session; null with none.
+    pub first_active_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -92,6 +96,10 @@ pub struct ToolSessions {
     pub last_active_at: Option<u64>,
     /// This tool's part of all sessions in the last 30 days, 0..=1.
     pub share_last_30d: f64,
+    /// Distinct UTC days with at least one session of this tool.
+    pub days_seen: u32,
+    /// Milliseconds since the epoch of the oldest session; null with none.
+    pub first_active_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -384,7 +392,16 @@ fn tool_sessions(tool: &'static str, times: &[u64], recent_since: u64, recent_al
         sessions_last_30d: recent,
         last_active_at: times.iter().copied().max(),
         share_last_30d: share,
+        days_seen: days_seen(times.iter().copied()),
+        first_active_at: times.iter().copied().min(),
     }
+}
+
+const DAY_MS: u64 = 86_400_000;
+
+/// Distinct UTC days among session file times (ms since the epoch).
+fn days_seen(times: impl Iterator<Item = u64>) -> u32 {
+    count(times.map(|t| t / DAY_MS).collect::<BTreeSet<u64>>().len())
 }
 
 fn count(n: usize) -> u32 {
@@ -488,6 +505,8 @@ pub fn scan_local_sessions_in(roots: &SessionRoots, now: SystemTime, limit: Dura
         sources,
         truncated: budget.spent || apps_cut,
         elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        days_seen: days_seen(claude.times.iter().chain(codex.times.iter()).copied()),
+        first_active_at: claude.times.iter().chain(codex.times.iter()).copied().min(),
     }
 }
 
@@ -544,6 +563,8 @@ fn empty_scan(outcome: &'static str, elapsed_ms: u64) -> LocalScan {
             .collect(),
         truncated: false,
         elapsed_ms,
+        days_seen: 0,
+        first_active_at: None,
     }
 }
 
@@ -875,5 +896,30 @@ mod tests {
         assert!(text.contains("repos=read:1"));
         assert!(!text.contains("secret-project") && !text.contains("private-repo"));
         assert!(!text.contains(&home(&m).to_string_lossy().into_owned()));
+    }
+
+    #[test]
+    fn local_sessions_days_seen_and_first_active_at_come_from_session_file_times() {
+        let m = machine();
+        // Two Claude sessions on one day, one three days back; Codex shares
+        // that day and adds one ten days back.
+        claude_sessions(&m, "-work-a", &[0, 0, 3]);
+        codex_sessions(&m, &[3, 10]);
+        let scan = scan(&m);
+        let claude = tool(&scan, "claude-code");
+        assert_eq!(claude.days_seen, 2);
+        assert_eq!(claude.first_active_at, to_ms(now() - DAY * 3));
+        let codex = tool(&scan, "codex");
+        assert_eq!(codex.days_seen, 2);
+        assert_eq!(codex.first_active_at, to_ms(now() - DAY * 10));
+        // The scan's days are the union across tools: today, 3 and 10 days back.
+        assert_eq!(scan.days_seen, 3);
+        assert_eq!(scan.first_active_at, to_ms(now() - DAY * 10));
+        assert_no_content(&scan);
+
+        let empty = scan_local_sessions_in(&machine().roots, now(), SCAN_BUDGET);
+        assert_eq!((empty.days_seen, empty.first_active_at), (0, None));
+        assert_eq!((tool(&empty, "codex").days_seen, tool(&empty, "codex").first_active_at), (0, None));
+        assert_eq!((empty_scan("missing", 0).days_seen, empty_scan("missing", 0).first_active_at), (0, None));
     }
 }

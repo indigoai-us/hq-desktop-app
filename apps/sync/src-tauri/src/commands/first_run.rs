@@ -35,7 +35,7 @@ use crate::util::{logfile::log, paths};
 pub use hq_desktop_core::first_run::{
     classify_from_map, classify_from_menubar_read, ensure_install_attempt_id, merge_menubar_flags,
     notice_shown_in_map, read_menubar, read_menubar_obj, should_autoshow_on_launch,
-    should_sync_after_first_run_handoff, LaunchKind, MenubarRead,
+    should_open_desktop_on_launch, should_sync_after_first_run_handoff, LaunchKind, MenubarRead,
 };
 
 pub const FIRST_LAUNCH_SYNC_FLAG: &str = "desktop.first-launch-sync-v1";
@@ -165,6 +165,10 @@ pub fn classify_launch<R: Runtime>(app: &AppHandle<R>) -> LaunchKind {
         // first-run write against an unknown settings location.
         Err(_) => LaunchKind::Normal,
     };
+    // Publish the same verdict process-wide so the HQ root resolver treats a
+    // fresh install as onboarding even after `ensure_machine_id` writes
+    // `machineId` later in `.setup()`.
+    hq_desktop_core::first_run::set_setup_launch_kind(kind);
     // Mint and persist the stable join key before onboarding can emit setup or
     // sign-in telemetry, but only when the initial read proved that settings
     // are absent or valid JSON. A damaged existing settings file must remain
@@ -383,10 +387,22 @@ pub async fn show_main_window_at_tray(
             return;
         }
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        if let Err(error) = crate::commands::sync::start_sync_with_trigger(
-            handle,
-            None,
-            crate::commands::cdp_mirror::SyncTrigger::First,
+        // One budget across both waits, so a retry never doubles it.
+        let deadline = tokio::time::Instant::now() + FIRST_LAUNCH_NODE_INSTALL_WAIT;
+        if let Err(error) = start_first_launch_sync_after_node_install(
+            |report_ended| {
+                crate::commands::install_queue::wait_for_node_install(
+                    deadline.saturating_duration_since(tokio::time::Instant::now()),
+                    report_ended,
+                )
+            },
+            || {
+                crate::commands::sync::start_sync_with_trigger(
+                    handle.clone(),
+                    None,
+                    crate::commands::cdp_mirror::SyncTrigger::First,
+                )
+            },
         )
         .await
         {
@@ -398,6 +414,57 @@ pub async fn show_main_window_at_tray(
         }
     });
     Ok(())
+}
+
+/// How long the first-launch sync waits for a Node install the background
+/// install queue is already running. The same 180 s as the first-launch npm
+/// cache wait.
+const FIRST_LAUNCH_NODE_INSTALL_WAIT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// Start the first-launch sync without racing the install queue's Node
+/// install. While that install runs, `start_sync` would find no Node, decline
+/// to start a second install beside it, and give up with
+/// `NODE_PROVISIONING_DEFERRED_MESSAGE`. So wait for the install first, and if
+/// the start still loses that race (the install began after the first check),
+/// wait and start once more. A failed install is returned as the same error
+/// `start_sync` gives for a failed Node install.
+///
+/// `wait_for_node_install(report_ended)` is
+/// [`crate::commands::install_queue::wait_for_node_install`] with the budget
+/// bound in.
+async fn start_first_launch_sync_after_node_install<W, WF, S, SF>(
+    wait_for_node_install: W,
+    start_sync: S,
+) -> Result<(), String>
+where
+    W: Fn(bool) -> WF,
+    WF: std::future::Future<Output = crate::commands::install_queue::NodeInstall>,
+    S: Fn() -> SF,
+    SF: std::future::Future<Output = Result<String, String>>,
+{
+    use crate::commands::install_queue::NodeInstall;
+    use crate::commands::sync::{
+        unprovisioned_node_repair_failed_message, NODE_PROVISIONING_DEFERRED_MESSAGE,
+    };
+
+    // Only an install that fails while we wait is reported here. One that
+    // failed earlier leaves `start_sync` free to try its own install.
+    if let NodeInstall::Failed(reason) = wait_for_node_install(false).await {
+        return Err(unprovisioned_node_repair_failed_message(&reason));
+    }
+    match start_sync().await {
+        Ok(_) => Ok(()),
+        Err(error) if error == NODE_PROVISIONING_DEFERRED_MESSAGE => {
+            match wait_for_node_install(true).await {
+                NodeInstall::Finished => start_sync().await.map(|_| ()),
+                NodeInstall::Failed(reason) => {
+                    Err(unprovisioned_node_repair_failed_message(&reason))
+                }
+                NodeInstall::NotRunning | NodeInstall::Running => Err(error),
+            }
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Mark the one-time auto-sync notice as shown for an updating user. Also sets
@@ -418,6 +485,146 @@ pub fn mark_auto_sync_notice_shown() -> Result<(), String> {
 #[cfg(test)]
 mod first_launch_sync_start_capture_tests {
     use super::*;
+
+    mod node_install_wait {
+        use super::*;
+        use crate::commands::install_queue::NodeInstall;
+        use crate::commands::sync::{
+            unprovisioned_node_repair_failed_message, NODE_PROVISIONING_DEFERRED_MESSAGE,
+        };
+        use std::collections::VecDeque;
+        use std::sync::{Arc, Mutex};
+
+        /// Scripted queue answers and start results, with a call log.
+        #[derive(Clone)]
+        struct Script {
+            waits: Arc<Mutex<VecDeque<NodeInstall>>>,
+            starts: Arc<Mutex<VecDeque<Result<String, String>>>>,
+            calls: Arc<Mutex<Vec<&'static str>>>,
+        }
+
+        impl Script {
+            fn new(waits: Vec<NodeInstall>, starts: Vec<Result<String, String>>) -> Self {
+                Self {
+                    waits: Arc::new(Mutex::new(waits.into())),
+                    starts: Arc::new(Mutex::new(starts.into())),
+                    calls: Arc::new(Mutex::new(Vec::new())),
+                }
+            }
+
+            async fn run(&self) -> Result<(), String> {
+                let wait = self.clone();
+                let start = self.clone();
+                start_first_launch_sync_after_node_install(
+                    move |report_ended| {
+                        let script = wait.clone();
+                        async move {
+                            script
+                                .calls
+                                .lock()
+                                .unwrap()
+                                .push(if report_ended { "wait-after-deferral" } else { "wait" });
+                            script.waits.lock().unwrap().pop_front().unwrap_or(NodeInstall::NotRunning)
+                        }
+                    },
+                    move || {
+                        let script = start.clone();
+                        async move {
+                            script.calls.lock().unwrap().push("start");
+                            script
+                                .starts
+                                .lock()
+                                .unwrap()
+                                .pop_front()
+                                .expect("start_sync called more often than scripted")
+                        }
+                    },
+                )
+                .await
+            }
+
+            fn calls(&self) -> Vec<&'static str> {
+                self.calls.lock().unwrap().clone()
+            }
+        }
+
+        fn deferred() -> Result<String, String> {
+            Err(NODE_PROVISIONING_DEFERRED_MESSAGE.to_string())
+        }
+
+        #[tokio::test]
+        async fn a_node_install_in_flight_makes_the_sync_wait_then_start() {
+            let script = Script::new(vec![NodeInstall::Finished], vec![Ok("hq-sync".to_string())]);
+            assert_eq!(script.run().await, Ok(()));
+            assert_eq!(script.calls(), vec!["wait", "start"]);
+        }
+
+        #[tokio::test]
+        async fn a_start_that_still_loses_the_race_waits_and_starts_once_more() {
+            // The queue started Node after the first check: the first start
+            // bails as deferred, the second wait sees the install end.
+            let script = Script::new(
+                vec![NodeInstall::NotRunning, NodeInstall::Finished],
+                vec![deferred(), Ok("hq-sync".to_string())],
+            );
+            assert_eq!(script.run().await, Ok(()));
+            assert_eq!(script.calls(), vec!["wait", "start", "wait-after-deferral", "start"]);
+        }
+
+        #[tokio::test]
+        async fn a_failed_node_install_reports_the_existing_error_without_starting() {
+            let script = Script::new(
+                vec![NodeInstall::Failed("download failed".to_string())],
+                vec![],
+            );
+            assert_eq!(
+                script.run().await,
+                Err(unprovisioned_node_repair_failed_message("download failed"))
+            );
+            assert_eq!(script.calls(), vec!["wait"], "no sync starts on a failed install");
+
+            let late = Script::new(
+                vec![NodeInstall::NotRunning, NodeInstall::Failed("no disk".to_string())],
+                vec![deferred()],
+            );
+            assert_eq!(
+                late.run().await,
+                Err(unprovisioned_node_repair_failed_message("no disk"))
+            );
+            assert_eq!(late.calls(), vec!["wait", "start", "wait-after-deferral"]);
+        }
+
+        #[tokio::test]
+        async fn no_queue_install_keeps_the_single_start_and_its_error() {
+            let script = Script::new(vec![NodeInstall::NotRunning], vec![Ok("hq-sync".to_string())]);
+            assert_eq!(script.run().await, Ok(()));
+            assert_eq!(script.calls(), vec!["wait", "start"]);
+
+            // Deferred by some other lane with no queue install to wait for:
+            // the existing error, with no second start.
+            let other_lane =
+                Script::new(vec![NodeInstall::NotRunning, NodeInstall::NotRunning], vec![deferred()]);
+            assert_eq!(other_lane.run().await, deferred().map(|_| ()));
+            assert_eq!(other_lane.calls(), vec!["wait", "start", "wait-after-deferral"]);
+
+            // An unrelated start error is returned as is, without waiting again.
+            let busy = Script::new(vec![NodeInstall::NotRunning], vec![Err("Sync is already running".into())]);
+            assert_eq!(busy.run().await, Err("Sync is already running".to_string()));
+            assert_eq!(busy.calls(), vec!["wait", "start"]);
+        }
+
+        #[tokio::test]
+        async fn a_wait_that_runs_out_still_tries_one_start() {
+            // The budget ended with the install still running. One start
+            // reports whatever state the runtime is in; no retry loop.
+            let script = Script::new(
+                vec![NodeInstall::Running, NodeInstall::Running],
+                vec![deferred()],
+            );
+            assert_eq!(script.run().await, deferred().map(|_| ()));
+            assert_eq!(script.calls(), vec!["wait", "start", "wait-after-deferral"]);
+        }
+    }
 
     #[test]
     fn first_launch_sync_start_failure_is_captured_with_bounded_content() {

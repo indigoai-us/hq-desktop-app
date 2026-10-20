@@ -81,12 +81,12 @@ describe("badge collection", () => {
   it("groups every badge by tier, highest first, earned before locked", () => {
     const groups = badgeCollection(EARNED, PROGRESS);
     expect(groups.map((g) => [g.label, g.earned, g.tiles.length])).toEqual([
-      ["Legendary", 0, 3],
+      ["Legendary", 0, 4],
       ["Gold", 2, 3],
       ["Silver", 1, 1],
       ["Bronze", 1, 12],
     ]);
-    expect(groups.flatMap((g) => g.tiles).length).toBe(19);
+    expect(groups.flatMap((g) => g.tiles).length).toBe(20);
     const bronze = groups[3].tiles;
     expect(bronze[0]).toMatchObject({ def: { id: "connector" }, earned: { tier: 1 } });
     expect(bronze.slice(1).every((t) => t.earned === null)).toBe(true);
@@ -102,9 +102,9 @@ describe("BadgesPane", () => {
   it("shows earned marks and locked outlines with criteria and progress, grouped by tier", async () => {
     mounted.push(mount(BadgesPane, { target: host, props: { badges: EARNED, progress: PROGRESS, owner: "Maya Chen" } }));
     await settle();
-    expect(host.querySelector('[data-testid="badges-pane-summary"]')?.textContent).toBe("4 of 19 earned");
+    expect(host.querySelector('[data-testid="badges-pane-summary"]')?.textContent).toBe("4 of 20 earned");
     expect([...host.querySelectorAll('[data-testid="badges-group"] .k')].map((k) => k.textContent?.replace(/\s+/g, " ").trim())).toEqual([
-      "Legendary 0/3",
+      "Legendary 0/4",
       "Gold 2/3",
       "Silver 1/1",
       "Bronze 1/12",
@@ -119,7 +119,8 @@ describe("BadgesPane", () => {
     expect(card?.getAttribute("role")).toBe("tooltip");
     expect(card?.textContent).toBe("Different skills used");
     expect(toolbox.querySelector('[data-testid="badges-progress"]')?.textContent).toBe("3 of 5 skills");
-    expect(toolbox.querySelector("canvas")?.getAttribute("aria-label") ?? toolbox.querySelector("[aria-label]")?.getAttribute("aria-label")).toContain("not earned yet");
+    expect(toolbox.querySelector('[role="img"]')?.getAttribute("aria-label")).toContain("not earned yet");
+    expect(toolbox.querySelector('[role="img"] svg[data-badge="toolbox"]')).not.toBeNull();
     const liftoff = host.querySelector('[data-testid="badges-tile"][data-badge-id="liftoff"]') as HTMLButtonElement;
     expect(liftoff.getAttribute("data-state")).toBe("earned");
     expect(liftoff.textContent).toContain("Silver");
@@ -148,27 +149,26 @@ describe("BadgesPane", () => {
     expect(src).toMatch(/\.link \{[^}]*font: 400 12px\/1\.4 var\(--font-ui[^}]*letter-spacing: normal; text-transform: none;/);
   });
 
-  it("is one view: no tabs, and an earned badge opens its card on the stage", async () => {
-    mounted.push(mount(BadgesPane, { target: host, props: { badges: EARNED, owner: "Maya Chen" } }));
+  // A badge here opened its holographic card straight away, skipping its
+  // levels; it now opens the badge's details, where "View card" shows the
+  // card (owner review 2026-10-16).
+  it("is one view: no tabs, and an earned badge opens its details, not the card", async () => {
+    const opened: string[] = [];
+    mounted.push(mount(BadgesPane, { target: host, props: { badges: EARNED, owner: "Maya Chen", onselect: (b) => opened.push(`${b.def.id}:${b.tier}`) } }));
     await settle();
     expect(host.querySelector('[role="tablist"]')).toBeNull();
     expect(host.querySelector('[data-testid="badges-binder"]')).toBeNull();
     const founding = host.querySelector('[data-testid="badges-tile"][data-badge-id="founding"]') as HTMLButtonElement;
-    expect(founding.getAttribute("aria-label")).toBe("Open the Founding Member card, Gold");
+    expect(founding.getAttribute("aria-label")).toBe("Open Founding Member, Gold");
     founding.click();
     await settle();
-    const modal = document.querySelector('[data-testid="badge-card-modal"]')!;
-    expect(modal.querySelector('[role="img"]')?.getAttribute("aria-label")).toContain("Founding Member card, Gold");
-    expect(host.querySelector('[data-testid="badge-detail-pane"]')).toBeNull();
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
-    await settle();
+    expect(opened).toEqual(["founding:3"]);
     expect(document.querySelector('[data-testid="badge-card-modal"]')).toBeNull();
-    expect(document.activeElement).toBe(founding);
   });
 });
 
 describe("See all on a profile", () => {
-  it("opens the Badges page in the pane; a badge opens its card, and Back returns to the profile", async () => {
+  it("opens the Badges page in the pane; a badge opens its details, and Back returns to the profile", async () => {
     setBadgeSource(() => EARNED);
     setBadgeProgressSource(() => PROGRESS);
     mounted.push(mount(ProfilePaneHost, { target: host, props: { kind: "person", name: "Maya Chen", company: "Indigo" } }));
@@ -182,12 +182,20 @@ describe("See all on a profile", () => {
     expect(host.querySelector('[data-testid="badges-pane"]')?.getAttribute("aria-label")).toBe("Maya Chen's badges");
     expect(host.querySelector('[data-testid="badges-progress"]')).not.toBeNull();
 
-    // A badge here opens its card on the stage; the page stays behind it.
+    // A badge here opens its details with its levels, not the card; "View
+    // card" there opens the card, and Back returns to the Badges page.
     click('[data-testid="badges-tile"][data-badge-id="poweruser"]');
     await settle();
+    expect(document.querySelector('[data-testid="badge-card-modal"]')).toBeNull();
+    expect(host.querySelector('[data-testid="badge-detail-pane"]')?.getAttribute("aria-label")).toBe("Power User badge");
+    expect(host.querySelectorAll('[data-testid="badge-level"]').length).toBeGreaterThan(0);
+    expect(host.querySelector('[data-testid="badge-detail-back"]')?.getAttribute("aria-label")).toBe("Back to badges");
+    click('[data-testid="badge-detail-view-card"]');
+    await settle();
     expect(document.querySelector('[data-testid="badge-card-modal"]')).not.toBeNull();
-    expect(host.querySelector('[data-testid="badge-detail-pane"]')).toBeNull();
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await settle();
+    click('[data-testid="badge-detail-back"]');
     await settle();
     expect(host.querySelector('[data-testid="badges-pane"]')).not.toBeNull();
 
@@ -206,7 +214,7 @@ describe("See all on a profile", () => {
     await settle();
     click('[data-testid="profile-badges-all"]');
     await settle();
-    expect(host.querySelector('[data-testid="badges-pane-summary"]')?.textContent).toBe("1 of 19 earned");
+    expect(host.querySelector('[data-testid="badges-pane-summary"]')?.textContent).toBe("1 of 20 earned");
   });
 
   it("shows nothing in production, where there is no source", async () => {

@@ -1,8 +1,10 @@
 <script lang="ts">
   /**
-   * The run's activity under the sunrise: proof of life and what the bot
-   * found. Done items carry a check, the running item pulses, skipped items
-   * are dim, failed ones amber with their reason. New items slide in; the
+   * The run's activity on the sunrise field: proof of life and what the bot
+   * found. Each row leads with one pixel cell, as the strip under it: lit for
+   * done, beating for the running item, faint for skipped, the page's one
+   * accent for failed, with the label alone. A detail shows only on other
+   * rows, and only as one short plain line (`shownDetail`). New items slide in; the
    * last few stay visible and older ones fade. Below: elapsed time, the usual
    * duration once there are two past runs, and a calm "Still working on …"
    * line when status.json has been quiet for 90 seconds. After 20 seconds
@@ -11,7 +13,7 @@
    * height so the elapsed line never jumps.
    */
   import { fly } from "svelte/transition";
-  import type { BriefActivity } from "./brief-runs.js";
+  import { shownDetail, type BriefActivity } from "./brief-runs.js";
 
   interface Props {
     activity: readonly BriefActivity[];
@@ -28,10 +30,13 @@
 </script>
 
 <div class="act" data-testid="brief-activity" style:--rows={visible}>
+  <!-- One row: the status on the left (it truncates first), the elapsed time on the right of its last line. -->
+  <div class="status-row" data-testid="brief-status-row">
   {#if shown.length}
     <ul>
       {#each shown as a, i (`${a.at}|${a.label}`)}
         {@const idleHere = !!idle && i === shown.length - 1}
+        {@const detail = shownDetail(a)}
         <li
           class={a.state}
           style:opacity={Math.max(0.35, 1 - (shown.length - 1 - i) * 0.16)}
@@ -40,32 +45,57 @@
           in:fly={{ y: reduced ? 0 : 8, duration: reduced ? 0 : 260 }}
         >
           <span class="mark" aria-hidden="true">
-            {#if a.state === "done" && !idleHere}✓{:else if a.state === "failed"}!{:else if a.state === "skipped"}–{:else}<span class="pulse"></span>{/if}
+            {#if (a.state === "done" && !idleHere) || a.state === "failed" || a.state === "skipped"}<span class="cell"></span>{:else}<span class="cell pulse"></span>{/if}
           </span>
-          <span class="lbl">{a.label}{#if a.detail}{" "}<span class="det">· {a.detail}</span>{/if}{#if idleHere}{" "}<span class="det idle" data-testid="brief-activity-idle">· still working… {idle}</span>{/if}</span>
+          <span class="lbl">{a.label}{#if detail}{" "}<span class="det">· {detail}</span>{/if}{#if idleHere}{" "}<span class="det idle" data-testid="brief-activity-idle">· still working… {idle}</span>{/if}</span>
         </li>
       {/each}
     </ul>
   {/if}
-  {#if stillWorking}<p class="still" data-testid="brief-still-working">{stillWorking}</p>{/if}
   {#if elapsed}
     <p class="time" data-testid="brief-elapsed">{elapsed}{#if estimate}{" "}<span>· {estimate}</span>{/if}</p>
   {/if}
+  </div>
+  {#if stillWorking}<p class="still" data-testid="brief-still-working">{stillWorking}</p>{/if}
 </div>
 
 <style>
+  /* Left aligned on the field, over the progress strip; white ink on colour (the field sets --b-ink). */
   .act {
     display: flex;
     flex-direction: column;
-    align-items: center;
-    justify-content: flex-start;
-    gap: 6px;
-    width: min(560px, 100%);
-    /* Reserved: the rows plus the elapsed line, so nothing below moves. */
-    min-height: calc(var(--rows, 1) * 19px + 24px);
+    align-items: flex-start;
+    justify-content: flex-end;
+    gap: 8px;
+    width: 100%;
+    /* Reserved: the rows (the elapsed time rides on the last), so nothing below moves. */
+    min-height: calc(var(--rows, 1) * 21px);
+  }
+  .status-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 16px;
+    width: 100%;
+    min-width: 0;
   }
   ul {
-    max-width: 100%;
+    flex: 1 1 auto;
+    min-width: 0;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 4px;
+  }
+  li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    font-size: 13px;
+    line-height: 17px;
+    color: rgb(var(--b-ink) / 0.92);
+    transition: opacity 0.4s ease;
   }
   li .lbl {
     min-width: 0;
@@ -73,53 +103,38 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  ul {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: grid;
-    gap: 3px;
-  }
-  li {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    font-size: 12.5px;
-    color: rgba(255, 255, 255, 0.82);
-    transition: opacity 0.4s ease;
-  }
   .mark {
-    width: 12px;
+    display: grid;
+    place-items: center;
+    width: 8px;
     flex: none;
-    text-align: center;
-    font-size: 11px;
-    color: #ffb580;
+  }
+  /* The strip's cell: 8 px, 1.5 px corners; lit when done. */
+  .cell {
+    display: block;
+    width: 8px;
+    height: 8px;
+    border-radius: 1.5px;
+    background: rgb(var(--b-ink) / 0.92);
   }
   li.skipped {
-    color: rgba(255, 255, 255, 0.4);
+    color: rgb(var(--b-ink) / 0.55);
   }
-  li.skipped .mark {
-    color: rgba(255, 255, 255, 0.4);
+  li.skipped .cell {
+    background: rgb(var(--b-ink) / 0.16);
   }
-  li.failed,
-  li.failed .mark {
-    color: #fbbf24;
+  li.failed .cell {
+    background: var(--b-hot, #c9765a);
   }
   .det {
-    color: rgba(255, 255, 255, 0.45);
+    color: rgb(var(--b-ink) / 0.66);
   }
   .pulse {
-    display: inline-block;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: #ffb580;
-    animation: pulse 1.4s ease-in-out infinite;
+    animation: pulse 1.6s ease-in-out infinite;
   }
   @keyframes pulse {
     50% {
-      opacity: 0.35;
-      transform: scale(0.8);
+      opacity: 0.3;
     }
   }
   @media (prefers-reduced-motion: reduce) {
@@ -127,15 +142,26 @@
       animation: none;
     }
   }
-  .still,
-  .time {
+  .still {
     margin: 0;
-    font-size: 12px;
-    color: rgba(255, 255, 255, 0.55);
+    font-size: 13px;
+    color: rgb(var(--b-ink) / 0.78);
   }
+  /* On the right of the last status line, centred on it (its 17px line box). */
   .time {
-    font-family: var(--b-mono, ui-monospace, monospace);
-    font-size: 11px;
-    color: rgba(255, 255, 255, 0.4);
+    flex: none;
+    margin: 0 0 0 auto;
+    padding: 1.5px 0;
+    white-space: nowrap;
+    font-family: var(--b-code, ui-monospace, monospace);
+    font-size: 10px;
+    font-weight: 500;
+    line-height: 14px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgb(var(--b-ink) / 0.7);
+  }
+  .time span {
+    color: rgb(var(--b-ink) / 0.55);
   }
 </style>
