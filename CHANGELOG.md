@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Badges: four new one-of-one honors, The Architect, The Angel, The Optimist and The Visionary. Honors that are given rather than earned (OG, Captain, Patient Zero, Ecom Rat and these four) no longer show as locked placeholders on the Badges page of people who were not given them.
+
 ## [0.11.15] — 2026-10-20
 
 - Bots: in a cloud bot's Brain tab, a provider the bot is not signed in to now shows "Not connected" instead of "Status unavailable".
