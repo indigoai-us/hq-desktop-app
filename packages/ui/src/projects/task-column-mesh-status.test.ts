@@ -69,4 +69,37 @@ describe("task columns follow the live ledger status (Shepherd 2502)", () => {
     expect(mergeStories([story("US-007")], null)[0].meshStatus).toBeNull();
     expect(classifyTasks(merged, []).find((t) => t.story.id === "US-007")?.column).toBe("not-started");
   });
+
+  // Review on #1733 (informational 1): a done ledger status with passes false
+  // fell through to the first-eligible rule and showed under In progress.
+  it("treats a done ProjectView row without passes as complete over a stale PRD", () => {
+    const live = parseProjectViewStories(
+      {
+        projectId: "launch-backlog",
+        stories: [
+          { id: "US-006", status: "done" },
+          { id: "US-007", status: "queued" },
+        ],
+      },
+      "launch-backlog",
+    );
+    expect(live?.map((s) => s.passes)).toEqual([true, null]);
+    const merged = mergeStories([story("US-006"), story("US-007", { dependsOn: ["US-006"] })], live);
+    const columns = classifyTasks(merged, []).map((t) => [t.story.id, t.column]);
+    expect(columns).toEqual([
+      ["US-006", "complete"],
+      ["US-007", "not-started"],
+    ]);
+  });
+
+  it("never puts a done story with passes false under In progress", () => {
+    const stories = [story("US-001", { meshStatus: "done" }), story("US-002", { meshStatus: "queued" })];
+    expect(classifyTasks(stories, []).map((t) => t.column)).toEqual(["not-started", "not-started"]);
+  });
+
+  it("reads To do while a To do write is in flight on a done story", () => {
+    const stories = [story("US-001", { passes: true, meshStatus: "done" })];
+    expect(taskPaneStatus(stories[0], stories, []).label).toBe("Complete");
+    expect(taskPaneStatus(stories[0], stories, [], false).label).toBe("To do");
+  });
 });

@@ -107,13 +107,17 @@ function parseLiveStory(raw: unknown): LiveStoryAssignment | null {
   const criteria = Array.isArray(raw.acceptanceCriteria)
     ? raw.acceptanceCriteria.filter((item): item is string => typeof item === "string")
     : [];
+  const meshStatus = parseMeshStatus(raw.status);
   return {
     id,
     title: str(raw.title) ?? "",
     description: str(raw.description) ?? "",
     acceptanceCriteria: criteria,
-    passes: typeof raw.passes === "boolean" ? raw.passes : null,
-    meshStatus: parseMeshStatus(raw.status),
+    // hq-pro mirrors passes from the ledger (`passes === (status === "done")`).
+    // When a view row carries done but omits passes, take done as complete so
+    // a stale PRD `passes: false` cannot pull the story back onto the board.
+    passes: typeof raw.passes === "boolean" ? raw.passes : meshStatus === "done" ? true : null,
+    meshStatus,
     assigneeUid: str(raw.assigneeUid),
     assigneeSource: parseSource(raw.assigneeSource),
     assignedAt: str(raw.assignedAt),

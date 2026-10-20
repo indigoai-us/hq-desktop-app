@@ -1222,7 +1222,8 @@ export function storyHasLiveSignal(
  * rule — never fabricates run history.
  *
  * Started when:
- * - the live ledger status is in_progress or review (queued is never started), or
+ * - the live ledger status is in_progress or review (queued and done are never
+ *   started), or
  * - non-empty notes, or
  * - classic classifier would place it in `in-progress` (first eligible).
  *
@@ -1233,7 +1234,10 @@ export function taskIsStarted(story: Story, allStories: Story[]): boolean {
   // Shepherd 2502: the live ledger status wins over the heuristics below. A
   // story the mesh still has as queued is not started, even when it is the
   // first eligible story or carries notes.
-  if (story.meshStatus === "queued") return false;
+  // A done ledger status with passes false only happens while a To do write
+  // is in flight (taskPaneStatus passesOverride) or on a payload that
+  // contradicts itself; neither is work in progress.
+  if (story.meshStatus === "queued" || story.meshStatus === "done") return false;
   if (story.meshStatus === "in_progress" || story.meshStatus === "review") return true;
   const notes = (story.notes ?? "").trim();
   if (notes.length > 0) return true;
