@@ -515,7 +515,13 @@ pub fn forget_account_kind() {
 /// Whether `companies/<slug>` is a folder under `root`. A slug that could leave
 /// the companies folder is never present.
 fn company_folder_present_in(root: &std::path::Path, slug: &str) -> bool {
-    if slug.is_empty() || slug.contains('/') || slug.contains('\\') || slug.contains("..") {
+    if slug.is_empty()
+        || slug == "."
+        || slug.contains('/')
+        || slug.contains('\\')
+        || slug.contains("..")
+        || slug.contains(':')
+    {
         return false;
     }
     root.join("companies").join(slug).is_dir()
@@ -532,19 +538,43 @@ pub fn company_folder_present(slug: String) -> bool {
     }
 }
 
-/// Release the setup hold on sync once install has finished, so a returning
-/// account can pull its companies before the wizard finishes (US-023). The
-/// lifecycle verdict is left alone; finishing setup still advances it.
+/// Whether the HQ folder the setup hold protects is in place: install is
+/// complete, or the `content` step, which lays down the HQ folder where the
+/// person chose, is recorded done. The background phase (tools, the vault
+/// upload, indexing) is not needed for a scoped company pull.
+fn hq_folder_ready_for_company_pull(
+    manifest: &crate::commands::install_manifest::InstallManifest,
+) -> bool {
+    manifest.completed_at.is_some()
+        || matches!(
+            manifest.steps.get("content").map(|step| &step.status),
+            Some(crate::commands::install_manifest::ItemStatus::Ok)
+        )
+}
+
+/// Read the install manifest and release the setup hold for the returning
+/// pull when the HQ folder is ready. Returns true when this call released it.
+fn release_sync_hold_for_company_pull_from_manifest() -> Result<bool, String> {
+    let manifest = crate::commands::install_manifest::read_install_manifest()?;
+    Ok(
+        crate::commands::lifecycle::release_sync_setup_hold_for_company_pull(
+            hq_folder_ready_for_company_pull(&manifest),
+        ),
+    )
+}
+
+/// Release the setup hold on sync so a returning account can pull its
+/// companies at Ready, while the background phase still runs (US-023). Only
+/// the returning-account pull calls this; a new person's sync stays held
+/// until setup finishes. The lifecycle verdict is left alone; finishing setup
+/// still advances it.
 #[tauri::command]
 pub async fn release_sync_hold_after_install(app: AppHandle) -> Result<bool, String> {
-    let manifest = crate::commands::install_manifest::read_install_manifest()?;
-    let released = crate::commands::lifecycle::release_sync_setup_hold_after_install(
-        manifest.completed_at.is_some(),
-    );
+    let released = release_sync_hold_for_company_pull_from_manifest()?;
     if released {
         log(
             "first-run",
-            "install finished; starting sync for the returning account pull",
+            "HQ folder ready; starting sync for the returning account pull",
         );
         crate::commands::hq_daemon_host::start_sync_services_after_setup(app);
     }
@@ -571,7 +601,7 @@ mod company_folder_present_tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("companies")).unwrap();
         std::fs::create_dir_all(root.path().join("outside")).unwrap();
-        for slug in ["", "..", "../outside", "a/b", "a\\b"] {
+        for slug in ["", ".", "..", "../outside", "a/b", "a\\b", "C:", "C:outside"] {
             assert!(!company_folder_present_in(root.path(), slug), "{slug:?}");
         }
     }
@@ -824,5 +854,85 @@ mod first_run_handoff_hint_tests {
     fn hint_flag_reads_are_bounded_below_the_shells_status_wait() {
         // The shell's own status wait is WELCOME_OWED_TIMEOUT_MS (2000).
         assert!(FIRST_RUN_HINT_FLAG_TIMEOUT < std::time::Duration::from_millis(2000));
+    }
+}
+
+#[cfg(test)]
+mod company_pull_hold_tests {
+    use super::release_sync_hold_for_company_pull_from_manifest;
+    use crate::commands::daemon::ensure_setup_allows_sync;
+    use crate::commands::install_manifest::{record_install_complete, record_step_ok};
+    use crate::commands::lifecycle::{
+        publish_sync_setup_gate, sync_held_for_setup, SYNC_HELD_FOR_SETUP_MESSAGE,
+    };
+    use crate::util::test_support::ENV_MUTEX;
+    use hq_desktop_core::lifecycle::LifecycleState;
+
+    fn with_home<F: FnOnce()>(f: F) {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let previous_home = std::env::var_os("HOME");
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        std::env::set_var("HOME", tmp.path());
+        f();
+        if let Some(home) = previous_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+    }
+
+    /// M5: a returning account's pull starts at Ready, once the HQ folder is
+    /// laid down, while the background phase is still running.
+    #[test]
+    fn the_returning_pull_starts_at_ready_before_the_background_phase() {
+        with_home(|| {
+            publish_sync_setup_gate(LifecycleState::NeedsInstall);
+            for step in ["content", "git-init", "personalize"] {
+                record_step_ok(step.to_string()).unwrap();
+            }
+            assert!(release_sync_hold_for_company_pull_from_manifest().unwrap());
+            assert!(!sync_held_for_setup());
+            assert!(ensure_setup_allows_sync().is_ok());
+            publish_sync_setup_gate(LifecycleState::NeedsInstall);
+        });
+    }
+
+    /// M5: a new person's sync stays refused until setup finishes. Their
+    /// path never calls the release, and the release refuses an install
+    /// that has not laid down the HQ folder.
+    #[test]
+    fn a_new_person_sync_before_setup_finishes_is_still_refused() {
+        with_home(|| {
+            publish_sync_setup_gate(LifecycleState::NeedsInstall);
+            for step in ["content", "git-init", "personalize"] {
+                record_step_ok(step.to_string()).unwrap();
+            }
+            assert_eq!(
+                ensure_setup_allows_sync().unwrap_err(),
+                SYNC_HELD_FOR_SETUP_MESSAGE
+            );
+        });
+        with_home(|| {
+            publish_sync_setup_gate(LifecycleState::NeedsInstall);
+            record_step_ok("git-init".to_string()).unwrap();
+            assert!(!release_sync_hold_for_company_pull_from_manifest().unwrap());
+            assert!(sync_held_for_setup());
+            assert_eq!(
+                ensure_setup_allows_sync().unwrap_err(),
+                SYNC_HELD_FOR_SETUP_MESSAGE
+            );
+        });
+    }
+
+    #[test]
+    fn a_finished_install_releases_the_hold() {
+        with_home(|| {
+            publish_sync_setup_gate(LifecycleState::NeedsInstall);
+            record_install_complete().unwrap();
+            assert!(release_sync_hold_for_company_pull_from_manifest().unwrap());
+            assert!(ensure_setup_allows_sync().is_ok());
+            publish_sync_setup_gate(LifecycleState::NeedsInstall);
+        });
     }
 }

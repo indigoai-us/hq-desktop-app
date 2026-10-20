@@ -92,10 +92,11 @@ pub(crate) fn publish_sync_setup_gate(state: LifecycleState) -> bool {
     was_held && !hold
 }
 
-/// Release the setup hold once install has finished, before the wizard ends
-/// (US-023 returning-account pull). Returns true when this call released it.
-pub(crate) fn release_sync_setup_hold_after_install(install_completed: bool) -> bool {
-    install_completed && publish_sync_setup_gate(LifecycleState::InstalledFirstRun)
+/// Release the setup hold for the returning-account pull (US-023) once the
+/// HQ folder is in place, before the background phase and the wizard end.
+/// Returns true when this call released it.
+pub(crate) fn release_sync_setup_hold_for_company_pull(hq_folder_ready: bool) -> bool {
+    hq_folder_ready && publish_sync_setup_gate(LifecycleState::InstalledFirstRun)
 }
 
 /// Current lifecycle verdict for the running process, if one was resolved.
@@ -1203,18 +1204,18 @@ mod tests {
     }
 
     /// A returning account's pull runs before setup finishes. The hold lifts
-    /// only once install is complete, so the pull's sync start is not refused.
+    /// only once the HQ folder is in place, so the pull's sync start is not refused.
     #[test]
-    fn the_hold_lifts_for_the_returning_pull_only_after_install() {
+    fn the_hold_lifts_for_the_returning_pull_only_once_the_folder_is_ready() {
         assert!(!publish_sync_setup_gate(LifecycleState::NeedsInstall));
         assert!(sync_held_for_setup());
-        assert!(!release_sync_setup_hold_after_install(false));
+        assert!(!release_sync_setup_hold_for_company_pull(false));
         assert!(sync_held_for_setup());
         assert!(crate::commands::daemon::ensure_setup_allows_sync().is_err());
-        assert!(release_sync_setup_hold_after_install(true));
+        assert!(release_sync_setup_hold_for_company_pull(true));
         assert!(!sync_held_for_setup());
         assert!(crate::commands::daemon::ensure_setup_allows_sync().is_ok());
-        assert!(!release_sync_setup_hold_after_install(true));
+        assert!(!release_sync_setup_hold_for_company_pull(true));
     }
 
     #[test]

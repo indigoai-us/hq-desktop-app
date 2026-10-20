@@ -4593,6 +4593,8 @@ describe('company onboarding step', () => {
     membershipUnauthorized?: number;
     /** set_account_kind rejects (the host could not write menubar.json). */
     setAccountKindFails?: boolean;
+    /** post_telemetry_opt_in rejects with this message (the usage-data answer is not sent). */
+    consentUploadError?: () => string | null;
   } = {}): Promise<void> {
     onboardingFlags.firstFolderSyncEnabled = false;
     onboardingFlags.companyNamePrefillEnabled = options.companyNamePrefillEnabled ?? false;
@@ -4647,6 +4649,11 @@ describe('company onboarding step', () => {
         case 'set_account_kind':
           if (options.setAccountKindFails) throw new Error('menubar.json is read-only');
           return undefined;
+        case 'post_telemetry_opt_in': {
+          const consentError = options.consentUploadError?.() ?? null;
+          if (consentError) throw new Error(consentError);
+          return undefined;
+        }
         case 'start_oauth_login':
           return { authorizeUrl: 'https://placeholder.test/authorize', state: 'oauth-state' };
         case 'oauth_listen_for_code':
@@ -5273,6 +5280,55 @@ describe('company onboarding step', () => {
       expect(syncedSlugs()).toEqual([]);
     });
 
+    it('does not offer Finish setup or finish after the ready watchdog while the account lookup is still pending', async () => {
+      __setReadyTimingsForTests({ consentDwellMs: 0, watchdogMs: 40 });
+      const onfinish = vi.fn();
+      await reachCompanyScenario({ memberships: acmeAndGlobex, membershipDelayMs: 600_000, onfinish });
+      // Well past the 40ms watchdog; the lookup has not answered.
+      await idle();
+
+      await expectHeld(onfinish);
+      expect(syncedSlugs()).toEqual([]);
+      expect(pullRows()).toEqual([]);
+
+      // The lookup answers returning: the companies are pulled, then Ready finishes.
+      await vi.advanceTimersByTimeAsync(600_000);
+      await completePull('acme');
+      await completePull('globex');
+      await untilFinished(onfinish);
+      expect(syncedSlugs()).toEqual(['acme', 'globex']);
+      expect(onfinish).toHaveBeenCalledOnce();
+    });
+
+    it('holds the finish before the usage-data write, then "Finish setup, send later" finishes once Continue clears the hold', async () => {
+      const onfinish = vi.fn();
+      await reachCompanyScenario({
+        memberships: acmeAndGlobex,
+        onfinish,
+        consentUploadError: () => 'error sending request: connection refused (offline)',
+      });
+      await completePull('acme', [{ company: 'acme', message: 'network down' }]);
+      await completePull('globex');
+      await flushUntil(() => Boolean(host.querySelector('[data-testid="company-pull-continue"]')));
+      await idle(20);
+
+      // Held in finishWithRecovery: no finish attempt, so the usage-data
+      // answer was not sent and there is no consent note to act on.
+      await expectHeld(onfinish);
+      expect(tauri.invoke.mock.calls.some(([command]) => command === 'post_telemetry_opt_in')).toBe(false);
+      expect(host.querySelector('[data-testid="consent-finish-offline"]')).toBeNull();
+
+      // Continue clears the hold; the finish fails on the offline usage-data write.
+      click('company-pull-continue');
+      await untilReady(() => Boolean(host.querySelector('[data-testid="consent-finish-offline"]')), 'the offline consent note');
+      expect(onfinish).not.toHaveBeenCalled();
+      expect(host.querySelector<HTMLButtonElement>('[data-testid="consent-finish-offline"]')!.disabled).toBe(false);
+
+      click('consent-finish-offline');
+      await untilFinished(onfinish);
+      expect(onfinish).toHaveBeenCalledOnce();
+    });
+
     it('does not offer Finish setup or finish after the ready watchdog while a pull failed without Continue', async () => {
       __setReadyTimingsForTests({ consentDwellMs: 0, watchdogMs: 40 });
       const onfinish = vi.fn();
@@ -5334,6 +5390,36 @@ describe('company onboarding step', () => {
       await flushUntil(() => pullRows()[0]?.status !== 'pulling');
 
       expect(pullRows()[0]).toMatchObject({ company: 'acme', status: 'failed' });
+    });
+
+    it("does not fail this company's pull on a sync error that names no company", async () => {
+      await reachCompanyScenario({ memberships: acmeAndGlobex });
+      await flushUntil(() => pullRows().some((row) => row.company === 'acme' && row.status === 'pulling'));
+
+      // A personal push or a watch pass's spawn error, running alongside.
+      emitTauriEvent('sync:error', { path: 'personal', message: 'personal push failed' });
+      emitTauriEvent('sync:error', { path: '(spawn)', message: 'hq-sync runner exited' });
+      await flush();
+      await completePull('acme');
+      await flushUntil(() => pullRows()[0]?.status !== 'pulling');
+
+      expect(pullRows()[0]).toMatchObject({ company: 'acme', status: 'done', text: 'Acme Ready' });
+      expect(pullOutcomes()).toContainEqual(
+        expect.objectContaining({ action: 'completed', companyUid: 'cmp_acme', companyPull: 'done', attemptCount: 1 }),
+      );
+    });
+
+    it('starts the company pull at Ready while the background phase is still running', async () => {
+      const onfinish = vi.fn();
+      await reachCompanyScenario({ memberships: acmeAndGlobex, holdInstall: true, onfinish });
+      await skipToReady();
+      await flushUntil(() => pullRows().some((row) => row.company === 'acme' && row.status === 'pulling'));
+
+      expect(tauri.invoke.mock.calls.some(([command]) => command === 'release_sync_hold_after_install')).toBe(true);
+      expect(syncedSlugs()).toEqual(['acme']);
+      // The background phase (its initial sync) never finished, so install is not complete.
+      expect(tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete')).toBe(false);
+      expect(onfinish).not.toHaveBeenCalled();
     });
 
     it('lifts the setup sync hold before the first company pull starts', async () => {

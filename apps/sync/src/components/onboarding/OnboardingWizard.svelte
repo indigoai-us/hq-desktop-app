@@ -1149,11 +1149,13 @@
       }
     });
     subscribeTauriEvent<{ company?: unknown; message?: unknown }>('sync:error', (payload) => {
-      // Another company's error (a watch pass running alongside) is not this pull's.
+      // Only an error naming this pull's company is this pull's. Another
+      // company's, or one with no company (a personal push, a spawn error from
+      // a watch pass running alongside), is not.
       if (
         companyPullWaiter &&
         typeof payload?.message === 'string' &&
-        (typeof payload.company !== 'string' || payload.company === companyPullWaiter.slug)
+        payload.company === companyPullWaiter.slug
       ) {
         companyPullWaiter.errors.push({ company: companyPullWaiter.slug, message: payload.message });
       }
@@ -3295,11 +3297,15 @@
   let accountLookupRetrying = $state(false);
   /** The lookup's first read failed and it is retrying; Ready must not read as done yet. */
   let accountLookupRetryPending = $state(false);
+  /** A lookup is in flight: nothing finishes until it says new or returning. */
+  let accountLookupPending = $state(false);
   /**
    * A retry only holds Ready once the person entity exists. Before that the
    * lookup is provisional: a failure there just looks again after setup.
    */
   const accountLookupFinalRetryPending = $derived(accountLookupRetryPending && (blockingPhaseDone || setupCompleted));
+  /** US-023: Ready is up but the lookup has not answered; it must not read as done. */
+  const accountLookupReadyPending = $derived(accountLookupPending && (blockingPhaseDone || setupCompleted));
   let accountKindResolution: Promise<AccountKind> | null = null;
   let accountKindGeneration = 0;
   let accountKindRecorded = false;
@@ -3340,6 +3346,7 @@
     readyReauth = false;
     accountLookupRetrying = false;
     accountLookupRetryPending = false;
+    accountLookupPending = false;
     accountKindResolution = null;
     accountKindRecorded = false;
     companyPullGeneration += 1;
@@ -3364,6 +3371,7 @@
     }).then(async (result) => {
       if (generation !== accountKindGeneration) return result;
       accountLookupRetryPending = false;
+      accountLookupPending = false;
       if (result.kind === 'lookup_failed') {
         if (accountKindResolution === resolution) accountKindResolution = null;
         return result;
@@ -3390,6 +3398,7 @@
       return result;
     });
     accountKindResolution = resolution;
+    accountLookupPending = true;
     return resolution;
   }
 
@@ -3439,6 +3448,8 @@
       (companyPullRows.length > 0 &&
         companyPullSettled && (pullSucceeded(companyPullRows) || companyPullContinued)),
   );
+  /** US-023: Ready may not finish yet (lookup in flight or failed, or companies still coming). */
+  const finishHeld = $derived(accountLookupFailed || accountLookupPending || !companyPullClear);
 
   function syncErrorEntries(errors: unknown): Array<{ company?: string; message: string }> {
     if (!Array.isArray(errors)) return [];
@@ -3525,8 +3536,9 @@
     companyPullRunning = true;
     if (only) companyPullContinued = false;
     try {
-      // Setup still holds sync until the wizard finishes; install is done by
-      // Ready, so lift the hold or every start below would be refused.
+      // Setup still holds sync until the wizard finishes. The HQ folder is in
+      // place by Ready, so lift the hold for this pull (the background phase
+      // may still be running) or every start below would be refused.
       await invokeCommand<boolean>('release_sync_hold_after_install').catch((error) => {
         console.warn('onboarding: sync hold release failed', error);
       });
@@ -4042,6 +4054,9 @@
       await finishWithRecovery();
       return;
     }
+    // US-023: the same hold as every other finish. The button is disabled
+    // while it holds; leave the consent note as it is.
+    if (finishHeld) return;
     // Ready screen: the answer is cached with provenance and the consent
     // repair sends it on the next connection. Finish without posting again and
     // without calling it a confirmed write.
@@ -4166,9 +4181,10 @@
 
   async function finishWithRecovery(): Promise<boolean> {
     if (finishing || finishInProgress) return false;
-    // US-023: nothing finishes while the account lookup failed or a returning
-    // account's companies are still coming (or one failed without Continue).
-    if (accountLookupFailed || !companyPullClear) return false;
+    // US-023: nothing finishes while the account lookup is in flight or
+    // failed, or a returning account's companies are still coming (or one
+    // failed without Continue).
+    if (finishHeld) return false;
     finishing = true;
     finishInProgress = true;
     finishError = false;
@@ -4763,10 +4779,10 @@
       if (showFirstFolderSyncStep && !firstFolderSyncVisited) return;
       if (showInviteTeammateStep && inviteTeammateContext && !inviteTeammateVisited) return;
       if (!connectorImportVisited && connectorImportCompany) return;
-      // US-023: hold Ready while the account lookup failed, and while a
-      // returning account's companies are still coming (or one failed and
-      // the person has not chosen Continue).
-      if (accountLookupFailed || !companyPullClear) return;
+      // US-023: hold Ready while the account lookup is in flight or failed,
+      // and while a returning account's companies are still coming (or one
+      // failed and the person has not chosen Continue).
+      if (finishHeld) return;
     }
     autoFinishAttempted = true;
     void finishWithRecovery().then((finished) => {
@@ -5471,7 +5487,7 @@
             ? returningAccount && returningCompanyNames
               ? `Welcome back. Bringing ${returningCompanyNames} to this Mac.`
               : 'Almost ready.'
-            : requiredFailureHeading ?? (accountLookupFailed || accountLookupFinalRetryPending ? 'Almost ready.' : returningReadyHeading ?? 'HQ is ready.')}
+            : requiredFailureHeading ?? (accountLookupFailed || accountLookupFinalRetryPending || accountLookupReadyPending ? 'Almost ready.' : returningReadyHeading ?? 'HQ is ready.')}
         </h2>
         <!-- The menu-bar sentence says setup is done, so it waits for Try again. -->
         {#if !requiredFailureHeading}
@@ -5634,7 +5650,7 @@
               {/if}
             </div>
           {/if}
-          {#if (finishError || readyWatchdogFired) && !blockingRetryRunning && !accountLookupFailed && companyPullClear}
+          {#if (finishError || readyWatchdogFired) && !blockingRetryRunning && !finishHeld}
             <div class="note finish-action" role="status" data-testid="launcher-finish-error">
               <p>Finish HQ setup here when you’re ready.</p>
               <div class="note-actions">
@@ -5743,7 +5759,7 @@
                 class="btn btn-secondary"
                 type="button"
                 data-testid="consent-retry"
-                disabled={consentSubmitting || finishing}
+                disabled={consentSubmitting || finishing || finishHeld}
                 onclick={() => void handleFinish()}
               >{consentSubmitting ? 'Retrying…' : 'Retry'}</button>
               {#if consentFailure.kind === 'offline'}
@@ -5751,7 +5767,7 @@
                   class="btn btn-secondary"
                   type="button"
                   data-testid="consent-finish-offline"
-                  disabled={consentSubmitting || finishing}
+                  disabled={consentSubmitting || finishing || finishHeld}
                   onclick={() => void finishOffline()}
                 ><RailIcon name="check" />Finish setup, send later</button>
               {/if}
