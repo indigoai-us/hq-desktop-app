@@ -7,6 +7,7 @@
   import { type ReactionEvent, dmScope } from '../lib/reactions';
   import { ReactionController } from '../lib/reactionController.svelte';
   import { mergeHydratedThread, shouldAppendInbound } from '../lib/dmThread';
+  import { loadSelfPersonUid } from '../lib/selfPersonUid';
   import type { MessageAttachment } from '../lib/messageAttachments';
   import {
     loadAttachmentCompanies,
@@ -73,6 +74,18 @@
   // arrives (its peer is the scope), kept in step with the visible messages.
   let reactionsCtl = $state<ReactionController | null>(null);
   let companies = $state<AttachmentCompany[]>([]);
+  // The shared ReactionBar names reactors and says "You" for this uid.
+  let selfPersonUid = $state<string | null>(null);
+
+  $effect(() => {
+    let cancelled = false;
+    void loadSelfPersonUid().then((uid) => {
+      if (!cancelled) selfPersonUid = uid;
+    });
+    return () => {
+      cancelled = true;
+    };
+  });
 
   $effect(() => {
     let cancelled = false;
@@ -313,6 +326,7 @@
     onsend={sendReply}
     reactions={reactionsCtl?.map ?? {}}
     ontogglereaction={reactionsCtl ? reactionsCtl.toggle : undefined}
+    {selfPersonUid}
     {companies}
   />
   {#if hiddenMessageCount > 0}

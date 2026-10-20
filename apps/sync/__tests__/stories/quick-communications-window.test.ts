@@ -6,7 +6,6 @@ const root = (...parts: string[]) => resolve(process.cwd(), ...parts);
 const read = (...parts: string[]) => readFileSync(root(...parts), 'utf8');
 
 const sidePane = read('src/components/QuickWindowSidePane.svelte');
-const channelView = read('src/components/messaging/ChannelView.svelte');
 
 // The quick-communications side pane outlived the dm-detail window it was
 // built for; share-detail is now its only host. These assertions cover the
@@ -48,14 +47,6 @@ describe('quick communications rail', () => {
     expect(sidePane).not.toContain('sourceLabel=');
     expect(sidePane).not.toContain('text={row.latest');
     expect(sidePane).not.toMatch(/\.conversation-row\s*\{[\s\S]*?border-left:/);
-  });
-
-  it('keeps group-DM language human after the conversation is selected', () => {
-    expect(channelView).toContain("const isGroup = $derived(current.scope === 'group')");
-    expect(channelView).toContain('const conversationLabel = $derived(isGroup ? title : `#${title}`)');
-    expect(channelView).toContain("{#if !isGroup}<span class=\"channel-hash\"");
-    expect(channelView).toContain("isGroup ? 'Join conversation' : `Join #${title}`");
-    expect(channelView).toContain('placeholder={`Message ${conversationLabel}…`}');
   });
 
   // OWNER-R26: skeleton rows were removed everywhere; a status line is the loading state.

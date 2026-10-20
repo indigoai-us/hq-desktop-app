@@ -380,7 +380,7 @@ mod tests {
     /// Manual timing on a real synced company folder:
     /// `ATLAS_MEASURE_DIR=<hq>/companies/<slug> cargo test --lib atlas_index -- --ignored --nocapture`
     #[test]
-    #[ignore]
+    #[ignore = "manual timing harness; needs ATLAS_MEASURE_DIR pointing at a real synced company folder"]
     fn measure_real_company_folder() {
         let Ok(dir) = std::env::var("ATLAS_MEASURE_DIR") else { return };
         let dir = PathBuf::from(dir);
