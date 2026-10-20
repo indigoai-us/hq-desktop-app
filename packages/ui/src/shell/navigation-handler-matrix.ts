@@ -506,11 +506,13 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "keydown-cmd-comma",
     file: SHARED_SHELL_FILE,
-    needle: 'id: "view.settings"',
+    needle: "openSettings: () => openSettings(),",
     destinationKind: "settings",
     history: "push",
     host: "shared-shell",
     inScope: true,
+    notes:
+      "The `view.settings` binding is defined in desktop-app/shell-shortcuts.ts; DesktopApp wires its openSettings action here.",
   },
   {
     id: "keydown-cmd-digit-rail",

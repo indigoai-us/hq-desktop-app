@@ -4,6 +4,12 @@
   // never takes or traps focus, Escape closes it, and the link itself still
   // opens on click. Layout varies by provider (see lib/linkPreview.ts).
   import type { LinkPreview, LinkProvider } from '../../common/linkPreview';
+  import {
+    cachedGithubSummary,
+    githubStatus,
+    onGithubSummary,
+    relativeAge,
+  } from '../../common/linkGithub';
 
   interface Props {
     id: string;
@@ -32,11 +38,24 @@
   }: Props = $props();
 
   const CARD_WIDTH = 300;
+  const GITHUB_CARD_WIDTH = 360;
   const GAP = 6;
 
   let copied = $state(false);
   let cardEl = $state<HTMLDivElement | null>(null);
   let cardHeight = $state(0);
+  let githubVersion = $state(0);
+
+  const github = $derived(preview.github);
+  const summary = $derived.by(() => {
+    void githubVersion;
+    return github ? cachedGithubSummary(href) : undefined;
+  });
+  const status = $derived(summary ? githubStatus(summary) : null);
+  const age = $derived(summary ? relativeAge(summary.updatedAt) : '');
+  const width = $derived(github ? GITHUB_CARD_WIDTH : CARD_WIDTH);
+
+  $effect(() => onGithubSummary(() => (githubVersion += 1)));
 
   const title = $derived(
     preview.wantsPageTitle && pageTitle ? pageTitle : (preview.cardTitle ?? preview.title),
@@ -44,7 +63,7 @@
   const position = $derived.by(() => {
     const vw = typeof window === 'undefined' ? 1024 : window.innerWidth;
     const vh = typeof window === 'undefined' ? 768 : window.innerHeight;
-    const left = Math.max(8, Math.min(rect.left, vw - CARD_WIDTH - 8));
+    const left = Math.max(8, Math.min(rect.left, vw - width - 8));
     const below = rect.bottom + GAP;
     const fitsBelow = below + cardHeight <= vh - 8 || rect.top - GAP - cardHeight < 8;
     const top = fitsBelow ? below : rect.top - GAP - cardHeight;
@@ -52,8 +71,23 @@
   });
 
   $effect(() => {
+    void summary;
     if (cardEl) cardHeight = cardEl.offsetHeight;
   });
+
+  function count(n: number): string {
+    return n.toLocaleString('en-US');
+  }
+
+  const STATUS_ICONS: Record<string, string> = {
+    'Changes requested': 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM9 9l6 6M15 9l-6 6',
+    Approved: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM8 12.5l2.5 2.5L16 9.5',
+    Open: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2z',
+    Draft: 'M12 3a9 9 0 0 1 0 18M12 21a9 9 0 0 1 0-18M9 12h6',
+    Merged: 'M7 4v16M7 8a4 4 0 0 0 4 4h2a4 4 0 0 1 4 4M17 20a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM7 6a2 2 0 1 0 0-4 2 2 0 0 0 0 4z',
+    Closed: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM9 9l6 6M15 9l-6 6',
+    'Not planned': 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM5.6 18.4L18.4 5.6',
+  };
 
   async function copy(): Promise<void> {
     await oncopy(href);
@@ -88,10 +122,82 @@
   data-provider={preview.provider}
   style:left={`${position.left}px`}
   style:top={`${position.top}px`}
-  style:width={`${CARD_WIDTH}px`}
+  style:width={`${width}px`}
   onpointerenter={onpointerenter}
   onpointerleave={onpointerleave}
 >
+  {#if github}
+    <div class="gh-head">
+      {#if status}
+        <span class="gh-pill" data-tone={status.tone}>
+          <svg
+            viewBox="0 0 24 24"
+            width="13"
+            height="13"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          ><path d={STATUS_ICONS[status.label] ?? STATUS_ICONS.Open} /></svg>
+          {status.label}
+        </span>
+      {:else}
+        <svg
+          class="link-card-icon"
+          viewBox="0 0 24 24"
+          width="14"
+          height="14"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        ><path d={ICON_PATHS.github} /></svg>
+        <span class="link-card-kind">{preview.kind}</span>
+      {/if}
+      <span class="gh-repo" title={github.repo}>{github.repo}</span>
+      <span class="gh-num">#{github.number}</span>
+      {#if age}<span class="gh-age">{age}</span>{/if}
+    </div>
+    {#if summary}
+      <div class="link-card-title gh-title">{summary.title}</div>
+      <div class="gh-foot">
+        {#if summary.author}
+          <span class="gh-author">
+            {#if summary.authorAvatar}
+              <img class="gh-avatar" src={summary.authorAvatar} alt="" width="18" height="18" />
+            {:else}
+              <span class="gh-avatar gh-avatar-blank" aria-hidden="true">{summary.author.slice(0, 1).toUpperCase()}</span>
+            {/if}
+            <span class="gh-login">{summary.author}</span>
+          </span>
+        {/if}
+        <span class="gh-chips">
+          {#if summary.additions != null && summary.deletions != null}
+            <span class="gh-chip" aria-label={`${summary.additions} lines added, ${summary.deletions} removed`}>
+              <span class="gh-add">+{count(summary.additions)}</span>
+              <span class="gh-del">−{count(summary.deletions)}</span>
+            </span>
+          {/if}
+          {#if summary.changedFiles != null}
+            <span class="gh-chip">{count(summary.changedFiles)} {summary.changedFiles === 1 ? 'file' : 'files'}</span>
+          {/if}
+          {#if summary.kind === 'issue' && summary.comments != null}
+            <span class="gh-chip">{count(summary.comments)} {summary.comments === 1 ? 'comment' : 'comments'}</span>
+          {/if}
+        </span>
+      </div>
+    {/if}
+    <div class="link-card-actions gh-actions">
+      <button type="button" class="link-card-btn" onclick={() => onopen(href)}>Open</button>
+      <button type="button" class="link-card-btn" onclick={() => void copy()}>
+        {copied ? 'Copied' : 'Copy link'}
+      </button>
+    </div>
+  {:else}
   <div class="link-card-head">
     <svg
       class="link-card-icon"
@@ -135,6 +241,7 @@
       {copied ? 'Copied' : 'Copy link'}
     </button>
   </div>
+  {/if}
 </div>
 
 <style>
@@ -238,5 +345,125 @@
   .link-card-btn:focus-visible {
     outline: 2px solid var(--pop-text);
     outline-offset: 2px;
+  }
+  .gh-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+    color: var(--pop-muted, var(--muted));
+  }
+
+  .gh-pill {
+    --tone: var(--pop-muted, var(--muted));
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3125rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--tone) 16%, transparent);
+    color: var(--tone);
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .gh-pill[data-tone='open'] {
+    --tone: #2ea043;
+  }
+
+  .gh-pill[data-tone='done'] {
+    --tone: #8957e5;
+  }
+
+  .gh-pill[data-tone='danger'] {
+    --tone: var(--red, #f0616d);
+  }
+
+  .gh-repo {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .gh-num,
+  .gh-age {
+    flex: none;
+    white-space: nowrap;
+  }
+
+  .gh-age {
+    margin-left: auto;
+  }
+
+  .gh-title {
+    font-size: calc(var(--text-base) * 1.07);
+    line-height: 1.35;
+  }
+
+  .gh-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+
+  .gh-author {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    min-width: 0;
+    color: var(--pop-muted, var(--muted));
+  }
+
+  .gh-avatar {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+  }
+
+  .gh-avatar-blank {
+    display: inline-grid;
+    place-items: center;
+    background: var(--pop-hover);
+    font-size: 0.6875rem;
+  }
+
+  .gh-login {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .gh-chips {
+    flex: none;
+    display: inline-flex;
+    gap: 0.375rem;
+  }
+
+  .gh-chip {
+    display: inline-flex;
+    gap: 0.25rem;
+    padding: 0.0625rem 0.4375rem;
+    border-radius: 5px;
+    background: var(--pop-hover);
+    color: var(--pop-muted, var(--muted));
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .gh-add {
+    color: #2ea043;
+  }
+
+  .gh-del {
+    color: var(--red, #f0616d);
+  }
+
+  .gh-actions {
+    margin-top: 0.125rem;
   }
 </style>

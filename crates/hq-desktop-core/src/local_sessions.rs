@@ -840,7 +840,7 @@ mod tests {
     /// Counts and timing against a real HQ folder (no content printed):
     /// `HQ_LOCAL_SESSIONS_ROOT=/path/to/HQ cargo test --lib real_hq -- --ignored --nocapture`.
     #[test]
-    #[ignore]
+    #[ignore = "manual timing harness; needs HQ_LOCAL_SESSIONS_ROOT pointing at a real HQ folder"]
     fn real_hq_counts_only() {
         let Ok(root) = std::env::var("HQ_LOCAL_SESSIONS_ROOT") else { return };
         let today = chrono::Utc::now().date_naive();

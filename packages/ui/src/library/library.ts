@@ -96,16 +96,6 @@ export function libraryItemKey(item: LibraryItem): string {
     : `skill:${item.skill.path}`;
 }
 
-export function libraryItemName(item: LibraryItem): string {
-  return item.kind === "worker" ? item.worker.name : item.skill.name;
-}
-
-export function libraryItemDescription(item: LibraryItem): string {
-  return item.kind === "worker"
-    ? item.worker.description
-    : item.skill.description;
-}
-
 /** Lowercased haystack for the text filter (name + description + scope/type). */
 export function libraryItemHaystack(item: LibraryItem): string {
   if (item.kind === "worker") {
