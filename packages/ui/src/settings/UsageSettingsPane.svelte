@@ -36,6 +36,7 @@
     accountKey,
     isPaused,
     lineBar,
+    usageIsPartial,
     orderedAccounts,
     readAccountRow,
     readPricing,
@@ -86,10 +87,13 @@
     onopensync?: () => void;
   } = $props();
 
+  // A company with no cloud account (local only) has no usage to show here.
   const rows = $derived<UsageAccount[]>(
     orderedAccounts(
-      accounts ??
-        companies.map((row): UsageAccount => ({ kind: "company", uid: row.uid, name: row.label, role: row.role })),
+      (
+        accounts ??
+        companies.map((row): UsageAccount => ({ kind: "company", uid: row.uid, name: row.label, role: row.role }))
+      ).filter((a) => a.kind === "personal" || Boolean(a.uid)),
     ),
   );
   const rowKeys = $derived(rows.map((r) => accountKey(r)).join("|"));
@@ -106,11 +110,14 @@
   let billingKey = $state<string | null>(null);
   let billingOutcome = $state<Record<string, BillingPortalOutcome | null>>({});
   let headers: HTMLButtonElement[] = $state([]);
+  /** Groups whose meters are shown (click or Enter on the group name; hover shows them too). */
+  let metersOpen = $state<Record<string, boolean>>({});
 
   // Read every line once per account list; the price list once.
   $effect(() => {
     void rowKeys;
-    const list = rows;
+    // Only the set of accounts re-reads the lines, not a new array with the same accounts.
+    const list = untrack(() => rows);
     const api = company;
     let cancelled = false;
     untrack(() => {
@@ -281,7 +288,7 @@
 
   function includedText(view: AccountRowReady): string {
     const included = view.usage?.allowanceCents ?? (pricing ? Math.round(pricing.includedUsd * 100) : null);
-    return included === null ? "usage" : formatUsd(included);
+    return included === null ? "Some" : formatUsd(included);
   }
 </script>
 
@@ -304,7 +311,7 @@
               class="line"
               id={`usage-line-${index}`}
               aria-expanded={open}
-              aria-controls={`usage-detail-${index}`}
+              aria-controls={open ? `usage-detail-${index}` : undefined}
               data-testid="usage-account"
               data-key={key}
               data-tone={bar?.tone ?? "none"}
@@ -363,11 +370,20 @@
                 {#if view.notice}
                   <p class="notice" class:alert={paused} role="status" data-testid="usage-notice" data-kind={view.notice.kind}>{view.notice.text}</p>
                 {/if}
-                {#if view.usage && bar}
+                {#if view.trial && bar}
+                  <div class="trial-bar">
+                    <span class="g-label"><span class="dot" style={`background:${segmentColor("trial")}`} aria-hidden="true"></span>Trial usage</span>
+                    <span class="g-amt" data-testid="usage-trial-usage">{view.trial.unknownMeters?.length ? "At least " : ""}{formatUsd(view.trial.usedCents ?? 0)} of {formatUsd(view.trial.capCents ?? 0)}</span>
+                    <span class="g-bar">
+                      <UsageStackBar segments={bar.segments} scaleCents={bar.scaleCents} tone={bar.tone} size="md" grow="mount" label={`Trial usage ${formatUsd(view.trial.usedCents ?? 0)} of ${formatUsd(view.trial.capCents ?? 0)}`} />
+                    </span>
+                  </div>
+                  <p class="note small" data-testid="usage-trial-note">Trial days are free. Costs by group start when the trial ends.</p>
+                {:else if view.usage && bar}
                   <ul class="groups" aria-label="This month by group">
                     {#each view.usage.groups as group (group.id)}
-                      <li class="group" tabindex="-1" title={group.meters.map((m) => `${m.label}: ${m.waived ? "waived" : m.costCents === null ? "not reported" : formatUsd(m.costCents)}${m.rate ? ` (${m.rate})` : ""}`).join("\n")}>
-                        <span class="g-label"><span class="dot" style={`background:${segmentColor(group.id)}`} aria-hidden="true"></span>{group.label}</span>
+                      <li class="group" class:show={metersOpen[key + ":" + group.id]} title={group.meters.map((m) => `${m.label}: ${m.waived ? "waived" : m.costCents === null ? "not reported" : formatUsd(m.costCents)}${m.rate ? ` (${m.rate})` : ""}`).join("\n")}>
+                        <button type="button" class="g-label g-toggle" aria-expanded={Boolean(metersOpen[key + ":" + group.id])} data-testid="usage-group-toggle" onclick={() => (metersOpen = { ...metersOpen, [key + ":" + group.id]: !metersOpen[key + ":" + group.id] })}><span class="dot" style={`background:${segmentColor(group.id)}`} aria-hidden="true"></span>{group.label}</button>
                         <span class="g-amt" data-testid="usage-group" data-group={group.id}>{group.cents === null ? "Not reported" : `${group.partial ? "At least " : ""}${formatUsd(group.cents)}`}</span>
                         <span class="g-bar">
                           <UsageStackBar
@@ -386,13 +402,10 @@
                       </li>
                     {/each}
                   </ul>
-                  {#if view.trial}
-                    <p class="note small">Trial days are free, so costs by group count only days after the trial.</p>
-                  {/if}
                 {/if}
                 <dl class="facts">
-                  {#if view.usage}
-                    <div><dt>Usage so far</dt><dd data-testid="usage-total">{formatUsd(view.usage.usageCents)}</dd><dd class="sub" data-testid="usage-period">{periodLabel(view.usage.periodStart, view.usage.periodEnd)}</dd></div>
+                  {#if view.usage && !view.trial}
+                    <div><dt>Usage so far</dt><dd data-testid="usage-total">{usageIsPartial(view.usage) ? "At least " : ""}{formatUsd(view.usage.usageCents)}</dd><dd class="sub" data-testid="usage-period">{periodLabel(view.usage.periodStart, view.usage.periodEnd)}</dd></div>
                     <div><dt>Included</dt><dd data-testid="usage-allowance-left">{formatUsd(view.usage.allowanceLeftCents)} of free usage left</dd><dd class="sub">{formatUsd(view.usage.allowanceCents)} each month</dd></div>
                   {:else if view.usageUnavailable}
                     <div><dt>This month</dt><dd class="quiet" data-testid="usage-unavailable">Not available right now</dd></div>
@@ -400,12 +413,15 @@
                     <div><dt>Plan</dt><dd data-testid="usage-old-plan">{view.planLabel}</dd></div>
                   {/if}
                   {#if view.trial}
-                    <div><dt>Trial</dt><dd data-testid="usage-trial-usage">{#if view.trial.usedCents !== null && view.trial.capCents !== null}{view.trial.unknownMeters?.length ? "At least " : ""}{formatUsd(view.trial.usedCents)} of {formatUsd(view.trial.capCents)}{:else}Not measured yet{/if}</dd><dd class="sub">{view.trial.daysLeft} {view.trial.daysLeft === 1 ? "day" : "days"} left{trialEndLabel(view.trial.endsAt) ? `, ${trialEndLabel(view.trial.endsAt).toLowerCase()}` : ""}</dd></div>
+                    <div><dt>Trial</dt><dd data-testid="usage-trial-days">{view.trial.daysLeft} {view.trial.daysLeft === 1 ? "day" : "days"} left</dd>{#if trialEndLabel(view.trial.endsAt)}<dd class="sub">{trialEndLabel(view.trial.endsAt)}</dd>{/if}</div>
+                    {#if !bar}
+                      <div><dt>Trial usage</dt><dd data-testid="usage-trial-usage">Not measured yet</dd></div>
+                    {/if}
                   {/if}
                   {#if view.plan === "usage" || view.plan === "trial"}
                     {@const limit = spend[key]}
                     <div><dt>Spend limit</dt><dd data-testid="usage-spend-limit">{limit === "loading" || limit === undefined ? "…" : limit === null ? "Can't be shown" : spendLimitLine(limit)}</dd><dd class="sub">{limit && limit !== "loading" && limit.noLimit ? "Metered work doesn't pause for spending" : "Metered work pauses at the limit"}</dd></div>
-                    {#if view.usage}
+                    {#if view.usage && !view.trial}
                       <div><dt>Projected bill</dt><dd data-testid="usage-projected">{view.usage.projectedBillCents === null ? "Not available yet" : formatUsd(view.usage.projectedBillCents)}</dd><dd class="sub" data-testid="usage-projected-note">At this pace, after the {formatUsd(view.usage.allowanceCents)} included</dd></div>
                     {/if}
                   {/if}
@@ -570,7 +586,7 @@
     padding: 1px 6px;
     border: 1px solid var(--line2, var(--line));
     border-radius: 999px;
-    color: var(--t3, var(--t2));
+    color: var(--t2);
     font-size: 10px;
     line-height: 1.5;
     white-space: nowrap;
@@ -613,11 +629,11 @@
   .total.quiet {
     font-size: 12px;
     font-weight: 400;
-    color: var(--t3, var(--t2));
+    color: var(--t2);
   }
 
   .helper {
-    color: var(--t3, var(--t2));
+    color: var(--t2);
     font-size: 11px;
     font-variant-numeric: tabular-nums;
   }
@@ -663,19 +679,48 @@
     grid-column: 1 / -1;
   }
 
-  /* The meters behind a group show on hover or focus: detail on demand. */
+  /* The meters behind a group show on hover or keyboard focus (detail on
+     demand); screen readers always read them. */
   .g-meters {
     grid-column: 1 / -1;
-    display: none;
+    display: flex;
     flex-wrap: wrap;
     gap: 2px 10px;
-    color: var(--t3, var(--t2));
+    color: var(--t2);
     font-size: 11px;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   .group:hover .g-meters,
-  .group:focus-within .g-meters {
-    display: flex;
+  .group.show .g-meters {
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip-path: none;
+    white-space: normal;
+  }
+
+  .g-toggle {
+    appearance: none;
+    justify-self: start;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .g-toggle:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--t2));
+    outline-offset: 2px;
+    border-radius: 3px;
   }
 
   .dot {
@@ -687,16 +732,18 @@
     vertical-align: 0;
   }
 
+  /* Facts sit side by side at their natural width; labels never wrap. */
   .facts {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-    gap: 10px 16px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 28px;
     margin: 0;
   }
 
   .facts dt {
-    color: var(--t3, var(--t2));
+    color: var(--t2);
     font-size: 11px;
+    white-space: nowrap;
   }
 
   .facts dd {
@@ -709,13 +756,13 @@
 
   .facts dd.sub {
     margin: 0;
-    color: var(--t3, var(--t2));
+    color: var(--t2);
     font-size: 11px;
     font-weight: 400;
   }
 
   .facts dd.quiet {
-    color: var(--t3, var(--t2));
+    color: var(--t2);
     font-weight: 400;
   }
 
@@ -727,12 +774,20 @@
   }
 
   .note.small {
-    margin-top: -6px;
+    margin: -4px 0 12px;
     font-size: 11px;
-    color: var(--t3, var(--t2));
+    color: var(--t2);
+  }
+
+  .trial-bar {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    row-gap: 4px;
+    margin: 4px 0 10px;
   }
 
   .notice {
+    margin: 4px 0 12px;
     color: var(--t1);
   }
 
@@ -787,7 +842,7 @@
   .act.link {
     padding: 0;
     border: 0;
-    color: var(--t3, var(--t2));
+    color: var(--t2);
     text-decoration: underline;
     text-underline-offset: 2px;
   }

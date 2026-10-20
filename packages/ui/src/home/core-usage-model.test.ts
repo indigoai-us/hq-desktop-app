@@ -638,3 +638,16 @@ describe("sign-out clears the usage cache (review critical, 2026-10-19)", () => 
     expect(preferredUsageAccount()).toBeNull();
   });
 });
+
+describe("a read in flight across sign-out is not cached (review, 2026-10-19)", () => {
+  it("rememberCoreUsage drops a view from an older cache generation", async () => {
+    const { cachedCoreUsage, rememberCoreUsage, coreUsageGeneration } = await import("./core-usage-model");
+    const view = { kind: "owner-only" as const, companyName: "Northwind" };
+    const startedIn = coreUsageGeneration();
+    clearAccountCaches();
+    rememberCoreUsage("cmp_northwind", view, Date.now(), startedIn);
+    expect(cachedCoreUsage("cmp_northwind")).toBeNull();
+    rememberCoreUsage("cmp_northwind", view, Date.now(), coreUsageGeneration());
+    expect(cachedCoreUsage("cmp_northwind")).not.toBeNull();
+  });
+});

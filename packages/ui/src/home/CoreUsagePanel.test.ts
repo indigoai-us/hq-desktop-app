@@ -489,6 +489,24 @@ describe("CoreUsagePanel", () => {
       expect(amass?.textContent).not.toContain("$5.00");
     });
 
+    it("a cached row total is painted, then read again, so the list never ranks stale totals", async () => {
+      const { rememberCoreUsage } = await import("./core-usage-model");
+      rememberCoreUsage("cmp_northwind", {
+        kind: "ready", companyName: "Northwind", planLabel: "Usage plan", paid: false, usageUnavailable: false, notice: null,
+        usage: { mode: "allowance", fill: 0.1, tone: "ok", over: false, usedLine: "$1.00 of $10.00 free", resetLine: null, partial: false, rows: [], rowsNote: null, totalCents: 100, segments: [], scaleCents: 1000, includedCents: 1000 },
+      });
+      const src = multiSource();
+      await render(src, vi.fn(), { account: ACCOUNTS[2], accounts: ACCOUNTS });
+      for (let i = 0; i < 3; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        flushSync();
+      }
+      expect(src.getBillingSummary).toHaveBeenCalledWith("cmp_northwind");
+      const row = host.querySelector('[data-testid="core-usage-account"][data-key="cmp_northwind"]');
+      expect(row?.textContent).toContain("$8.00");
+      expect(row?.textContent).not.toContain("$1.00");
+    });
+
     it("defaults to the personal account when that is the default, reading the person routes", async () => {
       const src = multiSource();
       await render(src, vi.fn(), { account: ACCOUNTS[2], accounts: ACCOUNTS });
@@ -574,7 +592,7 @@ describe("CoreUsagePanel", () => {
         const src = manySource();
         await render(src, vi.fn(), { account: MANY[2], accounts: MANY, onopenusage: vi.fn() });
         await settle();
-        expect(q("core-usage-top-label")?.textContent).toBe("Top 5 by usage this month");
+        expect(q("core-usage-top-label")?.textContent).toBe("Top 5 companies by usage this month");
         // The admin company is never read with the owner-gated routes.
         expect(src.getBillingSummary).not.toHaveBeenCalledWith("cmp_admin");
         expect(q("core-usage-accounts")?.dataset.ranked).toBe("true");
@@ -681,5 +699,18 @@ describe("CoreUsagePanel bar states", () => {
     );
     const parts = [...q("core-usage-bar")!.querySelectorAll<HTMLElement>("[data-segment]")].map((el) => [el.dataset.segment, el.style.width]);
     expect(parts).toEqual([["trial", "84%"]]);
+  });
+});
+
+describe("CoreUsagePanel bar with a card on file", () => {
+  it("past the included usage with a card the month bar stays calm (passing it is ordinary billing)", async () => {
+    await render(
+      source({
+        getBillingSummary: vi.fn(async () => ok({ pricingPlan: "usage-only", usageTrial: { status: "ended", cardOnFile: true }, defaultPaymentMethod: { present: true } })),
+        getUsageStatement: vi.fn(async () => ok({ ...STATEMENT, usageCents: 1400 })),
+      }),
+    );
+    expect(q("core-usage-bar")?.dataset.tone).toBe("ok");
+    expect(q("core-usage-used")?.dataset.tone).toBe("ok");
   });
 });

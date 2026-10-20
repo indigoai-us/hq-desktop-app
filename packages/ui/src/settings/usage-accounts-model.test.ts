@@ -79,6 +79,13 @@ describe("account lines", () => {
     expect(rowTotalText({ kind: "owner-only" })).toBe("Owner only");
     expect(rowTotalText({ kind: "unavailable" })).toBe("Unavailable");
     expect(rowTotalText(undefined)).toBe("…");
+    // An unreported group makes the total a floor, the same rule as the Core menu.
+    const partialGroup = [{ id: "agents", label: "Agents and AI", cents: null, partial: true, meters: [] }];
+    expect(rowTotalText({ ...base, plan: "usage", planLabel: "Usage plan", trial: null, usage: { ...usage, complete: true, groups: partialGroup } })).toBe("At least $8.00");
+    // A trial whose usage isn't measured never falls back to the month's $0.
+    expect(
+      rowTotalText({ ...base, plan: "trial", planLabel: "Trial", trial: { endsAt: "x", daysLeft: 3, capCents: 50000, usedCents: null }, usage: { ...usage, usageCents: 0, complete: true } }),
+    ).toBe("Not measured");
   });
 });
 

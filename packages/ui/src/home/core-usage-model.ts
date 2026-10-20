@@ -567,6 +567,13 @@ export async function readCoreUsageWithRetry(
  * next person on this computer never sees the previous person's usage.
  */
 const lastGood = new Map<string, { view: CoreUsageView; at: number }>();
+/** Bumped on sign-out; a read that started before it is never cached. */
+let cacheGeneration = 0;
+
+/** The cache generation a read starts in; pass it back to rememberCoreUsage. */
+export function coreUsageGeneration(): number {
+  return cacheGeneration;
+}
 
 export function cachedCoreUsage(companyUid: string): CoreUsageView | null {
   return lastGood.get(companyUid)?.view ?? null;
@@ -578,7 +585,14 @@ export function cachedCoreUsageAt(companyUid: string): number | null {
 }
 
 /** Ready views and the owner-only answer are cached; failures never are. */
-export function rememberCoreUsage(companyUid: string, view: CoreUsageView, at: number = Date.now()): void {
+export function rememberCoreUsage(
+  companyUid: string,
+  view: CoreUsageView,
+  at: number = Date.now(),
+  generation: number = cacheGeneration,
+): void {
+  // A read that was in flight across a sign-out belongs to the previous person.
+  if (generation !== cacheGeneration) return;
   if (view.kind === "ready" || view.kind === "owner-only") lastGood.set(companyUid, { view, at });
 }
 
@@ -792,7 +806,6 @@ export async function readAccountUsage(
   return view;
 }
 
-/** The switcher row total for an account's view: "$8.00", "At least $8.00", or a word. */
 /**
  * How many companies the Core menu lists. The menu always shows Personal and
  * the companies with the most usage this month, with a link to
@@ -878,6 +891,7 @@ export function canSetUpBilling(role: string | null | undefined): boolean {
 /** Forget every cached usage view and the remembered account (sign-out). */
 export function clearCoreUsageCache(): void {
   lastGood.clear();
+  cacheGeneration += 1;
   preferredUsageAccountKey = null;
 }
 

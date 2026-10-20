@@ -161,7 +161,7 @@ describe("UsageSettingsPane: one line per account", () => {
     // The spend limit is the line's marker, so usage lines read it with the
     // line; the old plans and the admin company never do. The switch offer
     // waits until a line opens.
-    expect(src.getSpendLimit.mock.calls.map((c) => c[0]).sort()).toEqual(["cmp_birch", "cmp_elm", "cmp_northwind"]);
+    expect((src.getSpendLimit.mock.calls as unknown as string[][]).map((c) => c[0]).sort()).toEqual(["cmp_birch", "cmp_elm", "cmp_northwind"]);
     expect(src.getUsageSwitch).not.toHaveBeenCalled();
   });
 
@@ -413,12 +413,13 @@ describe("UsageSettingsPane: stacked bars", () => {
   const bar = (key: string) => header(key).querySelector('[data-testid="usage-account-bar"]') as HTMLElement | null;
   const parts = (el: Element | null) => [...(el?.querySelectorAll<HTMLElement>("[data-segment]") ?? [])].map((p) => [p.dataset.segment, p.style.width]);
 
-  it("a usage line draws its groups against the $10 included, with the spend limit named past the end", async () => {
+  it("a usage line draws its groups against the $10 included; a limit far past the scale is not drawn on the line", async () => {
     await render(source());
     const b = bar("cmp_northwind")!;
     expect(b.dataset.tone).toBe("ok");
     expect(parts(b)).toEqual([["agents", "60%"], ["sync", "20%"]]);
-    expect(clean(b.querySelector('[data-testid="usage-bar-marker-label"]'))).toBe("Limit $250.00 ›");
+    expect(b.querySelector('[data-testid="usage-bar-marker"]')).toBeNull();
+    expect(b.querySelector('[data-testid="usage-bar-marker-label"]')).toBeNull();
     expect(clean(header("cmp_northwind").querySelector(".helper"))).toBe("of $10.00 included");
     // The old plans and admin lines have no bar.
     expect(bar("cmp_cedar")).toBeNull();
@@ -432,8 +433,46 @@ describe("UsageSettingsPane: stacked bars", () => {
     expect(parts(b)).toEqual([["trial", "84%"]]);
     expect(b.dataset.tone).toBe("near");
     expect(header("cmp_birch").dataset.tone).toBe("near");
-    expect(clean(b.querySelector('[data-testid="usage-bar-marker-label"]'))).toBe("Trial cap $500.00");
+    // The cap is the bar's end, named by the helper; no floating label.
+    expect(b.querySelector('[data-testid="usage-bar-marker-label"]')).toBeNull();
     expect(clean(header("cmp_birch").querySelector(".helper"))).toBe("of $500.00 trial cap");
+    // Opened, the trial shows one trial bar and one sentence, not $0.00 groups.
+    await open("cmp_birch");
+    expect(detail()!.querySelectorAll(".group")).toHaveLength(0);
+    expect(clean(q("usage-trial-usage", detail()!))).toBe("$420.00 of $500.00");
+    expect(clean(q("usage-trial-note", detail()!))).toBe("Trial days are free. Costs by group start when the trial ends.");
+    expect(clean(q("usage-trial-days", detail()!))).toBe("12 days left");
+  });
+
+  it("parts keep their group colours at every tone; the limit state is the outline and the total's colour", async () => {
+    const summaries = { ...SUMMARIES, cmp_elm: { pricingPlan: "usage-only", usageTrial: { status: "ended", cardOnFile: false } } };
+    await render(
+      source({
+        getBillingSummary: vi.fn(async (uid: string) => (summaries[uid as keyof typeof summaries] ? ok(summaries[uid as keyof typeof summaries]) : fail("FORBIDDEN"))),
+        getUsageStatement: vi.fn(async (uid: string) => ok(statement(uid === "cmp_elm" ? 880 : USAGE[uid] ?? 0))),
+      }),
+    );
+    const near = bar("cmp_elm")!;
+    const calm = bar("cmp_northwind")!;
+    expect(near.dataset.tone).toBe("near");
+    const colour = (el: Element, id: string) => (el.querySelector(`[data-segment="${id}"]`) as HTMLElement).style.getPropertyValue("--seg");
+    expect(colour(near, "agents")).toBe(colour(calm, "agents"));
+    expect(colour(near, "sync")).toBe(colour(calm, "sync"));
+  });
+
+  it("a limit that falls on the scale is drawn as a tick and labelled at it", async () => {
+    const summaries = { ...SUMMARIES, cmp_northwind: { pricingPlan: "usage-only", usageTrial: { status: "ended", cardOnFile: true } } };
+    await render(
+      source({
+        getBillingSummary: vi.fn(async (uid: string) => (summaries[uid as keyof typeof summaries] ? ok(summaries[uid as keyof typeof summaries]) : fail("FORBIDDEN"))),
+        getUsageStatement: vi.fn(async (uid: string) => ok(statement(uid === "cmp_northwind" ? 1500 : USAGE[uid] ?? 0))),
+        getSpendLimit: vi.fn(async () => ok({ limitCents: 1200, custom: true, paused: false })),
+      }),
+    );
+    const b = bar("cmp_northwind")!;
+    expect((b.querySelector('[data-testid="usage-bar-marker"]') as HTMLElement).style.left).toBe("80%");
+    expect(clean(b.querySelector('[data-testid="usage-bar-marker-label"]'))).toBe("Limit $12.00");
+    expect(b.dataset.tone).toBe("at");
   });
 
   it("with no card the included usage is the limit: amber near it, red and marked when sync is paused", async () => {
@@ -481,5 +520,30 @@ describe("UsageSettingsPane: stacked bars", () => {
     expect(rows).toHaveLength(1);
     expect([...rows[0]!.querySelectorAll("button")].map((b) => b.dataset.testid)).toEqual(["usage-switch-now", "usage-switch-cancel"]);
     expect(q("usage-billing", detail()!)).toBeNull();
+  });
+});
+
+describe("UsageSettingsPane: review follow-ups", () => {
+  it("a group's meters open from the keyboard with a button, not only on hover", async () => {
+    await render(source());
+    await open("cmp_northwind");
+    const toggle = detail()!.querySelector('[data-testid="usage-group-toggle"]') as HTMLButtonElement;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    toggle.click();
+    flushSync();
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle.closest(".group")?.classList.contains("show")).toBe(true);
+  });
+
+  it("a local-only company (no cloud uid) is not listed", async () => {
+    await render(source(), { accounts: [...ACCOUNTS, { kind: "company", uid: null, name: "Local Co", role: "owner" }] });
+    expect(lines().map((l) => l[0])).not.toContain("Local Co");
+  });
+
+  it("a closed line points at no panel; an open one does", async () => {
+    await render(source());
+    expect(header("cmp_northwind").hasAttribute("aria-controls")).toBe(false);
+    await open("cmp_northwind");
+    expect(header("cmp_northwind").getAttribute("aria-controls")).toBe(detail()!.id);
   });
 });

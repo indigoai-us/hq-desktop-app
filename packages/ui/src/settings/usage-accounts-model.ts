@@ -305,13 +305,19 @@ export function rowTotalText(view: AccountRowView | undefined): string {
   if (view.kind === "owner-only") return "Owner only";
   if (view.kind === "unavailable") return "Unavailable";
   if (view.plan === "legacy" || view.plan === "starter") return "No usage bill";
-  if (view.trial && view.trial.usedCents !== null) {
+  if (view.trial) {
+    if (view.trial.usedCents === null) return "Not measured";
     const text = formatUsd(view.trial.usedCents);
     return view.trial.unknownMeters?.length ? `At least ${text}` : text;
   }
   if (!view.usage) return "Unavailable";
   const text = formatUsd(view.usage.usageCents);
-  return view.usage.complete ? text : `At least ${text}`;
+  return usageIsPartial(view.usage) ? `At least ${text}` : text;
+}
+
+/** Same rule as the Core menu: an incomplete month or any unreported group makes the total a floor. */
+export function usageIsPartial(usage: AccountUsage): boolean {
+  return !usage.complete || usage.groups.some((g) => g.partial || g.cents === null);
 }
 
 export async function readPricing(source: UsageAccountsSource | null | undefined): Promise<UsagePricing | null> {
@@ -501,11 +507,12 @@ export function lineBar(view: AccountRowReady, spend: SpendLimitDetail | null | 
     const cap = view.trial.capCents;
     const used = view.trial.usedCents;
     if (cap === null || used === null) return null;
+    // The bar's end is the cap, named by the helper; no separate marker.
     return {
       segments: [{ id: "trial", label: "Trial usage", cents: used }],
       scaleCents: Math.max(cap, used, 1),
       includedCents: null,
-      marker: { cents: cap, label: `Trial cap ${formatUsd(cap)}` },
+      marker: null,
       tone: toneFor(used, cap, paused),
       helper: `of ${formatUsd(cap)} trial cap`,
     };
@@ -514,11 +521,14 @@ export function lineBar(view: AccountRowReady, spend: SpendLimitDetail | null | 
   const { usageCents, allowanceCents } = view.usage;
   const limit = spend && !spend.noLimit ? spend.limitCents : null;
   const toneLimit = view.cardOnFile === true ? limit : allowanceCents;
+  const scaleCents = Math.max(allowanceCents, usageCents, 1);
   return {
     segments: view.usage.groups.map((g) => ({ id: g.id, label: g.label, cents: g.cents ?? 0 })),
-    scaleCents: Math.max(allowanceCents, usageCents, 1),
+    scaleCents,
     includedCents: allowanceCents > 0 ? allowanceCents : null,
-    marker: limit !== null ? { cents: limit, label: `Limit ${formatUsd(limit)}` } : null,
+    // A limit is marked on the line only when it falls on the bar's scale;
+    // a limit far past this month's usage is in the detail instead.
+    marker: limit !== null && limit <= scaleCents ? { cents: limit, label: `Limit ${formatUsd(limit)}` } : null,
     tone: toneFor(usageCents, toneLimit, paused),
     helper: `of ${formatUsd(allowanceCents)} included`,
   };

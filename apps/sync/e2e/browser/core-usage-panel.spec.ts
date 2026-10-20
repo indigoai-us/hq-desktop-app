@@ -30,7 +30,7 @@ test('with no company open the meter shows the personal account, with Personal a
   await expect(panel).toHaveAttribute('data-state', 'ready', { timeout: 10_000 });
   await expect(page.getByTestId('core-usage-company')).toHaveText('Personal');
   await expect(page.getByTestId('core-usage-used')).toHaveText('$3.40 of $10.00 free');
-  await expect(page.getByTestId('core-usage-top-label')).toHaveText('Top 5 by usage this month');
+  await expect(page.getByTestId('core-usage-top-label')).toHaveText('Top 5 companies by usage this month');
   const rows = page.getByTestId('core-usage-account');
   await expect(rows).toHaveCount(2);
   await expect(rows.nth(0)).toContainText('Personal');

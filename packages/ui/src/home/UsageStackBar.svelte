@@ -5,11 +5,12 @@
    * coloured part, so the bar shows both how much is used and where it went,
    * against a scale (the $10 included, or the trial cap). Every effect states
    * something:
-   * - Colour: the groups when calm; amber from 80% of a limit and red at the
-   *   limit or when sync is paused (`tone`), so the bar alone says "careful".
-   * - Marker: a labelled tick for the spend limit or trial cap. A limit past
-   *   the end of the scale is named at the bar's end with an arrow.
-   * - Included tick: where the $10 included ends once usage has passed it.
+   * - Colour: each part is always its group's colour, matching the legend
+   *   dots and the group bars. Limit state is a thin outline (amber from 80%
+   *   of a limit, red at it or when sync is paused) and the marker's colour.
+   * - Ticks: the limit (when it falls on the scale) and, once usage has
+   *   passed it, the end of the included usage. Each is labelled at its tick;
+   *   nothing is labelled off the bar.
    * - Fill: grows from the old total to the new one when a total changes, and
    *   from empty when `grow="mount"` (a line that just opened). Nothing moves
    *   on a first paint otherwise, and nothing moves under reduced motion.
@@ -51,9 +52,22 @@
       .filter((s) => s.cents > 0)
       .map((s) => ({ ...s, pct: Math.min(100, (Math.max(0, s.cents) / scale) * 100) })),
   );
-  const markerPct = $derived(marker ? (marker.cents / scale) * 100 : null);
+  /** A limit is drawn only where it falls on the scale. */
+  const markerPct = $derived(marker && marker.cents >= 0 && marker.cents <= scale ? (marker.cents / scale) * 100 : null);
   const includedPct = $derived(
     includedCents !== null && includedCents > 0 && includedCents < scale ? (includedCents / scale) * 100 : null,
+  );
+  /** Labels under the bar, anchored so they never run past either end. */
+  const labels = $derived(
+    size !== "lg"
+      ? []
+      : [
+          ...(markerPct !== null && marker ? [{ id: "marker", pct: markerPct, text: marker.label }] : []),
+          // Two labels this close would collide; the limit wins.
+          ...(includedPct !== null && includedCents !== null && (markerPct === null || Math.abs(markerPct - includedPct) > 22)
+            ? [{ id: "included", pct: includedPct, text: `Included ${(includedCents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })}` }]
+            : []),
+        ].map((l) => ({ ...l, anchor: l.pct > 78 ? "end" : l.pct < 22 ? "start" : "middle" })),
   );
   const spoken = $derived(
     label ||
@@ -98,17 +112,16 @@
     {#if includedPct !== null}
       <span class="tick included" style={`left:${includedPct}%`} title="Included usage ends here"></span>
     {/if}
-    {#if marker && markerPct !== null && markerPct <= 100}
-      <span class="tick marker" style={`left:${Math.max(0, markerPct)}%`} data-testid="usage-bar-marker"></span>
+    {#if markerPct !== null}
+      <span class="tick marker" style={`left:${markerPct}%`} data-testid="usage-bar-marker"></span>
     {/if}
   </span>
-  {#if marker && size === "lg"}
-    <span
-      class="marker-label"
-      class:beyond={markerPct !== null && markerPct > 100}
-      style={markerPct !== null && markerPct <= 100 ? `left:${Math.max(0, markerPct)}%` : undefined}
-      data-testid="usage-bar-marker-label"
-    >{marker.label}{markerPct !== null && markerPct > 100 ? " ›" : ""}</span>
+  {#if labels.length}
+    <span class="labels">
+      {#each labels as l (l.id)}
+        <span class="tick-label" data-anchor={l.anchor} style={`left:${l.pct}%`} data-testid={`usage-bar-${l.id}-label`}>{l.text}</span>
+      {/each}
+    </span>
   {/if}
 </span>
 
@@ -150,7 +163,6 @@
     flex: none;
     height: 100%;
     background: var(--seg);
-    transition: background-color 240ms ease;
   }
 
   /* A hairline between parts keeps the split readable at any tone. */
@@ -158,24 +170,14 @@
     box-shadow: inset 2px 0 0 var(--v4-popover-strong, var(--elevated, rgba(0, 0, 0, 0.35)));
   }
 
-  /* Near a limit every part turns amber, at it (or paused) red; the parts
-     keep stepped strengths so the split still reads. */
-  .stack[data-tone="near"] .seg {
-    background: var(--warn, #f0a800);
+  /* Limit state never re-tints the parts (they stay their group colour);
+     a thin outline says it: amber near a limit, red at it or paused. */
+  .stack[data-tone="near"] .track {
+    box-shadow: 0 0 0 1.5px var(--warn, #f0a800);
   }
 
-  .stack[data-tone="at"] .seg {
-    background: var(--v4-error, var(--red, #dc2626));
-  }
-
-  .stack[data-tone="near"] .seg:nth-child(2),
-  .stack[data-tone="at"] .seg:nth-child(2) {
-    opacity: 0.78;
-  }
-
-  .stack[data-tone="near"] .seg:nth-child(3),
-  .stack[data-tone="at"] .seg:nth-child(3) {
-    opacity: 0.56;
+  .stack[data-tone="at"] .track {
+    box-shadow: 0 0 0 1.5px var(--v4-error, var(--red, #dc2626));
   }
 
   .tick {
@@ -207,29 +209,34 @@
     background: var(--t3, rgba(127, 127, 127, 0.6));
   }
 
-  .marker-label {
+  .labels {
+    position: relative;
+    display: block;
+    height: 14px;
+    margin-top: 4px;
+  }
+
+  .tick-label {
     position: absolute;
-    top: calc(100% + 3px);
-    transform: translateX(-100%);
-    color: var(--t3, var(--t2));
-    font-size: 10px;
-    line-height: 1.2;
+    top: 0;
+    transform: translateX(-50%);
+    color: var(--t2);
+    font-size: 10.5px;
+    line-height: 14px;
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }
 
-  .marker-label.beyond {
-    right: 0;
+  .tick-label[data-anchor="end"] {
+    transform: translateX(-100%);
+  }
+
+  .tick-label[data-anchor="start"] {
     transform: none;
   }
 
-  .stack:has(.marker-label) {
-    padding-bottom: 14px;
-  }
-
   @media (prefers-reduced-motion: reduce) {
-    .fill,
-    .seg {
+    .fill {
       transition: none;
     }
   }

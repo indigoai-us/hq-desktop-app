@@ -36,6 +36,7 @@
     usageAccountKey,
     type UsageAccount,
     cachedCoreUsageAt,
+    coreUsageGeneration,
     staleUsageLine,
     canReadBilling,
     canSetUpBilling,
@@ -132,8 +133,11 @@
   const top = $derived(topUsageAccounts(accounts, rowViews, TOP_USAGE_COMPANIES));
 
   // The list shows as soon as the menu opens, so the row totals are read on
-  // mount (cached reads paint at once).
+  // mount and whenever the accounts or their roles change (cached totals
+  // paint at once, then are read again).
+  const accountsKey = $derived(accounts.map((a) => `${usageAccountKey(a)}:${a.role ?? ""}`).join("|"));
   $effect(() => {
+    void accountsKey;
     if (!listed) return;
     untrack(() => loadRows());
   });
@@ -167,6 +171,7 @@
     shownUid = key;
     const uid = key;
     let cancelled = false;
+    const generation = coreUsageGeneration();
     void readAccountUsage(api as never, acct, {
       ...(delays ? { delays } : {}),
       cancelled: () => cancelled,
@@ -181,7 +186,7 @@
       }
       view = next;
       staleAt = undefined;
-      rememberCoreUsage(uid, next);
+      rememberCoreUsage(uid, next, Date.now(), generation);
       rowViews = { ...rowViews, [uid]: next };
     });
     return () => {
@@ -203,6 +208,20 @@
   const notice = $derived(view.kind === "ready" ? view.notice : null);
   /** Sync is paused: the bar turns red whatever the share used. */
   const paused = $derived(notice?.kind === "paused-trial-cap" || notice?.kind === "paused-card-required");
+  /**
+   * The bar's state: red when paused; otherwise against the included usage
+   * (or the trial cap). With a card on file, passing the included usage is
+   * ordinary billing, so the month bar stays calm.
+   */
+  const meterTone = $derived(
+    view.kind !== "ready" || !view.usage
+      ? "ok"
+      : paused
+        ? "at"
+        : view.usage.mode === "allowance" && view.paid
+          ? "ok"
+          : view.usage.tone,
+  );
   // An admin can't read whether a card is on file (the summary is
   // owner-only), so the admin button names both cases instead of implying
   // there is no card yet.
@@ -264,19 +283,21 @@
         rowViews = { ...rowViews, [key]: { kind: "owner-only", companyName: acct.name } };
         continue;
       }
-      const cached = cachedCoreUsage(key);
-      if (cached) {
-        rowViews = { ...rowViews, [key]: cached };
-        continue;
-      }
       // The shown account's row is filled by the meter's own read.
-      if (key === currentKey && view.kind === "loading") {
-        rowViews = { ...rowViews, [key]: view };
+      if (key === currentKey) {
+        rowViews = { ...rowViews, [key]: view.kind === "loading" ? (cachedCoreUsage(key) ?? view) : view };
         continue;
       }
-      rowViews = { ...rowViews, [key]: { kind: "loading", companyName: acct.name } };
+      // Paint the last good total at once, then always read it again, so a
+      // menu left open for days never ranks last month's totals.
+      const cached = cachedCoreUsage(key);
+      rowViews = { ...rowViews, [key]: cached ?? { kind: "loading", companyName: acct.name } };
+      const generation = coreUsageGeneration();
       void readAccountUsage(source as never, acct, { delays: [] }).then((next) => {
-        rememberCoreUsage(key, next);
+        rememberCoreUsage(key, next, Date.now(), generation);
+        if (generation !== coreUsageGeneration()) return;
+        // A failed re-read keeps the last good total on screen.
+        if (next.kind === "unavailable" && cached) return;
         rowViews = { ...rowViews, [key]: next };
       });
     }
@@ -344,10 +365,12 @@
   </div>
 
   {#if listed}
-    <p class="core-usage-top-label" data-testid="core-usage-top-label">Top {TOP_USAGE_COMPANIES} by usage this month</p>
-    <ul class="core-usage-accounts" role="listbox" aria-label="Accounts" data-testid="core-usage-accounts" data-ranked={String(top.ranked)}>
-      {#each top.rows as acct (usageAccountKey(acct))}
+    <ul class="core-usage-accounts" role="listbox" aria-label={`Personal and the top ${TOP_USAGE_COMPANIES} companies by usage this month`} data-testid="core-usage-accounts" data-ranked={String(top.ranked)}>
+      {#each top.rows as acct, i (usageAccountKey(acct))}
         {@const key = usageAccountKey(acct)}
+        {#if acct.kind === "company" && (i === 0 || top.rows[i - 1]?.kind === "personal")}
+          <li class="core-usage-top-label" role="presentation" data-testid="core-usage-top-label">Top {TOP_USAGE_COMPANIES} companies by usage this month</li>
+        {/if}
         <li>
           <button
             type="button"
@@ -416,7 +439,7 @@
       segments={usage.segments}
       scaleCents={usage.scaleCents}
       includedCents={usage.includedCents}
-      tone={paused ? "at" : usage.tone}
+      tone={meterTone}
       size="md"
       role="meter"
       aria-label={usage.mode === "trial" ? "Trial usage used" : "Included usage used"}
@@ -427,7 +450,7 @@
       data-mode={usage.mode}
     />
     <div class="core-usage-totals">
-      <span data-testid="core-usage-used" data-partial={usage.partial ? "true" : undefined}>{usage.usedLine}</span>
+      <span class="core-usage-used" data-testid="core-usage-used" data-tone={meterTone} data-partial={usage.partial ? "true" : undefined}>{usage.usedLine}</span>
       {#if usage.resetLine}
         <span data-testid="core-usage-reset">{usage.resetLine}</span>
       {/if}
@@ -544,10 +567,20 @@
     flex: none;
   }
 
+  /* The used line takes the bar's state colour, so the words and the bar agree. */
+  .core-usage-used[data-tone="near"] {
+    color: var(--warn-ink, var(--warn, #b45309));
+  }
+
+  .core-usage-used[data-tone="at"] {
+    color: var(--v4-error, var(--red, #dc2626));
+  }
+
   .core-usage-top-label {
-    margin: 2px 0 0;
+    margin: 6px 0 2px;
+    padding: 0 8px;
     font-size: 11px;
-    color: var(--t3);
+    color: var(--t2);
   }
   .core-usage-accounts {
     display: flex;
