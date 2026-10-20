@@ -611,6 +611,8 @@ export function cloudFileErrorCopy(code: string | null | undefined, device: stri
       return "Update HQ to open files stored in HQ cloud.";
     case "open-failed":
       return `It downloaded, but no app on ${device} could open it.`;
+    case "cloud-off":
+      return "Sync is off for this file's vault, so HQ can't download it. Turn it back on in Settings › Sync.";
     default:
       return "We couldn't download it. Try again in a moment.";
   }

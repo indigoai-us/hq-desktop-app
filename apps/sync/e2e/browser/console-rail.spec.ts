@@ -138,13 +138,14 @@ test.describe('console rail: full user path', () => {
     const menu = page.getByTestId('account-menu');
     await expect(menu).toBeVisible();
     // OWNER-R21: the menu is the name block (opens Settings at Profile), one
-    // Settings entry and Sign out; Profile and Billing rows moved into the
+    // Settings entry, one Sync entry (usage-only-pricing US-016: Settings ›
+    // Sync in one click) and Sign out; Profile and Billing rows moved into the
     // Settings list. Focus lands on the first item, the name block.
     await expect(page.getByTestId('account-identity')).toBeFocused();
-    for (const id of ['account-identity', 'account-settings', 'account-sign-out']) {
+    for (const id of ['account-identity', 'account-settings', 'account-sync', 'account-sign-out']) {
       await expect(page.getByTestId(id)).toBeVisible();
     }
-    await expect(menu.getByRole('menuitem')).toHaveCount(3);
+    await expect(menu.getByRole('menuitem')).toHaveCount(4);
     for (const id of ['account-profile', 'account-billing']) {
       await expect(page.getByTestId(id)).toHaveCount(0);
     }
@@ -153,6 +154,15 @@ test.describe('console rail: full user path', () => {
     await expect(page.getByTestId('confirm-dialog')).toBeVisible();
     await page.getByTestId('confirm-dialog-ok').click();
     await expect(menu).toHaveCount(0);
+  });
+
+  test('avatar menu Sync entry opens the Sync settings vault list', async ({ page }) => {
+    await openShell(page);
+    await page.getByTestId('rail-you').click();
+    await page.getByTestId('account-sync').click();
+    await expect(page.getByTestId('account-menu')).toHaveCount(0);
+    await expect(page.getByTestId('settings-vault-sync')).toBeVisible();
+    await expect(page.getByTestId('settings-vault-row-personal')).toBeVisible();
   });
 });
 

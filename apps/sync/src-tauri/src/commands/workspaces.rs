@@ -872,7 +872,19 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
         };
         workspace
     })
-    .collect();
+    .collect::<Vec<_>>();
+
+    // Save company display names so a "Sync is off for" refusal from a
+    // one-off sync path (which knows only the slug) names the company the way
+    // this list does (US-016). Best effort.
+    if let Err(e) = hq_desktop_core::vault_sync::save_company_display_names(
+        workspaces
+            .iter()
+            .filter(|w| w.kind == WorkspaceKind::Company)
+            .map(|w| (w.slug.as_str(), w.display_name.as_str())),
+    ) {
+        log("workspaces", &format!("company names not saved: {e}"));
+    }
 
     Ok(WorkspacesResult {
         workspaces,

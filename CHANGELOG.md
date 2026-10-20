@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Settings › Sync now has one place to turn cloud sync off on this computer, so its syncs stop counting toward your bill (storage and vault fees still apply, and teammates who sync still add usage): a switch for your personal vault, a switch for each company vault you belong to, and one "Turn off all cloud sync" switch. Each switch says what turning it off does. An off vault shows "Sync is off for <vault>" and how to turn it back on, and other vaults keep syncing. The choice applies only to this computer, survives restarts and app updates, and the `hq sync` command honours it. Sign-in, messages, deploys and local HQ keep working. The Core menu's usage panel and the account menu open this section in one click.
+
 ## [0.11.15] — 2026-10-20
 
 - Bots: in a cloud bot's Brain tab, a provider the bot is not signed in to now shows "Not connected" instead of "Status unavailable".

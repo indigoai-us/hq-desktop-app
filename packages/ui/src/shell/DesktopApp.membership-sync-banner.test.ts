@@ -195,6 +195,32 @@ describe("DesktopApp membership sync", () => {
     expect(banner()).toBeNull();
   });
 
+  it("never pulls or offers a company whose sync is switched off on this computer (US-016)", async () => {
+    const switchedOff = workspace({
+      slug: "initech",
+      displayName: "Initech",
+      cloudUid: "cmp_initech",
+      bucketName: "hq-initech",
+      syncEnabled: false,
+    });
+    const events = createSyncEventHost();
+    await mountApp([switchedOff, joinableCompany], events.host);
+    expect(startSync).toHaveBeenCalledTimes(1);
+    expect(startSync).toHaveBeenCalledWith("acme");
+    events.emit("sync:complete", { company: "acme" });
+    await settle();
+    expect(startSync, "the switched-off company is not pulled next").toHaveBeenCalledTimes(1);
+    expect(startSync).not.toHaveBeenCalledWith("initech");
+    expect(banner(), "and is not offered as a pull").toBeNull();
+  });
+
+  it("does nothing when the only new company has sync switched off (US-016)", async () => {
+    await mountApp([workspace({ syncEnabled: false })]);
+    await settle(12);
+    expect(startSync).not.toHaveBeenCalled();
+    expect(banner()).toBeNull();
+  });
+
   it("pulls each new company once, one after another", async () => {
     const second = workspace({
       slug: "initech",
