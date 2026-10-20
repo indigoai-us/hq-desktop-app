@@ -723,8 +723,10 @@
   import {
     applyUiSize,
     applyWindowOpacity,
+    currentColorTheme,
     hasAppearanceHost,
   } from "../settings/shell-settings-model.js";
+  import { APPEARANCE_CHANGE_EVENT } from "../settings/appearance-seam.js";
   import { restoreStoredColorTheme } from "../settings/settings-theme-seam.js";
   import {
     readSettingsPrefs,
@@ -4431,7 +4433,7 @@
         }
       : null;
   /** The finished scan's counts and report path, for the setup bot's handoff. */
-  let firstRunImport: FirstRunImportHandoff | null = null;
+  let firstRunImport = $state<FirstRunImportHandoff | null>(null);
   function recordFirstRunImport(result: FirstRunImportHandoff): void {
     firstRunImport = result;
   }
@@ -4852,9 +4854,31 @@
           detect: () => welcomeAppsHost.detect(),
           cli: { claudeCode: Boolean(aiTools?.claude_cli), codex: Boolean(aiTools?.codex_cli) },
           anywhereOnId: briefInstallView === "installed" ? briefOpenToolConnectorId(briefOpenTool) : null,
+          onopenaiapps: () => openSettings("agents"),
         }
       : null,
   );
+  /**
+   * The app theme for the welcome report: the appearance setting, with
+   * "system" resolved here so the report never reads the OS scheme itself.
+   * Follows every appearance change and, on "system", the OS switching.
+   */
+  let welcomeTheme = $state<"dark" | "light">("dark");
+  $effect(() => {
+    const root = document.documentElement;
+    const scheme = typeof window.matchMedia === "function" ? window.matchMedia("(prefers-color-scheme: light)") : null;
+    const read = (): void => {
+      const chosen = currentColorTheme(root);
+      welcomeTheme = chosen === "system" ? (scheme?.matches ? "light" : "dark") : chosen;
+    };
+    read();
+    window.addEventListener(APPEARANCE_CHANGE_EVENT, read);
+    scheme?.addEventListener?.("change", read);
+    return () => {
+      window.removeEventListener(APPEARANCE_CHANGE_EVENT, read);
+      scheme?.removeEventListener?.("change", read);
+    };
+  });
   // The cards and the AI apps card need launch detection; ask for it once the report shows.
   // The call is untracked: a host whose request reads its own state (a probing flag) would
   // otherwise re-run this effect when that state changes and probe forever after a failure.
@@ -16364,6 +16388,7 @@
               onsetup={welcomeReportNeedsAssistant ? openWelcomeSetup : null}
               madeBy={welcomeMadeByLine}
               aiApps={welcomeAiApps}
+              theme={welcomeTheme}
               session={welcomeConnectSession}
               blocked={welcomeReportBlocked}
               openTool={briefOpenToolAction}

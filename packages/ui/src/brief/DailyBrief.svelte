@@ -40,13 +40,21 @@
   import BriefHousekeeping from "./BriefHousekeeping.svelte";
   import BriefActionCard from "./BriefActionCard.svelte";
   import BriefConnectApps from "./BriefConnectApps.svelte";
-  import BriefWelcomeEdition from "./BriefWelcomeEdition.svelte";
+  import FirstViewWhere from "./FirstViewWhere.svelte";
+  import FirstViewConnect from "./FirstViewConnect.svelte";
+  import FirstViewOneThing from "./FirstViewOneThing.svelte";
+  import FirstViewRecent from "./FirstViewRecent.svelte";
+  import FirstViewWatch from "./FirstViewWatch.svelte";
   import { getWelcomeAiApps } from "./welcome-ai-apps.js";
-  import { welcomeEdition } from "./brief-welcome-edition.js";
+  import { matchFoundApps } from "../chat/first-run/found-apps.js";
+  import { yourAppsView } from "../chat/first-run/your-apps.js";
+  import { buildFirstView, type FirstViewConnectMode } from "./brief-first-view.js";
+  import { FV_QUIET_LINE, firstViewOpenFailed, firstViewStats, firstViewSub } from "./brief-first-view-copy.js";
+  import { WELCOME_HARNESS_NAME, type WelcomeAction, type WelcomeHarnessId } from "./brief-welcome-contract.js";
   import type { BriefWelcome } from "./brief-welcome.js";
   import type { FirstViewData } from "./brief-first-view-load.js";
   import { actionCardData, type BriefActions } from "./brief-action-cards.js";
-  import type { Snippet } from "svelte";
+  import { onDestroy, untrack, type Snippet } from "svelte";
   import type { BriefHousekeeping as BriefHousekeepingData } from "./brief-run-files.js";
   import type { BriefDmApi } from "./brief-dms.js";
   import {
@@ -104,10 +112,10 @@
     welcome?: BriefWelcome | null;
     /** Opens the start-or-join-a-company flow from the edition's company action. */
     onconnectcompany?: () => void;
-    /** Inside the welcome report: the first view's reads for `buildFirstView` (not drawn yet). */
+    /** Inside the welcome report: the run's `welcome` row and the import report on disk, the first view's one data source. */
     firstViewData?: FirstViewData | null;
   }
-  let { input, companies = [], onlaunch, header, tools, sectionOnly = false, summaryOnly = false, clearedItemIds = [], housekeeping = null, dmApi = null, onopenthread, onopenmeetings, onlog, actions = null, welcome = null, onconnectcompany }: Props = $props();
+  let { input, companies = [], onlaunch, header, tools, sectionOnly = false, summaryOnly = false, clearedItemIds = [], housekeeping = null, dmApi = null, onopenthread, onopenmeetings, onlog, actions = null, welcome = null, onconnectcompany, firstViewData = null }: Props = $props();
 
   const briefState = new BriefState(
     (engine, prompt) => (onlaunch ?? launchBriefPromptViaClipboard)(engine, prompt),
@@ -326,33 +334,196 @@
     }
   }
 
-  /** Inside the welcome report: "Connect your AI apps" after the action cards. */
+  /** Inside the welcome report the brief opens as its first view (welcome-ai-apps context). */
   const welcomeAiApps = getWelcomeAiApps();
-  /** Inside the welcome report, outside review mode: the round 11b welcome edition replaces the grid. */
-  const edition = $derived(
-    welcomeAiApps && !allCards && !sectionOnly && !summaryOnly
-      ? welcomeEdition(
-          input.runStats ? input : { ...input, runStats: welcomeAiApps.current?.runStats ?? null },
-          plan.prompts,
-          new Map(companies.flatMap((c) => [[c.uid.toLowerCase(), c.label] as [string, string], ...(c.slug ? [[c.slug.toLowerCase(), c.label] as [string, string]] : [])])),
-          welcome ? { fields: welcome.fields, error: !!welcome.error } : null,
-        )
+  /**
+   * Where Connect goes: "settings" opens the existing Integrations page (or the
+   * AI-apps settings for a harness); "expand" opens the connect section inside
+   * the card. One-line swap.
+   */
+  const CONNECT_MODE = "settings" as FirstViewConnectMode;
+  const fvOn = $derived(!!welcomeAiApps && !allCards && !sectionOnly && !summaryOnly);
+  // The suggested integrations' source, shared with the connect section: the
+  // launch scan, and the company's apps so connected ones stay out.
+  $effect(() => {
+    const cur = welcomeAiApps?.current;
+    const s = cur?.session;
+    if (!fvOn || !cur || !s) return;
+    const suggest = cur.suggest;
+    untrack(() => {
+      s.detectOnce(cur.detect);
+      if (suggest) s.setCompany(suggest.host, suggest.company?.uid ?? null);
+    });
+  });
+  /** The work apps the launch scan found (GitHub, Linear, Slack...), less the ones already connected. */
+  const fvSuggested = $derived.by((): { slug: string; name: string }[] => {
+    const cur = welcomeAiApps?.current;
+    const s = cur?.session;
+    if (!fvOn || !cur?.suggest || !s?.scan) return [];
+    const matched = matchFoundApps(s.scan);
+    const found = matched.apps.filter((app) => !app.excluded);
+    const load = cur.suggest.company ? s.load : null;
+    const connected = new Set(
+      load
+        ? yourAppsView({
+            found,
+            unmatched: matched.unmatched,
+            catalog: load.catalog,
+            connections: load.connections,
+            installations: load.installations,
+            canManage: load.canManage,
+            runs: s.runs,
+            evidence: () => "",
+          }).connected.map((c) => c.domain)
+        : Object.entries(s.runs).flatMap(([domain, r]) => (r.state === "connected" ? [domain] : [])),
+    );
+    return found.filter((app) => !connected.has(app.domain)).map((app) => ({ slug: app.domain, name: app.name }));
+  });
+  const FV_HARNESSES: readonly WelcomeHarnessId[] = ["claude-code", "codex", "cursor"];
+  /** The harness whose HQ connection is on in Settings: shown Connected, never Connect. */
+  const fvConnectedAi = $derived(FV_HARNESSES.filter((h) => h === welcomeAiApps?.current?.anywhereOnId));
+  /** The harnesses whose CLI is installed here, found even with no history. */
+  const fvInstalled = $derived.by((): WelcomeHarnessId[] => {
+    const cli = welcomeAiApps?.current?.cli;
+    return FV_HARNESSES.filter((h) => (h === "claude-code" && cli?.claudeCode) || (h === "codex" && cli?.codex));
+  });
+  /**
+   * Inside the welcome report, outside review mode: the first view. The same
+   * page (head, greeting row, grid) with the first-view cards in its slots.
+   */
+  const firstView = $derived(
+    fvOn
+      ? buildFirstView({
+          welcome: firstViewData?.welcome ?? null,
+          importReport: firstViewData?.importReport ?? null,
+          suggestedApps: fvSuggested,
+          connectedAiApps: fvConnectedAi,
+          canRun: canRunWelcome,
+          now: input.now,
+          userName: input.userName ?? null,
+          connectMode: CONNECT_MODE,
+        })
       : null,
   );
-  /** The edition opens the connect card from its own action, so the trailing card stays out. */
-  const editionConnects = $derived(
-    !!edition?.cards.some((c) =>
-      [c.action, ...(c.rows ?? []).map((r) => r.action)].some((a) => a?.kind === "welcome" && (a.action.kind === "connect_ai_apps" || a.action.kind === "connect_integration")),
-    ),
+  const fvStats = $derived(firstView ? firstViewStats(firstView) : []);
+  /**
+   * The first view's grid areas: the sunrise and Connect on top, One thing
+   * with the watch list under it beside your recent work, so One thing is
+   * sized to its content. `wide` is six columns, `narrow` four.
+   */
+  const fvAreas = $derived.by(() => {
+    if (!firstView) return { wide: "", narrow: "" };
+    const one = !!firstView.oneThing;
+    const risk = firstView.watchList.length > 0;
+    const focus = firstView.recentWork.length > 0 || firstView.topProjects.length > 0;
+    const row = (cells: string[]) => `"${cells.join(" ")}"`;
+    const fill = (names: string[], cols: number) => names.flatMap((n, i) => Array(Math.floor(cols / names.length) + (i < cols % names.length ? 1 : 0)).fill(n));
+    const side = [one && "oneThing", risk && "risk"].filter(Boolean) as string[];
+    const wide = [row([...Array(4).fill("sunrise"), "connect", "connect"])];
+    // Narrow windows use five columns so the Connect card keeps room for its status words on one line.
+    const narrow = [row(["sunrise", "sunrise", "sunrise", "connect", "connect"])];
+    if (focus && side.length) for (const n of side) wide.push(row([n, n, ...Array(4).fill("focus")]));
+    else if (focus) wide.push(row(Array(6).fill("focus")));
+    else if (side.length) wide.push(row(fill(side, 6)));
+    if (side.length) narrow.push(row(fill(side, 5)));
+    if (focus) narrow.push(row(Array(5).fill("focus")));
+    return { wide: wide.join(" "), narrow: narrow.join(" ") };
+  });
+  /** "expand" mode: the connect section shows inside the card once Connect is pressed. */
+  let connectOpen = $state(false);
+  /**
+   * A Connect the person started before the report was ready (a sign-in, or
+   * one waiting on a new company) keeps the connect section open in the
+   * Connect card, so it finishes there. Latched: it stays once the run lands.
+   */
+  let fvCarried = $state(false);
+  $effect(() => {
+    const s = welcomeAiApps?.current?.session;
+    if (!fvCarried && s && (!!s.pending || Object.values(s.runs).some((r) => r.state === "connecting" || r.state === "checking-docs"))) fvCarried = true;
+  });
+  /** Open actions in flight, so a double click opens one session. */
+  let fvBusy = $state<Record<string, boolean>>({});
+  /** The plain line an open came back with when the harness could not open. */
+  let fvError = $state<string | null>(null);
+  /** The open that failed, for Try again. */
+  let fvRetry = $state<{ harness: WelcomeHarnessId; prompt: string } | null>(null);
+  const canOpenHarness = (h: WelcomeHarnessId): boolean => !!welcomeAiApps?.openHarness?.harnesses.includes(h);
+  function canRunWelcome(a: WelcomeAction): boolean {
+    switch (a.kind) {
+      case "connect_ai_apps":
+        return !!welcomeAiApps?.current?.onopenaiapps || (CONNECT_MODE === "expand" && !!welcomeAiApps?.current);
+      case "connect_integration":
+        return !!welcomeAiApps?.current?.suggest || (CONNECT_MODE === "expand" && !!welcomeAiApps?.current);
+      case "open_harness":
+        return !!a.harness && canOpenHarness(a.harness);
+      case "connect_company":
+        return !!onconnectcompany;
+      default:
+        return !!a.launch_prompt;
+    }
+  }
+  async function openHarness(harness: WelcomeHarnessId, prompt = ""): Promise<void> {
+    const open = welcomeAiApps?.openHarness;
+    if (!open || fvBusy[harness]) return;
+    fvBusy = { ...fvBusy, [harness]: true };
+    try {
+      fvError = null;
+      fvRetry = null;
+      fvError = await open.open(harness, prompt);
+    } catch (err) {
+      console.warn("[hq-desktop] first view open threw:", err);
+      fvError = firstViewOpenFailed(WELCOME_HARNESS_NAME[harness]);
+    } finally {
+      if (fvError) fvRetry = { harness, prompt };
+      fvBusy = { ...fvBusy, [harness]: false };
+    }
+  }
+  /** Integrations Connect: the company's Integrations page, after the new-company sheet when there is no company yet. */
+  async function connectIntegration(): Promise<void> {
+    if (CONNECT_MODE === "expand") {
+      connectOpen = !connectOpen;
+      return;
+    }
+    const suggest = welcomeAiApps?.current?.suggest;
+    if (!suggest) return;
+    const uid = suggest.company?.uid ?? (await suggest.onnewcompany?.()) ?? null;
+    if (uid) suggest.onopenintegrations?.(uid);
+  }
+  /** AI-app Connect: the AI-apps settings. */
+  function connectAi(): void {
+    if (CONNECT_MODE === "expand") {
+      connectOpen = !connectOpen;
+      return;
+    }
+    welcomeAiApps?.current?.onopenaiapps?.();
+  }
+  function runWelcome(a: WelcomeAction): void {
+    if (a.kind === "open_harness" && a.harness) void openHarness(a.harness, a.launch_prompt);
+    else if (a.kind === "connect_ai_apps") connectAi();
+    else if (a.kind === "connect_integration") void connectIntegration();
+    else if (a.kind === "connect_company") onconnectcompany?.();
+  }
+  const welcomeActionLabel = (a: WelcomeAction): string | null =>
+    a.kind === "open_harness" ? "Open" : a.kind === "connect_ai_apps" || a.kind === "connect_integration" ? "Connect" : a.kind === "connect_company" ? "Set up" : null;
+  // The first view shows an open action it can run, so the report leaves out its own bar.
+  // Claimed while the first view first renders, so the bar never shows for a frame.
+  const fvShowsOpen = $derived(
+    !!firstView && [firstView.whereYouWork.open, firstView.oneThing].some((a) => a?.kind === "open_harness" && canRunWelcome(a)),
   );
+  let fvRelease: (() => void) | null = untrack(() => fvShowsOpen) ? (welcomeAiApps?.claimOpenTool?.() ?? null) : null;
+  $effect(() => {
+    if (fvShowsOpen && !fvRelease) fvRelease = welcomeAiApps?.claimOpenTool?.() ?? null;
+    if (!fvShowsOpen && fvRelease) {
+      fvRelease();
+      fvRelease = null;
+    }
+  });
+  onDestroy(() => fvRelease?.());
 </script>
 
 <svelte:window onkeydown={onkey} />
 
 <div class="daily-brief" data-testid="daily-brief" data-lead={plan.lead} data-density={plan.density} data-template={plan.template} data-daytype={plan.dayType}>
-  {#if edition}
-  <BriefWelcomeEdition {edition} now={nowDate} onlaunch={(id, prompt) => briefState.start(id, prompt)} launched={launchedNote} {onopenmeetings} {onconnectcompany} />
-  {:else}
   {#if !sectionOnly}
   <header class="b-head">
     <div class="b-brand">
@@ -371,12 +542,51 @@
           >Why these cards</span
         >{/if}
       <!-- A quiet pointer to review mode, left of the run button; review mode has its own bar. -->
-      {#if !allCards}<span class="b-hint" data-testid="brief-review-hint" aria-label="Shift+A to view every card"><kbd>Shift</kbd><kbd>A</kbd><span>to view every card</span></span>{/if}
+      {#if firstView}<span class="b-hint" data-testid="first-view-hint">Your first brief</span>
+      {:else if !allCards}<span class="b-hint" data-testid="brief-review-hint" aria-label="Shift+A to view every card"><kbd>Shift</kbd><kbd>A</kbd><span>to view every card</span></span>{/if}
       {#if tools}{@render tools()}{/if}
     </div>
   </header>
 
-  <section class="b-top">
+  <section class="b-top" class:fv-top={!!firstView}>
+    {#if firstView}
+    {@const fv = firstView}
+    <div class="b-hello">
+      <h1 class="b-greet" data-testid="brief-greeting">{fv.greeting}</h1>
+      {#if fv.countLine}<p class="fv-line" data-testid="first-view-count-line">{fv.countLine}</p>{/if}
+      {#if fvError}
+        <p class="fv-line fv-error" role="alert" data-testid="first-view-error">
+          {fvError}
+          {#if fvRetry}
+            {@const retry = fvRetry}
+            <button type="button" class="fv-retry" data-testid="first-view-retry" onclick={() => void openHarness(retry.harness, retry.prompt)}>Try again</button>
+          {/if}
+        </p>
+      {/if}
+      {#if fvStats.length}
+        <div class="b-stats">
+          {#each fvStats as st, i (st.key)}
+            <div class="stat" role="group" aria-label="{st.n} {st.label}, {st.caption}" data-testid="brief-stat" data-stat={st.key}>
+              <span class="pill" class:hot={i === 0}>{st.label}</span>
+              <b class="num">{st.n}</b>
+              <span class="cap">{st.caption}</span>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+    {#if fv.whereYouWork.tools.length || fv.whereYouWork.open}
+      <aside class="b-next fv-next" data-testid="brief-next">
+        <div class="nx-head"><span class="nx-tag"><svg viewBox={tagViewBox(CARD_TAG.focus)} style:width="{tagIconWidth(CARD_TAG.focus)}px" aria-hidden="true"><path d={CARD_TAG.focus.d} /></svg>Where you work</span></div>
+        <FirstViewWhere
+          tools={fv.whereYouWork.tools}
+          open={fv.whereYouWork.open}
+          onopen={(a) => runWelcome(a)}
+          busy={!!(fv.whereYouWork.open?.harness && fvBusy[fv.whereYouWork.open.harness])}
+        />
+      </aside>
+    {/if}
+    {:else}
     <div class="b-hello">
       <h1 class="b-greet" data-testid="brief-greeting">{greeting}{input.userName ? `, ${input.userName}` : ""}.</h1>
       <div class="b-stats">
@@ -421,6 +631,7 @@
         {#if next?.live}<g class="spin"><circle class="node" cx="60" cy="14" r="3.5" /><circle class="node" cx="60" cy="106" r="3.5" /></g>{/if}
       </svg>
     </aside>
+    {/if}
   </section>
   {/if}
 
@@ -435,6 +646,62 @@
       <span class="rv-keys" aria-label="Shift+A to go back"><kbd>Shift</kbd><kbd>A</kbd><span>to go back</span></span>
     </div>
   {/if}
+  {#if firstView}
+  {@const fv = firstView}
+  <!-- The first view: the brief's own grid with the first-view cards in its slots. -->
+  <main class="b-grid fv-grid" data-testid="first-view-grid" data-connect-mode={fv.connect.mode} style:--fv-areas={fvAreas.wide} style:--fv-areas-narrow={fvAreas.narrow}>
+    <div class="slot fv-slot" data-field="dusk" data-widget="sunrise" style="grid-area:sunrise">
+      <BriefSunrise
+        total={0}
+        cleared={0}
+        userName={input.userName}
+        greet={false}
+        big
+        sub={firstViewSub(fv)}
+        eyebrow="Sunrise"
+        quietLine={FV_QUIET_LINE}
+        now={input.now}
+      />
+    </div>
+    <div class="slot lit fv-slot" data-field="sky" data-widget="connect" style:--b-deco={decoUrl("waiting")} use:briefHover={{ tilt: true }} style="grid-area:connect;animation-delay:70ms">
+      {@render fvTag("waiting", "Connect your apps")}
+      <FirstViewConnect
+        connect={fv.connect}
+        connected={fvConnectedAi}
+        installed={fvInstalled}
+        canOpen={canOpenHarness}
+        onconnectintegration={() => void connectIntegration()}
+        onconnectai={() => connectAi()}
+        onopen={(h) => void openHarness(h)}
+        busy={fvBusy}
+        expanded={((CONNECT_MODE === "expand" && connectOpen) || fvCarried) && welcomeAiApps?.current ? fvExpanded : null}
+      />
+    </div>
+    {#if fv.oneThing}
+      <div class="slot lit fv-slot" data-field="violet" data-widget="oneThing" style:--b-deco={decoUrl("oneThing")} use:briefHover={{ tilt: true }} style="grid-area:oneThing;animation-delay:140ms">
+        {@render fvTag("oneThing", null)}
+        <FirstViewOneThing
+          action={fv.oneThing}
+          onaction={runWelcome}
+          actionLabel={welcomeActionLabel(fv.oneThing)}
+          busy={!!(fv.oneThing.kind === "open_harness" && fv.oneThing.harness && fvBusy[fv.oneThing.harness])}
+        />
+      </div>
+    {/if}
+    {#if fv.recentWork.length || fv.topProjects.length}
+      <div class="slot lit fv-slot" data-field="mono" data-widget="focus" style:--b-deco={decoUrl("focus")} use:briefHover={{ tilt: true }} style="grid-area:focus;animation-delay:210ms">
+        {@render fvTag("focus", "Your recent work")}
+        <FirstViewRecent recent={fv.recentWork} projects={fv.topProjects} now={nowDate} />
+      </div>
+    {/if}
+    {#if fv.watchList.length}
+      <div class="slot lit fv-slot" data-field="sunset" data-widget="risk" style:--b-deco={decoUrl("risk")} use:briefHover={{ tilt: true }} style="grid-area:risk;animation-delay:280ms">
+        {@render fvTag("risk", "Watch list")}
+        <FirstViewWatch list={fv.watchList} />
+      </div>
+    {/if}
+  </main>
+  {:else}
   <main
     class="b-grid"
     class:review={allCards}
@@ -576,8 +843,9 @@
       {/if}
     {/each}
   </main>
+  {/if}
 
-  {#if !summaryOnly && actions && actionCards.length}
+  {#if !summaryOnly && !firstView && actions && actionCards.length}
     <section class="b-actions" data-testid="brief-action-cards">
       {#each actionCards as card (card.id)}
         <BriefActionCard
@@ -592,14 +860,8 @@
       {/each}
     </section>
   {/if}
-  {/if}
 
-  {#if !summaryOnly && !sectionOnly && !editionConnects && welcomeAiApps?.current}
-    {@const connect = welcomeAiApps.current}
-    <BriefConnectApps detect={connect.detect} cli={connect.cli} suggest={connect.suggest} session={connect.session} anywhereOnId={connect.anywhereOnId ?? null} />
-  {/if}
-
-  {#if !summaryOnly && notShown.length}
+  {#if !summaryOnly && !firstView && notShown.length}
     <div class="b-dropped" data-testid="brief-dropped">
       <span class="eyebrow">Not shown today</span>
       {#each notShown.slice(0, 5) as r, i (`${r.kind}-${i}`)}
@@ -611,12 +873,93 @@
     </div>
   {/if}
 
-  {#if !summaryOnly && housekeeping}<BriefHousekeeping {housekeeping} />{/if}
+  {#if !summaryOnly && !firstView && housekeeping}<BriefHousekeeping {housekeeping} />{/if}
 
   <BriefPeek />
 </div>
 
+<!-- A first-view card's label: the brief's mono caps tag with its icon. -->
+{#snippet fvTag(kind: string, label: string | null)}
+  {@const tag = cardTag(kind, label ?? kind)}
+  <span class="why" role="note" data-testid="brief-why">{#if tag.d}<svg viewBox={tagViewBox(tag)} style:width="{tagIconWidth(tag)}px" aria-hidden="true"><path d={tag.d} /></svg>{/if}{label ?? tag.label}</span>
+{/snippet}
+
+<!-- "expand" mode: the existing connect section, inside the Connect card. -->
+{#snippet fvExpanded()}
+  {#if welcomeAiApps?.current}
+    {@const connect = welcomeAiApps.current}
+    <BriefConnectApps detect={connect.detect} cli={connect.cli} suggest={connect.suggest} session={connect.session} anywhereOnId={connect.anywhereOnId ?? null} />
+  {/if}
+{/snippet}
+
 <style>
+  /* The first view: the brief's grid and top row, sized to the window. The page scrolls; nothing is clipped. */
+  .daily-brief :global(.b-top.fv-top) {
+    grid-template-columns: minmax(0, 1fr) 320px;
+    min-width: 0;
+  }
+  .daily-brief :global(.b-top.fv-top .b-greet) {
+    font-size: 40px;
+  }
+  .daily-brief :global(.b-top.fv-top .b-stats) {
+    margin-top: 28px;
+  }
+  .fv-line {
+    margin: 12px 0 0;
+    font-size: 15px;
+    line-height: 1.45;
+    color: var(--b-t2);
+    max-width: 62ch;
+  }
+  .fv-error {
+    color: var(--b-t1);
+  }
+  .fv-retry {
+    margin-left: 8px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 2px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--b-line, rgba(255, 255, 255, 0.2));
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+  }
+  .daily-brief :global(.b-next.fv-next) {
+    justify-content: flex-start;
+    min-height: 0;
+  }
+  .daily-brief :global(.b-grid.fv-grid) {
+    min-width: 0;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-areas: var(--fv-areas);
+    /* The sunrise scales with the window; the rows under it take their content's height. */
+    grid-template-rows: minmax(clamp(240px, 44vh, 460px), auto);
+    grid-auto-rows: auto;
+    align-items: stretch;
+  }
+  .fv-slot {
+    display: flex;
+    min-width: 0;
+  }
+  .fv-slot > :global(.w) {
+    flex: 1;
+    min-width: 0;
+  }
+  /* The Connect card takes its rows' height rather than stretching to the sunrise beside it. */
+  .fv-slot[data-widget="connect"] {
+    align-self: start;
+  }
+  @media (max-width: 1180px) {
+    .daily-brief :global(.b-top.fv-top) {
+      grid-template-columns: minmax(0, 1fr) 280px;
+    }
+    .daily-brief :global(.b-grid.fv-grid) {
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-template-areas: var(--fv-areas-narrow);
+    }
+  }
   .prov,
   .leadchip {
     cursor: default;
@@ -800,6 +1143,10 @@
   /* A quiet day is one hero: let it hold the window instead of leaving the lower half empty. */
   .daily-brief[data-template="1"] .slot {
     min-height: clamp(360px, calc(100vh - 220px), 640px);
+  }
+  /* The first view has no items either, but its cards take their content's height. */
+  .daily-brief[data-template="1"] .slot.fv-slot {
+    min-height: 0;
   }
   .placeholder {
     border: 1px dashed rgb(var(--b-ink) / 0.18);

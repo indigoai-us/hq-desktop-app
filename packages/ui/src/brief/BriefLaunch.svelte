@@ -41,6 +41,20 @@
     copied = await copyBriefPrompt(prompt);
     if (copied) setTimeout(() => (copied = false), 1400);
   }
+  /** A launch in flight: the start buttons are disabled so a double click starts one session. */
+  let starting = $state(false);
+  async function go(text: string): Promise<void> {
+    if (starting) return;
+    starting = true;
+    try {
+      await brief.start(id, text);
+    } catch (err) {
+      // The start button stays, so the person can try again.
+      console.error("brief launch failed", err);
+    } finally {
+      starting = false;
+    }
+  }
 </script>
 
 <span class="launch" data-testid="brief-launch">
@@ -49,12 +63,12 @@
     <span class="go choice" role="group" aria-label="Choose an answer" data-testid="brief-start-split">
       <span class="lbl" aria-hidden="true">{label}</span>
       <span class="alt">
-        <button type="button" data-testid="brief-choice" onclick={() => void brief.start(id, promptWithPick(prompt, choices[0]))}>{choices[0]}</button>
-        <button type="button" data-testid="brief-choice" onclick={() => void brief.start(id, promptWithPick(prompt, choices[1]))}>{choices[1]}</button>
+        <button type="button" data-testid="brief-choice" onclick={() => void go(promptWithPick(prompt, choices[0]))} disabled={starting}>{choices[0]}</button>
+        <button type="button" data-testid="brief-choice" onclick={() => void go(promptWithPick(prompt, choices[1]))} disabled={starting}>{choices[1]}</button>
       </span>
     </span>
   {:else}
-    <button type="button" class="go" data-testid="brief-start" title={named ? `${named} in ${engine.label}` : undefined} onclick={() => void brief.start(id, prompt)}>
+    <button type="button" class="go" data-testid="brief-start" title={named ? `${named} in ${engine.label}` : undefined} disabled={starting} onclick={() => void go(prompt)}>
       {label}
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
     </button>

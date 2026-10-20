@@ -119,6 +119,18 @@ describe("buildFirstView", () => {
     expect(v.count).toBe(17);
   });
 
+  it("integration rows go GitHub, Linear, Slack, then the rest in source order (round 4 m3)", () => {
+    const v = view(core.codex_company, {
+      suggestedApps: [
+        { slug: "notion.so", name: "Notion" },
+        { slug: "slack.com", name: "Slack" },
+        { slug: "linear.app", name: "Linear" },
+        { slug: "figma.com", name: "Figma" },
+      ],
+    });
+    expect(v.connect.integrations.map((i) => i.name)).toEqual(["GitHub", "Linear", "Slack", "Notion", "Figma"]);
+  });
+
   it("16.0.30 legacy with import null: next_steps, apps and sessions{total, claude, codex, days_seen}", () => {
     const v = view(legacy.welcome);
     expect(v.count).toBe(41);
@@ -145,6 +157,38 @@ describe("buildFirstView", () => {
     expect(pastWork(v)).toEqual([]);
   });
 
+  it("a desktop report feeds every first-view part: where rows, tools and the count line (round 4 M1)", () => {
+    // The brief says 38/3 and 9 days; the report says 371/31 over 37 days. Every part reads the report.
+    const v = view(legacy.welcome, { importReport: report });
+    expect(v.whereYouWork.tools.map((t) => [t.harness, t.name, t.sessions])).toEqual([
+      ["claude-code", "Claude Code", 371],
+      ["codex", "Codex", 31],
+    ]);
+    expect(v.tools).toEqual(["Claude Code", "Codex"]);
+    expect(v.pills.tools).toBe(2);
+    expect(v.whereYouWork.tools.reduce((n, t) => n + t.sessions, 0)).toBe(402);
+  });
+
+  it("a report with no tools list names the tools that have report sessions (round 4 M1)", () => {
+    const v = view(legacy.welcome, { importReport: { ...report, tools: [] } });
+    expect(v.whereYouWork.tools.map((t) => [t.harness, t.sessions])).toEqual([
+      ["claude-code", 371],
+      ["codex", 31],
+    ]);
+    expect(v.tools).toEqual(["Claude Code", "Codex"]);
+  });
+
+  it("no import report: where rows, tools and the count line fall back to the welcome row (round 4 M1)", () => {
+    const v = view(legacy.welcome, { importReport: null });
+    expect(v.whereYouWork.tools.map((t) => [t.harness, t.sessions])).toEqual([
+      ["claude-code", 38],
+      ["codex", 3],
+    ]);
+    expect(v.tools).toEqual(["Claude Code", "Codex"]);
+    expect(v.pills).toEqual({ sessions: 41, days: 9, projects: null, tools: 2 });
+    expect(v.countLine).toBe("41 sessions over 9 days in Claude Code and Codex.");
+  });
+
   it("a report count with no days hides the days, never borrowing the brief's (review m1)", () => {
     // The hq-cli fallback writes days as null (read as 0); the 16.0.30 brief says 9 days for its own 41 sessions.
     const cli = parseImportReport({ ...desktopReport.report, sessions: { ...desktopReport.report.sessions, total: 400, days_seen: null } })!;
@@ -167,6 +211,28 @@ describe("buildFirstView", () => {
     const v = view(legacy.welcome, { importReport: { ...report, projects: names } });
     expect(v.topProjects).toHaveLength(5);
     expect(v.pills.projects).toBe(7);
+  });
+
+  it("Shawon's probe: a Core 1432 row with one hq project and a 402-session report shows the report's projects, names only (round 5 C1)", () => {
+    const probe = { ...core.claude_person, top_projects: [{ name: "hq", path: "~/hq", sessions: 1, last_active_at: "2026-10-19T07:00:00Z", harness: "claude-code" }], tree: { ...core.claude_person.tree, projects: 1 } };
+    const v = view(probe, { importReport: report });
+    expect(v.pills.projects).toBe(3);
+    expect(v.topProjects).toEqual([
+      { name: "hq", sessions: null },
+      { name: "hq-desktop-app", sessions: null },
+      { name: "billing-api", sessions: null },
+    ]);
+    expect(v.countLine).toBe("402 sessions over 37 days in Claude Code and Codex. Top threads: hq, hq-desktop-app, billing-api.");
+  });
+
+  it("a report with zero sessions still owns every count: nothing falls back to the welcome row (round 5 C1)", () => {
+    const empty = parseImportReport({ ...desktopReport.report, sessions: { total: 0, claude: 0, codex: 0, cursor: 0, days_seen: 0 }, tools: [], projects: [] })!;
+    const v = view(core.showcase_company, { importReport: empty });
+    expect(v.count).toBe(0);
+    expect(v.pills.projects).toBeFalsy();
+    expect(v.topProjects).toEqual([]);
+    expect(v.whereYouWork.tools).toEqual([]);
+    expect(v.countLine).toBeNull();
   });
 
   it("cursor-primary: Cursor leads where-you-work, and a host that cannot open Cursor gets the next runnable action", () => {

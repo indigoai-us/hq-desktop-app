@@ -14,10 +14,12 @@
     report: Record<string, unknown>;
     /** Extra brief page props (onconnectcompany, onlaunch). */
     page?: Record<string, unknown>;
+    /** The brief page's platform adapter (its import report read, for one). */
+    adapter?: Record<string, unknown>;
   }
-  let { source, companies, report, page = {} }: Props = $props();
+  let { source, companies, report, page = {}, adapter = {} }: Props = $props();
 </script>
 
 <WelcomeReport {...{ ready: true, ...report }}>
-  <BriefRunsPage adapter={{}} {source} {companies} {...page} />
+  <BriefRunsPage adapter={adapter as never} {source} {companies} {...page} />
 </WelcomeReport>

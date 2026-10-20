@@ -21,7 +21,9 @@ import WelcomeReport, {
 import ReportWithBrief from "./WelcomeReportBriefHarness.test-support.svelte";
 import { octoberEightBrief } from "./brief-fixture.js";
 import { riseFrame, riseRevealAt, welcomeRiseSources } from "./brief-rise.js";
-import { WELCOME_RISE_FINDING_CLAUDE, welcomeRiseBriefInput } from "./welcome-rise-run.js";
+import { welcomeRiseBriefInput } from "./welcome-rise-run.js";
+import { parseWelcome } from "./brief-welcome.js";
+import core from "./fixtures/core-1432-welcome.json";
 import type { YourAppsHost, YourAppsLoad, YourAppsResult } from "../chat/first-run/your-apps-host.js";
 
 let target: HTMLDivElement;
@@ -34,6 +36,13 @@ async function settle(times = 8): Promise<void> {
   }
 }
 const q = <T extends Element = HTMLElement>(sel: string): T | null => document.querySelector<T>(sel);
+
+/** A welcome whose one thing is a prompt, so the first view launches it through the brief's start button. */
+const TOUR_PROMPT = "Give me a short tour of my HQ.";
+const TOUR = {
+  first_run: true,
+  actions: [{ id: "tree", kind: "open_tree", label: "Look around your HQ", reason: "38 projects so far.", launch_prompt: TOUR_PROMPT, primary: true }],
+};
 
 const briefPage = createRawSnippet(() => ({ render: () => `<div data-testid="brief-page">Daily brief</div>` }));
 
@@ -236,44 +245,50 @@ describe("WelcomeReport", () => {
     expect(q('[data-testid="suggested-app-connect-linear.app"]')?.textContent?.trim()).toBe("Waiting");
   });
 
-  it("once the report is ready the card moves into the brief body: after the action cards, before Not shown today", async () => {
+  it("once the report is ready the connect UI moves into the first view's Connect card, the only connect UI on the page", async () => {
     target = document.createElement("div");
     document.body.appendChild(target);
     const NOW = new Date(2026, 9, 8, 7, 42);
+    const onopenaiapps = vi.fn();
     component = mount(ReportWithBrief, {
       target,
       props: {
         input: { ...octoberEightBrief(NOW), today: "2026-10-08" },
+        welcome: parseWelcome(core.showcase_personal), firstViewData: { welcome: core.showcase_personal, importReport: null },
         actions: { destinations: { assistantName: "Atlas", claudeCode: true, codex: false }, onassistant: vi.fn(async () => null) },
         report: {
-          aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: false } },
+          aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: false }, onopenaiapps },
           connect: { host: fakeHost(), company: { uid: "cmp_acme", name: "Acme" } },
         },
       },
     });
     await settle();
-    // Review mode (Shift+A) shows "Not shown today".
+    const brief = q('[data-testid="welcome-report-ready"]')!;
+    const card = q('[data-testid="first-view-connect"]')!;
+    expect(card).not.toBeNull();
+    expect(brief.contains(card)).toBe(true);
+    // The held card under the loading screen is gone, and nothing else offers Connect.
+    expect(q('[data-testid="welcome-report-connect"]')).toBeNull();
+    expect(document.querySelectorAll('[data-testid="first-view-connect"]')).toHaveLength(1);
+    expect(q('[data-testid="connect-ai-apps-card"]')).toBeNull();
+    // An AI app HQ did not find connects through the AI-apps settings.
+    const cursor = card.querySelector<HTMLButtonElement>('[data-testid="first-view-connect-row"][data-harness="cursor"] button')!;
+    expect(cursor.textContent?.trim()).toBe("Connect");
+    cursor.click();
+    expect(onopenaiapps).toHaveBeenCalledTimes(1);
+
+    // Review mode (Shift+A) shows the full catalogue, with no second connect card in it.
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true }));
     await settle();
-    const brief = q('[data-testid="welcome-report-ready"]')!;
-    const card = q('[data-testid="connect-ai-apps-card"]')!;
-    const actionCards = q('[data-testid="brief-action-cards"]')!;
-    const dropped = q('[data-testid="brief-dropped"]')!;
-    expect(card).not.toBeNull();
-    expect(actionCards).not.toBeNull();
-    expect(dropped).not.toBeNull();
-    expect(brief.contains(card)).toBe(true);
-    expect(q('[data-testid="welcome-report-connect"]')).toBeNull();
-    expect(document.querySelectorAll('[data-testid="connect-ai-apps-card"]')).toHaveLength(1);
-    expect(actionCards.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(card.compareDocumentPosition(dropped) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(q('[data-testid="connect-ai-app-claude-code"]')).not.toBeNull();
-    expect(q('[data-testid="suggested-app-linear.app"]')).not.toBeNull();
+    expect(q('[data-testid="first-view-grid"]')).toBeNull();
+    expect(q('[data-testid="brief-action-cards"]')).not.toBeNull();
+    expect(q('[data-testid="brief-dropped"]')).not.toBeNull();
+    expect(q('[data-testid="connect-ai-apps-card"]')).toBeNull();
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true }));
     await settle();
   });
 
-  it("keeps a sign-in running when the report turns ready mid-Connect: it lands as connected, with one scan", async () => {
+  it("keeps a sign-in running when the report turns ready mid-Connect: it lands as connected in the first view, with one scan", async () => {
     const props = $state({ ready: false });
     const host = fakeHost();
     let signal: AbortSignal | null = null;
@@ -306,17 +321,19 @@ describe("WelcomeReport", () => {
     props.ready = true;
     await settle();
     expect(signal!.aborted).toBe(false);
-    expect(q('[data-testid="welcome-report-ready"] [data-testid="suggested-app-connect-linear.app"]')?.textContent?.trim()).toBe("Waiting");
+    // The sign-in carries into the first view's Connect card.
+    expect(q('[data-testid="first-view-grid"]')).not.toBeNull();
+    expect(q('[data-testid="first-view-connect"] [data-testid="suggested-app-connect-linear.app"]')?.textContent?.trim()).toBe("Waiting");
 
     finish({ ok: true, connectionId: "conn-linear", installationId: null });
     await settle();
-    expect(q<HTMLElement>('[data-testid="welcome-report-ready"] [data-testid="suggested-app-linear.app"]')?.dataset.kind).toBe("chip");
+    expect(q<HTMLElement>('[data-testid="first-view-connect"] [data-testid="suggested-app-linear.app"]')?.dataset.kind).toBe("chip");
     expect(detect).toHaveBeenCalledTimes(1);
     expect(host.load).toHaveBeenCalledTimes(1);
     expect(host.connect).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps a Connect waiting on a new company when the report turns ready, and connects once the company lands", async () => {
+  it("keeps a Connect waiting on a new company when the report turns ready, in the first view, and connects once the company lands", async () => {
     const props = $state({ ready: false, company: null as { uid: string; name: string } | null });
     const host = fakeHost();
     let answer: (uid: string | null) => void = () => undefined;
@@ -345,7 +362,8 @@ describe("WelcomeReport", () => {
 
     props.ready = true;
     await settle();
-    expect(q('[data-testid="welcome-report-ready"] [data-testid="suggested-app-connect-linear.app"]')?.textContent?.trim()).toBe("Waiting");
+    expect(q('[data-testid="first-view-grid"]')).not.toBeNull();
+    expect(q('[data-testid="first-view-connect"] [data-testid="suggested-app-connect-linear.app"]')?.textContent?.trim()).toBe("Waiting");
 
     answer("cmp_new");
     props.company = { uid: "cmp_new", name: "New Co" };
@@ -460,7 +478,7 @@ describe("WelcomeReport", () => {
     expect(onfix).toHaveBeenCalledTimes(1);
   });
 
-  it("after the rise, the brief is the round 11b welcome edition and its decision link hands the item to a session", async () => {
+  it("after the rise, the brief is the first view and its one thing hands the prompt to a session", async () => {
     target = document.createElement("div");
     document.body.appendChild(target);
     const onlaunch = vi.fn(async () => null);
@@ -469,6 +487,7 @@ describe("WelcomeReport", () => {
       target,
       props: {
         input: welcomeRiseBriefInput(),
+        welcome: parseWelcome(TOUR), firstViewData: { welcome: TOUR, importReport: null },
         onopenmeetings,
         actions: { destinations: { assistantName: "Atlas", claudeCode: true, codex: false }, onassistant: vi.fn(async () => null) },
         report: { aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: false } } },
@@ -476,42 +495,29 @@ describe("WelcomeReport", () => {
       },
     });
     await settle();
-    const edition = q('[data-testid="welcome-report-ready"] [data-testid="welcome-edition"]')!;
-    expect(edition).not.toBeNull();
-    expect(q('[data-testid="welcome-edition-greeting"]')?.textContent).toBe("Good morning, Alex.");
-    expect(q('[data-testid="welcome-edition-date"]')?.textContent).toBe("Saturday, October 17");
-    expect([...document.querySelectorAll<HTMLElement>('[data-testid="welcome-edition-card"]')].map((c) => c.dataset.card)).toEqual(["decision", "day", "work"]);
-    expect([...document.querySelectorAll('[data-testid="welcome-edition-section"] h3')].map((h) => h.textContent)).toEqual(["Northstar", "Fieldwork", "Studio"]);
-    // The unread calendar is one quiet line under the greeting, never a headline card.
-    expect(q('[data-testid="welcome-edition-run"]')?.textContent).toBe("168 sessions read · 6 repos · Calendar could not be read.");
-    expect(edition.textContent?.match(/Calendar could not be read/g)).toHaveLength(1);
-    expect(edition.textContent).not.toContain("Your calendar can wait.");
-    expect(q('[data-card="day"] h3')?.textContent).toBe("4 things for you today.");
-    expect(q('[data-card="day"] .kicker')?.textContent?.trim()).toBe("Today's priorities");
-    expect(q('[data-card="work"] h3')?.textContent).toBe("Finish the welcome state.");
-    expect(edition.textContent).not.toMatch(/\.svelte|apps\/desktop/);
-    // The calendar was not read, so there is no agenda to open.
-    expect(q('[data-card="day"] [data-testid="welcome-edition-action"]')).toBeNull();
-    expect(edition.textContent).not.toContain("Open the agenda");
-    expect(onopenmeetings).not.toHaveBeenCalled();
-    // The purple sunrise card and the ticker are gone from the welcome page.
-    expect(q('[data-testid="welcome-report-ready"] .b-head')).toBeNull();
+    const ready = q('[data-testid="welcome-report-ready"]')!;
+    const grid = q('[data-testid="first-view-grid"]')!;
+    expect(grid).not.toBeNull();
+    expect(ready.contains(grid)).toBe(true);
+    expect(q('[data-testid="brief-greeting"]')?.textContent).toBe("Good morning, Alex.");
+    expect([...grid.querySelectorAll<HTMLElement>(":scope > [data-widget]")].map((el) => el.dataset.widget).slice(0, 3)).toEqual(["sunrise", "connect", "oneThing"]);
+    // The old welcome edition and the review catalogue are gone from the welcome page.
+    expect(q('[data-testid="welcome-edition"]')).toBeNull();
     expect(q('[data-testid="welcome-report-ready"] [data-testid="brief-action-cards"]')).toBeNull();
+    expect(ready.textContent).not.toMatch(/\.svelte|apps\/desktop|launch_prompt/);
+    expect(onopenmeetings).not.toHaveBeenCalled();
 
-    const decision = q('[data-card="decision"] [data-testid="welcome-edition-action"]') as HTMLButtonElement;
-    expect(decision.textContent).toBe("Review the decision");
-    decision.click();
+    const start = q<HTMLButtonElement>('[data-testid="first-view-one-thing"] [data-testid="brief-start"]')!;
+    expect(start).not.toBeNull();
+    start.click();
     await settle();
     expect(onlaunch).toHaveBeenCalledTimes(1);
-    // The brief plan's prompt for the item, not just its title.
-    const [engine, prompt] = onlaunch.mock.calls[0] as unknown as [string, string];
-    expect(engine).toBe("claude");
-    expect(prompt.startsWith(`${WELCOME_RISE_FINDING_CLAUDE} Repo or source: northstar/desktop.`)).toBe(true);
-    expect(q('[data-card="decision"] [data-testid="welcome-edition-note"]')).not.toBeNull();
-    expect(q('[data-card="decision"] [data-testid="welcome-edition-action"]')).toBeNull();
+    // The welcome action's own prompt, in the engine the brief starts in.
+    expect(onlaunch.mock.calls[0]).toEqual(["claude", TOUR_PROMPT]);
+    expect(q('[data-testid="first-view-one-thing"] .note[role="status"]')?.textContent).toBe("Started in Claude.");
   });
 
-  it("carries the count the reveal ended on into the welcome edition, and the real session count when there was no reveal", async () => {
+  it("the reveal's count stays on the rise, and the first view does not repeat a run-stats line", async () => {
     const companies = [
       { id: "northstar", name: "Northstar" },
       { id: "fieldwork", name: "Fieldwork" },
@@ -532,6 +538,7 @@ describe("WelcomeReport", () => {
       props: {
         input,
         report,
+        welcome: parseWelcome(core.showcase_personal), firstViewData: { welcome: core.showcase_personal, importReport: null },
         get ready() {
           return props.ready;
         },
@@ -539,39 +546,38 @@ describe("WelcomeReport", () => {
     });
     await settle();
     expect(q('[data-testid="brief-rise"]')).not.toBeNull();
-    // Gate review item 8: the brief repeats the exact count the reveal had on screen.
     const shown = q('[data-testid="brief-rise-count"]')?.textContent;
     expect(shown).toBe(ended);
     props.ready = true;
     await settle();
-    expect(q('[data-testid="welcome-edition-run"]')?.textContent).toBe(`${shown} · Calendar could not be read.`);
-    await unmount(component);
-    target.remove();
-
-    // Ready on arrival: no reveal ran, so the line counts the run's own sessions.
-    target = document.createElement("div");
-    document.body.appendChild(target);
-    component = mount(ReportWithBrief, { target, props: { input, report, ready: true } });
-    await settle();
-    expect(q('[data-testid="welcome-edition-run"]')?.textContent).toBe("168 sessions read · Calendar could not be read.");
+    // The first view counts from the welcome itself, under the greeting, once.
+    expect(q('[data-testid="first-view-grid"]')).not.toBeNull();
+    expect(q('[data-testid="welcome-edition-run"]')).toBeNull();
+    expect(q('[data-testid="welcome-report-ready"]')?.textContent).not.toContain(shown!);
+    expect(q('[data-testid="first-view-count-line"]')?.textContent).toMatch(/^196 sessions over 41 days/);
+    expect(document.querySelectorAll('[data-testid="first-view-count-line"]')).toHaveLength(1);
   });
 
-  it("review mode (Shift+A) swaps the welcome edition back to the full catalogue", async () => {
+  it("review mode (Shift+A) swaps the first view for the full catalogue, and back", async () => {
     target = document.createElement("div");
     document.body.appendChild(target);
     component = mount(ReportWithBrief, {
       target,
-      props: { input: welcomeRiseBriefInput(), report: { aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: false } } } },
+      props: { input: welcomeRiseBriefInput(), welcome: parseWelcome(core.showcase_personal), firstViewData: { welcome: core.showcase_personal, importReport: null }, report: { aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: false } } } },
     });
     await settle();
-    expect(q('[data-testid="welcome-edition"]')).not.toBeNull();
+    expect(q('[data-testid="first-view-grid"]')).not.toBeNull();
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true }));
     await settle();
-    expect(q('[data-testid="welcome-edition"]')).toBeNull();
+    expect(q('[data-testid="first-view-grid"]')).toBeNull();
     expect(q('[data-testid="brief-review"]')).not.toBeNull();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true }));
+    await settle();
+    expect(q('[data-testid="first-view-grid"]')).not.toBeNull();
+    expect(q('[data-testid="brief-review"]')).toBeNull();
   });
 
-  it("the welcome edition launches in the engine the person saved, and a second click while it starts does nothing", async () => {
+  it("the first view launches in the engine the person saved, and a second click while it starts does nothing", async () => {
     localStorage.setItem("hq.brief.engine", "codex");
     target = document.createElement("div");
     document.body.appendChild(target);
@@ -580,26 +586,27 @@ describe("WelcomeReport", () => {
     try {
       component = mount(ReportWithBrief, {
         target,
-        props: { input: welcomeRiseBriefInput(), report: { aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: true } } }, onlaunch },
+        props: { input: welcomeRiseBriefInput(), welcome: parseWelcome(TOUR), firstViewData: { welcome: TOUR, importReport: null }, report: { aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: true } } }, onlaunch },
       });
       await settle();
-      const link = q<HTMLButtonElement>('[data-card="decision"] [data-testid="welcome-edition-action"]')!;
-      link.click();
+      const start = q<HTMLButtonElement>('[data-testid="first-view-one-thing"] [data-testid="brief-start"]')!;
+      start.click();
       await settle();
-      expect(link.disabled).toBe(true);
-      link.click();
+      expect(start.disabled).toBe(true);
+      start.click();
       await settle();
       expect(onlaunch).toHaveBeenCalledTimes(1);
       expect((onlaunch.mock.calls[0] as unknown as [string])[0]).toBe("codex");
       finish(null);
       await settle();
-      expect(q('[data-card="decision"] [data-testid="welcome-edition-note"]')?.textContent).toBe("Started in Codex.");
+      expect(start.disabled).toBe(false);
+      expect(q('[data-testid="first-view-one-thing"] .note[role="status"]')?.textContent).toBe("Started in Codex.");
     } finally {
       localStorage.removeItem("hq.brief.engine");
     }
   });
 
-  it("a launch that throws keeps the welcome edition link so the person can try again", async () => {
+  it("a launch that throws keeps the first view's start button so the person can try again", async () => {
     target = document.createElement("div");
     document.body.appendChild(target);
     const onlaunch = vi.fn(async (): Promise<string | null> => {
@@ -607,15 +614,15 @@ describe("WelcomeReport", () => {
     });
     component = mount(ReportWithBrief, {
       target,
-      props: { input: welcomeRiseBriefInput(), report: { aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: false } } }, onlaunch },
+      props: { input: welcomeRiseBriefInput(), welcome: parseWelcome(TOUR), firstViewData: { welcome: TOUR, importReport: null }, report: { aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: false } } }, onlaunch },
     });
     await settle();
-    q<HTMLButtonElement>('[data-card="decision"] [data-testid="welcome-edition-action"]')!.click();
+    q<HTMLButtonElement>('[data-testid="first-view-one-thing"] [data-testid="brief-start"]')!.click();
     await settle();
     expect(onlaunch).toHaveBeenCalledTimes(1);
-    const link = q<HTMLButtonElement>('[data-card="decision"] [data-testid="welcome-edition-action"]');
-    expect(link).not.toBeNull();
-    expect(link!.disabled).toBe(false);
-    expect(q('[data-card="decision"] [data-testid="welcome-edition-note"]')).toBeNull();
+    const start = q<HTMLButtonElement>('[data-testid="first-view-one-thing"] [data-testid="brief-start"]');
+    expect(start).not.toBeNull();
+    expect(start!.disabled).toBe(false);
+    expect(q('[data-testid="first-view-one-thing"] .note[role="status"]')).toBeNull();
   });
 });
