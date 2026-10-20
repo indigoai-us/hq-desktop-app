@@ -226,7 +226,7 @@ pub(crate) fn body_error_class(
     }
 }
 
-fn response_is_rate_limited(status: StatusCode, headers: &HeaderMap) -> bool {
+pub(crate) fn response_is_rate_limited(status: StatusCode, headers: &HeaderMap) -> bool {
     status == StatusCode::TOO_MANY_REQUESTS
         || (status == StatusCode::FORBIDDEN
             && (headers
@@ -236,7 +236,7 @@ fn response_is_rate_limited(status: StatusCode, headers: &HeaderMap) -> bool {
                 || headers.contains_key("retry-after")))
 }
 
-fn rate_limit_reset_epoch(headers: &HeaderMap) -> Option<u64> {
+pub(crate) fn rate_limit_reset_epoch(headers: &HeaderMap) -> Option<u64> {
     if let Some(reset) = headers
         .get("x-ratelimit-reset")
         .and_then(|value| value.to_str().ok())

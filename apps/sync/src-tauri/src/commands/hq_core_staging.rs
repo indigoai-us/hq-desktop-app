@@ -172,6 +172,13 @@ pub(crate) fn resolve_gh_token() -> Option<String> {
     // 2. Fallback: parse oauth_token for github.com out of hosts.yml. Covers
     //    setups where `gh` isn't on the Tauri app's minimal PATH but the
     //    config file is present.
+    gh_token_from_hosts_file()
+}
+
+/// The github.com `oauth_token` from `~/.config/gh/hosts.yml`, if present.
+/// Crate-public so `link_github` can run `gh auth token` with its own timeout
+/// and still use the same file fallback.
+pub(crate) fn gh_token_from_hosts_file() -> Option<String> {
     let hosts = dirs::home_dir()?
         .join(".config")
         .join("gh")
