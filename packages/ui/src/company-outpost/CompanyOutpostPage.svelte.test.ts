@@ -479,6 +479,15 @@ describe("Company Outpost page", () => {
     expect(target.querySelector("[data-testid='add-outpost']")).toBeNull();
   });
 
+  it("opens a detail screen even when the first list read fails", async () => {
+    const { target } = await show("admin", {
+      listError: { ok: false, code: "error", message: "Could not load. Retry." },
+    }, { initialScreen: "detail", initialOutpostId: "demo-2" });
+    await settle();
+    expect(target.querySelector("[data-testid='detail-loading']")).toBeNull();
+    expect(target.querySelector("[data-testid='machine']")?.textContent).toContain("demo-2");
+  });
+
   it("shows a blocked Outpost that is not available with the neutral state, for admin and member, light and dark", async () => {
     for (const theme of ["light", "dark"]) {
       document.documentElement.setAttribute("data-force-theme", theme);

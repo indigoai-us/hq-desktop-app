@@ -240,7 +240,7 @@
   }
 
   function continueAdd() {
-    if (!manage) return;
+    if (!manage || atCap) return;
     previewName = client.previewAdd(items.map((item) => item.name)).name;
     screen = "confirm";
   }
@@ -315,9 +315,11 @@
     }
     let live = true;
     void (async () => {
-      const ok = await refresh();
+      await refresh();
       if (!live) return;
-      if (ok && initialOutpostId) {
+      // Read the detail even when the list read failed, so a detail open
+      // never waits on a list error it cannot show.
+      if (initialOutpostId) {
         const result = await client.detail(initialOutpostId);
         if (live && !result.ok) detailError = result.message;
         if (live && result.ok) {
