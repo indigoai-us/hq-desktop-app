@@ -609,7 +609,7 @@
   /* The month's total is the largest thing on a line. */
   .total {
     font-size: 17px;
-    font-weight: 600;
+    font-weight: 500;
     letter-spacing: -0.01em;
     font-variant-numeric: tabular-nums;
     color: var(--t1);
