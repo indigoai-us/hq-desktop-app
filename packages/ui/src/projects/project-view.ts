@@ -6,7 +6,7 @@
  * every story unassigned rather than inventing an owner from the PRD.
  */
 
-import type { Story, StoryAssigneeSource, StoryChange, StoryIdentity } from "./projects-model.js";
+import type { Story, StoryAssigneeSource, StoryMeshStatus, StoryChange, StoryIdentity } from "./projects-model.js";
 import { registerAccountCache } from "../common/account-caches.js";
 
 export interface LiveStoryAssignment {
@@ -15,6 +15,7 @@ export interface LiveStoryAssignment {
   description: string;
   acceptanceCriteria: string[];
   passes: boolean | null;
+  meshStatus: StoryMeshStatus | null;
   assigneeUid: string | null;
   assigneeSource: StoryAssigneeSource;
   assignedAt: string | null;
@@ -89,6 +90,12 @@ function parseChanges(raw: unknown): StoryChange[] {
   return out.slice(-32);
 }
 
+const MESH_STATUSES: ReadonlySet<string> = new Set(["queued", "in_progress", "review", "done"]);
+
+function parseMeshStatus(raw: unknown): StoryMeshStatus | null {
+  return typeof raw === "string" && MESH_STATUSES.has(raw) ? (raw as StoryMeshStatus) : null;
+}
+
 function parseSource(raw: unknown): StoryAssigneeSource {
   return raw === "actor" || raw === "explicit" ? raw : null;
 }
@@ -100,12 +107,17 @@ function parseLiveStory(raw: unknown): LiveStoryAssignment | null {
   const criteria = Array.isArray(raw.acceptanceCriteria)
     ? raw.acceptanceCriteria.filter((item): item is string => typeof item === "string")
     : [];
+  const meshStatus = parseMeshStatus(raw.status);
   return {
     id,
     title: str(raw.title) ?? "",
     description: str(raw.description) ?? "",
     acceptanceCriteria: criteria,
-    passes: typeof raw.passes === "boolean" ? raw.passes : null,
+    // hq-pro mirrors passes from the ledger (`passes === (status === "done")`).
+    // When a view row carries done but omits passes, take done as complete so
+    // a stale PRD `passes: false` cannot pull the story back onto the board.
+    passes: typeof raw.passes === "boolean" ? raw.passes : meshStatus === "done" ? true : null,
+    meshStatus,
     assigneeUid: str(raw.assigneeUid),
     assigneeSource: parseSource(raw.assigneeSource),
     assignedAt: str(raw.assignedAt),
@@ -143,6 +155,7 @@ export function parseProjectViewStories(
 function blankAssignment(story: Story): Story {
   return {
     ...story,
+    meshStatus: null,
     assigneeUid: null,
     assigneeSource: null,
     assignedAt: null,
@@ -163,6 +176,7 @@ function applyLive(story: Story, live: LiveStoryAssignment): Story {
     acceptanceCriteria:
       story.acceptanceCriteria.length > 0 ? story.acceptanceCriteria : live.acceptanceCriteria,
     passes: live.passes ?? story.passes,
+    meshStatus: live.meshStatus,
     assigneeUid: live.assigneeUid,
     assigneeSource: live.assigneeSource,
     assignedAt: live.assignedAt,
