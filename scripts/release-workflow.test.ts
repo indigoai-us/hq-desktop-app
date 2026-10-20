@@ -1020,7 +1020,9 @@ exec "$REAL_NODE" "$@"
   it("builds signed Linux .deb and AppImage bundles with the UI inside", () => {
     const linux = jobBody("linux");
 
-    expect(linux).toContain("runs-on: ubuntu-22.04");
+    expect(linux).toContain(
+      'runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX_2204 || \'"ubuntu-22.04"\') }}',
+    );
     expect(linux).toContain("needs: validate");
     // Linux has no prebuilt shell, so the job runs on both dispatch paths.
     expect(linux).not.toContain("legacy_build");
