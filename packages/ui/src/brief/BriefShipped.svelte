@@ -3,7 +3,7 @@
    * What you shipped yesterday: one glass tile per product (never per repo),
    * each with the product's logo, how much merged, and a plain line worth
    * knowing. Holographic foil = an achievement; the edge follows your pointer.
-   * A FIRST badge marks a first-of-its-kind ship; the flame counts consecutive
+   * A first-of-its-kind ship says so in its peek (the Firsts card celebrates it); the flame counts consecutive
    * landing days. At most five tiles, then a "+N more" tile peeking the rest.
    */
   import BriefOrigin from "./BriefOrigin.svelte";
@@ -36,8 +36,16 @@
   const cells = $derived(shown.length + (rest.length ? 1 : 0));
   // One-row cards keep every tile on one line; tall cards wrap at three (L) or two (M) columns.
   const gridCols = $derived(Math.max(1, tall ? Math.min(cols >= 3 ? 3 : 2, cells) : cells));
-  // L shows two highlight lines, M one; one-row sizes show none.
-  const lines = $derived(tall ? (cols >= 3 ? 2 : 1) : 0);
+  // In one row, "+N more" is a slim column at the end rather than a full tile.
+  const gridTemplate = $derived(!tall && rest.length ? `repeat(${shown.length}, minmax(0, 1fr)) 76px` : `repeat(${gridCols}, minmax(0, 1fr))`);
+  // Each tile lists what was worth knowing under its count, as many as its height holds (up to five);
+  // a short card simply shows fewer.
+  const lines = 5;
+  /** "Oct 4 – Oct 8" from two YYYY-MM-DD dates. */
+  const dayRange = (from: string, to: string) => {
+    const f = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    return `${f(from)} – ${f(to)}`;
+  };
   const streak = $derived(shippedStreak(landedDays, today));
   const total = $derived(merged ?? tiles.reduce((n, t) => n + t.merged, 0));
 
@@ -95,14 +103,14 @@
   }
 </script>
 
-<div class="w" data-testid="brief-shipped">
+<div class="w c-green" data-testid="brief-shipped">
   <div class="top">
     <div>
-      <div class="eyebrow" style="color:var(--b-ok)">
+      <div class="eyebrow">
         <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4.5 4.5L19 7" /></svg> Run complete · yesterday
       </div>
       <h3>
-        What you shipped{#if streak}<span class="streak" title={streakTitle(streak)} data-testid="brief-shipped-streak"
+        What you shipped{#if streak}<span class="streak" data-testid="brief-shipped-streak"
             ><svg viewBox="0 0 12 14" aria-hidden="true"><path d="M6 0C7 3 10 5 10 9a4 4 0 0 1-8 0c0-2 1-3 2-4 0 2 1 3 2 3-1-3 0-6 0-8z" /></svg>{streak.days} days</span
           >{/if}
       </h3>
@@ -120,7 +128,7 @@
               sections: [{ label: "By product", lines: byProduct(win) }],
             }),
           }}
-        >{dayLabel(win.from)} to {dayLabel(win.to)} · {win.total} PRs · {win.merged} merged</div>
+        >{dayRange(win.from, win.to)} · {win.total} PRs</div>
       {/if}
     </div>
     <div class="tot">
@@ -129,7 +137,7 @@
     </div>
   </div>
   {#if tiles.length}
-    <div class="runs" class:one={!tall} style="--cols:{gridCols}">
+    <div class="runs" class:one={!tall} style="grid-template-columns:{gridTemplate}">
       {#each shown as t (t.key)}
         <div
           class="run"
@@ -137,11 +145,10 @@
           aria-label={`${t.product} · ${t.headline}`}
           data-testid="brief-shipped-tile"
           onpointermove={track}
-          use:peek={{ state: brief, content: () => tilePeek(t) }}
+          use:peek={{ state: brief, content: () => tilePeek(t), place: "below" }}
         >
           <div class="hd">
             <BriefOrigin origin={t.origin} product />
-            {#if t.first}<span class="first" data-testid="brief-shipped-first" title="A first for this product">★ FIRST</span>{/if}
           </div>
           <div class="v" data-testid="brief-shipped-headline">{t.headline}</div>
           {#each t.highlights.slice(0, lines) as h, i (i)}
@@ -150,7 +157,7 @@
         </div>
       {/each}
       {#if rest.length}
-        <div class="run more" role="button" tabindex="0" data-testid="brief-shipped-more" use:peek={{ state: brief, content: morePeek }}>
+        <div class="run more" role="button" tabindex="0" data-testid="brief-shipped-more" use:peek={{ state: brief, content: morePeek, place: "below" }}>
           +{rest.length} more
         </div>
       {/if}
@@ -161,18 +168,20 @@
 </div>
 
 <style>
+  /* The title block and the totals share one centre line. */
   .top {
     display: flex;
     justify-content: space-between;
-    align-items: flex-start;
+    align-items: center;
     gap: 12px;
+  }
+  .top h3 {
+    margin-top: 0;
   }
   .win {
     margin-top: 4px;
-    font-family: var(--b-mono);
-    font-size: 10px;
-    letter-spacing: 0.04em;
-    color: rgba(255, 255, 255, 0.32);
+    font-size: 13px;
+    color: var(--b-t3);
   }
   .tot {
     display: flex;
@@ -180,14 +189,14 @@
     align-items: baseline;
   }
   .tot .big {
-    font-size: 36px;
+    font-size: var(--b-fs-num);
   }
   .tot .dim {
-    color: rgba(255, 255, 255, 0.56);
+    color: rgb(var(--b-ink) / 0.7);
   }
   .tot small {
-    font-size: 12px;
-    color: rgba(255, 255, 255, 0.56);
+    font-size: 13px;
+    color: rgb(var(--b-ink) / 0.56);
     margin-left: 6px;
   }
   /* Streak flame: consecutive landing days, only when earned (two or more). */
@@ -197,10 +206,9 @@
     gap: 3px;
     margin-left: 8px;
     font-family: var(--b-mono);
-    font-size: 9.5px;
+    font-size: 11px;
     font-weight: 500;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    letter-spacing: 0;
     color: var(--b-sun);
     vertical-align: middle;
   }
@@ -227,29 +235,22 @@
     grid-auto-rows: 1fr;
     min-height: 0;
   }
+  /* One row of tiles still fills the card's height, so there is no empty band under them. */
   .runs.one {
-    flex: none;
-    margin-top: 10px;
-    grid-auto-rows: auto;
+    margin-top: 14px;
   }
   .run {
     position: relative;
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    border-radius: 14px;
-    padding: 10px 12px;
+    border-radius: 10px;
+    padding: 12px 14px;
     container-type: inline-size;
-    /* Glass: lit from the top, hairline rim, soft drop. No inner shadow and no
-       backdrop-filter (WKWebView draws it as a square that ignores the radius). */
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.025) 42%, rgba(255, 255, 255, 0.015)),
-      radial-gradient(120% 60% at 20% 0%, rgba(255, 255, 255, 0.06), transparent 60%);
-    border: 1px solid rgba(255, 255, 255, 0.09);
-    border-top-color: rgba(255, 255, 255, 0.18);
-    box-shadow:
-      0 1px 2px rgba(0, 0, 0, 0.3),
-      0 8px 20px -8px rgba(0, 0, 0, 0.5);
+    /* Glass tile, no rim (no backdrop-filter: WKWebView draws it as a square). */
+    background: rgb(var(--b-ink) / 0.12);
+    border: 0;
+    box-shadow: none;
     min-width: 0;
   }
   .hd {
@@ -257,50 +258,19 @@
     align-items: center;
     justify-content: space-between;
     gap: 6px;
-    margin-bottom: 5px;
+    margin-bottom: 10px;
     min-width: 0;
   }
   .hd :global(.org) {
     min-width: 0;
   }
   /* Too narrow for the product name: keep the logo, hide the text. */
-  @container (max-width: 150px) {
+  @container (max-width: 110px) {
     .hd :global(.org b) {
       display: none;
     }
   }
-  /* FIRST badge: warm foil, only on a first-of-its-kind ship. */
-  .first {
-    flex: none;
-    display: inline-flex;
-    align-items: center;
-    font-family: var(--b-mono);
-    font-size: 8px;
-    letter-spacing: 0.08em;
-    padding: 2px 6px;
-    border-radius: 99px;
-    color: #2a1408;
-    position: relative;
-    overflow: hidden;
-    isolation: isolate;
-    background: #ffb580;
-  }
-  /* The foil is a wide gradient overlay slid with a transform, so the shimmer stays on the compositor. */
-  .first::before {
-    content: "";
-    position: absolute;
-    inset: 0 auto 0 0;
-    width: 220%;
-    z-index: -1;
-    background: linear-gradient(110deg, #ffb580, #ffe2c4 40%, #ff809f 60%, #ffb580);
-    animation: foil 3.5s ease-in-out infinite;
-  }
-  @keyframes foil {
-    50% {
-      transform: translateX(-54.5%);
-    }
-  }
-  /* Holographic foil, only on shipped work. */
+  /* Hover: light follows the pointer across the tile and catches its rim (white glass, no foil). */
   .run::before {
     content: "";
     position: absolute;
@@ -309,21 +279,20 @@
     pointer-events: none;
     opacity: 0;
     transition: opacity 0.3s;
-    background: linear-gradient(115deg, transparent 20%, rgba(255, 120, 200, 0.22) 35%, rgba(120, 220, 255, 0.22) 50%, rgba(180, 255, 150, 0.2) 62%, transparent 78%);
-    background-size: 250% 250%;
-    background-position: var(--hx, 50%) var(--hy, 50%);
-    mix-blend-mode: color-dodge;
+    /* A soft white light under the pointer, the same glass light the cards use; no colour. */
+    background: radial-gradient(180px circle at var(--hx, 50%) var(--hy, 50%), rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0) 70%);
   }
   .run::after {
     content: "";
     position: absolute;
     inset: 0;
     border-radius: inherit;
-    padding: 1.2px;
+    padding: 1px;
     pointer-events: none;
     opacity: 0;
     transition: opacity 0.3s;
-    background: conic-gradient(from var(--ang, 0deg), #ff7ac6, #7ad7ff, #b6ff8a, #ffd36e, #ff7ac6);
+    /* The rim catches the light on the pointer's side and fades away from it, in white. */
+    background: conic-gradient(from var(--ang, 0deg), rgba(255, 255, 255, 0.75), rgba(255, 255, 255, 0.2) 22%, rgba(255, 255, 255, 0.08) 50%, rgba(255, 255, 255, 0.2) 78%, rgba(255, 255, 255, 0.75));
     -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
     mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
     -webkit-mask-composite: xor;
@@ -336,25 +305,37 @@
     opacity: 0.95;
   }
   .v {
-    font-size: 12.5px;
+    font-size: 15px;
     font-weight: 500;
     line-height: 1.25;
   }
+  /* Highlights as a calm list: one line each, hairlines between, the count above them. */
   .s {
-    font-size: 11px;
-    color: rgba(255, 255, 255, 0.56);
-    margin-top: 3px;
+    font-size: 12px;
+    line-height: 1.35;
+    color: rgb(var(--b-ink) / 0.78);
+    padding: 7px 0;
+    border-top: 1px solid rgb(var(--b-ink) / 0.12);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* The rest of the products, in one quiet tile; no foil (nothing shipped here). */
+  .v + .s {
+    margin-top: 10px;
+  }
+  /* The rest of the products: a slim, quiet column with no fill until hovered. */
   .run.more {
     justify-content: center;
     align-items: center;
+    padding: 0 6px;
+    background: transparent;
     font-size: 12px;
-    color: rgba(255, 255, 255, 0.78);
+    color: rgb(var(--b-ink) / 0.72);
     cursor: default;
+    transition: background 0.2s;
+  }
+  .run.more:hover {
+    background: rgb(var(--b-ink) / 0.08);
   }
   .run.more::before,
   .run.more::after {
@@ -362,7 +343,7 @@
   }
   .run.more:hover,
   .run.more:focus-visible {
-    background: rgba(255, 255, 255, 0.08);
+    background: rgb(var(--b-ink) / 0.08);
     outline: none;
   }
 </style>

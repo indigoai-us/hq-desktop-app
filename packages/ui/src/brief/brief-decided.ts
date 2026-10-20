@@ -79,6 +79,43 @@ export function decidedRows(meetings: readonly BriefMeeting[], windowFrom: numbe
   return out;
 }
 
+export interface DecidedGroup {
+  meeting: BriefMeeting;
+  rows: DecidedRow[];
+}
+
+/**
+ * The shown rows under their meetings: one group per meeting, in row order,
+ * so the card names each meeting once and its decisions sit under it.
+ */
+export function groupByMeeting(rows: readonly DecidedRow[]): DecidedGroup[] {
+  const out: DecidedGroup[] = [];
+  for (const r of rows) {
+    const last = out[out.length - 1];
+    if (last && last.meeting.id === r.meeting.id) last.rows.push(r);
+    else out.push({ meeting: r.meeting, rows: [r] });
+  }
+  return out;
+}
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/**
+ * A group heading's time: "2 PM", or "Mon 2 PM" when the window is a
+ * catch-up and its meetings fall on different days. Local time, no toLocale.
+ */
+export function headingWhen(iso: string, withDay: boolean): string {
+  const clock = clockLabel(iso);
+  if (!withDay || !clock) return clock;
+  return `${WEEKDAYS[new Date(iso).getDay()]} ${clock}`;
+}
+
+/** True when the rows' meetings start on more than one local day. */
+export function spansDays(rows: readonly DecidedRow[]): boolean {
+  const days = new Set(rows.map((r) => new Date(r.meeting.startTime).toDateString()));
+  return days.size > 1;
+}
+
 /** "6 decisions made yesterday without you"; "while you were away" on a catch-up window. */
 export function settledTitle(n: number, opts: { mine: boolean; away: boolean }): string {
   const what = `${n} decision${n === 1 ? "" : "s"} made ${opts.away ? "while you were away" : "yesterday"}`;

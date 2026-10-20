@@ -67,13 +67,13 @@ describe("bot sidepane controls", () => {
     expect(q('[data-testid="bot-profile-copy-uid"]')?.textContent).toBe("Copied");
   });
 
-  it("pauses and resumes through the agents API, and Stop opens the session stop confirm", async () => {
+  it("pauses and resumes through the agents API, and Stop confirms before stopping the bot", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);
     const agents = agentsApi();
     mount(ProfilePaneHost, {
       target: host,
-      props: { kind: "bot", name: "deacon", live: true, agentUid: "agt_01DEACON", runtimeKind: "local", agents: agents as never },
+      props: { kind: "bot", name: "deacon", live: true, agentUid: "agt_01DEACON", runtimeKind: "cloud", agents: agents as never },
     });
     await settle();
     const pause = () => q<HTMLButtonElement>('[data-testid="bot-profile-pause"]')!;
@@ -89,7 +89,11 @@ describe("bot sidepane controls", () => {
     expect(pause().textContent).toBe("Pause");
     q<HTMLButtonElement>('[data-testid="bot-profile-stop"]')!.click();
     await tick();
-    expect(q('[data-testid="bot-session-pane"]')?.getAttribute("data-phase")).toBe("confirm-stop");
+    expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain("Stop bot?");
+    expect(agents.stop).toHaveBeenCalledTimes(1);
+    document.querySelector<HTMLButtonElement>('[data-testid="confirm-dialog-ok"]')!.click();
+    await settle();
+    expect(agents.stop).toHaveBeenCalledTimes(2);
   });
 
   it("rolls Pause back and says so when the server refuses", async () => {
@@ -107,14 +111,15 @@ describe("bot sidepane controls", () => {
     expect(q('[data-testid="bot-profile-action-error"]')?.textContent).toContain("Could not pause");
   });
 
-  it("section Edit links open the edit sheet on that tab", async () => {
+  it("opens editable details directly from the details button", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);
     mount(ProfilePaneHost, { target: host, props: { kind: "bot", name: "deacon", company: "Indigo" } });
     await tick();
-    q<HTMLButtonElement>('[data-testid="bot-profile-edit-runtime"]')!.click();
+    q<HTMLButtonElement>(".details-button")!.click();
     await tick();
-    expect(q('[data-testid="edit-bot-tab-runtime"]')?.getAttribute("aria-selected")).toBe("true");
+    expect(q('[data-testid="bot-identity-editor"]')).not.toBeNull();
+    expect(q('[data-testid="edit-bot-name"]')).not.toBeNull();
   });
 
   it("edits vault grants as read or write only, through the folder picker", async () => {

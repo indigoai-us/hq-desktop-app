@@ -475,7 +475,7 @@ describe("the Connect Slack modal: each stage", () => {
     expect(steps()).toEqual(["done:Approve Nova in Slack", "done:Create a token for Nova", "done:HQ finishes the setup"]);
     expect(indicator()).toBe("Step 3 of 3: Connected");
     expect(statusLines()).toEqual(["done:Nova is in Slack. Invite it to a channel or send it a direct message."]);
-    expect(footerButtons()).toEqual(["Done"]);
+    expect(footerButtons()).toEqual(["Slack app settings", "Done"]);
     // No button that claims to send a test message.
     expect(dialog().textContent).not.toMatch(/send (a )?test/i);
     // No bot user id in the status: no button to open the bot.
@@ -487,7 +487,7 @@ describe("the Connect Slack modal: each stage", () => {
   it("offers to open the bot in Slack once connected, when the status carries both ids", () => {
     render({ status: CONNECTED_WITH_BOT });
     expect(stage()).toBe("connected");
-    expect(footerButtons()).toEqual(["Done", "Open Nova in Slack"]);
+    expect(footerButtons()).toEqual(["Slack app settings", "Done", "Open Nova in Slack"]);
     const open = byId<HTMLButtonElement>("slack-connect-open-bot")!;
     expect(open.classList.contains("is-primary")).toBe(true);
     expect(document.activeElement).toBe(open);
@@ -506,7 +506,7 @@ describe("the Connect Slack modal: each stage", () => {
     });
     expect(stage()).toBe("connected");
     expect(byId("slack-connect-open-bot")).toBeNull();
-    expect(footerButtons()).toEqual(["Done"]);
+    expect(footerButtons()).toEqual(["Slack app settings", "Done"]);
     await takeDown();
     render({
       status: status(

@@ -1841,6 +1841,90 @@ describe('first-run sign-in screen', () => {
 });
 
 describe('onboarding launch handoff', () => {
+  /**
+   * Mount the ready screen with no install folder known: the mount-time
+   * default lookup fails, so `installPath` stays null. The launch-time
+   * lookup then answers `resolvedPath`.
+   */
+  async function mountReadyWithoutInstallPath(
+    resolvedPath: string,
+    tools: typeof NO_AI_TOOLS,
+  ): Promise<void> {
+    let launchTime = false;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          if (!launchTime) throw new Error('default folder unavailable');
+          return resolvedPath;
+        case 'detect_ai_tools':
+          return tools;
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: CONNECTOR_IMPORT_STEP_INDEX, onfinish: vi.fn() },
+    });
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-launch-claude"]')),
+    );
+    launchTime = true;
+  }
+
+  /** The launch either reached Claude or fell back to the escape path. */
+  function launchSettled(): boolean {
+    return (
+      tauri.invoke.mock.calls.some(
+        ([command]) => command === 'open_claude_code_link' || command === 'launch_claude_code',
+      ) || Boolean(host.querySelector('[data-testid="onboarding-escape"]'))
+    );
+  }
+
+  it('always sends the Claude deep link with a non-empty folder, even when installPath is unset', async () => {
+    const tools = { ...NO_AI_TOOLS, claude_desktop: true, any: true };
+    await mountReadyWithoutInstallPath('C:\\Users\\you\\hq', tools);
+
+    readyButton('onboarding-launch-claude').click();
+    await flushUntil(launchSettled);
+
+    const calls = tauri.invoke.mock.calls.filter(
+      ([command]) => command === 'open_claude_code_link',
+    );
+    expect(calls).toHaveLength(1);
+    const url = new URL(String((calls[0][1] as { url: string }).url));
+    expect(url.searchParams.get('folder')).toBe('C:\\Users\\you\\hq');
+    expect(
+      tauri.invoke.mock.calls.filter(([command]) => command === 'resolve_hq_path'),
+    ).toContainEqual(['resolve_hq_path', { create: false }]);
+  });
+
+  it('launches the Claude CLI in the resolved folder when installPath is unset', async () => {
+    const tools = { ...NO_AI_TOOLS, claude_cli: true, any: true };
+    await mountReadyWithoutInstallPath('/Users/test/hq', tools);
+
+    readyButton('onboarding-launch-claude').click();
+    await flushUntil(launchSettled);
+
+    expect(
+      tauri.invoke.mock.calls.filter(([command]) => command === 'launch_claude_code'),
+    ).toEqual([['launch_claude_code', { path: '/Users/test/hq' }]]);
+    expect(host.querySelector('[data-testid="onboarding-escape"]')).toBeNull();
+  });
+
+  it('never sends a folderless Claude deep link when no folder can be resolved', async () => {
+    const tools = { ...NO_AI_TOOLS, claude_desktop: true, any: true };
+    await mountReadyWithoutInstallPath('   ', tools);
+
+    readyButton('onboarding-launch-claude').click();
+    await flushUntil(launchSettled);
+
+    expect(
+      tauri.invoke.mock.calls.filter(([command]) => command === 'open_claude_code_link'),
+    ).toHaveLength(0);
+    expect(host.querySelector('[data-testid="onboarding-escape"]')).not.toBeNull();
+  });
+
   it('turns a failed Claude launch into a folder escape path, never a red dump', async () => {
     mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, { ...NO_AI_TOOLS, claude_desktop: true, any: true });
     await flushUntil(() =>

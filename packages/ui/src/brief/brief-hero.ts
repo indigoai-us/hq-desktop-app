@@ -10,6 +10,7 @@ import { productName } from "./brief-origin.js";
 import { decisionPeek, redAge, riskPeek } from "./brief-peeks.js";
 import { clockLabel } from "./brief-time.js";
 import type {
+  BriefDay,
   BriefDecision,
   BriefHandoff,
   BriefInput,
@@ -25,6 +26,8 @@ import type {
 export interface HeroLead {
   text: string;
   because: string | null;
+  /** The item priority 1 is about, when the writer named one. */
+  itemId?: string | null;
 }
 
 const HOUR_MS = 3_600_000;
@@ -48,10 +51,34 @@ export function firstLine(lead: HeroLead | null | undefined): string {
   return `First: ${text}.${because ? ` ${because}` : ""}`;
 }
 
-/** The Welcome back greeting: 'Here's what changed, starting with "Approve the Q4 plan".' */
-export function catchUpGreet(lead: HeroLead | null | undefined): string {
-  const text = clause(lead?.text);
-  return text ? `Here's what changed, starting with "${text}".` : "Here's what changed.";
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * When the last brief was, in words: "since Sunday's brief" inside the week,
+ * "since your Oct 2 brief" beyond it, "since yesterday's brief". Empty when
+ * there was no last brief or its time is unreadable.
+ */
+export function catchUpSince(lastBriefAt: string | null | undefined, nowIso: string): string {
+  if (!lastBriefAt) return "";
+  const t = new Date(lastBriefAt);
+  const n = new Date(nowIso);
+  if (Number.isNaN(t.getTime()) || Number.isNaN(n.getTime())) return "";
+  const days = Math.round((localDayStart(n) - localDayStart(t)) / DAY_MS);
+  if (days <= 0) return "since this morning's brief";
+  if (days === 1) return "since yesterday's brief";
+  if (days < 7) return `since ${WEEKDAYS[t.getDay()]}'s brief`;
+  return `since your ${MONTH_NAMES[t.getMonth()]} ${t.getDate()} brief`;
+}
+
+/**
+ * The Welcome back greeting under the days-away number: "Here's what changed
+ * since Sunday's brief." The lead itself is the card's featured block, so the
+ * greeting never repeats it.
+ */
+export function catchUpGreet(lastBriefAt: string | null | undefined, nowIso: string): string {
+  const since = catchUpSince(lastBriefAt, nowIso);
+  return since ? `Here's what changed ${since}.` : "Here's what changed.";
 }
 
 /** The lead's because as the line under the Welcome back greeting; empty without one. */
@@ -248,4 +275,179 @@ export function moreTilesPeek(rest: readonly CatchUpTile[]): PeekContent {
     status: "Also since your last brief",
     sections: [{ label: "Changes", lines: rest.map((t) => ({ label: t.text, state: t.tag.split(" · ").pop() ?? t.tag, tone: t.tone })) }],
   };
+}
+
+/** Priority 1 as Welcome back features it: the writer's words, the why, and its tile when it has one. */
+export interface CatchUpLead {
+  text: string;
+  because: string;
+  /** The tile it is about (its tag, product, peek and prompt); null when priority 1 has no tile. */
+  tile: CatchUpTile | null;
+}
+
+const sameText = (a: string, b: string) => clause(a).toLowerCase() === clause(b).toLowerCase();
+
+/**
+ * The one thing Welcome back starts with: priority 1 in the writer's words,
+ * matched to its tile by item id (else by its words). Without a priority the
+ * first tile leads, the way the catalogue counts them. Null when there is
+ * nothing to lead with.
+ */
+export function catchUpLead(tiles: readonly CatchUpTile[], lead: HeroLead | null | undefined): CatchUpLead | null {
+  const text = clause(lead?.text);
+  if (text) {
+    const tile = (lead?.itemId ? tiles.find((t) => t.id === lead.itemId) : undefined) ?? tiles.find((t) => sameText(t.text, text)) ?? null;
+    return { text, because: catchUpBecause(lead) || becauseSentence(tile?.sub), tile };
+  }
+  const first = tiles[0];
+  return first ? { text: first.text, because: becauseSentence(first.sub), tile: first } : null;
+}
+
+/** One big number on the Welcome back card: what moved while you were away. */
+export interface CatchUpStat {
+  key: "waiting" | "merged" | "shipped" | "meetings" | "sessions" | "dms";
+  /** Mono caps label: "WAITING ON YOU", "MERGED". */
+  label: string;
+  value: number;
+  /** The number to read first (calls waiting on you); the rest are quieter. */
+  focus: boolean;
+  peek: PeekContent | null;
+}
+
+/** The local YYYY-MM-DD of a time; "" when unreadable. */
+function localDate(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** A YYYY-MM-DD as a local date, or null. */
+function parseDay(date: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+}
+
+/** One day you were away, as the orbit on the Welcome back card draws it. */
+export interface AwayDay {
+  date: string;
+  /** Mono weekday tag: "SUN". */
+  tag: string;
+  /** Sessions, meetings and merges that day; 0 when the brief has no day stats. */
+  weight: number;
+  /** That day's numbers; null when the brief has no day stats. */
+  peek: PeekContent | null;
+}
+
+/** The days in the away window that the brief has stats for, oldest first (at most seven). */
+export function awayWindow(input: Pick<BriefInput, "days" | "lastBriefAt" | "now" | "today">): BriefDay[] {
+  const from = localDate(input.lastBriefAt);
+  const today = input.today ?? localDate(input.now);
+  return (input.days ?? []).filter((d) => (!from || d.date >= from) && (!today || d.date < today)).slice(-7);
+}
+
+/**
+ * The days you were away, oldest first, for the orbit: the brief's own day
+ * stats when it has them (each with a peek of that day's numbers), else just
+ * the dates counted back from today. At most seven; empty when you were not away.
+ */
+export function awayDays(input: Pick<BriefInput, "days" | "lastBriefAt" | "now" | "today">, daysAway: number): AwayDay[] {
+  if (!(daysAway >= 1)) return [];
+  const window = awayWindow(input);
+  if (window.length) {
+    return window.map((d) => {
+      const at = parseDay(d.date);
+      const lines: BriefLine[] = [
+        { label: "Sessions", state: String(d.sessions) },
+        { label: "Meetings", state: String(d.meetings) },
+        { label: "Merged", state: String(d.merged) },
+      ];
+      return {
+        date: d.date,
+        tag: at ? DAYS[at.getDay()]! : "",
+        weight: d.sessions + d.meetings + d.merged,
+        peek: {
+          title: at ? `${WEEKDAYS[at.getDay()]}, ${MONTH_NAMES[at.getMonth()]} ${at.getDate()}` : d.date,
+          status: d.beat?.label ?? "While you were away",
+          sections: [{ label: "That day", lines }],
+        },
+      };
+    });
+  }
+  const end = parseDay(input.today ?? localDate(input.now)) ?? new Date(input.now);
+  const n = Math.min(Math.floor(daysAway), 7);
+  return Array.from({ length: n }, (_, i) => {
+    const at = new Date(end.getFullYear(), end.getMonth(), end.getDate() - (n - i));
+    return { date: localDate(at.toISOString()), tag: DAYS[at.getDay()]!, weight: 0, peek: null };
+  });
+}
+
+const sum = (days: readonly BriefDay[], key: "sessions" | "meetings" | "merged") => days.reduce((n, d) => n + (Number.isFinite(d[key]) ? d[key] : 0), 0);
+
+/** A by-day peek for one of the away numbers. */
+function byDayPeek(title: string, days: readonly BriefDay[], key: "sessions" | "meetings"): PeekContent {
+  return {
+    title,
+    status: "While you were away",
+    sections: [
+      {
+        label: "By day",
+        lines: days.map((d) => {
+          const at = parseDay(d.date);
+          return { label: at ? `${WEEKDAYS[at.getDay()]}, ${MONTH_NAMES[at.getMonth()]} ${at.getDate()}` : d.date, state: String(d[key]) };
+        }),
+      },
+    ],
+  };
+}
+
+const countOf = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/**
+ * What moved while you were away, as up to four big numbers: the calls
+ * waiting on you first (the one to read), then merged (or products shipped),
+ * meetings, sessions and DMs over the away window. A number the brief does
+ * not know is left out rather than shown as 0; waiting always shows.
+ */
+export function catchUpStats(input: BriefInput, decisions: readonly BriefDecision[]): CatchUpStat[] {
+  const window = awayWindow(input);
+  const waiting = decisions.length;
+  const out: CatchUpStat[] = [
+    {
+      key: "waiting",
+      label: "WAITING ON YOU",
+      value: waiting,
+      focus: waiting > 0,
+      peek: waiting
+        ? {
+            title: `${countOf(waiting, "call")} ${waiting === 1 ? "waits" : "wait"} on you`,
+            status: "Ranked by what they unblock",
+            sections: [{ label: "Waiting on you", lines: decisions.map((d) => ({ label: humanTitle(d.title).text, state: productName(d.origin.repo, d.origin.product) })) }],
+          }
+        : null,
+    },
+  ];
+  const merged = input.merged ?? (window.length ? sum(window, "merged") : null);
+  if (merged != null && merged > 0) out.push({ key: "merged", label: "MERGED", value: merged, focus: false, peek: shippedPeek(input.shipped, merged) });
+  else if (input.shipped.length) out.push({ key: "shipped", label: "SHIPPED", value: input.shipped.length, focus: false, peek: shippedPeek(input.shipped, input.merged) });
+  const meetings = sum(window, "meetings");
+  if (meetings > 0) out.push({ key: "meetings", label: "MEETINGS", value: meetings, focus: false, peek: byDayPeek(countOf(meetings, "meeting"), window, "meetings") });
+  const sessions = sum(window, "sessions");
+  if (sessions > 0) out.push({ key: "sessions", label: "SESSIONS", value: sessions, focus: false, peek: byDayPeek(countOf(sessions, "session"), window, "sessions") });
+  if (input.dmCount && input.dmCount > 0) out.push({ key: "dms", label: "DMS", value: input.dmCount, focus: false, peek: null });
+  return out.slice(0, 4);
+}
+
+/**
+ * A point on the Welcome back orbit at t in [0, 1], in percent of the orbit's
+ * box: a curve that rises from the bottom left to "today" at the top right.
+ */
+export const ORBIT = { p0: [0, 94], p1: [46, 94], p2: [80, 66], p3: [97, 10] } as const;
+export function orbitPoint(t: number): [number, number] {
+  const u = 1 - t;
+  const a = u * u * u;
+  const b = 3 * u * u * t;
+  const c = 3 * u * t * t;
+  const d = t * t * t;
+  return [a * ORBIT.p0[0] + b * ORBIT.p1[0] + c * ORBIT.p2[0] + d * ORBIT.p3[0], a * ORBIT.p0[1] + b * ORBIT.p1[1] + c * ORBIT.p2[1] + d * ORBIT.p3[1]];
 }

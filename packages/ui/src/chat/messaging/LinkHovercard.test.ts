@@ -14,6 +14,15 @@ import {
   setPageTitleFetcher,
 } from "../../common/linkTitles";
 import { renderMessageBodyMarkdown } from "../../common/messageMarkdown";
+import {
+  cachedGithubSummary,
+  githubStatus,
+  relativeAge,
+  requestGithubSummary,
+  resetGithubSummariesForTest,
+  setGithubSummaryFetcher,
+  type GithubLinkSummary,
+} from "../../common/linkGithub";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -23,6 +32,7 @@ afterEach(async () => {
   component = null;
   host?.remove();
   resetPageTitlesForTest();
+  resetGithubSummariesForTest();
   vi.useRealTimers();
 });
 
@@ -73,13 +83,76 @@ describe("LinkHovercard render", () => {
     expect(bare.getAttribute("aria-label")).toBe("example.org");
   });
 
-  it("renders a GitHub PR card from parsed fields", () => {
+  it("renders a GitHub PR header without repeating the repo or showing the URL", () => {
     const { card } = mountCard("https://github.com/indigoai-us/hq-desktop-app/pull/1512");
-    expect(card.querySelector(".link-card-title")?.textContent).toBe(
-      "indigoai-us/hq-desktop-app#1512",
-    );
-    const values = [...card.querySelectorAll("dd")].map((dd) => dd.textContent);
-    expect(values).toEqual(["indigoai-us/hq-desktop-app", "#1512"]);
+    expect(card.querySelector(".gh-repo")?.textContent).toBe("indigoai-us/hq-desktop-app");
+    expect(card.querySelector(".gh-num")?.textContent).toBe("#1512");
+    expect(card.querySelector(".link-card-kind")?.textContent).toBe("Pull request");
+    // No fields grid, no raw URL, no repeated "owner/repo#n" title.
+    expect(card.querySelector("dl")).toBeNull();
+    expect(card.querySelector(".link-card-url")).toBeNull();
+    expect(card.textContent).not.toContain("indigoai-us/hq-desktop-app#1512");
+    expect(card.textContent).not.toContain("https://github.com");
+  });
+
+  it("renders live PR details: status, title, author, size and age", async () => {
+    const href = "https://github.com/indigoai-us/hq-desktop-app/pull/1699";
+    const summary: GithubLinkSummary = {
+      kind: "pull",
+      title: "Desktop usage meter and Settings > Usage",
+      state: "open",
+      review: "changes_requested",
+      author: "coreyepstein",
+      authorAvatar: "data:image/png;base64,AAAA",
+      updatedAt: new Date(Date.now() - 16 * 3_600_000).toISOString(),
+      additions: 2340,
+      deletions: 161,
+      changedFiles: 28,
+    };
+    const fetch = vi.fn(async () => summary);
+    setGithubSummaryFetcher(fetch);
+    requestGithubSummary(href);
+    await vi.waitFor(() => expect(cachedGithubSummary(href)).toEqual(summary));
+    const { card } = mountCard(href);
+    expect(card.querySelector(".gh-pill")?.textContent?.trim()).toBe("Changes requested");
+    expect(card.querySelector(".gh-pill")?.getAttribute("data-tone")).toBe("danger");
+    expect(card.querySelector(".gh-title")?.textContent).toBe(summary.title);
+    expect(card.querySelector(".gh-login")?.textContent).toBe("coreyepstein");
+    expect(card.querySelector("img.gh-avatar")?.getAttribute("src")).toBe(summary.authorAvatar);
+    expect(card.querySelector(".gh-add")?.textContent).toBe("+2,340");
+    expect(card.querySelector(".gh-del")?.textContent).toBe("−161");
+    const chips = [...card.querySelectorAll(".gh-chip")].map((c) => c.textContent?.replace(/\s+/g, " ").trim());
+    expect(chips).toEqual(["+2,340 −161", "28 files"]);
+    expect(card.querySelector(".gh-age")?.textContent).toBe("16h ago");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("fills in issue details when they arrive after the card opened", async () => {
+    const href = "https://github.com/acme/app/issues/7";
+    let resolve!: (value: GithubLinkSummary) => void;
+    setGithubSummaryFetcher(() => new Promise((r) => (resolve = r)));
+    requestGithubSummary(href);
+    const { card } = mountCard(href);
+    expect(card.querySelector(".gh-title")).toBeNull();
+    resolve({ kind: "issue", title: "Crash on launch", state: "completed", author: "sam", comments: 1 });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(card.querySelector(".gh-title")?.textContent).toBe("Crash on launch");
+    });
+    expect(card.querySelector(".gh-pill")?.textContent?.trim()).toBe("Closed");
+    expect(card.querySelector(".gh-avatar-blank")?.textContent).toBe("S");
+    expect([...card.querySelectorAll(".gh-chip")].map((c) => c.textContent)).toEqual(["1 comment"]);
+  });
+
+  it("keeps the parsed header when the lookup finds nothing", async () => {
+    const href = "https://github.com/acme/private/pull/3";
+    setGithubSummaryFetcher(async () => null);
+    requestGithubSummary(href);
+    await vi.waitFor(() => expect(cachedGithubSummary(href)).toBeNull());
+    const { card } = mountCard(href);
+    expect(card.querySelector(".gh-pill")).toBeNull();
+    expect(card.querySelector(".gh-num")?.textContent).toBe("#3");
+    expect([...card.querySelectorAll("button")].map((b) => b.textContent?.trim())).toEqual(["Open", "Copy link"]);
   });
 
   it("renders a generic card with the full URL, Open and Copy link", async () => {
@@ -185,5 +258,44 @@ describe("linkTitles cache", () => {
     requestPageTitle("https://example.com/b");
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(cachedPageTitle("https://example.com/b")).toBeUndefined();
+  });
+});
+
+describe("GitHub link summaries", () => {
+  it("asks the host at most once a minute per link", async () => {
+    const href = "https://github.com/acme/app/pull/1";
+    const fetch = vi.fn(async () => ({ kind: "pull", title: "t", state: "open" }) as GithubLinkSummary);
+    setGithubSummaryFetcher(fetch);
+    requestGithubSummary(href);
+    requestGithubSummary(href);
+    await vi.waitFor(() => expect(cachedGithubSummary(href)?.title).toBe("t"));
+    requestGithubSummary(href);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    requestGithubSummary(href, Date.now() + 61_000);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("maps states to pill labels and tones", () => {
+    const pr = (state: GithubLinkSummary["state"], review: GithubLinkSummary["review"] = null) =>
+      githubStatus({ kind: "pull", title: "t", state, review });
+    expect(pr("open")).toEqual({ label: "Open", tone: "open" });
+    expect(pr("open", "approved")).toEqual({ label: "Approved", tone: "open" });
+    expect(pr("draft")).toEqual({ label: "Draft", tone: "muted" });
+    expect(pr("merged")).toEqual({ label: "Merged", tone: "done" });
+    expect(pr("closed")).toEqual({ label: "Closed", tone: "danger" });
+    // A review decision only matters while the PR is open.
+    expect(pr("merged", "changes_requested")).toEqual({ label: "Merged", tone: "done" });
+    const issue = (state: GithubLinkSummary["state"]) => githubStatus({ kind: "issue", title: "t", state });
+    expect(issue("completed")).toEqual({ label: "Closed", tone: "done" });
+    expect(issue("not_planned")).toEqual({ label: "Not planned", tone: "muted" });
+  });
+
+  it("formats ages", () => {
+    const now = Date.parse("2026-10-19T12:00:00Z");
+    expect(relativeAge(null, now)).toBe("");
+    expect(relativeAge("2026-10-19T11:59:40Z", now)).toBe("just now");
+    expect(relativeAge("2026-10-19T11:15:00Z", now)).toBe("45m ago");
+    expect(relativeAge("2026-10-18T20:00:00Z", now)).toBe("16h ago");
+    expect(relativeAge("2026-10-16T12:00:00Z", now)).toBe("3d ago");
   });
 });

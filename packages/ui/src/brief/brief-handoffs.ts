@@ -12,6 +12,8 @@ import type { BriefHandoff, BriefLine, BriefTone } from "./brief-types.js";
 export const HANDOFF_ROWS = 5;
 /** Rows on a one-row card. */
 export const HANDOFF_ROWS_SHORT = 3;
+/** Rows on a one-row, one-column card, where each row takes two lines. */
+export const HANDOFF_ROWS_NARROW = 1;
 /** A missing receipt turns amber past this many hours. */
 export const HANDOFF_OVERDUE_HOURS = 24;
 const HOUR_MS = 3_600_000;
