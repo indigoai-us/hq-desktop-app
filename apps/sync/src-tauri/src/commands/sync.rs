@@ -2576,6 +2576,48 @@ pub(crate) fn start_sync_gates() -> Result<(), String> {
     crate::commands::daemon::ensure_setup_allows_sync()
 }
 
+/// Per-vault switch gate for a company-scoped pass (US-016). `start_sync`
+/// checks it after the slug is validated and before the host phase is
+/// resolved, so a company switched off in Settings › Sync is refused on both
+/// hosts: the legacy `hq-sync-runner --company <slug>` spawn and the daemon's
+/// `hq daemon sync now --company <slug>`. A scoped run never carries
+/// `HQ_SYNC_SKIP_COMPANIES`, so this is the only check on that path.
+/// All-scope passes (`None`) leave off companies to the runner's skip env.
+pub(crate) fn start_sync_company_gate(company_slug: Option<&str>) -> Result<(), String> {
+    match company_slug {
+        Some(slug) => hq_desktop_core::vault_sync::ensure_vault_sync_allowed(
+            &hq_desktop_core::vault_sync::SyncVault::Company(slug.to_string()),
+        ),
+        None => Ok(()),
+    }
+}
+
+/// Everything `start_sync` checks before it resolves the host phase: the
+/// all-off switch, the dev kill switch and unfinished setup
+/// ([`start_sync_gates`]), the slug, and then the company's own switch
+/// ([`start_sync_company_gate`], US-016). Returns the validated slug. Both the
+/// daemon and the legacy host paths run after this, so a refusal here stops
+/// both.
+pub(crate) fn start_sync_preflight(company_slug: Option<String>) -> Result<Option<String>, String> {
+    start_sync_gates()?;
+    let company_slug = daemon_sync_company_slug(company_slug)?;
+    start_sync_company_gate(company_slug.as_deref())?;
+    Ok(company_slug)
+}
+
+/// Whether an All- or company-scoped pass may run the first push for a newly
+/// provisioned company. A company switched off on this computer is skipped
+/// (US-016): the first push uploads every local file, and the runner's
+/// `HQ_SYNC_SKIP_COMPANIES` does not cover this pre-runner phase.
+fn first_push_allowed(
+    switches: &hq_desktop_core::vault_sync::VaultSyncSwitches,
+    slug: &str,
+) -> bool {
+    switches.allows(&hq_desktop_core::vault_sync::SyncVault::Company(
+        slug.to_string(),
+    ))
+}
+
 /// Returns the handle string on success (always `"hq-sync"`). Every webview
 /// caller is a person pressing Sync; Rust callers name their own trigger via
 /// [`start_sync_with_trigger`].
@@ -2622,8 +2664,7 @@ async fn start_sync_inner(
     // caller of this command — the V2 window's Sync, the menubar popover's Sync
     // Now, sync-on-launch, and notification retries — at the single Rust choke
     // point so no surface can start a sync while the titlebar says Cloud Off.
-    start_sync_gates()?;
-    let company_slug = daemon_sync_company_slug(company_slug)?;
+    let company_slug = start_sync_preflight(company_slug)?;
     let host_phase = crate::commands::hq_daemon_host::resolved_phase_for_command().await?;
     if let Some(result) = crate::commands::hq_daemon_host::daemon_sync_now_for_phase(
         host_phase,
@@ -3000,7 +3041,9 @@ async fn start_sync_inner(
     // whole first-push phase. EVERY failure arm in this phase must record into it.
     let mut pre_runner_failures: Vec<(PreRunnerSite, Option<u16>, PreRunnerCause)> = Vec::new();
 
-    // Provisioning stays global, but first-push is filtered to this run's scope.
+    // Provisioning stays global, but first-push is filtered to this run's scope
+    // and to companies whose sync switch is on (US-016).
+    let vault_switches = hq_desktop_core::vault_sync::VaultSyncSwitches::read();
     for company in companies.iter().filter(|c| scope.includes(&c.slug)) {
         if let Err(_e) = app.emit(
             EVENT_SYNC_COMPANY_PROVISIONED,
@@ -3013,6 +3056,16 @@ async fn start_sync_inner(
             log("sync", &format!("failed to emit company-provisioned: {_e}"));
             #[cfg(debug_assertions)]
             eprintln!("[sync] failed to emit company-provisioned: {}", _e);
+        }
+        if !first_push_allowed(&vault_switches, &company.slug) {
+            log(
+                "sync",
+                &format!(
+                    "phase: first_push {} skipped: sync is off for it",
+                    company.slug
+                ),
+            );
+            continue;
         }
         // First-push: upload every local file for the newly-provisioned company.
         log("sync", &format!("phase: first_push {}", company.slug));
@@ -4128,6 +4181,113 @@ mod tests {
         )
         .unwrap();
         assert!(start_sync_cloud_gate().is_ok());
+    }
+
+    /// US-016 regression: a company-scoped `start_sync` for a company whose
+    /// switch is off must be refused. `start_sync_inner` runs this gate before
+    /// it resolves the host phase, so neither the legacy
+    /// `hq-sync-runner --company <slug>` spawn nor the daemon's
+    /// `hq daemon sync now --company <slug>` is reached. Before the fix the
+    /// scoped path checked only the all-off switch and the scoped spawn carried
+    /// no `HQ_SYNC_SKIP_COMPANIES`, so the off company uploaded and downloaded.
+    #[test]
+    fn test_start_sync_company_gate_refuses_a_switched_off_company() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        let _home = scoped_home(tmp.path());
+
+        // No settings file: every vault is on.
+        assert_eq!(start_sync_company_gate(Some("acme")), Ok(()));
+
+        fs::write(
+            tmp.path().join(".hq/menubar.json"),
+            r#"{"workspaceSyncEnabled":{"acme":false,"zeta":true}}"#,
+        )
+        .unwrap();
+        let off = hq_desktop_core::vault_sync::vault_off_message(
+            &hq_desktop_core::vault_sync::SyncVault::Company("acme".to_string()),
+        );
+        // The slug as `start_sync` passes it, after `daemon_sync_company_slug`.
+        let slug = daemon_sync_company_slug(Some("  acme  ".to_string())).unwrap();
+        assert_eq!(start_sync_company_gate(slug.as_deref()), Err(off.clone()));
+        // Slugs match case-insensitively, like the runner's skip env.
+        assert!(start_sync_company_gate(Some("ACME")).is_err());
+        assert_eq!(start_sync_company_gate(Some("acme")), Err(off));
+        // The refusal is the "Sync is off for" message the UI shows as idle.
+        assert!(start_sync_company_gate(Some("acme"))
+            .unwrap_err()
+            .starts_with("Sync is off for "));
+        // Other companies and All-scope passes still start; the runner's
+        // skip env covers off companies in an All-scope pass.
+        assert_eq!(start_sync_company_gate(Some("zeta")), Ok(()));
+        assert_eq!(start_sync_company_gate(Some("other")), Ok(()));
+        assert_eq!(start_sync_company_gate(None), Ok(()));
+        // The all-off switch refuses with its own message.
+        fs::write(
+            tmp.path().join(".hq/menubar.json"),
+            r#"{"cloudPaused":true}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            start_sync_company_gate(Some("zeta")),
+            Err(hq_desktop_core::daemon::CLOUD_PAUSED_MESSAGE.to_string())
+        );
+    }
+
+    /// US-016: `start_sync_inner` calls `start_sync_preflight` as its first
+    /// statement, before it resolves the host phase. A refusal here means
+    /// neither `hq daemon sync now --company acme` (daemon host) nor the
+    /// `hq-sync-runner --company acme` spawn (legacy host) is reached.
+    #[test]
+    fn test_start_sync_preflight_refuses_a_switched_off_company_before_any_host() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        let _home = scoped_home(tmp.path());
+        fs::write(
+            tmp.path().join(".hq/menubar.json"),
+            r#"{"workspaceSyncEnabled":{"acme":false}}"#,
+        )
+        .unwrap();
+
+        let refused = start_sync_preflight(Some(" acme ".to_string()));
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|e| e.starts_with("Sync is off for acme")),
+            "expected the acme refusal, got {refused:?}"
+        );
+        assert_eq!(
+            start_sync_preflight(Some("zeta".to_string())),
+            Ok(Some("zeta".to_string()))
+        );
+        assert_eq!(start_sync_preflight(None), Ok(None));
+        // An invalid slug is still rejected by the slug check.
+        assert!(start_sync_preflight(Some("Bad_Slug".to_string())).is_err());
+    }
+
+    /// US-016 (review informational 5): the pre-runner first push for a newly
+    /// provisioned company is skipped when that company is switched off.
+    #[test]
+    fn test_first_push_allowed_respects_company_switch() {
+        let mut companies = std::collections::BTreeMap::new();
+        companies.insert("acme".to_string(), false);
+        companies.insert("zeta".to_string(), true);
+        let switches = hq_desktop_core::vault_sync::VaultSyncSwitches {
+            all_off: false,
+            personal_enabled: true,
+            companies,
+        };
+        assert!(!first_push_allowed(&switches, "acme"));
+        assert!(!first_push_allowed(&switches, "Acme"));
+        assert!(first_push_allowed(&switches, "zeta"));
+        assert!(first_push_allowed(&switches, "new-co"));
+        let all_off = hq_desktop_core::vault_sync::VaultSyncSwitches {
+            all_off: true,
+            ..switches
+        };
+        assert!(!first_push_allowed(&all_off, "zeta"));
     }
 
     // ── resolve_jwt_impl ─────────────────────────────────────────────────────────

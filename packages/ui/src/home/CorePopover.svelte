@@ -372,6 +372,9 @@
       const flag = await adapter.identity.hasFeature(FIRST_WEEK_RETURN_NUDGE_FLAG);
       if (!flag.ok || flag.value !== true || disposed) return;
       for (const workspace of workspaces) {
+        // Sync switched off for this company on this computer (Settings ›
+        // Sync, US-016): do not offer a sync for it.
+        if (workspace.syncEnabled === false) continue;
         const companyUid = typeof workspace.cloudUid === "string"
           ? workspace.cloudUid
           : typeof workspace.uid === "string"
