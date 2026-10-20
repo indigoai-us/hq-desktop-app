@@ -20,5 +20,5 @@ export function brainRow(id: BrainProvider, model = ''): BrainRow {
   return { ...BRAIN_PROVIDERS.find(provider => provider.id === id)!, state: 'unknown', active: false, model, effort: '', canConnect: false, canSave: false, detail: 'Connection status is unavailable.', models: modelChoicesFor({ runtime: id, model }), efforts: LOCAL_BOT_SETTINGS[id].efforts };
 }
 export function loginState(value: unknown): BrainRow['state'] {
-  return value === 'authorized' || value === 'connected' || value === 'authenticated' || value === 'signed-in' ? 'connected' : value === 'disconnected' || value === 'signed-out' || value === 'expired' ? 'disconnected' : 'unknown';
+  return value === 'authorized' || value === 'connected' || value === 'authenticated' || value === 'signed-in' ? 'connected' : value === 'disconnected' || value === 'not-connected' || value === 'signed-out' || value === 'expired' ? 'disconnected' : 'unknown';
 }
