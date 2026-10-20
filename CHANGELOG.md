@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.11.15] — 2026-10-20
+
 - Bots: in a cloud bot's Brain tab, a provider the bot is not signed in to now shows "Not connected" instead of "Status unavailable".
 - Setup on Windows: installing HQ on a new Windows computer works again. Since October 19, setup stopped at the HQ command line tool step with "expected execFileSync('rsync', ...) blocks not found". Pressing Try again or reopening HQ got past it. A newer HQ command line tool no longer needs the Windows workaround HQ applied to it, and HQ treated the missing part as an error. HQ now skips the workaround when the tool does not need it.
 - Messages: hovering a GitHub pull request or issue link shows a more useful card. It leads with the status (Changes requested, Approved, Open, Draft, Merged or Closed), the repository, the number and when it was last updated, then the title, the author, and how many lines and files changed (comments for an issue). Before, the card showed the repository and number three times and the raw link, and nothing about the pull request itself. Private repositories show details when you are signed in to GitHub with the `gh` command line tool; otherwise the card shows just the repository and number.
