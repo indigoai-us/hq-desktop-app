@@ -42,7 +42,7 @@
     type CloudFileEventPayload,
 } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
-  import { resolveUsageCompany, usageAccounts } from "../home/core-usage-model.js";
+  import { resolveUsageCompany, setPreferredUsageAccount, usageAccounts } from "../home/core-usage-model.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
@@ -105,6 +105,7 @@
     shouldShowLaunch,
   } from "../badges/badge-launch.js";
   import { installBadgeLoader } from "../badges/badge-loader.svelte.js";
+  import { setUsageLevelOpener, setUsageLevelViewer } from "../home/usage-levels.svelte.js";
   import { topBadge } from "../badges/badge-tier.js";
   import { resolveEarned, type ResolvedBadge } from "../badges/badge-catalog.js";
   import CompanySettingsHost from "./CompanySettingsHost.svelte";
@@ -12854,6 +12855,20 @@
    * whole window, when the server has badges on for you (badge-launch.ts).
    * It waits for first-run setup and the guided tour, which own the window.
    */
+  /**
+   * usage-only-pricing US-019: company levels are stored per signed-in person,
+   * and the level-up card's "See usage" opens Settings > Usage on that account.
+   */
+  $effect(() => {
+    setUsageLevelViewer(self?.uid ?? null);
+  });
+  $effect(() => {
+    setUsageLevelOpener((accountKey) => {
+      setPreferredUsageAccount(accountKey);
+      openSettings("usage");
+    });
+    return () => setUsageLevelOpener(null);
+  });
   let launchOpen = $state(false);
   const youBadgesEnabled = $derived(badgesEnabledFor(youSubject));
   $effect(() => {

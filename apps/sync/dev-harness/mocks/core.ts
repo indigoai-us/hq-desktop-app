@@ -2371,6 +2371,15 @@ export function convertFileSrc(filePath: string, _protocol = 'asset'): string {
 /** Companies switched to usage pricing in this page load (`?persona=usage-owner`). */
 const usageOwnerSwitched = new Set<string>();
 
+/**
+ * `?levels=demo` (US-019 company levels): every usage company has a card on
+ * file and no spend limit, and the month totals spread the accounts across
+ * levels: Northwind Level 7, Elm Street Level 6, Hazel & Rowe Level 5 but
+ * paused (red wins), Personal Level 3. Birch Labs stays in its trial.
+ */
+const usageLevelsDemo = () => new URLSearchParams(window.location.search).get('levels') === 'demo';
+const LEVELS_DEMO_CENTS: Record<string, number> = { cmp_ux_northwind: 1_240_000, cmp_ux_elm: 620_000, cmp_ux_hazel: 150_000, personal: 14_000 };
+
 function usageOwnerStatement(usageCents: number) {
   const split = (share: number) => Math.round(usageCents * share);
   const line = (key: string, displayName: string, unit: string, unitCents: number, costCents: number, extra: Record<string, unknown> = {}) => ({
@@ -2416,7 +2425,23 @@ function usageOwnerMock(url: string, method: string, body: Record<string, unknow
     cmp_ux_hazel: { billingConfigured: false, pricingPlan: 'usage-only', defaultPaymentMethod: { present: false, brand: null }, usageTrial: { status: 'ended', allowanceCents: 1000, cardOnFile: false, cardRequired: true, syncPaused: true, pauseReason: 'usage_card_required' } },
   };
   // Elm Street is near the $10 included with no card (amber); Hazel & Rowe is past it and paused (red).
-  const usageCents: Record<string, number> = { cmp_ux_northwind: 800, cmp_ux_birch: 0, cmp_ux_elm: 880, cmp_ux_dogwood: 0, cmp_ux_hazel: 1060 };
+  const usageCents: Record<string, number> = usageLevelsDemo()
+    ? { ...LEVELS_DEMO_CENTS, cmp_ux_birch: 0, cmp_ux_dogwood: 0 }
+    : { cmp_ux_northwind: 800, cmp_ux_birch: 0, cmp_ux_elm: 880, cmp_ux_dogwood: 0, cmp_ux_hazel: 1060 };
+  if (usageLevelsDemo()) {
+    for (const uid of ['cmp_ux_northwind', 'cmp_ux_elm']) {
+      summaries[uid] = { ...summaries[uid], defaultPaymentMethod: { present: true, brand: 'visa' }, usageTrial: { status: 'ended', allowanceCents: 1000, cardOnFile: true } };
+    }
+    if (url === '/v1/billing/person/summary') {
+      return json({ cardOnFile: true, personalUsage: { allowanceCents: 1000, usedCents: LEVELS_DEMO_CENTS.personal, usagePeriodStart: '2026-10-01', usageThroughDay: '2026-10-17', cardRequired: false, cardOnFile: true, syncPaused: false } });
+    }
+    if (url.startsWith('/v1/billing/usage?') && url.includes('scope=person')) {
+      return json({ ...usageOwnerStatement(LEVELS_DEMO_CENTS.personal), scope: 'person' });
+    }
+    if (url === '/v1/billing/person/spend-limit' || url.startsWith('/v1/billing/spend-limit?')) {
+      return json({ limitCents: null, noLimit: true, custom: true, defaultLimitCents: 10000, paused: false, spend: null });
+    }
+  }
   if (url.startsWith('/v1/billing/summary?')) {
     const uid = uidOf();
     if (usageOwnerSwitched.has(uid)) {

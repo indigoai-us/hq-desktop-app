@@ -14,7 +14,10 @@
   import type { AdapterResult } from "@hq/platform";
   import RailIcon from "../common/button/RailIcon.svelte";
   import UsageStackBar from "./UsageStackBar.svelte";
-  import { segmentColor } from "./usage-stack.js";
+  import UsageLevelChip from "./UsageLevelChip.svelte";
+  import UsageLevelMark from "./UsageLevelMark.svelte";
+  import { levelSegmentColor } from "./usage-level-theme.js";
+  import { observeCoreView, usageLevelState } from "./usage-levels.svelte.js";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import {
     approvedCheckoutUrl,
@@ -188,6 +191,8 @@
       staleAt = undefined;
       rememberCoreUsage(uid, next, Date.now(), generation);
       rowViews = { ...rowViews, [uid]: next };
+      // US-019: every month read counts toward the account's level.
+      observeCoreView(uid, next);
     });
     return () => {
       cancelled = true;
@@ -203,6 +208,10 @@
     }, refreshMs);
     return () => clearInterval(timer);
   });
+
+  /** The shown account's company level (US-019); null until a month statement has been read. */
+  const levelState = $derived(usageLevelState(currentKey));
+  const level = $derived(levelState?.level ?? 0);
 
   const paid = $derived(view.kind === "ready" && view.paid);
   const notice = $derived(view.kind === "ready" ? view.notice : null);
@@ -299,6 +308,7 @@
         // A failed re-read keeps the last good total on screen.
         if (next.kind === "unavailable" && cached) return;
         rowViews = { ...rowViews, [key]: next };
+        observeCoreView(key, next);
       });
     }
   }
@@ -368,6 +378,7 @@
     <ul class="core-usage-accounts" role="listbox" aria-label={`Personal and the top ${TOP_USAGE_COMPANIES} companies by usage this month`} data-testid="core-usage-accounts" data-ranked={String(top.ranked)}>
       {#each top.rows as acct, i (usageAccountKey(acct))}
         {@const key = usageAccountKey(acct)}
+        {@const rowLevel = usageLevelState(key)}
         {#if acct.kind === "company" && (i === 0 || top.rows[i - 1]?.kind === "personal")}
           <li class="core-usage-top-label" role="presentation" aria-hidden="true" data-testid="core-usage-top-label">Top {TOP_USAGE_COMPANIES} companies by usage this month</li>
         {/if}
@@ -382,7 +393,7 @@
             data-key={key}
             onclick={() => pick(acct)}
           >
-            <span class="core-usage-account-name">{acct.name}</span>
+            <span class="core-usage-account-name">{#if rowLevel}<UsageLevelMark level={rowLevel.level} size={14} data-testid="core-usage-account-level" />{/if}{acct.name}</span>
             <span class="core-usage-account-role">{acct.kind === "personal" ? "Your account" : billingRole(acct.role) === "admin" ? "Admin" : billingRole(acct.role) === "owner" ? "Owner" : billingRole(acct.role) === "member" ? "Member" : ""}</span>
             <span class="core-usage-account-total" data-testid="core-usage-account-total">{accountTotalText(rowViews[key])}</span>
           </button>
@@ -434,8 +445,15 @@
     <p class="core-usage-note" data-testid="core-usage-unavailable">This month's usage isn't available yet.</p>
   {:else if view.usage}
     {@const usage = view.usage}
-    <span class="core-usage-label" data-testid="core-usage-label">{usage.mode === "trial" ? "Trial usage" : "Usage this month"}</span>
+    <div class="core-usage-label-row">
+      <span class="core-usage-label" data-testid="core-usage-label">{usage.mode === "trial" ? "Trial usage" : "Usage this month"}</span>
+      {#if levelState && usage.mode === "allowance"}
+        <UsageLevelChip level={levelState.level} bestCents={levelState.bestCents} bestMonth={levelState.bestMonth} variant="menu" data-testid="core-usage-level" />
+      {/if}
+    </div>
     <UsageStackBar
+      {level}
+      celebrate={levelState?.fresh ?? false}
       segments={usage.segments}
       scaleCents={usage.scaleCents}
       includedCents={usage.includedCents}
@@ -459,7 +477,7 @@
       <ul class="core-usage-rows" data-testid="core-usage-rows">
         {#each usage.rows as row (row.id)}
           <li class="core-usage-row" data-testid="core-usage-row" data-group={row.id}>
-            <span class="core-usage-row-label"><span class="core-usage-dot" style={`background:${segmentColor(row.id)}`} aria-hidden="true"></span>{row.label}</span>
+            <span class="core-usage-row-label"><span class="core-usage-dot" style={`background:${levelSegmentColor(row.id, level, meterTone)}`} aria-hidden="true"></span>{row.label}</span>
             {#if row.amount.kind === "amount"}
               <span
                 class="core-usage-row-amount"
@@ -534,6 +552,14 @@
     margin-bottom: 6px;
     border-radius: 10px;
     background: var(--v4-raised, var(--raised));
+  }
+
+  .core-usage-label-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-width: 0;
   }
 
   .core-usage-head,
@@ -617,6 +643,10 @@
   }
 
   .core-usage-account-name {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

@@ -57,6 +57,8 @@ export interface UsageLine {
   status: UsageLineStatus | null;
   billed: boolean;
   costCents: number | null;
+  /** The meter's count this period (runs, syncs, calls); null when not reported. */
+  usage?: number | null;
 }
 
 export interface MonthStatement {
@@ -103,6 +105,10 @@ export interface UsageMeterView {
   scaleCents: number;
   /** Where the included usage ends, for the bar's tick; null in trial mode. */
   includedCents: number | null;
+  /** The month the statement covers (`periodStart`); null in trial mode (US-019 levels read it). */
+  periodStart: string | null;
+  /** Meter counts this month by rate-card key, for the level-up card; empty in trial mode. */
+  counts: Readonly<Record<string, number>>;
 }
 
 /** Group rows as bar parts; a group with no measured amount draws nothing. */
@@ -193,7 +199,7 @@ export function monthStatementFromBody(body: unknown): MonthStatement | null {
         const status = typeof line.status === "string" && LINE_STATUSES.has(line.status)
           ? (line.status as UsageLineStatus)
           : null;
-        return [{ key, status, billed: line.billed !== false, costCents: finite(line.costCents) }];
+        return [{ key, status, billed: line.billed !== false, costCents: finite(line.costCents), usage: finite(line.usage) }];
       })
     : [];
   return {
@@ -278,6 +284,13 @@ function fillOf(usedCents: number, limitCents: number): number {
   return usedCents > 0 ? 1 : 0;
 }
 
+/** Billed meters' counts by key (`agent-run`: 1240); meters with no count are left out. */
+function lineCounts(lines: readonly UsageLine[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const l of lines) if (l.billed && typeof l.usage === "number" && l.usage >= 0) out[l.key] = l.usage;
+  return out;
+}
+
 /** The month against the included usage (no trial running). */
 export function meterView(statement: MonthStatement): UsageMeterView {
   const { allowanceCents, usageCents } = statement;
@@ -304,6 +317,8 @@ export function meterView(statement: MonthStatement): UsageMeterView {
     segments: groupSegments(rows),
     scaleCents: Math.max(allowanceCents, usageCents, 1),
     includedCents: allowanceCents > 0 ? allowanceCents : null,
+    periodStart: statement.periodStart,
+    counts: lineCounts(statement.lines),
   };
 }
 
@@ -336,6 +351,8 @@ export function trialMeterView(trial: RunningTrial): UsageMeterView {
       segments: [],
       scaleCents: Math.max(trial.capCents ?? 0, 1),
       includedCents: null,
+      periodStart: null,
+      counts: {},
     };
   }
   const line = `${formatUsd(trial.usedCents)} of ${formatUsd(trial.capCents)} trial usage`;
@@ -354,6 +371,8 @@ export function trialMeterView(trial: RunningTrial): UsageMeterView {
     segments: [{ id: "trial", label: "Trial usage", cents: trial.usedCents }],
     scaleCents: Math.max(trial.capCents, trial.usedCents, 1),
     includedCents: null,
+    periodStart: null,
+    counts: {},
   };
 }
 
