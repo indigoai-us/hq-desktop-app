@@ -1681,6 +1681,10 @@ mod tests {
             let repo = tmp.path().join("repo with spaces");
             std::fs::create_dir_all(&repo).unwrap();
             let path = bundle_probe_path(&layout.git_dir(), asset, &system_root);
+            // An empty global config file, not `NUL`: Git on windows-11-arm
+            // fails `git init` with "unable to access 'NUL'".
+            let global_config = tmp.path().join("empty-global.gitconfig");
+            std::fs::write(&global_config, "").unwrap();
             let run = |args: &[&str]| {
                 let mut command = std::process::Command::new(&git);
                 command
@@ -1688,7 +1692,7 @@ mod tests {
                     .current_dir(&repo)
                     .env("PATH", &path)
                     .env("GIT_CONFIG_NOSYSTEM", "1")
-                    .env("GIT_CONFIG_GLOBAL", "NUL")
+                    .env("GIT_CONFIG_GLOBAL", &global_config)
                     .env("GIT_TERMINAL_PROMPT", "0");
                 let output = run_probe(command, Duration::from_secs(120)).unwrap();
                 assert!(
