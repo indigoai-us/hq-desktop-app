@@ -82,6 +82,7 @@ describe("share files", () => {
     // Core Builder's fourth level is Tier IV, not "T-L" (owner review 2026-10-12).
     expect(shareCode({ ...liftoff, def: BADGE_BY_ID.corebuilder, tier: "L" })).toBe("HQ-B-019 · T-IV");
     expect(shareCode({ ...liftoff, def: BADGE_BY_ID.ecomrat, tier: "L" })).toBe("HQ-B-020 · T-L");
+    expect(shareCode({ ...liftoff, def: BADGE_BY_ID.angel, tier: "L" })).toBe("HQ-B-022 · T-L");
     expect(shareCode({ ...liftoff, def: BADGE_BY_ID.og, tier: "L" })).toBe("HQ-B-016 · T-L");
     // The tag on the bottom rule is where to find HQ; the left rule names what this is.
     expect(SHARE_TAG).toBe("HQFORWORK.COM");
@@ -193,7 +194,7 @@ describe("share files", () => {
     const at = (id: string): ResolvedBadge => ({ ...liftoff, def: BADGE_BY_ID[id], tier: "L" });
     expect(shareKicker(liftoff, "Maya Chen")).toBe("MAYA CHEN EARNED");
     expect(shareKicker(liftoff, null)).toBe("EARNED ON HQ");
-    for (const id of ["og", "captain", "patientzero", "ecomrat"]) {
+    for (const id of ["og", "captain", "patientzero", "ecomrat", "architect", "angel", "optimist", "visionary"]) {
       expect(shareKicker(at(id), "Corey Epstein"), id).toBe("COREY EPSTEIN WAS AWARDED");
       expect(shareKicker(at(id), null), id).toBe("AWARDED ON HQ");
     }
