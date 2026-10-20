@@ -71,6 +71,49 @@ describe('company pull', () => {
     expect(pullFailures(rows).map((row) => row.slug)).toEqual(['acme']);
   });
 
+  it('fails every company still waiting at once when the sync cannot be spawned', async () => {
+    const GADGET = { companyUid: 'cmp_gadget', slug: 'gadget', name: 'Gadget' };
+    const d = deps({
+      runSync: vi.fn(async () => ({ errors: [{ message: 'spawn failed' }], aborted: false, spawnFailed: true })),
+    });
+    const snapshots: Array<Array<[string, string]>> = [];
+    const outcomes: unknown[] = [];
+    const rows = await runCompanyPull({
+      rows: initialPullRows([ACME, GLOBEX, GADGET]),
+      deps: d,
+      onRows: (next) => snapshots.push(next.map((row) => [row.slug, row.status])),
+      onOutcome: (outcome) => outcomes.push(outcome),
+    });
+
+    expect(d.runSync).toHaveBeenCalledTimes(1);
+    expect(snapshots.at(-1)).toEqual([['acme', 'failed'], ['globex', 'failed'], ['gadget', 'failed']]);
+    expect(snapshots.at(-2)).toEqual([['acme', 'failed'], ['globex', 'queued'], ['gadget', 'queued']]);
+    expect(rows.map((row) => [row.slug, row.errorKind, row.attempts])).toEqual([
+      ['acme', 'start_failed', 1],
+      ['globex', 'start_failed', 1],
+      ['gadget', 'start_failed', 1],
+    ]);
+    expect(outcomes).toEqual([
+      { companyUid: 'cmp_acme', outcome: 'failed', attempt: 1, errorKind: 'start_failed', selfHealed: false },
+      { companyUid: 'cmp_globex', outcome: 'failed', attempt: 1, errorKind: 'start_failed', selfHealed: false },
+      { companyUid: 'cmp_gadget', outcome: 'failed', attempt: 1, errorKind: 'start_failed', selfHealed: false },
+    ]);
+  });
+
+  it('leaves companies already pulled alone when a later sync cannot be spawned', async () => {
+    const d = deps({
+      runSync: vi.fn(async (slug: string) =>
+        slug === 'globex' ? { errors: [{ message: 'spawn failed' }], aborted: false, spawnFailed: true } : CLEAN,
+      ),
+    });
+    const rows = await runCompanyPull({ rows: initialPullRows([ACME, GLOBEX]), deps: d, onRows: () => {} });
+
+    expect(rows.map((row) => [row.slug, row.status, row.errorKind])).toEqual([
+      ['acme', 'done', null],
+      ['globex', 'failed', 'start_failed'],
+    ]);
+  });
+
   it('Try again pulls only the failed company and counts the attempt', async () => {
     let fail = true;
     const d = deps({

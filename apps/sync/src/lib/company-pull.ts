@@ -36,6 +36,11 @@ export interface CompanyPullRunResult {
   errors: Array<{ company?: string; message: string }>;
   aborted: boolean;
   timedOut?: boolean;
+  /**
+   * The sync process could not be spawned (a `(spawn)` error naming no
+   * company). No pull can progress, so every company still waiting fails too.
+   */
+  spawnFailed?: boolean;
 }
 
 export interface CompanyPullOutcome {
@@ -132,12 +137,13 @@ async function runWhenFree(
 export async function pullCompany(
   row: Pick<CompanyPullRow, 'companyUid' | 'slug'>,
   deps: CompanyPullDeps,
-): Promise<{ ok: boolean; errorKind: CompanyPullErrorKind | null; selfHealed: boolean }> {
+): Promise<{ ok: boolean; errorKind: CompanyPullErrorKind | null; selfHealed: boolean; spawnFailed?: boolean }> {
   let selfHealed = false;
   for (;;) {
     const run = await runWhenFree(row.slug, deps);
     if (!run.ok) return { ok: false, errorKind: run.errorKind, selfHealed };
     const { result } = run;
+    if (result.spawnFailed) return { ok: false, errorKind: 'start_failed', selfHealed, spawnFailed: true };
     if (result.timedOut) return { ok: false, errorKind: 'timeout', selfHealed };
     if (result.aborted) return { ok: false, errorKind: 'aborted', selfHealed };
     const missingBucket = result.errors.filter((entry) => isMissingBucketMessage(entry.message));
@@ -156,7 +162,8 @@ export async function pullCompany(
  * Pull the given companies in order. `onRows` gets every state change so the
  * Ready screen can show per-company progress; `onOutcome` gets one record per
  * finished attempt for telemetry. Only companies that are queued or failed are
- * pulled, so the same call serves the first run and Try again.
+ * pulled, so the same call serves the first run and Try again. When the sync
+ * process cannot be spawned, every company still waiting fails at once.
  */
 export async function runCompanyPull(options: {
   rows: readonly CompanyPullRow[];
@@ -173,7 +180,7 @@ export async function runCompanyPull(options: {
     targets.includes(row.companyUid) ? { ...row, status: 'queued' as const, errorKind: null } : row,
   );
   options.onRows(rows);
-  for (const companyUid of targets) {
+  for (const [index, companyUid] of targets.entries()) {
     if (options.deps.cancelled?.()) break;
     const row = rows.find((candidate) => candidate.companyUid === companyUid)!;
     const attempt = row.attempts + 1;
@@ -192,6 +199,26 @@ export async function runCompanyPull(options: {
       errorKind: result.errorKind,
       selfHealed: result.selfHealed,
     });
+    if (result.spawnFailed) {
+      const rest = targets.slice(index + 1);
+      if (rest.length === 0) break;
+      rows = rows.map((candidate) =>
+        rest.includes(candidate.companyUid)
+          ? { ...candidate, status: 'failed' as const, attempts: candidate.attempts + 1, errorKind: 'start_failed' as const }
+          : candidate,
+      );
+      options.onRows(rows);
+      for (const restUid of rest) {
+        options.onOutcome?.({
+          companyUid: restUid,
+          outcome: 'failed',
+          attempt: rows.find((candidate) => candidate.companyUid === restUid)!.attempts,
+          errorKind: 'start_failed',
+          selfHealed: false,
+        });
+      }
+      break;
+    }
   }
   return rows;
 }

@@ -5392,13 +5392,12 @@ describe('company onboarding step', () => {
       expect(pullRows()[0]).toMatchObject({ company: 'acme', status: 'failed' });
     });
 
-    it("does not fail this company's pull on a sync error that names no company", async () => {
+    it("does not fail this company's pull on an ordinary sync error that names no company", async () => {
       await reachCompanyScenario({ memberships: acmeAndGlobex });
       await flushUntil(() => pullRows().some((row) => row.company === 'acme' && row.status === 'pulling'));
 
-      // A personal push or a watch pass's spawn error, running alongside.
+      // The sync is running; a personal push alongside it fails.
       emitTauriEvent('sync:error', { path: 'personal', message: 'personal push failed' });
-      emitTauriEvent('sync:error', { path: '(spawn)', message: 'hq-sync runner exited' });
       await flush();
       await completePull('acme');
       await flushUntil(() => pullRows()[0]?.status !== 'pulling');
@@ -5407,6 +5406,38 @@ describe('company onboarding step', () => {
       expect(pullOutcomes()).toContainEqual(
         expect.objectContaining({ action: 'completed', companyUid: 'cmp_acme', companyPull: 'done', attemptCount: 1 }),
       );
+    });
+
+    it('fails every waiting pull at once when the sync process cannot be spawned', async () => {
+      const onfinish = vi.fn();
+      await reachCompanyScenario({ memberships: acmeAndGlobex, onfinish });
+      await flushUntil(() => pullRows().some((row) => row.company === 'acme' && row.status === 'pulling'));
+
+      // No company named: no sync ever started, so no pull can progress.
+      emitTauriEvent('sync:error', { path: '(spawn)', message: 'No such file or directory (os error 2)' });
+      // No timer is advanced: the rows fail without waiting out the timeout.
+      await flushUntil(() => pullRows().every((row) => row.status === 'failed'));
+
+      expect(pullRows().map((row) => row.company)).toEqual(['acme', 'globex']);
+      expect(pullRows()[0]!.text).toContain("Couldn't pull Acme");
+      expect(pullRows()[1]!.text).toContain("Couldn't pull Globex");
+      const retries = [...host.querySelectorAll('[data-testid="company-pull-retry"]')].map((button) => button.textContent);
+      expect(retries).toEqual(['Try again', 'Try again']);
+      // Globex was failed with Acme; no second sync was started for it.
+      expect(syncedSlugs()).toEqual(['acme']);
+      expect(pullOutcomes()).toEqual([
+        expect.objectContaining({ action: 'failed', companyUid: 'cmp_acme', companyPull: 'failed', companyPullError: 'start_failed', attemptCount: 1 }),
+        expect.objectContaining({ action: 'failed', companyUid: 'cmp_globex', companyPull: 'failed', companyPullError: 'start_failed', attemptCount: 1 }),
+      ]);
+      await idle();
+      expect(onfinish).not.toHaveBeenCalled();
+
+      click('company-pull-retry');
+      await completePull('acme');
+      await flushUntil(() => pullRows()[0]?.status === 'done');
+
+      expect(syncedSlugs()).toEqual(['acme', 'acme']);
+      expect(pullRows()[1]).toMatchObject({ company: 'globex', status: 'failed' });
     });
 
     it('starts the company pull at Ready while the background phase is still running', async () => {

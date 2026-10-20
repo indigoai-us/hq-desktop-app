@@ -1148,11 +1148,21 @@
         firstFolderSyncObservedFailure = true;
       }
     });
-    subscribeTauriEvent<{ company?: unknown; message?: unknown }>('sync:error', (payload) => {
-      // Only an error naming this pull's company is this pull's. Another
-      // company's, or one with no company (a personal push, a spawn error from
-      // a watch pass running alongside), is not.
-      if (
+    subscribeTauriEvent<{ company?: unknown; path?: unknown; message?: unknown }>('sync:error', (payload) => {
+      // A sync process that could not be spawned never runs, so no pull can
+      // progress: fail this one now (and, through spawnFailed, every company
+      // still waiting) instead of waiting out the timeout.
+      if (companyPullWaiter && payload?.path === '(spawn)' && !payload.company) {
+        companyPullWaiter.finish({
+          errors: [{ message: typeof payload.message === 'string' ? payload.message : 'sync error' }],
+          aborted: false,
+          spawnFailed: true,
+        });
+      }
+      // Otherwise only an error naming this pull's company is this pull's.
+      // Another company's, or one with no company while a sync is running (a
+      // personal push), is not.
+      else if (
         companyPullWaiter &&
         typeof payload?.message === 'string' &&
         payload.company === companyPullWaiter.slug
