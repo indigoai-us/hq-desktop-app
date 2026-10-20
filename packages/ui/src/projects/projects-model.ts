@@ -39,6 +39,11 @@ export interface Story {
   model_hint?: string | null;
   /** Explicit task owner/assignee/creator/source metadata, when declared. */
   provenance?: WorkProvenance;
+  /**
+   * Live Work Mesh ledger status from the ProjectView. Null or absent when
+   * there is no server view; the board then falls back to PRD heuristics.
+   */
+  meshStatus?: StoryMeshStatus | null;
   /** Live ProjectView assignee uid. Null when the story is unassigned. */
   assigneeUid?: string | null;
   /** `actor` is inferred from a status change; `explicit` is a chosen assignee. */
@@ -54,6 +59,9 @@ export interface Story {
   /** Hydrated last actor. Null when the server has no actor yet. */
   lastActor?: StoryIdentity | null;
 }
+
+/** Work Mesh ledger story statuses (hq-pro ProjectView `status`). */
+export type StoryMeshStatus = "queued" | "in_progress" | "review" | "done";
 
 /** How the current assignee was chosen. Null on legacy stories and after a clear. */
 export type StoryAssigneeSource = "actor" | "explicit" | null;
@@ -1214,6 +1222,7 @@ export function storyHasLiveSignal(
  * rule — never fabricates run history.
  *
  * Started when:
+ * - the live ledger status is in_progress or review (queued is never started), or
  * - non-empty notes, or
  * - classic classifier would place it in `in-progress` (first eligible).
  *
@@ -1221,6 +1230,11 @@ export function storyHasLiveSignal(
  */
 export function taskIsStarted(story: Story, allStories: Story[]): boolean {
   if (story.passes) return false;
+  // Shepherd 2502: the live ledger status wins over the heuristics below. A
+  // story the mesh still has as queued is not started, even when it is the
+  // first eligible story or carries notes.
+  if (story.meshStatus === "queued") return false;
+  if (story.meshStatus === "in_progress" || story.meshStatus === "review") return true;
   const notes = (story.notes ?? "").trim();
   if (notes.length > 0) return true;
   const classified = classifyStories(allStories);

@@ -6,7 +6,7 @@
  * every story unassigned rather than inventing an owner from the PRD.
  */
 
-import type { Story, StoryAssigneeSource, StoryChange, StoryIdentity } from "./projects-model.js";
+import type { Story, StoryAssigneeSource, StoryMeshStatus, StoryChange, StoryIdentity } from "./projects-model.js";
 import { registerAccountCache } from "../common/account-caches.js";
 
 export interface LiveStoryAssignment {
@@ -15,6 +15,7 @@ export interface LiveStoryAssignment {
   description: string;
   acceptanceCriteria: string[];
   passes: boolean | null;
+  meshStatus: StoryMeshStatus | null;
   assigneeUid: string | null;
   assigneeSource: StoryAssigneeSource;
   assignedAt: string | null;
@@ -89,6 +90,12 @@ function parseChanges(raw: unknown): StoryChange[] {
   return out.slice(-32);
 }
 
+const MESH_STATUSES: ReadonlySet<string> = new Set(["queued", "in_progress", "review", "done"]);
+
+function parseMeshStatus(raw: unknown): StoryMeshStatus | null {
+  return typeof raw === "string" && MESH_STATUSES.has(raw) ? (raw as StoryMeshStatus) : null;
+}
+
 function parseSource(raw: unknown): StoryAssigneeSource {
   return raw === "actor" || raw === "explicit" ? raw : null;
 }
@@ -106,6 +113,7 @@ function parseLiveStory(raw: unknown): LiveStoryAssignment | null {
     description: str(raw.description) ?? "",
     acceptanceCriteria: criteria,
     passes: typeof raw.passes === "boolean" ? raw.passes : null,
+    meshStatus: parseMeshStatus(raw.status),
     assigneeUid: str(raw.assigneeUid),
     assigneeSource: parseSource(raw.assigneeSource),
     assignedAt: str(raw.assignedAt),
@@ -143,6 +151,7 @@ export function parseProjectViewStories(
 function blankAssignment(story: Story): Story {
   return {
     ...story,
+    meshStatus: null,
     assigneeUid: null,
     assigneeSource: null,
     assignedAt: null,
@@ -163,6 +172,7 @@ function applyLive(story: Story, live: LiveStoryAssignment): Story {
     acceptanceCriteria:
       story.acceptanceCriteria.length > 0 ? story.acceptanceCriteria : live.acceptanceCriteria,
     passes: live.passes ?? story.passes,
+    meshStatus: live.meshStatus,
     assigneeUid: live.assigneeUid,
     assigneeSource: live.assigneeSource,
     assignedAt: live.assignedAt,
