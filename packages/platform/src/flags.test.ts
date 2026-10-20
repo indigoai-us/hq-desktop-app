@@ -237,8 +237,31 @@ describe("registry key mapping", () => {
 
     await expect(adapter.identity.hasFeature(VISUAL_FIRST_RUN_FLAG)).resolves.toEqual(ok(false));
     expect(isEnabled).not.toHaveBeenCalled();
-    // Off without asking hq-pro's per-feature route either.
-    expect(invoke).not.toHaveBeenCalled();
+    // Off without asking hq-pro's per-feature route either. The only IPC is
+    // the demo-defaults list read, which is empty outside demo builds.
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith("demo_flag_defaults_on");
+  });
+
+  it("turns visual first-run setup on with no hq-flags value when the demo list includes it", async () => {
+    const isEnabled = vi.fn(() => true);
+    const invoke = vi.fn(async (cmd: string) =>
+      cmd === "demo_flag_defaults_on" ? [VISUAL_FIRST_RUN_FLAG] : undefined,
+    );
+    const adapter = createSyncPlatformAdapter({
+      invoke,
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => ({ version: 1, flags: {} }),
+          isEnabled,
+        }),
+    });
+
+    await expect(adapter.identity.hasFeature(VISUAL_FIRST_RUN_FLAG)).resolves.toEqual(ok(true));
+    expect(isEnabled).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith("demo_flag_defaults_on");
   });
 
   it("keeps visual first-run setup off when the registry cannot be read", async () => {

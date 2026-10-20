@@ -11,6 +11,12 @@
 //! `commands/hq_core_update.rs`) accept hq-core prereleases, and refuse any
 //! release below [`MIN_CORE_VERSION`]. When it is off, every caller keeps
 //! the stable-only rule it had before the switch existed.
+//!
+//! It also reads every flag in [`DEMO_FLAG_DEFAULTS_ON`] as on when hq-flags
+//! answers false, has no answer, or cannot be read: in Rust through
+//! `commands::hq_pro::feature_flag_read`, and in the desktop shell through
+//! the [`demo_flag_defaults_on`] command, which the Tauri adapter's
+//! `hasFeature` consults. Off, the list is empty and every read is unchanged.
 
 use std::cmp::Ordering;
 
@@ -24,6 +30,53 @@ fn prerelease_flag() -> Option<&'static str> {
 /// True only in a bundle built with `HQ_CORE_PRERELEASE=1`.
 pub fn core_prerelease() -> bool {
     crate::scratch_build::switch_on(prerelease_flag())
+}
+
+/// Feature flags a demo build reads as on whatever hq-flags says. Only flags
+/// a walk or demo needs belong here: the first-run "Your apps" step and the
+/// visual first-run takeover it sits in.
+pub const DEMO_FLAG_DEFAULTS_ON: &[&str] = &[
+    "desktop.first-run-found-apps-v1",
+    "desktop.visual-first-run",
+];
+
+/// The flags read as on for a build whose switch is `on`: empty when off.
+pub fn flag_defaults_on(on: bool) -> Vec<String> {
+    if on {
+        DEMO_FLAG_DEFAULTS_ON
+            .iter()
+            .map(|f| f.to_string())
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Apply the demo default to one flag read (`Ok(None)`: no answer;
+/// `Err(())`: unreadable). On and listed: `Ok(Some(true))`. Otherwise the
+/// read unchanged.
+pub fn apply_flag_default(
+    on: bool,
+    flag: &str,
+    read: Result<Option<bool>, ()>,
+) -> Result<Option<bool>, ()> {
+    if on && DEMO_FLAG_DEFAULTS_ON.contains(&flag) {
+        Ok(Some(true))
+    } else {
+        read
+    }
+}
+
+/// [`apply_flag_default`] for this build's switch.
+pub fn flag_default(flag: &str, read: Result<Option<bool>, ()>) -> Result<Option<bool>, ()> {
+    apply_flag_default(core_prerelease(), flag, read)
+}
+
+/// The flags this build reads as on. Empty in any build made without
+/// `HQ_CORE_PRERELEASE`.
+#[tauri::command]
+pub fn demo_flag_defaults_on() -> Vec<String> {
+    flag_defaults_on(core_prerelease())
 }
 
 /// One entry of the GitHub releases list.
@@ -265,6 +318,114 @@ mod tests {
             assert!(
                 !core_prerelease(),
                 "a build without HQ_CORE_PRERELEASE never takes prereleases"
+            );
+        }
+    }
+
+    const FOUND_APPS: &str = "desktop.first-run-found-apps-v1";
+    const VISUAL_FIRST_RUN: &str = "desktop.visual-first-run";
+    const LISTED: [&str; 2] = [FOUND_APPS, VISUAL_FIRST_RUN];
+
+    #[test]
+    fn defaults_on_lists_only_the_found_apps_and_visual_first_run_flags() {
+        assert_eq!(DEMO_FLAG_DEFAULTS_ON, &LISTED);
+    }
+
+    #[test]
+    fn switch_on_server_false_reads_true() {
+        for flag in LISTED {
+            assert_eq!(
+                apply_flag_default(true, flag, Ok(Some(false))),
+                Ok(Some(true)),
+                "{flag}"
+            );
+            assert_eq!(
+                apply_flag_default(true, flag, Ok(Some(true))),
+                Ok(Some(true)),
+                "{flag}"
+            );
+        }
+    }
+
+    #[test]
+    fn switch_on_server_error_or_none_reads_true() {
+        for flag in LISTED {
+            assert_eq!(
+                apply_flag_default(true, flag, Err(())),
+                Ok(Some(true)),
+                "{flag}"
+            );
+            assert_eq!(
+                apply_flag_default(true, flag, Ok(None)),
+                Ok(Some(true)),
+                "{flag}"
+            );
+        }
+    }
+
+    #[test]
+    fn switch_off_server_false_reads_false() {
+        for flag in LISTED {
+            assert_eq!(
+                apply_flag_default(false, flag, Ok(Some(false))),
+                Ok(Some(false)),
+                "{flag}"
+            );
+        }
+    }
+
+    #[test]
+    fn switch_off_server_none_reads_none() {
+        for flag in LISTED {
+            assert_eq!(
+                apply_flag_default(false, flag, Ok(None)),
+                Ok(None),
+                "{flag}"
+            );
+            assert_eq!(apply_flag_default(false, flag, Err(())), Err(()), "{flag}");
+            assert_eq!(
+                apply_flag_default(false, flag, Ok(Some(true))),
+                Ok(Some(true)),
+                "{flag}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_flags_are_never_affected() {
+        for on in [true, false] {
+            for flag in [
+                "desktop.first-folder-sync-step-v1",
+                "desktop.hq-daemon",
+                "",
+                "desktop.first-run-found-apps",
+                "desktop.visual-first-run-v2",
+            ] {
+                assert!(!DEMO_FLAG_DEFAULTS_ON.contains(&flag), "{flag}");
+                for read in [Ok(Some(false)), Ok(Some(true)), Ok(None), Err(())] {
+                    assert_eq!(apply_flag_default(on, flag, read), read, "{on} {flag}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn defaults_on_list_is_empty_when_the_switch_is_off() {
+        assert!(flag_defaults_on(false).is_empty());
+        assert_eq!(
+            flag_defaults_on(true),
+            vec![FOUND_APPS.to_string(), VISUAL_FIRST_RUN.to_string()]
+        );
+    }
+
+    #[test]
+    fn this_build_applies_defaults_by_its_switch() {
+        assert_eq!(demo_flag_defaults_on(), flag_defaults_on(core_prerelease()));
+        for flag in LISTED {
+            assert_eq!(
+                flag_default(flag, Ok(Some(false))),
+                apply_flag_default(core_prerelease(), flag, Ok(Some(false))),
+                "{flag}"
             );
         }
     }

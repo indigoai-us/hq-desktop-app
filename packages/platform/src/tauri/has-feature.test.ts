@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FlagClient, FlagSnapshot } from "@indigoai-us/hq-flags-client";
 import { TauriPlatformAdapter } from "./index.js";
-import { createSyncPlatformAdapter } from "./sync-adapter.js";
+import { createSyncPlatformAdapter, DEMO_FLAG_DEFAULT_CANDIDATES } from "./sync-adapter.js";
 import {
   COMPANY_NAME_PREFILL_FLAG,
   COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
   FIRST_RUN_FOUND_APPS_FLAG,
   PERSONAL_TRANSCRIPTS_FLAG,
+  VISUAL_FIRST_RUN_FLAG,
   registryKeyFor,
 } from "../flags.js";
 
@@ -536,5 +537,130 @@ describe("desktop.human-only-conversations is on by default in desktop adapters"
     adapter.identity.subscribeFeature?.(FLAG, (r) => seen.push(r))?.();
     expect(seen).toEqual([]);
     expect(calls).toEqual([]);
+  });
+});
+
+describe("createSyncPlatformAdapter hasFeature in a demo build", () => {
+  type Registry = "false" | "absent" | "error" | "true";
+
+  /** A sync adapter whose registry answers `registry` for every flag and
+   * whose `demo_flag_defaults_on` answers `demo` (a thrown Error rejects). */
+  function demoAdapter(registry: Registry, demo: unknown) {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        if (cmd === "demo_flag_defaults_on") {
+          if (demo instanceof Error) throw demo;
+          return demo;
+        }
+        if (cmd === "hq_pro_fetch") {
+          const url = String((args as { url?: unknown } | undefined)?.url ?? "");
+          if (!url.startsWith("/v1/flags/resolve")) return { status: 404, body: "not found" };
+          if (registry === "error") throw new Error("offline");
+          const value = registry === "true";
+          return {
+            status: 200,
+            body: JSON.stringify({
+              version: 1,
+              flags:
+                registry === "absent"
+                  ? {}
+                  : {
+                      [FIRST_RUN_FOUND_APPS_FLAG]: value,
+                      [VISUAL_FIRST_RUN_FLAG]: value,
+                      [PERSONAL_TRANSCRIPTS_FLAG]: value,
+                      [COMPANY_NAME_PREFILL_FLAG]: value,
+                      "agents.claude-provider": value,
+                    },
+            }),
+          };
+        }
+        throw new Error(`unexpected ${cmd}`);
+      },
+    });
+    return { adapter, calls };
+  }
+
+  const LISTED = [FIRST_RUN_FOUND_APPS_FLAG, VISUAL_FIRST_RUN_FLAG];
+  const CASES = LISTED.flatMap((flag) =>
+    (["false", "absent", "error"] as const).map((registry) => [flag, registry] as const),
+  );
+
+  it("asks only for the found-apps and visual first-run flags (scripts/demo-core-prerelease-contract.test.ts pins the Rust list)", () => {
+    expect([...DEMO_FLAG_DEFAULT_CANDIDATES]).toEqual(LISTED);
+  });
+
+  it.each(CASES)(
+    "reads %s on when the demo list has it and the registry is %s",
+    async (flag, registry) => {
+      const { adapter } = demoAdapter(registry, LISTED);
+      await expect(adapter.identity.hasFeature(flag)).resolves.toEqual({
+        ok: true,
+        value: true,
+      });
+    },
+  );
+
+  it.each(CASES)(
+    "keeps %s off when the demo list is empty and the registry is %s",
+    async (flag, registry) => {
+      const { adapter } = demoAdapter(registry, []);
+      await expect(adapter.identity.hasFeature(flag)).resolves.toEqual({
+        ok: true,
+        value: false,
+      });
+    },
+  );
+
+  it.each<[string, unknown]>([
+    ["rejects", new Error("unknown command demo_flag_defaults_on")],
+    ["answers a non-list", { flags: [FIRST_RUN_FOUND_APPS_FLAG] }],
+    ["answers null", null],
+  ])("treats the demo list as empty when the command %s", async (_label, demo) => {
+    const { adapter } = demoAdapter("false", demo);
+    await expect(adapter.identity.hasFeature(FIRST_RUN_FOUND_APPS_FLAG)).resolves.toEqual({
+      ok: true,
+      value: false,
+    });
+  });
+
+  it("never changes an unlisted flag, even when the demo list names it", async () => {
+    const unlisted = [PERSONAL_TRANSCRIPTS_FLAG, COMPANY_NAME_PREFILL_FLAG, "agents.claude-provider"];
+    for (const registry of ["false", "absent", "error"] as const) {
+      const { adapter, calls } = demoAdapter(registry, [FIRST_RUN_FOUND_APPS_FLAG, ...unlisted]);
+      for (const flag of unlisted) {
+        await expect(adapter.identity.hasFeature(flag)).resolves.toEqual({ ok: true, value: false });
+      }
+      expect(calls.some((call) => call.cmd === "demo_flag_defaults_on")).toBe(false);
+    }
+    const on = demoAdapter("true", [FIRST_RUN_FOUND_APPS_FLAG]);
+    for (const flag of unlisted) {
+      await expect(on.adapter.identity.hasFeature(flag)).resolves.toEqual({ ok: true, value: true });
+    }
+  });
+
+  it("asks for the demo list once per session", async () => {
+    const { adapter, calls } = demoAdapter("false", [FIRST_RUN_FOUND_APPS_FLAG]);
+    await Promise.all([
+      adapter.identity.hasFeature(FIRST_RUN_FOUND_APPS_FLAG),
+      adapter.identity.hasFeature(FIRST_RUN_FOUND_APPS_FLAG),
+    ]);
+    await adapter.identity.hasFeature(FIRST_RUN_FOUND_APPS_FLAG);
+    expect(calls.filter((call) => call.cmd === "demo_flag_defaults_on")).toHaveLength(1);
+
+    const failed = demoAdapter("false", new Error("boom"));
+    await failed.adapter.identity.hasFeature(FIRST_RUN_FOUND_APPS_FLAG);
+    await failed.adapter.identity.hasFeature(FIRST_RUN_FOUND_APPS_FLAG);
+    expect(failed.calls.filter((call) => call.cmd === "demo_flag_defaults_on")).toHaveLength(1);
+  });
+
+  it("does not ask for the demo list when the registry already says on", async () => {
+    const { adapter, calls } = demoAdapter("true", []);
+    await expect(adapter.identity.hasFeature(FIRST_RUN_FOUND_APPS_FLAG)).resolves.toEqual({
+      ok: true,
+      value: true,
+    });
+    expect(calls.some((call) => call.cmd === "demo_flag_defaults_on")).toBe(false);
   });
 });
