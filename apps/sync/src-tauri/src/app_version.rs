@@ -85,3 +85,5 @@ mod tests {
         }
     }
 }
+
+// CI canary for #1726 (throwaway PR, will be closed).
