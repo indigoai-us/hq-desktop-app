@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
 import CoreUsagePanel from "./CoreUsagePanel.svelte";
 import CoreUsagePanelSwitchProbe from "./CoreUsagePanelSwitchProbe.test.svelte";
+import CoreUsagePanelAccountsProbe from "./CoreUsagePanelAccountsProbe.test.svelte";
 import { __resetCoreUsageCacheForTests } from "./core-usage-model";
 import { clearAccountCaches } from "../common/account-caches";
 
@@ -505,6 +506,49 @@ describe("CoreUsagePanel", () => {
       const row = host.querySelector('[data-testid="core-usage-account"][data-key="cmp_northwind"]');
       expect(row?.textContent).toContain("$8.00");
       expect(row?.textContent).not.toContain("$1.00");
+    });
+
+    it("a failed re-read keeps the cached row total on screen", async () => {
+      const { rememberCoreUsage } = await import("./core-usage-model");
+      rememberCoreUsage("cmp_northwind", {
+        kind: "ready", companyName: "Northwind", planLabel: "Usage plan", paid: false, usageUnavailable: false, notice: null,
+        usage: { mode: "allowance", fill: 0.1, tone: "ok", over: false, usedLine: "$1.00 of $10.00 free", resetLine: null, partial: false, rows: [], rowsNote: null, totalCents: 100, segments: [], scaleCents: 1000, includedCents: 1000 },
+      });
+      await render(multiSource({ getBillingSummary: vi.fn(async () => fail("http-500")) }), vi.fn(), { account: ACCOUNTS[2], accounts: ACCOUNTS });
+      for (let i = 0; i < 3; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        flushSync();
+      }
+      const row = host.querySelector('[data-testid="core-usage-account"][data-key="cmp_northwind"]');
+      expect(row?.textContent).toContain("$1.00");
+      expect(row?.textContent).not.toContain("Unavailable");
+    });
+
+    it("rows load again when an account's role arrives while the menu is open", async () => {
+      const src = multiSource();
+      const memberFirst = [{ kind: "company" as const, uid: "cmp_northwind", name: "Northwind", role: "member" }, ACCOUNTS[0], ACCOUNTS[2]];
+      host = document.createElement("div");
+      document.body.append(host);
+      component = mount(CoreUsagePanelAccountsProbe, {
+        target: host,
+        props: { source: src as never, first: memberFirst, second: ACCOUNTS },
+      });
+      for (let i = 0; i < 3; i += 1) {
+        flushSync();
+        await tick();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      const row = () => host.querySelector('[data-testid="core-usage-account"][data-key="cmp_northwind"]');
+      expect(row()?.textContent).toContain("Owner only");
+      expect(src.getBillingSummary).not.toHaveBeenCalledWith("cmp_northwind");
+      (host.querySelector('[data-testid="probe-accounts"]') as HTMLElement).click();
+      for (let i = 0; i < 3; i += 1) {
+        flushSync();
+        await tick();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      expect(src.getBillingSummary).toHaveBeenCalledWith("cmp_northwind");
+      expect(row()?.textContent).toContain("$8.00");
     });
 
     it("defaults to the personal account when that is the default, reading the person routes", async () => {

@@ -380,7 +380,7 @@
                   <ul class="groups" aria-label="This month by group">
                     {#each view.usage.groups as group (group.id)}
                       <li class="group" class:show={metersOpen[key + ":" + group.id]} title={group.meters.map((m) => `${m.label}: ${m.waived ? "waived" : m.costCents === null ? "not reported" : formatUsd(m.costCents)}${m.rate ? ` (${m.rate})` : ""}`).join("\n")}>
-                        <button type="button" class="g-label g-toggle" aria-expanded={Boolean(metersOpen[key + ":" + group.id])} data-testid="usage-group-toggle" onclick={() => (metersOpen = { ...metersOpen, [key + ":" + group.id]: !metersOpen[key + ":" + group.id] })}><span class="dot" style={`background:${segmentColor(group.id)}`} aria-hidden="true"></span>{group.label}</button>
+                        <button type="button" class="g-label g-toggle" aria-pressed={Boolean(metersOpen[key + ":" + group.id])} data-testid="usage-group-toggle" onclick={() => (metersOpen = { ...metersOpen, [key + ":" + group.id]: !metersOpen[key + ":" + group.id] })}><span class="dot" style={`background:${segmentColor(group.id)}`} aria-hidden="true"></span>{group.label}</button>
                         <span class="g-amt" data-testid="usage-group" data-group={group.id}>{group.cents === null ? "Not reported" : `${group.partial ? "At least " : ""}${formatUsd(group.cents)}`}</span>
                         <span class="g-bar">
                           <UsageStackBar
@@ -404,7 +404,7 @@
                   {#if view.usage && !view.trial}
                     <div><dt>Usage so far</dt><dd data-testid="usage-total">{usageIsPartial(view.usage) ? "At least " : ""}{formatUsd(view.usage.usageCents)}</dd><dd class="sub" data-testid="usage-period">{periodLabel(view.usage.periodStart, view.usage.periodEnd)}</dd></div>
                     <div><dt>Included</dt><dd data-testid="usage-allowance-left">{formatUsd(view.usage.allowanceLeftCents)} of free usage left</dd><dd class="sub">{formatUsd(view.usage.allowanceCents)} each month</dd></div>
-                  {:else if view.usageUnavailable}
+                  {:else if view.usageUnavailable && !view.trial}
                     <div><dt>This month</dt><dd class="quiet" data-testid="usage-unavailable">Not available right now</dd></div>
                   {:else if !view.trial}
                     <div><dt>Plan</dt><dd data-testid="usage-old-plan">{view.planLabel}</dd></div>

@@ -369,9 +369,9 @@
       {#each top.rows as acct, i (usageAccountKey(acct))}
         {@const key = usageAccountKey(acct)}
         {#if acct.kind === "company" && (i === 0 || top.rows[i - 1]?.kind === "personal")}
-          <li class="core-usage-top-label" role="presentation" data-testid="core-usage-top-label">Top {TOP_USAGE_COMPANIES} companies by usage this month</li>
+          <li class="core-usage-top-label" role="presentation" aria-hidden="true" data-testid="core-usage-top-label">Top {TOP_USAGE_COMPANIES} companies by usage this month</li>
         {/if}
-        <li>
+        <li role="presentation">
           <button
             type="button"
             role="option"

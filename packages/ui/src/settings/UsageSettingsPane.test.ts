@@ -7,6 +7,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
 import UsageSettingsPane from "./UsageSettingsPane.svelte";
+import UsageSettingsPaneAccountsProbe from "./UsageSettingsPaneAccountsProbe.test.svelte";
 import { setPreferredUsageAccount } from "../home/core-usage-model";
 
 const ok = (value: unknown) => ({ ok: true as const, value });
@@ -528,10 +529,10 @@ describe("UsageSettingsPane: review follow-ups", () => {
     await render(source());
     await open("cmp_northwind");
     const toggle = detail()!.querySelector('[data-testid="usage-group-toggle"]') as HTMLButtonElement;
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
     toggle.click();
     flushSync();
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
     expect(toggle.closest(".group")?.classList.contains("show")).toBe(true);
   });
 
@@ -545,5 +546,27 @@ describe("UsageSettingsPane: review follow-ups", () => {
     expect(header("cmp_northwind").hasAttribute("aria-controls")).toBe(false);
     await open("cmp_northwind");
     expect(header("cmp_northwind").getAttribute("aria-controls")).toBe(detail()!.id);
+  });
+});
+
+describe("UsageSettingsPane: re-reads only when the account set changes", () => {
+  it("a new array with the same accounts reads nothing again; one more account reads only that one", async () => {
+    const src = source();
+    host = document.createElement("div");
+    document.body.append(host);
+    component = mount(UsageSettingsPaneAccountsProbe, {
+      target: host,
+      props: { source: src as never, accounts: ACCOUNTS, extra: { kind: "company", uid: "cmp_oak", name: "Oak", role: "owner" } },
+    });
+    await settle();
+    const summaries = () => src.getBillingSummary.mock.calls.length;
+    const before = summaries();
+    expect(before).toBeGreaterThan(0);
+    (host.querySelector('[data-testid="probe-same"]') as HTMLElement).click();
+    await settle();
+    expect(summaries()).toBe(before);
+    (host.querySelector('[data-testid="probe-add"]') as HTMLElement).click();
+    await settle();
+    expect(src.getBillingSummary).toHaveBeenCalledWith("cmp_oak");
   });
 });
