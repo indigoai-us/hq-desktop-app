@@ -291,7 +291,7 @@
               onkeydown={(event) => onHeaderKey(event, index)}
             >
               <span class="chev" class:open aria-hidden="true"><Caret tone="var(--t3)" /></span>
-              <span class="name" data-testid="usage-account-name">{#if acct.kind === "personal"}{lineName(acct)}{:else}<CompanyLabel name={acct.name} companyUid={acct.uid} size={14} />{/if}</span>
+              <span class="name" class:personal={acct.kind === "personal"} data-testid="usage-account-name">{#if acct.kind === "personal"}{lineName(acct)}{:else}<CompanyLabel name={acct.name} companyUid={acct.uid} size={14} />{/if}</span>
               {#if roleTag(acct)}<span class="role">{roleTag(acct)}</span>{/if}
               <span class="plan" data-testid="usage-account-plan" data-plan={view.kind === "ready" ? view.plan : view.kind}>{view.kind === "ready" ? view.planLabel : ""}</span>
               <span class="total" data-testid="usage-account-total">{rowTotalText(view)}</span>
@@ -391,20 +391,13 @@
                       </div>
                     {:else if state.kind === "loading"}
                       <p class="note" role="status">Checking whether this account can switch…</p>
-                    {:else if state.kind === "offered"}
-                      <div class="actions">
-                        <button type="button" class="act primary" data-testid="usage-switch-start" onclick={() => (confirmKey = key)}>Switch to usage pricing</button>
-                      </div>
                     {:else if state.kind === "card-required"}
                       <p class="note" data-testid="usage-switch-note">A card is needed to switch. There's no free trial when you switch.</p>
                     {:else if state.kind === "refused"}
                       <p class="note" data-testid="usage-switch-note">{state.text}</p>
                     {:else if state.kind === "switched"}
                       <p class="note" data-testid="usage-switch-note">This account is already on usage pricing.</p>
-                    {:else}
-                      <div class="actions">
-                        <button type="button" class="act" data-testid="usage-switch-start" disabled>Switch to usage pricing</button>
-                      </div>
+                    {:else if state.kind === "not-available"}
                       <p class="note" data-testid="usage-switch-note">{SWITCH_NOT_AVAILABLE_TEXT}</p>
                     {/if}
                   </div>
@@ -414,6 +407,14 @@
                 {/if}
 
                 <div class="actions">
+                  {#if view.plan === "starter" && confirmKey !== key}
+                    {@const offer = switchStates[key]}
+                    {#if offer?.kind === "offered"}
+                      <button type="button" class="act primary" data-testid="usage-switch-start" onclick={() => (confirmKey = key)}>Switch to usage pricing</button>
+                    {:else if offer?.kind === "not-available"}
+                      <button type="button" class="act" data-testid="usage-switch-start" disabled>Switch to usage pricing</button>
+                    {/if}
+                  {/if}
                   {#if canOpenBilling(acct, paid)}
                     <button
                       type="button"
@@ -504,6 +505,11 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-weight: 500;
+  }
+
+  /* Lines up with the company names, which follow a 14px avatar and a 6px gap. */
+  .name.personal {
+    padding-left: 20px;
   }
 
   .role,
