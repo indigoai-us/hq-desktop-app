@@ -28,8 +28,10 @@
   let phase = $state<"idle" | "pending" | "failed" | "done">("idle");
   let failure = $state("");
   const companies = $derived(notetakerCompanyOptions(meetingsStore.companyNamesByUid));
-  // Seeded once at open; later store refreshes should not change the pick.
-  let companyId = $state(defaultNotetakerCompany(meetingsStore.companyNamesByUid));
+  // The user's pick wins. Until they pick, follow the store, so memberships
+  // that load after the sheet opens still preselect a sole company.
+  let picked = $state("");
+  const companyId = $derived(picked || defaultNotetakerCompany(meetingsStore.companyNamesByUid));
   const problem = $derived(notetakerLinkProblem(link));
   const ready = $derived(canInviteNotetaker(link) && companyId !== "");
 
@@ -81,7 +83,7 @@
           value={companyId}
           options={[{ value: "", label: "Choose a company" }, ...companies]}
           disabled={phase === "pending"}
-          onchange={(v) => (companyId = v)}
+          onchange={(v) => (picked = v)}
         />
       </div>
     {:else if companies.length === 0}

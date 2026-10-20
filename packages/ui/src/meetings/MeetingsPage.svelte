@@ -58,6 +58,7 @@
     totalSignalCounts,
     type MeetingEvent,
   } from "./meetings-model";
+  import { defaultNotetakerCompany } from "./notetaker-invite";
   import {
     MEETINGS_CONNECT_EMPTY_BODY,
     MEETINGS_CONNECT_EMPTY_TITLE,
@@ -480,23 +481,27 @@
 
   // Ad-hoc "paste a meeting URL" invite — parity with the classic
   // MeetingsWindow. Sends the recording bot to a link that isn't on the user's
-  // calendar. `urlInputCompanyId` null = Personal (the default). This page owns
-  // the in-flight guard; the store owns the invoke + toast copy.
+  // calendar. It always saves to a company (hq-pro refuses Personal recordings):
+  // `urlInputCompanyId` is the user's pick; until they pick, a sole company is
+  // used. This page owns the in-flight guard; the store owns the invoke + toast copy.
   let urlInput = $state("");
   let urlInputCompanyId = $state<string | null>(null);
+  const urlInviteCompanyId = $derived(
+    urlInputCompanyId || defaultNotetakerCompany(companyNamesByUid) || null,
+  );
   let urlInviting = $state(false);
   async function onUrlInvite(): Promise<void> {
     const url = urlInput.trim();
-    if (urlInviting || !isPlausibleMeetingUrl(url)) return;
+    if (urlInviting || !isPlausibleMeetingUrl(url) || !urlInviteCompanyId) return;
     urlInviting = true;
     // Snapshot the destination BEFORE the await so a slow request that lands
     // after the user re-types doesn't clear their next selection.
-    const submittedCompanyId = urlInputCompanyId;
+    const submittedCompanyId = urlInviteCompanyId;
     try {
       const t = await meetingsStore.inviteBotByUrl(url, submittedCompanyId);
       if (t) {
         // `info` = invited (success or already-scheduled) → reset the row so the
-        // next paste starts fresh on Personal. `warn` = keep it for a retry.
+        // next paste starts fresh. `warn` = keep it for a retry.
         if (t.kind === "info") {
           urlInput = "";
           urlInputCompanyId = null;
@@ -950,16 +955,16 @@
       </div>
       {#if urlInput.trim().length > 0}
         <!-- Destination picker. Only renders once the user starts typing —
-             keeps the idle bar clean. `null` = Personal (the default). -->
+             keeps the idle bar clean. No Personal option: it can never record. -->
         <span class="url-invite-company-wrap">
           <Dropdown
             testid="url-invite-company"
             label="Save bot to"
             floating
-            value={urlInputCompanyId ?? ""}
+            value={urlInviteCompanyId ?? ""}
             onchange={(v) => (urlInputCompanyId = v || null)}
             disabled={urlInviting}
-            options={[{ value: "", label: "Personal" }, ...[...companyNamesByUid.entries()].map(([uid, name]) => ({ value: uid, label: name }))]}
+            options={[...(urlInviteCompanyId ? [] : [{ value: "", label: "Choose a company" }]), ...[...companyNamesByUid.entries()].map(([uid, name]) => ({ value: uid, label: name }))]}
           />
           <span class="url-invite-company-chevron" aria-hidden="true">›</span>
         </span>
@@ -968,7 +973,7 @@
         type="button"
         class="btn subtle url-invite-btn"
         data-testid="meetings-url-invite"
-        disabled={urlInviting || !isPlausibleMeetingUrl(urlInput.trim())}
+        disabled={urlInviting || !isPlausibleMeetingUrl(urlInput.trim()) || !urlInviteCompanyId}
         aria-busy={urlInviting}
         aria-label={urlInviting
           ? "Inviting recording bot"

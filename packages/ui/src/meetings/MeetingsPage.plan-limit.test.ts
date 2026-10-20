@@ -63,8 +63,11 @@ beforeEach(() => {
     if (method === "listCalendars") {
       return Promise.resolve(ok({ calendars: [], selectedCalendarIds: [] }));
     }
+    if (method === "listMemberships") {
+      // A pasted-link invite always names a company; the sole one is used.
+      return Promise.resolve(ok([{ companyUid: "cmp_indigo", companyName: "Indigo", status: "active" }]));
+    }
     if (
-      method === "listMemberships" ||
       method === "listUpcoming" ||
       method === "listScheduledBots" ||
       method === "listAccounts"
@@ -155,7 +158,7 @@ describe("MeetingsPage plan-required action", () => {
       meetingUrl: "https://meet.google.com/abc-defg-hij",
       calendarEventId: null,
       calendarSeriesId: null,
-      companyId: null,
+      companyId: "cmp_indigo",
     });
   });
 });

@@ -8,6 +8,7 @@
 import { pushToast } from "../shell/toast-stack.svelte.js";
 import { meetingsStore, type ToastDescriptor } from "./meetings-store.svelte";
 import { isActiveBotStatus, meetingUrlsMatch } from "./meetings-model";
+import { defaultNotetakerCompany } from "./notetaker-invite";
 
 export type OpenExternal = (url: string) => void | Promise<void>;
 
@@ -62,7 +63,10 @@ export async function joinPastedLink(
     toast({ kind: "warn", text: "Couldn't open the meeting link." });
     return { failureDetail: "Couldn't open the meeting link." };
   }
-  const result = await meetingsStore.inviteBotByUrl(url, null);
+  // Never Personal: the sole company is used; with several, the store refuses
+  // and says to pick one in Invite notetaker.
+  const companyId = defaultNotetakerCompany(meetingsStore.companyNamesByUid) || null;
+  const result = await meetingsStore.inviteBotByUrl(url, companyId);
   const matchingBots = meetingsStore.scheduledBots.filter(
     (bot) => meetingUrlsMatch(bot.meetingUrl, url),
   );

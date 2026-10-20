@@ -22,6 +22,7 @@ vi.mock("./meetings-store.svelte", () => ({ meetingsStore: store }));
 import NotetakerControl from "./NotetakerControl.svelte";
 import InviteNotetakerSheet from "./InviteNotetakerSheet.svelte";
 import MeetingsSidepane from "./MeetingsSidepane.svelte";
+import { joinPastedLink } from "./meeting-calendar-actions";
 import { EMPTY_MEETINGS_FILTER } from "./meetings-rail-model";
 import { defaultNotetakerCompany, notetakerCompanyOptions, notetakerLinkProblem, notetakerStatus } from "./notetaker-invite";
 
@@ -284,5 +285,23 @@ describe("OWNER-R3 Invite notetaker to a meeting (header +)", () => {
     q<HTMLButtonElement>(el, "invite-notetaker-confirm")!.click();
     await settle();
     expect(q(el, "invite-notetaker-done")).not.toBeNull();
+  });
+});
+
+// Regression (PR #1674 review): the paste-a-link Join path sent the notetaker
+// as Personal (companyId null).
+describe("OWNER-R3 joinPastedLink saves to a company", () => {
+  it("sends the sole company", async () => {
+    store.inviteBotByUrl.mockResolvedValueOnce({ kind: "info", text: "ok" });
+    await joinPastedLink("https://zoom.us/j/999", vi.fn().mockResolvedValue(undefined));
+    expect(store.inviteBotByUrl).toHaveBeenCalledWith("https://zoom.us/j/999", "cmp_indigo");
+  });
+
+  it("with several companies passes no company, so the store refuses and the reason is shown", async () => {
+    store.companyNamesByUid = new Map([["cmp_indigo", "Indigo"], ["cmp_acme", "Acme"]]);
+    store.inviteBotByUrl.mockResolvedValueOnce({ kind: "warn", text: "Choose a company for the notes first." });
+    const result = await joinPastedLink("https://zoom.us/j/999", vi.fn().mockResolvedValue(undefined));
+    expect(store.inviteBotByUrl).toHaveBeenCalledWith("https://zoom.us/j/999", null);
+    expect(result.failureDetail).toBe("Choose a company for the notes first.");
   });
 });

@@ -26,6 +26,7 @@ const store = vi.hoisted(() => ({
   stopCalendarConnectWatch: vi.fn(),
   disconnectCalendar: vi.fn(),
   inviteBotByUrl: vi.fn(),
+  companyNamesByUid: new Map<string, string>([["cmp_lr", "LiveRecover"]]),
 }));
 vi.mock("./meetings-store.svelte", () => ({ meetingsStore: store }));
 
@@ -172,7 +173,8 @@ describe("US-042 paste detection", () => {
     (el.querySelector('[data-testid="paste-link-join"]') as HTMLButtonElement).click();
     await settle();
     expect(openExternal).toHaveBeenCalledWith(zoom);
-    expect(store.inviteBotByUrl).toHaveBeenCalledWith(zoom, null);
+    // The sole company, never Personal (PR #1674 review).
+    expect(store.inviteBotByUrl).toHaveBeenCalledWith(zoom, "cmp_lr");
   });
 
   it("keeps a terminal notetaker failure visible below the pasted link", async () => {

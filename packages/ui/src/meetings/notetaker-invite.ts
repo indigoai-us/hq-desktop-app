@@ -38,6 +38,13 @@ export function defaultNotetakerCompany(companyNamesByUid: ReadonlyMap<string, s
   return companyNamesByUid.size === 1 ? [...companyNamesByUid.keys()][0]! : "";
 }
 
+/** Why a pasted-link invite was not sent: it had no company to save to. */
+export function notetakerNeedsCompanyText(companyCount: number): string {
+  return companyCount === 0
+    ? "The notetaker saves its notes to a company. Join or create a company in HQ to invite it."
+    : "Choose a company for the notes first. Use Invite notetaker to pick one.";
+}
+
 export interface NotetakerStatus {
   /** What the notetaker is doing, in plain words; empty when none is invited. */
   label: string;
