@@ -308,6 +308,32 @@ describe("createSyncPlatformAdapter personal Outpost", () => {
     expect(res && !res.ok ? res.code : "").toBe("invalid_login_code");
   });
 
+  it("sends a sign-in code once with no 503 retry, but still retries a status read", async () => {
+    const actions: string[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (_cmd, args) => {
+        const sent = JSON.parse(String((args as { body: string }).body)) as { action: string };
+        actions.push(sent.action);
+        return { status: 503, body: JSON.stringify({ code: "company_signin_unavailable" }) };
+      },
+      requestPolicy: { throttle: null, sleep: async () => {}, random: () => 0 },
+    });
+    const res = await adapter.agents.companyOutpostSignIn?.({
+      companyUid: "cmp_indigo",
+      action: "code",
+      code: "EXAMPLE-NOT-A-REAL-CODE",
+    });
+    expect(actions).toEqual(["code"]);
+    expect(res?.ok).toBe(false);
+    expect(res && !res.ok ? res.code : "").toBe("company_signin_unavailable");
+    expect(JSON.stringify(res)).not.toContain("EXAMPLE-NOT-A-REAL-CODE");
+
+    actions.length = 0;
+    await adapter.agents.companyOutpostSignIn?.({ companyUid: "cmp_indigo", action: "status" });
+    expect(actions.length).toBeGreaterThan(1);
+    expect(new Set(actions)).toEqual(new Set(["status"]));
+  });
+
   it("surfaces a missing Outpost as an http-404 failure", async () => {
     const adapter = createSyncPlatformAdapter({
       invoke: async () => ({ status: 404, body: JSON.stringify({ error: true, message: "not found" }) }),

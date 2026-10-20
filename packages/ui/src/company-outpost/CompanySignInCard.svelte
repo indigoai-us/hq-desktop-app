@@ -8,6 +8,7 @@
     type CompanySignInRole,
     type CompanySignInView,
     type SignInFailure,
+    type SignInFinishing,
   } from "./company-signin-model.js";
 
   interface Props {
@@ -18,6 +19,7 @@
     busy?: "submit" | "refresh" | "regenerate" | null;
     now?: number;
     notice?: string | null;
+    finishing?: SignInFinishing;
     onRefresh?: () => void;
     onRegenerate?: () => void;
     onSubmitCode?: (code: string) => void;
@@ -31,6 +33,7 @@
     busy = null,
     now = Date.now(),
     notice = null,
+    finishing = null,
     onRefresh,
     onRegenerate,
     onSubmitCode,
@@ -38,7 +41,7 @@
 
   let code = $state("");
 
-  const card = $derived(deriveSignInPresentation({ role, view, failure, codeError, now }));
+  const card = $derived(deriveSignInPresentation({ role, view, failure, codeError, now, finishing }));
 
   function submit(event: Event) {
     event.preventDefault();
@@ -93,7 +96,7 @@
           id="company-signin-code"
           data-testid="company-signin-code"
           type="password"
-          autocomplete="off"
+          autocomplete="one-time-code"
           spellcheck="false"
           aria-label="Sign-in code"
           aria-invalid={card.codeError ? "true" : undefined}
@@ -104,7 +107,7 @@
             if (target instanceof HTMLInputElement) code = target.value;
           }}
         />
-        <button class="primary" type="submit" data-testid="company-signin-submit" disabled={busy === "submit" || code.trim() === ""}>
+        <button class="primary" type="submit" data-testid="company-signin-submit" disabled={busy !== null || code.trim() === ""}>
           {busy === "submit" ? SIGNIN_COPY.submitting : SIGNIN_COPY.submit}
         </button>
       </div>
@@ -123,10 +126,10 @@
   {#if card.showRefresh || card.showNewLink}
     <div class="actions">
       {#if card.showRefresh}
-        <button type="button" data-testid="company-signin-refresh" disabled={busy === "refresh"} onclick={() => onRefresh?.()}>{SIGNIN_COPY.refresh}</button>
+        <button type="button" data-testid="company-signin-refresh" disabled={busy !== null} onclick={() => { if (!busy) onRefresh?.(); }}>{busy === "refresh" ? SIGNIN_COPY.refreshing : SIGNIN_COPY.refresh}</button>
       {/if}
       {#if card.showNewLink}
-        <button type="button" data-testid="company-signin-new-link" disabled={busy === "regenerate"} onclick={() => onRegenerate?.()}>{SIGNIN_COPY.newLink}</button>
+        <button type="button" data-testid="company-signin-new-link" disabled={busy !== null} onclick={() => { if (!busy) onRegenerate?.(); }}>{busy === "regenerate" ? SIGNIN_COPY.requestingLink : SIGNIN_COPY.newLink}</button>
       {/if}
     </div>
   {/if}

@@ -51,9 +51,12 @@ export const SIGNIN_COPY = {
   submit: "Submit code",
   submitting: "Submitting...",
   refresh: "Refresh",
+  refreshing: "Refreshing...",
   newLink: "New sign-in link",
+  requestingLink: "Requesting a new link...",
   rejected: "That sign-in code was not accepted. Copy the full code from the Claude page and try again.",
   finishing: "Finishing sign-in...",
+  stillFinishing: "Still finishing sign-in. Refresh to check again.",
   linkChanged: "The sign-in link changed. Use the new link below.",
   unreachable: "Could not reach the company Outpost. Try again.",
   notAdmin: "Only company owners and admins can do this.",
@@ -119,9 +122,29 @@ export function linkExpiryLine(expiresAt: string | undefined, now: number): { ex
   if (Number.isNaN(at)) return { expired: false, text: SIGNIN_COPY.expiresAbout };
   if (at <= now) return { expired: true, text: SIGNIN_COPY.expired };
   const when = new Date(at);
-  const hh = String(when.getUTCHours()).padStart(2, "0");
-  const mm = String(when.getUTCMinutes()).padStart(2, "0");
-  return { expired: false, text: `This link expires at ${hh}:${mm} UTC.` };
+  const hh = String(when.getHours()).padStart(2, "0");
+  const mm = String(when.getMinutes()).padStart(2, "0");
+  return { expired: false, text: `This link expires at ${hh}:${mm}.` };
+}
+
+/** True when the view carries a link whose server expiry has passed. */
+export function linkHasExpired(view: CompanySignInView | null, now: number): boolean {
+  if (!view?.loginUrl || !view.loginUrlExpiresAt) return false;
+  const at = Date.parse(view.loginUrlExpiresAt);
+  return !Number.isNaN(at) && at <= now;
+}
+
+/**
+ * After an accepted code: "active" for the 2-minute window while the box
+ * finishes, "stalled" once that window ran out with no signed-in read.
+ */
+export type SignInFinishing = "active" | "stalled" | null;
+
+/** Fixed copy for a failed call. Never the server's own text. */
+export function signInFailureLine(failure: SignInFailure): string {
+  if (failure === "not_admin") return SIGNIN_COPY.notAdmin;
+  if (failure === "unavailable") return SIGNIN_COPY.unavailable;
+  return SIGNIN_COPY.unreachable;
 }
 
 export type SignInPhase =
@@ -133,6 +156,7 @@ export type SignInPhase =
   | "expired"
   | "awaiting_code"
   | "code_rejected"
+  | "finishing"
   | "signed_in";
 
 export interface SignInPresentation {
@@ -160,6 +184,7 @@ export function deriveSignInPresentation(input: {
   failure: SignInFailure | null;
   codeError: string | null;
   now: number;
+  finishing?: SignInFinishing;
 }): SignInPresentation {
   const canManage = manage(input.role);
   const blank = (phase: SignInPhase, headline: string, detail: string | null, badge: string): SignInPresentation => ({
@@ -177,7 +202,8 @@ export function deriveSignInPresentation(input: {
   });
 
   if (input.failure === "not_available") {
-    return { ...blank("not_available", SIGNIN_COPY.notAvailable, null, SIGNIN_COPY.badgeUnavailable), showRefresh: false, showContact: true };
+    // Refresh stays for owners and admins, so a company that becomes eligible can recover in place.
+    return { ...blank("not_available", SIGNIN_COPY.notAvailable, null, SIGNIN_COPY.badgeUnavailable), showRefresh: canManage, showContact: true };
   }
 
   if (!canManage) {
@@ -203,8 +229,25 @@ export function deriveSignInPresentation(input: {
   }
 
   const view = input.view;
+  if (input.failure) {
+    // A failed call after a view loaded: one fixed line and Refresh. The link
+    // and code field are hidden, because the view may no longer be current.
+    const signed = view.state === "signed_in" && view.signedIn;
+    return {
+      ...blank("failed", signed ? SIGNIN_COPY.signedIn : SIGNIN_COPY.notSignedIn, signInFailureLine(input.failure), SIGNIN_COPY.badgeUnavailable),
+      showRefresh: true,
+    };
+  }
   if (view.state === "signed_in" && view.signedIn) {
     return blank("signed_in", SIGNIN_COPY.signedIn, null, SIGNIN_COPY.badgeSigned);
+  }
+  if (input.finishing) {
+    // The code was accepted. No link or code field, so it cannot be sent twice.
+    return {
+      ...blank("finishing", SIGNIN_COPY.notSignedIn, null, SIGNIN_COPY.badgeWaiting),
+      showRefresh: true,
+      showNewLink: input.finishing === "stalled",
+    };
   }
   if (view.state === "unknown") {
     return blank("unavailable", SIGNIN_COPY.unavailable, null, SIGNIN_COPY.badgeUnavailable);
@@ -213,7 +256,8 @@ export function deriveSignInPresentation(input: {
     return {
       ...blank("preparing", SIGNIN_COPY.notSignedIn, SIGNIN_COPY.notReady, SIGNIN_COPY.badgeWaiting),
       showRefresh: true,
-      showNewLink: true,
+      // The server answers not_ready to regenerate until a box exists.
+      showNewLink: false,
     };
   }
 
@@ -259,10 +303,20 @@ export function suppressUnchangedLink(previousUrl: string | null, next: CompanyS
   return { signedIn: next.signedIn, state: next.state, signedInAt: next.signedInAt };
 }
 
+/** Slow re-check while the company cannot have an Outpost yet. */
+export const NOT_AVAILABLE_POLL_MS = 60_000;
+
 /** Contract poll intervals. Null means the card is idle. */
-export function signInPollDelayMs(view: CompanySignInView | null, finishing: boolean): number | null {
+export function signInPollDelayMs(
+  view: CompanySignInView | null,
+  finishing: boolean,
+  options: { now?: number; failure?: SignInFailure | null } = {},
+): number | null {
+  if (options.failure === "not_available") return NOT_AVAILABLE_POLL_MS;
   if (finishing) return 3_000;
   if (!view || view.state === "signed_in" || view.state === "unknown") return null;
+  // An expired link stays expired until someone asks for a new one.
+  if (linkHasExpired(view, options.now ?? Date.now())) return null;
   if (view.state === "awaiting_box" || (view.state === "awaiting_sign_in" && !view.loginUrl)) return 5_000;
   if (view.loginUrl) return 15_000;
   if (view.state === "no_host") return 5_000;

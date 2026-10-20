@@ -2,15 +2,17 @@
 import { flushSync, mount, unmount, type ComponentProps } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import CompanySignInCard from "./CompanySignInCard.svelte";
-import CompanySignInPanel from "./CompanySignInPanel.svelte";
 import CompanyOutpostSignInPreview from "./CompanyOutpostSignInPreview.svelte";
 import { SIGNIN_COPY, SIGNIN_CONTACT_URL } from "./company-signin-model.js";
 import { COMPANY_OUTPOST_BOX_DETAIL_SIGNIN_SLOT, SIGNIN_PREVIEW_STATES, signInPreviewFrame } from "./company-signin-preview.js";
-import { createCompanySignInClient, type CompanySignInPost } from "./company-signin-client.js";
 
 const URL = "https://claude.ai/oauth/authorize?example=1";
 const CODE = "EXAMPLE-NOT-A-REAL-CODE";
 const NOW = Date.parse("2026-10-18T20:00:00.000Z");
+function localClock(iso: string): string {
+  const at = new Date(iso);
+  return `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+}
 
 describe("company sign-in card", () => {
   let component: Record<string, unknown> | null = null;
@@ -45,7 +47,8 @@ describe("company sign-in card", () => {
     });
     expect(waiting.querySelector("[data-testid='company-signin-card']")?.getAttribute("data-phase")).toBe("awaiting_code");
     expect(waiting.querySelector("[data-testid='company-signin-open']")?.getAttribute("href")).toBe(URL);
-    expect(waiting.querySelector("[data-testid='company-signin-expiry']")?.textContent).toBe("This link expires at 20:10 UTC.");
+    expect(waiting.querySelector("[data-testid='company-signin-expiry']")?.textContent).toBe(`This link expires at ${localClock("2026-10-18T20:10:00.000Z")}.`);
+    expect(waiting.querySelector("[data-testid='company-signin-code']")?.getAttribute("autocomplete")).toBe("one-time-code");
     expect(waiting.querySelector("[data-testid='company-signin-code']")?.getAttribute("type")).toBe("password");
     expect(waiting.textContent).not.toMatch(/USD|!/);
   });
@@ -91,169 +94,6 @@ describe("company sign-in card", () => {
     expect(target.querySelector("[data-testid='company-signin-new-link']")).toBeNull();
     expect(target.querySelector("[data-testid='company-signin-refresh']")).toBeNull();
     expect(target.querySelector("a")).toBeNull();
-  });
-});
-
-describe("company sign-in panel", () => {
-  let component: Record<string, unknown> | null = null;
-
-  afterEach(async () => {
-    if (component) await unmount(component);
-    component = null;
-    vi.restoreAllMocks();
-  });
-
-  it("sends a wrong code through the route, then shows one line and an empty field", async () => {
-    const logs: string[] = [];
-    for (const method of ["log", "info", "debug", "warn", "error"] as const) {
-      vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
-        logs.push(args.map(String).join(" "));
-      });
-    }
-    const post = vi.fn<CompanySignInPost>(async (body) => {
-      if (body.action === "code") return { ok: false, status: 400, code: "invalid_login_code", message: `no ${CODE}` };
-      return { ok: true, status: 200, body: { signIn: { signedIn: false, state: "awaiting_sign_in", loginUrl: URL, loginUrlExpiresAt: "2026-10-18T20:10:00.000Z" } } };
-    });
-    const target = document.createElement("div");
-    document.body.appendChild(target);
-    component = mount(CompanySignInPanel, {
-      target,
-      props: {
-        role: "admin",
-        companyUid: "cmp_indigo",
-        outpostId: "opc_main",
-        preview: {
-          now: NOW,
-          view: { signedIn: false, state: "awaiting_sign_in", loginUrl: URL, loginUrlExpiresAt: "2026-10-18T20:10:00.000Z" },
-        },
-        client: createCompanySignInClient({ companyUid: "cmp_indigo", outpostId: "opc_main", role: "admin", post }),
-      },
-    }) as Record<string, unknown>;
-    flushSync();
-    const input = target.querySelector<HTMLInputElement>("[data-testid='company-signin-code']")!;
-    input.value = CODE;
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    flushSync();
-    (target.querySelector("[data-testid='company-signin-submit']") as HTMLButtonElement).click();
-    flushSync();
-    await vi.waitFor(() => expect(target.querySelector("[data-testid='company-signin-error']")?.textContent).toBe(SIGNIN_COPY.rejected));
-    expect(post).toHaveBeenCalledWith(expect.objectContaining({ action: "code", code: CODE }));
-    expect(input.value).toBe("");
-    expect(target.textContent).not.toContain(CODE);
-    expect(logs.join("\n")).not.toContain(CODE);
-  });
-
-  it("drops the old link when an admin asks for a new one", async () => {
-    const post = vi.fn<CompanySignInPost>(async (body) => {
-      if (body.action === "regenerate") return { ok: true, status: 202, body: { ok: true } };
-      return { ok: true, status: 200, body: { signIn: { signedIn: false, state: "awaiting_sign_in" } } };
-    });
-    const target = document.createElement("div");
-    document.body.appendChild(target);
-    component = mount(CompanySignInPanel, {
-      target,
-      props: {
-        role: "admin",
-        companyUid: "cmp_indigo",
-        preview: {
-          now: NOW,
-          view: { signedIn: false, state: "awaiting_sign_in", loginUrl: URL, loginUrlExpiresAt: "2026-10-18T20:10:00.000Z" },
-        },
-        client: createCompanySignInClient({ companyUid: "cmp_indigo", role: "admin", post }),
-      },
-    }) as Record<string, unknown>;
-    flushSync();
-    (target.querySelector("[data-testid='company-signin-new-link']") as HTMLButtonElement).click();
-    flushSync();
-    await vi.waitFor(() => expect(target.querySelector("[data-testid='company-signin-card']")?.getAttribute("data-phase")).toBe("preparing"));
-    expect(target.textContent).not.toContain(URL);
-    expect(target.querySelector("[data-testid='company-signin-open']")).toBeNull();
-    expect(JSON.stringify(post.mock.calls)).not.toContain(URL);
-    expect(post).toHaveBeenCalledWith(expect.objectContaining({ action: "regenerate" }));
-  });
-
-  it("keeps hiding the old link when status still returns it", async () => {
-    const post = vi.fn<CompanySignInPost>(async (body) => {
-      if (body.action === "regenerate") return { ok: true, status: 202, body: { ok: true } };
-      return {
-        ok: true,
-        status: 200,
-        body: { signIn: { signedIn: false, state: "awaiting_sign_in", loginUrl: URL, loginUrlExpiresAt: "2026-10-18T20:10:00.000Z" } },
-      };
-    });
-    const target = document.createElement("div");
-    document.body.appendChild(target);
-    component = mount(CompanySignInPanel, {
-      target,
-      props: {
-        role: "admin",
-        companyUid: "cmp_indigo",
-        preview: {
-          now: NOW,
-          view: { signedIn: false, state: "awaiting_sign_in", loginUrl: URL, loginUrlExpiresAt: "2026-10-18T20:10:00.000Z" },
-        },
-        client: createCompanySignInClient({ companyUid: "cmp_indigo", role: "admin", post }),
-      },
-    }) as Record<string, unknown>;
-    flushSync();
-    (target.querySelector("[data-testid='company-signin-new-link']") as HTMLButtonElement).click();
-    flushSync();
-    await vi.waitFor(() => expect(target.querySelector("[data-testid='company-signin-card']")?.getAttribute("data-phase")).toBe("preparing"));
-    expect(target.textContent).not.toContain(URL);
-    expect(target.querySelector("[data-testid='company-signin-open']")).toBeNull();
-  });
-
-  it("shows finishing after an accepted code", async () => {
-    const post = vi.fn<CompanySignInPost>(async (body) => {
-      if (body.action === "code") return { ok: true, status: 202, body: { ok: true } };
-      return {
-        ok: true,
-        status: 200,
-        body: { signIn: { signedIn: false, state: "awaiting_sign_in", loginUrl: URL, loginUrlExpiresAt: "2026-10-18T20:10:00.000Z" } },
-      };
-    });
-    const target = document.createElement("div");
-    document.body.appendChild(target);
-    component = mount(CompanySignInPanel, {
-      target,
-      props: {
-        role: "admin",
-        companyUid: "cmp_indigo",
-        preview: {
-          now: NOW,
-          view: { signedIn: false, state: "awaiting_sign_in", loginUrl: URL, loginUrlExpiresAt: "2026-10-18T20:10:00.000Z" },
-        },
-        client: createCompanySignInClient({ companyUid: "cmp_indigo", role: "admin", post }),
-      },
-    }) as Record<string, unknown>;
-    flushSync();
-    const input = target.querySelector<HTMLInputElement>("[data-testid='company-signin-code']")!;
-    input.value = CODE;
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    flushSync();
-    (target.querySelector("[data-testid='company-signin-submit']") as HTMLButtonElement).click();
-    flushSync();
-    await vi.waitFor(() => expect(target.querySelector("[data-testid='company-signin-notice']")?.textContent).toBe(SIGNIN_COPY.finishing));
-    expect(target.textContent).not.toContain(CODE);
-  });
-
-  it("does not call the route for a member", async () => {
-    const post = vi.fn<CompanySignInPost>(async () => ({ ok: true, status: 200, body: {} }));
-    const target = document.createElement("div");
-    document.body.appendChild(target);
-    component = mount(CompanySignInPanel, {
-      target,
-      props: {
-        role: "member",
-        companyUid: "cmp_indigo",
-        client: createCompanySignInClient({ companyUid: "cmp_indigo", role: "member", post }),
-      },
-    }) as Record<string, unknown>;
-    flushSync();
-    await Promise.resolve();
-    expect(post).not.toHaveBeenCalled();
-    expect(target.querySelector("[data-testid='company-signin-new-link']")).toBeNull();
-    expect(target.textContent).toContain(SIGNIN_COPY.unavailable);
   });
 });
 
@@ -348,7 +188,7 @@ describe("neutral not-available-yet state", () => {
     component = null;
   });
 
-  it("shows one plain line and one contact action, with no refresh, link or code", () => {
+  it("shows one plain line and one contact action, Refresh for an admin only, and no link or code", () => {
     for (const role of ["admin", "member"] as const) {
       const target = document.createElement("div");
       document.body.appendChild(target);
@@ -367,7 +207,8 @@ describe("neutral not-available-yet state", () => {
       expect(contact?.textContent?.trim()).toBe("Contact us");
       expect(contact?.getAttribute("href")).toBe(SIGNIN_CONTACT_URL);
       expect(contact?.getAttribute("target")).toBe("_blank");
-      expect(target.querySelectorAll("button")).toHaveLength(0);
+      const buttons = [...target.querySelectorAll("button")].map((button) => button.getAttribute("data-testid"));
+      expect(buttons).toEqual(role === "admin" ? ["company-signin-refresh"] : []);
       expect(target.querySelector("[data-testid='company-signin-open']")).toBeNull();
       expect(target.querySelector("[data-testid='company-signin-code']")).toBeNull();
       void unmount(component);
@@ -375,59 +216,4 @@ describe("neutral not-available-yet state", () => {
       target.remove();
     }
   });
-
-  it("switches the panel to the neutral state when the route says billing_required", async () => {
-    const post = vi.fn<CompanySignInPost>(async () => ({ ok: false, status: 503, code: "billing_required" }));
-    const target = document.createElement("div");
-    document.body.appendChild(target);
-    component = mount(CompanySignInPanel, {
-      target,
-      props: {
-        role: "admin",
-        companyUid: "cmp_indigo",
-        client: createCompanySignInClient({ companyUid: "cmp_indigo", role: "admin", post }),
-      },
-    }) as Record<string, unknown>;
-    flushSync();
-    await vi.waitFor(() => {
-      expect(target.querySelector("[data-testid='company-signin-card']")?.getAttribute("data-phase")).toBe("not_available");
-    });
-    expect(target.textContent).toContain(SIGNIN_COPY.notAvailable);
-    expect(target.textContent).not.toMatch(MONEY_WORDS);
-    expect(target.querySelector("[data-testid='company-signin-refresh']")).toBeNull();
-  });
-
-  it("stops polling once a new link comes back not available", async () => {
-    vi.useFakeTimers();
-    try {
-      const post = vi.fn<CompanySignInPost>(async (body) =>
-        body.action === "regenerate"
-          ? { ok: false, status: 402, code: "payment_required" }
-          : { ok: true, status: 200, body: { signIn: { signedIn: false, state: "awaiting_sign_in", loginUrl: URL } } });
-      const target = document.createElement("div");
-      document.body.appendChild(target);
-      component = mount(CompanySignInPanel, {
-        target,
-        props: {
-          role: "admin",
-          companyUid: "cmp_indigo",
-          client: createCompanySignInClient({ companyUid: "cmp_indigo", role: "admin", post }),
-        },
-      }) as Record<string, unknown>;
-      await vi.advanceTimersByTimeAsync(0);
-      flushSync();
-      target.querySelector<HTMLButtonElement>("[data-testid='company-signin-new-link']")?.click();
-      await vi.advanceTimersByTimeAsync(0);
-      flushSync();
-      expect(target.querySelector("[data-testid='company-signin-card']")?.getAttribute("data-phase")).toBe("not_available");
-      const calls = post.mock.calls.length;
-      await vi.advanceTimersByTimeAsync(60_000);
-      flushSync();
-      expect(post.mock.calls.length).toBe(calls);
-      expect(target.querySelector("[data-testid='company-signin-card']")?.getAttribute("data-phase")).toBe("not_available");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
 });
-

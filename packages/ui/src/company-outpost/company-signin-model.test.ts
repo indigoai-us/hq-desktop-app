@@ -6,13 +6,20 @@ import {
   parseCompanySignInBody,
   safeCompanyLoginUrl,
   signInPollDelayMs,
+  signInFailureLine,
   suppressUnchangedLink,
+  NOT_AVAILABLE_POLL_MS,
 } from "./company-signin-model.js";
 
 const NOW = Date.parse("2026-10-18T20:00:00.000Z");
 const URL = "https://claude.ai/oauth/authorize?example=1";
 const LATER = "2026-10-18T20:10:00.000Z";
 const EARLIER = "2026-10-18T19:50:00.000Z";
+/** LATER as the viewer's local clock reads it. */
+function localClock(iso: string): string {
+  const at = new Date(iso);
+  return `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+}
 
 describe("company sign-in view", () => {
   it("reads the status payload and keeps an optional expiry", () => {
@@ -49,11 +56,12 @@ describe("company sign-in view", () => {
 });
 
 describe("link expiry", () => {
-  it("names the clock time when the server sent one", () => {
+  it("names the local clock time when the server sent one", () => {
     expect(linkExpiryLine(LATER, NOW)).toEqual({
       expired: false,
-      text: "This link expires at 20:10 UTC.",
+      text: `This link expires at ${localClock(LATER)}.`,
     });
+    expect(linkExpiryLine(LATER, NOW).text).not.toContain("UTC");
   });
 
   it("says the link has expired once that time has passed", () => {
@@ -84,7 +92,7 @@ describe("sign-in card presentation", () => {
     expect(card.showLink).toBe(true);
     expect(card.showCode).toBe(true);
     expect(card.showNewLink).toBe(true);
-    expect(card.expiry).toBe("This link expires at 20:10 UTC.");
+    expect(card.expiry).toBe(`This link expires at ${localClock(LATER)}.`);
     expect(card.loginUrl).toBe(URL);
   });
 
@@ -127,6 +135,52 @@ describe("sign-in card presentation", () => {
     expect(card.showCode).toBe(false);
     expect(card.showNewLink).toBe(false);
     expect(card.showLink).toBe(false);
+  });
+
+  it("hides New sign-in link while there is no box", () => {
+    const view = parseCompanySignInBody({ signIn: { signedIn: false, state: "no_host" } });
+    const card = deriveSignInPresentation({ ...admin, view });
+    expect(card.detail).toBe(SIGNIN_COPY.notReady);
+    expect(card.showRefresh).toBe(true);
+    expect(card.showNewLink).toBe(false);
+  });
+
+  it("shows a failure as one line and Refresh even with a view loaded, and hides the link and code", () => {
+    const view = parseCompanySignInBody({
+      signIn: { signedIn: false, state: "awaiting_sign_in", loginUrl: URL, loginUrlExpiresAt: LATER },
+    });
+    for (const failure of ["unreachable", "unavailable", "not_admin", "rejected"] as const) {
+      const card = deriveSignInPresentation({ ...admin, view, failure });
+      expect(card.phase).toBe("failed");
+      expect(card.detail).toBe(signInFailureLine(failure));
+      expect(card.showRefresh).toBe(true);
+      expect(card.showNewLink).toBe(false);
+      expect(card.showLink).toBe(false);
+      expect(card.showCode).toBe(false);
+      expect(card.loginUrl).toBeUndefined();
+    }
+    expect(signInFailureLine("unreachable")).toBe(SIGNIN_COPY.unreachable);
+    expect(signInFailureLine("not_admin")).toBe(SIGNIN_COPY.notAdmin);
+    expect(deriveSignInPresentation({ ...admin, view }).phase).toBe("awaiting_code");
+  });
+
+  it("hides the link and code field while an accepted code finishes", () => {
+    const view = parseCompanySignInBody({
+      signIn: { signedIn: false, state: "awaiting_sign_in", loginUrl: URL, loginUrlExpiresAt: LATER },
+    });
+    const active = deriveSignInPresentation({ ...admin, view, finishing: "active" });
+    expect(active.phase).toBe("finishing");
+    expect(active.showLink).toBe(false);
+    expect(active.showCode).toBe(false);
+    expect(active.showNewLink).toBe(false);
+    expect(active.showRefresh).toBe(true);
+    const stalled = deriveSignInPresentation({ ...admin, view, finishing: "stalled" });
+    expect(stalled.phase).toBe("finishing");
+    expect(stalled.showCode).toBe(false);
+    expect(stalled.showNewLink).toBe(true);
+    expect(stalled.showRefresh).toBe(true);
+    const signed = deriveSignInPresentation({ ...admin, view: { signedIn: true, state: "signed_in" }, finishing: "active" });
+    expect(signed.phase).toBe("signed_in");
   });
 
   it("shows a failed read as one plain line", () => {
@@ -196,7 +250,7 @@ describe("company not available yet", () => {
     { signedIn: false, state: "no_host" },
   ] as const;
 
-  it("shows one neutral line and one contact action, for admin and member", () => {
+  it("shows one neutral line and one contact action, with Refresh for owners and admins only", () => {
     for (const role of ["owner", "admin", "member"] as const) {
       for (const view of views) {
         const card = deriveSignInPresentation({ role, view, failure: "not_available", codeError: null, now: NOW });
@@ -207,7 +261,7 @@ describe("company not available yet", () => {
         expect(card.expiry).toBeNull();
         expect(card.showLink).toBe(false);
         expect(card.showCode).toBe(false);
-        expect(card.showRefresh).toBe(false);
+        expect(card.showRefresh).toBe(role !== "member");
         expect(card.showNewLink).toBe(false);
         expect(card.showContact).toBe(true);
         expect(card.loginUrl).toBeUndefined();
@@ -243,5 +297,18 @@ describe("sign-in route timing", () => {
     expect(signInPollDelayMs({ signedIn: false, state: "awaiting_sign_in", loginUrl: URL }, false)).toBe(15_000);
     expect(signInPollDelayMs({ signedIn: false, state: "awaiting_sign_in", loginUrl: URL }, true)).toBe(3_000);
     expect(signInPollDelayMs({ signedIn: true, state: "signed_in" }, false)).toBeNull();
+  });
+
+  it("stops polling once the shown link has expired", () => {
+    const view = { signedIn: false, state: "awaiting_sign_in", loginUrl: URL, loginUrlExpiresAt: LATER } as const;
+    expect(signInPollDelayMs(view, false, { now: NOW })).toBe(15_000);
+    expect(signInPollDelayMs(view, false, { now: Date.parse(LATER) })).toBeNull();
+    expect(signInPollDelayMs(view, false, { now: Date.parse(LATER) + 1 })).toBeNull();
+  });
+
+  it("re-checks slowly while the company is not available", () => {
+    expect(NOT_AVAILABLE_POLL_MS).toBe(60_000);
+    expect(signInPollDelayMs(null, false, { failure: "not_available" })).toBe(60_000);
+    expect(signInPollDelayMs({ signedIn: false, state: "awaiting_box" }, false, { failure: "not_available" })).toBe(60_000);
   });
 });

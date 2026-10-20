@@ -572,6 +572,19 @@ export function createSyncPlatformAdapter(
   }
 
   /**
+   * One POST with the HTTP status on a failure and no 429/503 retry. For a
+   * write that must not be repeated, such as a single-use sign-in code: a
+   * retry after the server consumed it would come back as a rejection.
+   */
+  async function hqProPostOnceWithStatus<T>(path: string, body?: unknown): AdapterPromise<T> {
+    const attempted = await hqProAttempt<T>('POST', path, body);
+    if (!attempted.result.ok && attempted.result.code === 'network') {
+      return attempted.result;
+    }
+    return withHttpStatus(attempted.result, attempted.status);
+  }
+
+  /**
    * Prototype settings handlers fire these writes without awaiting them, so
    * persist through the process-wide queue to preserve concurrent patches from
    * every settings surface. The native apply commands re-read menubar.json, so
@@ -1349,7 +1362,10 @@ export function createSyncPlatformAdapter(
       listMyOutpostJobs: () => hqProJson('GET', OUTPOST_PATHS.jobsStatus),
       companyOutpostSignIn: (body) => {
         const sent = typeof body.code === 'string' ? body.code : '';
-        const request = hqProRequestWithStatus<Json>('POST', OUTPOST_PATHS.companySignIn, body);
+        // The code action is single-use, so it is sent once and never retried.
+        const request = body.action === 'code'
+          ? hqProPostOnceWithStatus<Json>(OUTPOST_PATHS.companySignIn, body)
+          : hqProRequestWithStatus<Json>('POST', OUTPOST_PATHS.companySignIn, body);
         return sent ? request.then((result) => withoutSecret(result, sent)) : request;
       },
       listMyGoogleAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.googleAccounts),
