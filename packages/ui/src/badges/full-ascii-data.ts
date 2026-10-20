@@ -11,7 +11,7 @@
  * Loaded lazily: only the holographic card and the share image need it.
  */
 
-export const PALETTE_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-";
+export { PALETTE_ALPHABET } from "./full-ascii-palette.js";
 
 export interface AsciiArt {
   chars: readonly string[];

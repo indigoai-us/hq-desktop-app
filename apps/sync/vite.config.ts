@@ -5,6 +5,7 @@ import { sentryVitePlugin } from "@sentry/vite-plugin";
 import pkg from "./package.json" with { type: "json" };
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHqSharedChunks } from "./vite.chunks.mjs";
 
 const rootDir = fileURLToPath(new URL(".", import.meta.url));
 
@@ -52,22 +53,11 @@ export default defineConfig({
       output: {
         // Two HTML entries (main + desktop-alt) share the workspace UI
         // packages and Svelte runtime; without an explicit chunk each entry
-        // bundled its own copy, doubling parse/compile work.
-        manualChunks(id) {
-          // Atlas and telemetry stay in their dynamic-import chunks (US-012, US-032).
-          if (/[\\/]packages[\\/]ui[\\/]src[\\/](atlas|telemetry)[\\/]/.test(id)) {
-            return undefined;
-          }
-          if (
-            /[\\/]node_modules[\\/]svelte[\\/]/.test(id) ||
-            /[\\/]node_modules[\\/]@hq[\\/](ui|core|platform|work)[\\/]/.test(id) ||
-            /[\\/]packages[\\/](ui|core|platform|work)[\\/]/.test(id) ||
-            /[\\/]apps[\\/]work[\\/]/.test(id)
-          ) {
-            return "hq-shared";
-          }
-          return undefined;
-        },
+        // bundled its own copy, doubling parse/compile work. Only boot-path
+        // code goes into "hq-shared"; workspace import() targets (Atlas,
+        // telemetry, the shell's lazy doors) keep their own chunks. See
+        // vite.chunks.mjs.
+        manualChunks: createHqSharedChunks(),
       },
     },
   },
