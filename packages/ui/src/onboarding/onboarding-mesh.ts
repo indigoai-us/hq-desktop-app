@@ -22,13 +22,6 @@ export const MESH_BANDS = [
   "Connecting presence.",
 ] as const;
 
-/** @deprecated use MESH_TITLE */
-export const MESH_UPGRADE_TITLE = MESH_TITLE;
-/** @deprecated use MESH_BODY */
-export const MESH_UPGRADE_BODY = MESH_BODY;
-/** @deprecated use MESH_BANDS */
-export const MESH_UPGRADE_BANDS = MESH_BANDS;
-
 export function meshProgressLine(progress: MeshDoctorProgress | null): string {
   if (!progress || progress.phase === "apply") return MESH_BANDS[0];
   if (progress.phase === "done") return "Connected presence.";

@@ -38,7 +38,11 @@ import { readRepoFile } from './harness';
 
 // repoRoot is apps/sync, so the shared crate sources are read via '../../crates'.
 const processSource = readRepoFile('src-tauri/src/commands/process.rs');
-const daemonSource = readRepoFile('src-tauri/src/commands/daemon.rs');
+// daemon.rs keeps its unit tests in daemon_tests.rs; several assertions name them.
+const daemonSource =
+  readRepoFile('src-tauri/src/commands/daemon.rs') +
+  '\n' +
+  readRepoFile('src-tauri/src/commands/daemon_tests.rs');
 const mainSource = readRepoFile('src-tauri/src/main.rs');
 // HQ-DESKTOP-44 (re-entrant path): the Windows session-end teardown moved out of
 // main.rs into the shared fn both RunEvent::Exit and the WH_CALLWNDPROC intercept

@@ -11,6 +11,13 @@ name: UI-only publish
 # UI must never run on a shell it was not built against, so that change needs
 # a native release instead.
 
+# Runner variables (repo-level Actions variables; docs/ci/self-hosted-runners.md).
+# Every job reads its runs-on from one of these. Unset means the current hosted
+# label, so nothing queues on a pool that does not exist yet:
+#   HQ_DESKTOP_RUNNER_LINUX          ["self-hosted","linux","X64","indigo-x64"]           default "ubuntu-latest"
+# Set a variable to the JSON array (or a JSON string label) to move every job
+# that reads it. Job names, and so required check names, do not change.
+
 on:
   workflow_dispatch:
     inputs:
@@ -41,7 +48,7 @@ concurrency:
 jobs:
   publish:
     name: Build, sign, and publish UI bundle
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX || '"ubuntu-latest"') }}
     permissions:
       contents: write
     env:

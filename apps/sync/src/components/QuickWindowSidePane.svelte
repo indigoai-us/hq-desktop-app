@@ -21,8 +21,7 @@
     dedupeChannelsById,
     type Channel,
   } from '../lib/channels';
-  import IdentityMark from './messaging/IdentityMark.svelte';
-  import { presenceStatus } from '@hq/ui';
+  import { IdentityMark, presenceStatus } from '@hq/ui';
 
   // Source list for the quick communications window. DM/share conversations
   // retain the existing grouped history semantics; channels are an optional
