@@ -11,8 +11,7 @@ vi.mock('svelte', async () => {
 });
 
 import { mount, unmount } from 'svelte';
-import { agentAvatarAssets } from '@hq/ui';
-import IdentityMark from './IdentityMark.svelte';
+import { agentAvatarAssets, IdentityMark } from '@hq/ui';
 
 const dir = dirname(fileURLToPath(import.meta.url));
 const uiRoot = join(dir, '../../../../../packages/ui/src');

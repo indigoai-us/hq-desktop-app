@@ -30,15 +30,23 @@ describe("cache-warm.yml prebuilt-shell warmers", () => {
     { job: "warm-shell-windows-arm64", target: "windows-arm64", ext: "tar.zst", triples: "aarch64-pc-windows-msvc" },
   ];
 
-  it("runs on main pushes that can change the shell key, and on dispatch", () => {
-    expect(workflow).toMatch(/push:\n\s+branches: \[main\]/);
-    expect(workflow).toContain('- "scripts/shell-hash.mjs"');
-    expect(workflow).toContain('- "crates/**"');
+  it("runs once a day off-peak and on dispatch, never on every main push", () => {
+    const on = workflow.slice(workflow.indexOf("\non:\n"), workflow.indexOf("\npermissions:\n"));
+    expect(on).not.toMatch(/^\s+push:/m);
+    expect(on).not.toMatch(/^\s+pull_request/m);
+    const crons = [...on.matchAll(/- cron: "([^"]+)"/g)].map((m) => m[1]);
+    expect(crons).toHaveLength(1);
+    const [minute, hour, dom, month, dow] = crons[0].split(" ");
+    expect([dom, month, dow]).toEqual(["*", "*", "*"]);
+    expect(Number(minute)).toBeGreaterThan(0);
+    // 03:00-09:00 UTC is outside US and EU working hours.
+    expect(Number(hour)).toBeGreaterThanOrEqual(3);
+    expect(Number(hour)).toBeLessThanOrEqual(9);
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toMatch(/rebuild:\n(\s+.*\n)*?\s+type: boolean\n\s+default: false/);
   });
 
-  it("lets an in-progress warm finish instead of cancelling it on the next push", () => {
+  it("lets an in-progress warm finish instead of cancelling it on the next run", () => {
     expect(workflow).toMatch(/concurrency:\n\s+group: .*\n\s+cancel-in-progress: false/);
     expect(workflow).not.toContain("cancel-in-progress: true");
   });
