@@ -1,5 +1,20 @@
 name: Release
 
+# Runner variables (repo-level Actions variables; docs/ci/self-hosted-runners.md).
+# Every job reads its runs-on from one of these. Unset means the current hosted
+# label, so nothing queues on a pool that does not exist yet:
+#   HQ_DESKTOP_RUNNER_LINUX          ["self-hosted","linux","X64","indigo-x64"]           default "ubuntu-latest"
+#   HQ_DESKTOP_RUNNER_LINUX_2204     ["self-hosted","linux","X64","indigo-x64"]           default "ubuntu-22.04"
+#   HQ_DESKTOP_RUNNER_MACOS_RELEASE  ["self-hosted","macOS","ARM64","hq-desktop-release"] default "macos-14"
+#   HQ_DESKTOP_RUNNER_WINDOWS        ["self-hosted","Windows","X64","hq-windows"]         default "windows-latest"
+# Set a variable to the JSON array (or a JSON string label) to move every job
+# that reads it. Job names, and so required check names, do not change.
+#
+# HQ_DESKTOP_RUNNER_MACOS_RELEASE stays unset (hosted macos-14) until one
+# self-hosted release run is green AND its artifact is verified notarized:
+#   spctl -a -vv <app>; xcrun stapler validate <app>;
+#   codesign --verify --deep --strict <app>.
+
 on:
   push:
     tags:
@@ -20,6 +35,12 @@ on:
         required: false
         default: false
         type: boolean
+
+# One release per tag at a time. Never cancel: a cancelled release can leave a
+# half-published GitHub Release or a notarization submission behind.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.tag }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -51,7 +72,7 @@ jobs:
   announce-build:
     name: Announce the build in #hq-dev
     if: ${{ inputs.shelltest != true }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX || '"ubuntu-latest"') }}
     permissions:
       contents: read
     env:
@@ -129,7 +150,7 @@ jobs:
   shelltest-tag:
     name: Create throwaway shelltest tag
     if: ${{ inputs.shelltest == true }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX || '"ubuntu-latest"') }}
     permissions:
       contents: write
     env:
@@ -158,7 +179,7 @@ jobs:
     name: Validate release tag and version
     needs: shelltest-tag
     if: ${{ !cancelled() && (needs.shelltest-tag.result == 'success' || needs.shelltest-tag.result == 'skipped') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX || '"ubuntu-latest"') }}
     outputs:
       tag: ${{ steps.classify.outputs.tag }}
       version: ${{ steps.classify.outputs.version }}
@@ -511,7 +532,7 @@ jobs:
     name: Build macOS universal (legacy single job)
     needs: validate
     if: ${{ !cancelled() && needs.validate.result == 'success' && inputs.legacy_build == true }}
-    runs-on: macos-14
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_MACOS_RELEASE || '"macos-14"') }}
     env:
       # Vite/Rollup bundling of the UI exceeded Node's default ~2 GB heap on macOS (run 37857004569).
       NODE_OPTIONS: --max-old-space-size=6144
@@ -605,7 +626,10 @@ jobs:
       # so a stale entry is rebuilt, never linked into a signed bundle.
       # Signing, notarization and updater signing still run on freshly linked
       # binaries.
+      # Self-hosted runners keep target/ between runs; restoring it from the
+      # Actions cache there only costs download time.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ runner.environment == 'github-hosted' }}
         with:
           workspaces: apps/sync/src-tauri
           shared-key: release-macos-universal
@@ -992,6 +1016,21 @@ jobs:
             --timeout-ms 30000 \
             --launch
 
+      # Self-hosted macOS runners persist between jobs, so nothing the signing
+      # steps wrote may outlive the job. Hosted runners are discarded anyway;
+      # this is a no-op there. Cleanup only: no signing behaviour changes.
+      - name: Remove temporary signing keychain and notary key
+        if: always()
+        shell: bash
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          if [ -e "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
+          rm -f "$KEYCHAIN_PATH" \
+            "$RUNNER_TEMP/developer-id-application.p12" \
+            "$RUNNER_TEMP/asc-api-key.p8"
+
   # --- Prebuilt-shell macOS pipeline (docs/RELEASE.md "Prebuilt shell") ---
   #
   # The compiled Tauri shell (Rust binary, tray helper, Recall sidecar) only
@@ -1004,7 +1043,7 @@ jobs:
     name: Compute macOS shell cache key
     needs: validate
     if: ${{ !cancelled() && needs.validate.result == 'success' && inputs.legacy_build != true }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX || '"ubuntu-latest"') }}
     outputs:
       key: ${{ steps.key.outputs.key }}
       toolchain: ${{ steps.key.outputs.toolchain }}
@@ -1048,7 +1087,7 @@ jobs:
     name: macOS shell (restore or build)
     needs: [validate, shell-key]
     if: ${{ !cancelled() && needs.shell-key.result == 'success' }}
-    runs-on: macos-14
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_MACOS_RELEASE || '"macos-14"') }}
     timeout-minutes: 90
     permissions:
       contents: write
@@ -1181,8 +1220,10 @@ jobs:
           cargo --version
           cargo metadata --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml >/dev/null
 
+      # Self-hosted runners keep target/ between runs; restoring it from the
+      # Actions cache there only costs download time.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        if: ${{ runner.environment == 'github-hosted' && (steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true') }}
         with:
           workspaces: apps/sync/src-tauri
           shared-key: release-macos-universal
@@ -1454,7 +1495,7 @@ jobs:
     name: Build UI bundle
     needs: validate
     if: ${{ !cancelled() && needs.validate.result == 'success' && inputs.legacy_build != true }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX || '"ubuntu-latest"') }}
     env:
       # Vite/Rollup bundling of the UI exceeded Node's default ~2 GB heap on macOS (run 37857004569).
       NODE_OPTIONS: --max-old-space-size=6144
@@ -1502,7 +1543,7 @@ jobs:
     name: Assemble, sign and package macOS universal
     needs: [validate, shell-key, shell-macos, ui]
     if: ${{ !cancelled() && needs.shell-macos.result == 'success' && needs.ui.result == 'success' }}
-    runs-on: macos-14
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_MACOS_RELEASE || '"macos-14"') }}
     timeout-minutes: 90
     defaults:
       run:
@@ -1772,12 +1813,26 @@ jobs:
             --timeout-ms 30000 \
             --launch
 
+      # Self-hosted macOS runners persist between jobs, so nothing the signing
+      # steps wrote may outlive the job. Hosted runners are discarded anyway;
+      # this is a no-op there. Cleanup only: no signing behaviour changes.
+      - name: Remove temporary signing keychain and notary key
+        if: always()
+        shell: bash
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          if [ -e "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
+          rm -f "$KEYCHAIN_PATH" \
+            "$RUNNER_TEMP/developer-id-application.p12" \
+            "$RUNNER_TEMP/asc-api-key.p8"
 
   shell-windows-x64:
     name: Windows x64 shell (restore or build)
     needs: validate
     if: ${{ !cancelled() && needs.validate.result == 'success' && inputs.legacy_build != true }}
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_WINDOWS || '"windows-latest"') }}
     timeout-minutes: 90
     permissions:
       contents: write
@@ -2022,7 +2077,7 @@ jobs:
     name: Windows arm64 shell (restore or build)
     needs: validate
     if: ${{ !cancelled() && needs.validate.result == 'success' && inputs.legacy_build != true }}
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_WINDOWS || '"windows-latest"') }}
     timeout-minutes: 90
     permissions:
       contents: write
@@ -2297,7 +2352,7 @@ jobs:
     name: Assemble, sign and package Windows x64
     needs: [validate, shell-windows-x64, ui]
     if: ${{ !cancelled() && needs.shell-windows-x64.result == 'success' && needs.ui.result == 'success' }}
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_WINDOWS || '"windows-latest"') }}
     timeout-minutes: 90
     permissions:
       contents: read
@@ -2467,6 +2522,7 @@ jobs:
       - name: Tauri bundle (x86_64-pc-windows-msvc)
         env:
           RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
+        shell: pwsh
         run: pnpm tauri bundle --target x86_64-pc-windows-msvc --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config $env:TAURI_MSI_VERSION_CONFIG --config $env:TAURI_ASSEMBLE_STAMP_CONFIG
 
       - name: Install Sentry CLI
@@ -2640,7 +2696,7 @@ jobs:
     name: Assemble, sign and package Windows arm64
     needs: [validate, shell-windows-arm64, ui]
     if: ${{ !cancelled() && needs.shell-windows-arm64.result == 'success' && needs.ui.result == 'success' }}
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_WINDOWS || '"windows-latest"') }}
     timeout-minutes: 90
     permissions:
       contents: read
@@ -2801,6 +2857,7 @@ jobs:
       - name: Tauri bundle (aarch64-pc-windows-msvc)
         env:
           RECALL_SIDECAR_TARGET: aarch64-pc-windows-msvc
+        shell: pwsh
         run: pnpm tauri bundle --target aarch64-pc-windows-msvc --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config $env:TAURI_MSI_VERSION_CONFIG --config $env:TAURI_ASSEMBLE_STAMP_CONFIG
 
       - name: Install Sentry CLI
@@ -2974,7 +3031,7 @@ jobs:
     name: Build Windows (legacy single job)
     needs: validate
     if: ${{ !cancelled() && needs.validate.result == 'success' && inputs.legacy_build == true }}
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_WINDOWS || '"windows-latest"') }}
     timeout-minutes: 90
     permissions:
       contents: read
@@ -3031,7 +3088,10 @@ jobs:
       # so a stale entry is rebuilt, never linked into a signed bundle.
       # Signing, notarization and updater signing still run on freshly linked
       # binaries.
+      # Self-hosted runners keep target/ between runs; restoring it from the
+      # Actions cache there only costs download time.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ runner.environment == 'github-hosted' }}
         with:
           workspaces: apps/sync/src-tauri
           shared-key: release-${{ matrix.target }}
@@ -3152,6 +3212,7 @@ jobs:
           # Tauri runs the overlay's beforeBuildCommand, which builds the launcher
           # again. Keep that nested build on the matrix architecture as well.
           RECALL_SIDECAR_TARGET: ${{ matrix.target }}
+        shell: pwsh
         run: pnpm tauri build --target ${{ matrix.target }} --bundles msi nsis updater --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config $env:TAURI_MSI_VERSION_CONFIG
 
       - name: Install Sentry CLI
@@ -3328,7 +3389,7 @@ jobs:
     # the UI (tauri's beforeBuildCommand) and both bundles from the tag on
     # every dispatch path, legacy or not.
     if: ${{ !cancelled() && needs.validate.result == 'success' }}
-    runs-on: ubuntu-22.04
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX_2204 || '"ubuntu-22.04"') }}
     timeout-minutes: 90
     permissions:
       contents: read
@@ -3378,8 +3439,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: x86_64-unknown-linux-gnu
-
+      # Self-hosted runners keep target/ between runs; restoring it from the
+      # Actions cache there only costs download time.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ runner.environment == 'github-hosted' }}
         with:
           workspaces: apps/sync/src-tauri
           shared-key: release-x86_64-unknown-linux-gnu
@@ -3511,7 +3574,7 @@ jobs:
     # release or updater manifest: macOS, the complete Windows matrix and
     # Linux must all finish successfully.
     if: ${{ !cancelled() && needs.validate.result == 'success' && (needs.macos.result == 'success' || needs.assemble-macos.result == 'success') && (needs.windows.result == 'success' || (needs.assemble-windows-x64.result == 'success' && needs.assemble-windows-arm64.result == 'success')) && needs.linux.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX || '"ubuntu-latest"') }}
     permissions:
       contents: write
     env:
@@ -4158,7 +4221,7 @@ jobs:
     name: Attach UI hot-update bundle
     needs: [validate, publish, shell-key, shell-windows-x64, shell-windows-arm64, ui]
     if: ${{ !cancelled() && needs.publish.result == 'success' && needs.ui.result == 'success' && inputs.legacy_build != true && inputs.shelltest != true }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX || '"ubuntu-latest"') }}
     permissions:
       contents: write
     env:
@@ -4236,7 +4299,7 @@ jobs:
       # each other's push and burn all the retries.
       group: release-version-sync
       cancel-in-progress: false
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX || '"ubuntu-latest"') }}
     permissions:
       contents: read
     env:
@@ -4380,7 +4443,7 @@ jobs:
     name: Announce the outcome in #hq-dev
     needs: [validate, macos, assemble-macos, windows, linux, publish]
     if: ${{ !cancelled() && inputs.shelltest != true }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX || '"ubuntu-latest"') }}
     permissions:
       contents: read
     env:
@@ -4424,7 +4487,7 @@ jobs:
     name: Delete shelltest release and tag
     needs: [shelltest-tag, validate, shell-key, shell-macos, ui, assemble-macos, macos, windows, linux, publish]
     if: ${{ always() && inputs.shelltest == true }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX || '"ubuntu-latest"') }}
     permissions:
       contents: write
     env:

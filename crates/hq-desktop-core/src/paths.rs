@@ -1557,6 +1557,249 @@ pub fn managed_git_rescue_path_for_home(
     out.join(&PATH_SEP.to_string())
 }
 
+/// Failure copy for a git spawn HQ refuses because the only git it can find
+/// is Apple's install-prompt stub. The first-run git stage shows the same text.
+pub const MANAGED_GIT_MISSING: &str = "managed git is not installed";
+
+/// Program a refused git spawn targets instead of the stub. `/dev/null` is not
+/// a directory, so spawning this always fails without running anything.
+pub const REFUSED_GIT_PROGRAM: &str = "/dev/null/managed-git-is-not-installed";
+
+/// The `/usr/bin` commands that, on a Mac without Apple's developer tools, are
+/// stubs which open the "install command line developer tools" prompt.
+pub const APPLE_TOOL_PROMPT_STUBS: &[&str] = &[
+    "git",
+    "python3",
+    "pip3",
+    "make",
+    "clang",
+    "clang++",
+    "cc",
+    "c++",
+    "gcc",
+    "g++",
+    "xcrun",
+    "xcodebuild",
+];
+
+/// True when Apple's developer tools (Command Line Tools or Xcode) are
+/// installed under `root`. Filesystem only: this never runs Apple's
+/// tool selector, `xcrun` or a stub, because running them is what opens the prompt.
+pub fn macos_developer_tools_present_under(root: &Path) -> bool {
+    let has_git =
+        |developer_dir: &Path| developer_dir.join("usr").join("bin").join("git").is_file();
+    if has_git(&root.join("Library/Developer/CommandLineTools"))
+        || has_git(&root.join("Applications/Xcode.app/Contents/Developer"))
+    {
+        return true;
+    }
+    match std::fs::read_link(root.join("var/db/xcode_select_link")) {
+        Ok(target) => {
+            let rerooted = match target.strip_prefix("/") {
+                Ok(relative) => root.join(relative),
+                Err(_) => root.join("var/db").join(&target),
+            };
+            has_git(&rerooted)
+        }
+        Err(_) => false,
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static APPLE_TOOL_STUBS_OVERRIDE: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Test-only override of [`apple_tool_stubs_active`] for the current thread.
+/// Dropping the guard restores the previous value.
+#[cfg(any(test, feature = "test-support"))]
+pub struct AppleToolStubsOverride(Option<bool>);
+
+#[cfg(any(test, feature = "test-support"))]
+impl AppleToolStubsOverride {
+    pub fn set(active: bool) -> Self {
+        Self(APPLE_TOOL_STUBS_OVERRIDE.with(|cell| cell.replace(Some(active))))
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for AppleToolStubsOverride {
+    fn drop(&mut self) {
+        APPLE_TOOL_STUBS_OVERRIDE.with(|cell| cell.set(self.0));
+    }
+}
+
+/// True on a Mac without Apple's developer tools, where `/usr/bin/git`,
+/// `/usr/bin/python3`, `/usr/bin/make` and the compilers are install-prompt
+/// stubs. False on every other platform.
+pub fn apple_tool_stubs_active() -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(active) = APPLE_TOOL_STUBS_OVERRIDE.with(|cell| cell.get()) {
+        return active;
+    }
+    cfg!(target_os = "macos") && !macos_developer_tools_present_under(Path::new("/"))
+}
+
+/// True when `path` is the `/usr/bin` stub for `tool` and the stubs are live.
+pub fn is_apple_tool_prompt_stub_with(tool: &str, path: &Path, stubs_active: bool) -> bool {
+    stubs_active
+        && APPLE_TOOL_PROMPT_STUBS.contains(&tool)
+        && path == Path::new("/usr/bin").join(tool)
+}
+
+/// Directory of HQ's stand-ins for Apple's install-prompt stubs. Children get
+/// it on PATH just before `/usr/bin`, so a bare `git`, `python3`, `make` or
+/// compiler lookup fails with a message instead of opening Apple's prompt.
+#[cfg(not(target_os = "windows"))]
+pub fn apple_tool_guard_dir_in(home: &Path) -> PathBuf {
+    managed_toolchain_dir(home).join("apple-tool-guard")
+}
+
+#[cfg(not(target_os = "windows"))]
+const APPLE_TOOL_GUARD_VERSION: &str = "1";
+
+#[cfg(not(target_os = "windows"))]
+fn apple_tool_guard_script(tool: &str) -> String {
+    let message = if tool == "git" {
+        MANAGED_GIT_MISSING.to_string()
+    } else {
+        format!("{tool} is not available: Apple's developer tools are not installed")
+    };
+    format!(
+        "#!/bin/sh\n# Written by HQ. Stands in for Apple's install-prompt stub at /usr/bin/{tool}.\necho '{tool}: {message}' >&2\nexit 1\n"
+    )
+}
+
+/// Write the guard directory for `home` if it is missing or out of date.
+#[cfg(not(target_os = "windows"))]
+pub fn ensure_apple_tool_guard_dir_in(home: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = apple_tool_guard_dir_in(home);
+    let marker = dir.join(".hq-apple-tool-guard");
+    if std::fs::read_to_string(&marker).ok().as_deref() == Some(APPLE_TOOL_GUARD_VERSION) {
+        return Ok(dir);
+    }
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("create apple tool guard {}: {error}", dir.display()))?;
+    for tool in APPLE_TOOL_PROMPT_STUBS {
+        let script = dir.join(tool);
+        std::fs::write(&script, apple_tool_guard_script(tool))
+            .map_err(|error| format!("write apple tool guard {}: {error}", script.display()))?;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).map_err(
+            |error| {
+                format!(
+                    "make apple tool guard executable {}: {error}",
+                    script.display()
+                )
+            },
+        )?;
+    }
+    std::fs::write(&marker, APPLE_TOOL_GUARD_VERSION).map_err(|error| {
+        format!(
+            "write apple tool guard marker {}: {error}",
+            marker.display()
+        )
+    })?;
+    Ok(dir)
+}
+
+/// Insert `dir` just before the first `/usr/bin` entry, or append it when the
+/// PATH has none.
+pub fn insert_before_usr_bin(parts: &mut Vec<String>, dir: String) {
+    match parts.iter().position(|part| part == "/usr/bin") {
+        Some(index) => parts.insert(index, dir),
+        None => parts.push(dir),
+    }
+}
+
+/// Find the git a PATH would run, skipping Apple's stub (when the stubs are
+/// live) and HQ's own guard. Nothing is spawned.
+#[cfg(not(target_os = "windows"))]
+pub fn resolve_git_on_path(
+    search_path: &str,
+    stubs_active: bool,
+    guard_dir: Option<&Path>,
+) -> Result<PathBuf, String> {
+    for dir in search_path.split(PATH_SEP).filter(|dir| !dir.is_empty()) {
+        if guard_dir.is_some_and(|guard| Path::new(dir) == guard) {
+            continue;
+        }
+        let candidate = Path::new(dir).join("git");
+        if !is_executable_file(&candidate)
+            || is_apple_tool_prompt_stub_with("git", &candidate, stubs_active)
+        {
+            continue;
+        }
+        return Ok(candidate);
+    }
+    Err(MANAGED_GIT_MISSING.to_string())
+}
+
+/// The one git HQ runs for `home`: the managed wrapper, then the managed
+/// binary, then the first non-stub git on `search_path`. Refuses with
+/// [`MANAGED_GIT_MISSING`] rather than ever selecting Apple's stub.
+#[cfg(not(target_os = "windows"))]
+pub fn resolve_git_program_in(
+    home: &Path,
+    search_path: &str,
+    stubs_active: bool,
+) -> Result<PathBuf, String> {
+    let shim = managed_git_shim_dir_in(home).join("git");
+    if is_executable_file(&shim) {
+        return Ok(shim);
+    }
+    let bin = managed_git_bin_in(home);
+    if is_executable_file(&bin) {
+        return Ok(bin);
+    }
+    resolve_git_on_path(
+        search_path,
+        stubs_active,
+        Some(&apple_tool_guard_dir_in(home)),
+    )
+}
+
+/// [`resolve_git_program_in`] for the current home and child PATH.
+#[cfg(not(target_os = "windows"))]
+pub fn resolve_git_program() -> Result<PathBuf, String> {
+    let path = child_path();
+    let stubs_active = apple_tool_stubs_active();
+    match home_dir() {
+        Some(home) => resolve_git_program_in(&home, &path, stubs_active),
+        None => resolve_git_on_path(&path, stubs_active, None),
+    }
+}
+
+/// The git program and environment HQ uses for a direct spawn. On a refusal
+/// the program is [`REFUSED_GIT_PROGRAM`], so the spawn fails without running
+/// Apple's stub.
+#[cfg(not(target_os = "windows"))]
+pub fn resolved_git_spawn_parts() -> (std::ffi::OsString, Vec<(String, String)>) {
+    resolved_git_spawn_parts_on(&child_path())
+}
+
+/// [`resolved_git_spawn_parts`] for a child PATH the caller already built.
+#[cfg(not(target_os = "windows"))]
+pub fn resolved_git_spawn_parts_on(path: &str) -> (std::ffi::OsString, Vec<(String, String)>) {
+    let stubs_active = apple_tool_stubs_active();
+    let home = home_dir();
+    let resolved = match home.as_deref() {
+        Some(home) => resolve_git_program_in(home, path, stubs_active),
+        None => resolve_git_on_path(path, stubs_active, None),
+    };
+    match resolved {
+        Ok(git) => {
+            let env = home
+                .as_deref()
+                .map(|home| managed_git_env_for_resolved_bin_in(home, &git))
+                .unwrap_or_default();
+            (git.into_os_string(), env)
+        }
+        Err(_) => (REFUSED_GIT_PROGRAM.into(), Vec::new()),
+    }
+}
+
 #[cfg(not(target_os = "windows"))]
 fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
     for dir in unix_bin_search_dirs(home) {
@@ -2424,9 +2667,25 @@ pub fn spawn_command(path: &str, args: &[&str]) -> std::process::Command {
 /// Applies [`no_window`] so Windows project/Overview refreshes do not flash a
 /// console for every `git` invocation. Also sets `GIT_OPTIONAL_LOCKS=0` so
 /// read-only history walks never contend with an interactive git index lock.
+///
+/// PATH is [`child_path`], so `git` resolves to HQ's managed git ahead of
+/// `/usr/bin/git`. On a Mac without Apple's developer tools that file is a
+/// shim that opens Apple's install prompt when run.
 pub fn git_command() -> Command {
+    let path = child_path();
+    #[cfg(target_os = "windows")]
     let mut cmd = Command::new("git");
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = {
+        // Resolve the program up front. A bare `git` would be looked up on
+        // the parent's PATH, where `/usr/bin/git` can be Apple's prompt stub.
+        let (program, git_env) = resolved_git_spawn_parts_on(&path);
+        let mut cmd = Command::new(program);
+        cmd.envs(git_env);
+        cmd
+    };
     no_window(&mut cmd);
+    cmd.env("PATH", path);
     cmd.env("GIT_OPTIONAL_LOCKS", "0");
     cmd
 }
@@ -2641,6 +2900,19 @@ pub fn child_path() -> String {
             }
         }
 
+        // On a Mac without Apple's developer tools, `/usr/bin/git`, `python3`,
+        // `make` and the compilers are stubs that open Apple's install prompt.
+        // HQ's guard scripts sit just ahead of `/usr/bin` so a child that runs
+        // one of those names fails with a plain error instead. They shadow
+        // only names that would otherwise have reached the stub.
+        if apple_tool_stubs_active() {
+            if let Some(home) = home_dir() {
+                if let Ok(guard) = ensure_apple_tool_guard_dir_in(&home) {
+                    insert_before_usr_bin(&mut parts, guard.to_string_lossy().to_string());
+                }
+            }
+        }
+
         // Stable de-dup: a settings-PATH dir may repeat a managed/system entry
         // pushed later. Keep the first (highest-priority) occurrence.
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -2669,12 +2941,25 @@ pub fn managed_git_env() -> Vec<(String, String)> {
 /// one owner.
 #[cfg(not(target_os = "windows"))]
 pub fn managed_git_env_in(home: &Path) -> Vec<(String, String)> {
-    let resolved = resolve_bin("git");
-    managed_git_env_for_resolved_bin_in(home, Path::new(&resolved))
+    // The child looks git up on its own PATH, so ask what that lookup selects,
+    // skipping Apple's stub and HQ's guard the same way the child's git would.
+    match resolve_git_on_path(
+        &child_path(),
+        apple_tool_stubs_active(),
+        Some(&apple_tool_guard_dir_in(home)),
+    ) {
+        Ok(resolved) => managed_git_env_for_resolved_bin_in(home, &resolved),
+        Err(_) => Vec::new(),
+    }
 }
 
+/// The managed Git environment for an already-resolved git, or nothing when
+/// `resolved_git` is not HQ's own binary or wrapper.
 #[cfg(not(target_os = "windows"))]
-fn managed_git_env_for_resolved_bin_in(home: &Path, resolved_git: &Path) -> Vec<(String, String)> {
+pub fn managed_git_env_for_resolved_bin_in(
+    home: &Path,
+    resolved_git: &Path,
+) -> Vec<(String, String)> {
     let toolchain = managed_toolchain_dir(home);
     let git_dir = toolchain.join("git");
     let managed_git = git_dir.join("bin").join("git");
@@ -4662,11 +4947,311 @@ mod tests {
     #[test]
     fn test_git_command_targets_git_and_disables_optional_locks() {
         let cmd = git_command();
+        #[cfg(target_os = "windows")]
         assert_eq!(cmd.get_program(), "git");
+        #[cfg(not(target_os = "windows"))]
+        {
+            let program = Path::new(cmd.get_program());
+            assert!(
+                program == Path::new(REFUSED_GIT_PROGRAM)
+                    || (program.is_absolute() && program.file_name() == Some("git".as_ref())),
+                "git_command must spawn a resolved absolute git: {}",
+                program.display()
+            );
+        }
         let locks = cmd
             .get_envs()
             .find_map(|(key, value)| (key == "GIT_OPTIONAL_LOCKS").then_some(value));
         assert_eq!(locks, Some(Some(std::ffi::OsStr::new("0"))));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn git_command_puts_the_managed_git_ahead_of_usr_bin() {
+        let _guard = crate::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let shim = managed_git_shim_dir_in(&home).join("git");
+        write_unix_exec(&shim);
+        let _home = crate::test_support::ScopedEnv::set("HOME", home.as_os_str());
+
+        let cmd = git_command();
+        let path = cmd
+            .get_envs()
+            .find_map(|(key, value)| (key == "PATH").then_some(value))
+            .flatten()
+            .expect("git_command must set PATH for the child")
+            .to_string_lossy()
+            .into_owned();
+        let dirs: Vec<&str> = path.split(':').collect();
+        let managed = dirs
+            .iter()
+            .position(|dir| Path::new(dir) == shim.parent().unwrap())
+            .expect("the managed git dir must be on the child PATH");
+        let usr_bin = dirs
+            .iter()
+            .position(|dir| *dir == "/usr/bin")
+            .expect("/usr/bin stays on the child PATH");
+        assert!(
+            managed < usr_bin,
+            "managed git must come before /usr/bin/git: {path}"
+        );
+    }
+
+    fn env_value(cmd: &Command, name: &str) -> Option<String> {
+        cmd.get_envs()
+            .find_map(|(key, value)| (key == name).then_some(value))
+            .flatten()
+            .map(|value| value.to_string_lossy().into_owned())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn developer_tools_detection_reads_the_filesystem_only() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        assert!(!macos_developer_tools_present_under(root));
+
+        let clt = root.join("clt");
+        write_unix_exec(&clt.join("Library/Developer/CommandLineTools/usr/bin/git"));
+        assert!(macos_developer_tools_present_under(&clt));
+
+        let xcode = root.join("xcode");
+        write_unix_exec(&xcode.join("Applications/Xcode.app/Contents/Developer/usr/bin/git"));
+        assert!(macos_developer_tools_present_under(&xcode));
+
+        let selected = root.join("selected");
+        write_unix_exec(&selected.join("Tools/Xcode-beta.app/Contents/Developer/usr/bin/git"));
+        std::fs::create_dir_all(selected.join("var/db")).unwrap();
+        std::os::unix::fs::symlink(
+            "/Tools/Xcode-beta.app/Contents/Developer",
+            selected.join("var/db/xcode_select_link"),
+        )
+        .unwrap();
+        assert!(macos_developer_tools_present_under(&selected));
+
+        let dangling = root.join("dangling");
+        std::fs::create_dir_all(dangling.join("var/db")).unwrap();
+        std::os::unix::fs::symlink(
+            "/Library/Developer/CommandLineTools",
+            dangling.join("var/db/xcode_select_link"),
+        )
+        .unwrap();
+        assert!(!macos_developer_tools_present_under(&dangling));
+    }
+
+    #[test]
+    fn apple_tool_stub_match_needs_live_stubs_and_the_usr_bin_path() {
+        for tool in ["git", "python3", "make", "clang", "cc", "xcrun"] {
+            let stub = Path::new("/usr/bin").join(tool);
+            assert!(is_apple_tool_prompt_stub_with(tool, &stub, true), "{tool}");
+            assert!(
+                !is_apple_tool_prompt_stub_with(tool, &stub, false),
+                "{tool}"
+            );
+            let brew = Path::new("/opt/homebrew/bin").join(tool);
+            assert!(!is_apple_tool_prompt_stub_with(tool, &brew, true), "{tool}");
+        }
+        assert!(!is_apple_tool_prompt_stub_with(
+            "ls",
+            Path::new("/usr/bin/ls"),
+            true
+        ));
+    }
+
+    #[test]
+    fn apple_tool_stub_override_is_scoped_to_the_guard() {
+        {
+            let _stubs = AppleToolStubsOverride::set(true);
+            assert!(apple_tool_stubs_active());
+            {
+                let _inner = AppleToolStubsOverride::set(false);
+                assert!(!apple_tool_stubs_active());
+            }
+            assert!(apple_tool_stubs_active());
+        }
+        let _stubs = AppleToolStubsOverride::set(false);
+        assert!(!apple_tool_stubs_active());
+    }
+
+    #[test]
+    fn insert_before_usr_bin_places_the_dir_ahead_of_the_first_usr_bin() {
+        let mut parts: Vec<String> = ["/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/bin"]
+            .iter()
+            .map(|part| part.to_string())
+            .collect();
+        insert_before_usr_bin(&mut parts, "/guard".to_string());
+        assert_eq!(
+            parts,
+            [
+                "/opt/homebrew/bin",
+                "/guard",
+                "/usr/bin",
+                "/bin",
+                "/usr/bin"
+            ]
+        );
+        let mut no_usr_bin = vec!["/bin".to_string()];
+        insert_before_usr_bin(&mut no_usr_bin, "/guard".to_string());
+        assert_eq!(no_usr_bin, ["/bin", "/guard"]);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn git_resolver_prefers_the_managed_wrapper_then_the_binary_then_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let other = tmp.path().join("brew/bin");
+        write_unix_exec(&other.join("git"));
+        let search = format!("{}:/usr/bin", other.display());
+
+        assert_eq!(
+            resolve_git_program_in(&home, &search, true).unwrap(),
+            other.join("git")
+        );
+
+        let bin = managed_git_bin_in(&home);
+        write_unix_exec(&bin);
+        assert_eq!(resolve_git_program_in(&home, &search, true).unwrap(), bin);
+
+        let shim = managed_git_shim_dir_in(&home).join("git");
+        write_unix_exec(&shim);
+        assert_eq!(resolve_git_program_in(&home, &search, true).unwrap(), shim);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn git_resolver_refuses_the_usr_bin_stub_without_running_it() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        // /usr/bin/git is real on every Mac and Linux CI image. With the
+        // stubs live the resolver must skip it; it never spawns a candidate.
+        if !is_executable_file(Path::new("/usr/bin/git")) {
+            return;
+        }
+        assert_eq!(
+            resolve_git_program_in(&home, "/usr/bin", true),
+            Err(MANAGED_GIT_MISSING.to_string())
+        );
+        assert_eq!(
+            resolve_git_program_in(&home, "/usr/bin", false).unwrap(),
+            PathBuf::from("/usr/bin/git")
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn git_resolver_skips_hq_guard_stub() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let guard = ensure_apple_tool_guard_dir_in(&home).unwrap();
+        let search = guard.to_string_lossy().into_owned();
+        assert_eq!(
+            resolve_git_program_in(&home, &search, true),
+            Err(MANAGED_GIT_MISSING.to_string())
+        );
+        assert_eq!(
+            resolve_git_on_path(&search, true, Some(&guard)),
+            Err(MANAGED_GIT_MISSING.to_string())
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn apple_tool_guard_scripts_fail_with_the_existing_copy() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let guard = ensure_apple_tool_guard_dir_in(&home).unwrap();
+        assert_eq!(guard, apple_tool_guard_dir_in(&home));
+        for tool in APPLE_TOOL_PROMPT_STUBS {
+            assert!(is_executable_file(&guard.join(tool)), "{tool}");
+        }
+        // These are HQ's own two-line scripts, not Apple's stubs.
+        let output = std::process::Command::new(guard.join("git"))
+            .arg("--version")
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(MANAGED_GIT_MISSING));
+        let output = std::process::Command::new(guard.join("python3"))
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        // Idempotent: a second call keeps the directory as written.
+        assert_eq!(ensure_apple_tool_guard_dir_in(&home).unwrap(), guard);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn child_path_puts_the_guard_before_usr_bin_only_when_stubs_are_live() {
+        let _guard = crate::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let _home = crate::test_support::ScopedEnv::set("HOME", home.as_os_str());
+        let guard = apple_tool_guard_dir_in(&home)
+            .to_string_lossy()
+            .into_owned();
+
+        {
+            let _stubs = AppleToolStubsOverride::set(false);
+            let path = child_path();
+            assert!(!path.split(':').any(|dir| dir == guard), "{path}");
+        }
+
+        let _stubs = AppleToolStubsOverride::set(true);
+        let path = child_path();
+        let dirs: Vec<&str> = path.split(':').collect();
+        let guard_at = dirs
+            .iter()
+            .position(|dir| *dir == guard)
+            .expect("the guard dir must be on the child PATH when stubs are live");
+        let usr_bin = dirs.iter().position(|dir| *dir == "/usr/bin").unwrap();
+        assert!(guard_at < usr_bin, "{path}");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn git_command_never_targets_the_usr_bin_stub_when_stubs_are_live() {
+        let _guard = crate::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let _home = crate::test_support::ScopedEnv::set("HOME", home.as_os_str());
+        let _path = crate::test_support::ScopedEnv::set("PATH", "/usr/bin:/bin");
+        let _stubs = AppleToolStubsOverride::set(true);
+
+        let cmd = git_command();
+        let program = Path::new(cmd.get_program());
+        assert_ne!(program, Path::new("git"), "a bare git inherits the stub");
+        assert_ne!(program, Path::new("/usr/bin/git"));
+        assert!(program.is_absolute(), "{}", program.display());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn git_command_uses_the_managed_binary_when_the_wrapper_is_missing() {
+        let _guard = crate::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let bin = managed_git_bin_in(&home);
+        write_unix_exec(&bin);
+        let _home = crate::test_support::ScopedEnv::set("HOME", home.as_os_str());
+        let _stubs = AppleToolStubsOverride::set(true);
+
+        let cmd = git_command();
+        assert_eq!(Path::new(cmd.get_program()), bin);
+        let exec_path = env_value(&cmd, "GIT_EXEC_PATH").expect("managed git env");
+        assert!(exec_path.ends_with("libexec/git-core"), "{exec_path}");
+        assert_eq!(env_value(&cmd, "GIT_OPTIONAL_LOCKS").as_deref(), Some("0"));
     }
 
     #[test]
