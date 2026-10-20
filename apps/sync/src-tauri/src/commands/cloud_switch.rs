@@ -85,7 +85,10 @@ pub(crate) trait CloudSwitchEffects {
 pub(crate) const CLI_DAEMON_PAUSED_BY_SWITCH_KEY: &str = "cloudSwitchPausedCliDaemonSync";
 
 pub(crate) const STOP_NOTICE: &str = "Cloud sync is off";
-pub(crate) const START_NOTICE: &str = "Cloud sync is on";
+/// Shown only when cloud sync was turned back on but background sync (or the
+/// legacy CLI daemon) did not restart.
+pub(crate) const START_NOTICE: &str =
+    "Cloud sync is on, but background sync didn't restart. Use Sync now or quit and reopen HQ.";
 
 /// Apply a switch change through `effects`. Persisting is the only step whose
 /// failure fails the command: once the flag is on disk every sync path honors
@@ -506,7 +509,11 @@ mod tests {
     #[test]
     fn cloud_switch_notice_copy() {
         assert_eq!(STOP_NOTICE, "Cloud sync is off");
-        assert_eq!(START_NOTICE, "Cloud sync is on");
+        assert_eq!(
+            START_NOTICE,
+            "Cloud sync is on, but background sync didn't restart. Use Sync now or quit and reopen HQ."
+        );
+        assert!(START_NOTICE.starts_with("Cloud sync is on"));
     }
 
     #[derive(Default)]
