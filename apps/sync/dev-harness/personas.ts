@@ -32,8 +32,11 @@ export type PersonaId = (typeof PERSONA_IDS)[number];
  *
  *   member       non-owner member of one company, not Indigo, gates off
  *   new-account  signed in, no companies, no local HQ folder, nothing else
+ *   usage-owner  owner of six companies and admin of one, one on each billing
+ *                plan, for Settings > Usage (US-018); billing mocks key off
+ *                the company uids in mocks/core.ts
  */
-export const HARNESS_ONLY_PERSONA_IDS = ['member', 'new-account'] as const;
+export const HARNESS_ONLY_PERSONA_IDS = ['member', 'new-account', 'usage-owner'] as const;
 export type HarnessOnlyPersonaId = (typeof HARNESS_ONLY_PERSONA_IDS)[number];
 
 export type PersonaPaint = 'setup' | 'conversations';
@@ -351,6 +354,91 @@ export const HARNESS_ONLY_PERSONAS: Record<HarnessOnlyPersonaId, ShellPersona> =
     whoami: { personUid: 'prs_new', email: 'new@fresh.test', displayName: 'New Person' },
     accountId: 'acct_new',
     workspaces: [],
+    channels: [],
+    contacts: [],
+    expectedPaint: 'setup',
+  },
+  'usage-owner': {
+    id: 'usage-owner',
+    label: 'owner of several companies on different billing plans',
+    isIndigo: false,
+    whoami: { personUid: 'prs_riley', email: 'riley@owner.test', displayName: 'Riley Owner' },
+    accountId: 'acct_riley',
+    workspaces: [
+      workspace({
+        slug: 'personal',
+        displayName: 'Riley Owner',
+        kind: 'personal',
+        state: 'personal',
+        cloudUid: 'prs_riley',
+        bucketName: 'hq-vault-personal-riley',
+        role: null,
+        membershipStatus: null,
+      }),
+      workspace({
+        slug: 'northwind',
+        displayName: 'Northwind',
+        kind: 'company',
+        state: 'synced',
+        cloudUid: 'cmp_ux_northwind',
+        bucketName: 'hq-vault-northwind',
+        role: 'owner',
+      }),
+      workspace({
+        slug: 'birch',
+        displayName: 'Birch Labs',
+        kind: 'company',
+        state: 'synced',
+        cloudUid: 'cmp_ux_birch',
+        bucketName: 'hq-vault-birch',
+        role: 'owner',
+      }),
+      workspace({
+        slug: 'cedar',
+        displayName: 'Cedar & Co',
+        kind: 'company',
+        state: 'synced',
+        cloudUid: 'cmp_ux_cedar',
+        bucketName: 'hq-vault-cedar',
+        role: 'owner',
+      }),
+      workspace({
+        slug: 'dogwood',
+        displayName: 'Dogwood',
+        kind: 'company',
+        state: 'synced',
+        cloudUid: 'cmp_ux_dogwood',
+        bucketName: 'hq-vault-dogwood',
+        role: 'owner',
+      }),
+      workspace({
+        slug: 'elm',
+        displayName: 'Elm Street',
+        kind: 'company',
+        state: 'synced',
+        cloudUid: 'cmp_ux_elm',
+        bucketName: 'hq-vault-elm',
+        role: 'owner',
+      }),
+      workspace({
+        slug: 'fir',
+        displayName: 'Fir Studio',
+        kind: 'company',
+        state: 'synced',
+        cloudUid: 'cmp_ux_fir',
+        bucketName: 'hq-vault-fir',
+        role: 'owner',
+      }),
+      workspace({
+        slug: 'aspen',
+        displayName: 'Aspen',
+        kind: 'company',
+        state: 'synced',
+        cloudUid: 'cmp_ux_aspen',
+        bucketName: 'hq-vault-aspen',
+        role: 'admin',
+      }),
+    ],
     channels: [],
     contacts: [],
     expectedPaint: 'setup',

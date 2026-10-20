@@ -256,6 +256,11 @@ export const WEB_PATHS = {
   personalSpendLimit: "/v1/billing/person/spend-limit",
   personalBillingCheckout: "/v1/billing/checkout/person",
   personalBillingPortal: "/v1/billing/person/portal",
+  /** GET (owner) / POST (owner, body `{ companyUid }`): switch to usage pricing. */
+  companyUsageSwitch: (companyUid: string) =>
+    `/v1/billing/usage-switch?companyUid=${encodeURIComponent(companyUid)}`,
+  usageSwitch: "/v1/billing/usage-switch",
+  personalUsageSwitch: "/v1/billing/usage-switch?scope=person",
   /** GET, public price list. */
   pricing: "/v1/pricing",
   firstWeekReturnNudge: (companyUid: string) =>
@@ -1212,6 +1217,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
     getPersonalSpendLimit: () => this.get(WEB_PATHS.personalSpendLimit),
     createPersonalBillingCheckoutSession: () => this.post(WEB_PATHS.personalBillingCheckout, {}),
     createPersonalBillingPortalSession: () => this.post(WEB_PATHS.personalBillingPortal, {}),
+    getUsageSwitch: (companyUid) => this.get(WEB_PATHS.companyUsageSwitch(companyUid)),
+    switchToUsagePricing: (companyUid) => this.post(WEB_PATHS.usageSwitch, { companyUid }),
+    getPersonalUsageSwitch: () => this.get(WEB_PATHS.personalUsageSwitch),
+    switchPersonalToUsagePricing: () => this.post(WEB_PATHS.usageSwitch, { scope: "person" }),
     getFirstWeekReturnNudge: (companyUid) =>
       this.get(WEB_PATHS.firstWeekReturnNudge(companyUid)),
   };

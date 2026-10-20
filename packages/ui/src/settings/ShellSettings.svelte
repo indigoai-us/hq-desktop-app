@@ -725,7 +725,16 @@
       {:else if active === "billing"}
         <BillingSettingsPane {openExternal} company={adapter?.company ?? null} companies={profileCompanies} {selectedCompanyUid} />
       {:else if active === "usage"}
-        <UsageSettingsPane company={adapter?.company ?? null} companies={profileCompanies} accounts={usageAccounts} {selectedCompanyUid} />
+        <UsageSettingsPane
+          company={adapter?.company ?? null}
+          companies={profileCompanies}
+          accounts={usageAccounts}
+          {selectedCompanyUid}
+          onopenurl={openExternal}
+          onopensync={sections.some((section) => section.id === "sync")
+            ? () => (onsectionchange ? onsectionchange("sync") : (active = "sync"))
+            : undefined}
+        />
       {:else if active === "companies"}
         <CompaniesSettingsPane
           {adapter}

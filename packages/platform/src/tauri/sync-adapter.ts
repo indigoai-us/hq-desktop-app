@@ -1459,6 +1459,10 @@ export function createSyncPlatformAdapter(
         hqProJson<{ url: string }>('POST', WEB_PATHS.personalBillingCheckout, {}),
       createPersonalBillingPortalSession: () =>
         hqProJson<{ url: string }>('POST', WEB_PATHS.personalBillingPortal, {}),
+      getUsageSwitch: (companyUid) => hqProJson('GET', WEB_PATHS.companyUsageSwitch(companyUid)),
+      switchToUsagePricing: (companyUid) => hqProJson('POST', WEB_PATHS.usageSwitch, { companyUid }),
+      getPersonalUsageSwitch: () => hqProJson('GET', WEB_PATHS.personalUsageSwitch),
+      switchPersonalToUsagePricing: () => hqProJson('POST', WEB_PATHS.usageSwitch, { scope: 'person' }),
       ensureHomeChannel: async (companyUid) => {
         const res = await call<string>('ensure_company_home_channel', {
           companyUid,

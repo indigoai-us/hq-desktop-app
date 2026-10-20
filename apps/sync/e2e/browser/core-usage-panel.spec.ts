@@ -108,6 +108,43 @@ test('Usage details opens Settings > Usage with the same numbers', async ({ page
   await expect(page.getByTestId('usage-projected')).toHaveText('$6.00');
   await expect(page.getByTestId('usage-spend-limit')).toHaveText('$100.00 a month (default)');
   await expect(page.getByTestId('usage-line')).toHaveCount(7);
+  // The account the menu showed is the open line.
+  await expect(page.locator('[data-testid="usage-account"][data-key="cmp_indigo"]')).toHaveAttribute('aria-expanded', 'true');
+});
+
+test('Settings > Usage lists one line per account and opens one at a time, and a free company can switch', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/dev-harness/index.html?view=shell&persona=usage-owner&theme=dark');
+  await expect(page.getByTestId('app-rail')).toBeVisible({ timeout: 30_000 });
+  await page.getByTestId('titlebar-core-pill').click();
+  await expect(page.getByTestId('core-popover')).toBeVisible({ timeout: 10_000 });
+  await page.getByTestId('core-usage-details').click();
+  await expect(page.getByTestId('settings-usage-pane')).toBeVisible({ timeout: 10_000 });
+  const lines = page.getByTestId('usage-account');
+  await expect(lines).toHaveCount(8);
+  await expect(lines.nth(0)).toContainText('Personal');
+  await expect(lines.nth(0)).toContainText('Starter (free)');
+  const line = (uid: string) => page.locator(`[data-testid="usage-account"][data-key="${uid}"]`);
+  await expect(line('cmp_ux_aspen')).toContainText('Owner only');
+  await expect(line('cmp_ux_birch')).toContainText('Trial, 12 days left', { timeout: 10_000 });
+  await expect(line('cmp_ux_cedar')).toContainText('Legacy plan');
+  await expect(line('cmp_ux_northwind')).toContainText('$8.00');
+  await line('cmp_ux_northwind').click();
+  await expect(line('cmp_ux_northwind')).toHaveAttribute('aria-expanded', 'true');
+  await expect(line('personal')).toHaveAttribute('aria-expanded', 'false');
+  const detail = page.getByTestId('usage-account-detail');
+  await expect(detail).toHaveCount(1);
+  await expect(detail.getByTestId('usage-spend-limit')).toHaveText('$250.00 a month');
+  await expect(detail.getByTestId('usage-group')).toHaveCount(3);
+  await line('cmp_ux_dogwood').focus();
+  await page.keyboard.press('Enter');
+  await expect(line('cmp_ux_dogwood')).toHaveAttribute('aria-expanded', 'true');
+  await expect(line('cmp_ux_northwind')).toHaveAttribute('aria-expanded', 'false');
+  await detail.getByTestId('usage-switch-start').click();
+  await expect(detail.getByTestId('usage-switch-confirm')).toBeVisible();
+  await detail.getByTestId('usage-switch-now').click();
+  await expect(detail.getByTestId('usage-switch-result')).toHaveText('Switched to usage pricing.', { timeout: 10_000 });
+  await expect(line('cmp_ux_dogwood')).toContainText('Usage plan');
 });
 
 test('Turn off sync opens the Sync section of Settings', async ({ page }) => {

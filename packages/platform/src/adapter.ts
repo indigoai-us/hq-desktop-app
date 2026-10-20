@@ -1285,6 +1285,19 @@ export interface CompanyApi {
   createPersonalBillingCheckoutSession?(): AdapterPromise<{ url: string }>;
   /** `POST /v1/billing/person/portal`: the personal Stripe customer portal. */
   createPersonalBillingPortalSession?(): AdapterPromise<{ url: string }>;
+  /**
+   * Switch to usage pricing (hq-pro US-014; free companies and people from
+   * hq-pro #5081). `GET /v1/billing/usage-switch?companyUid=` (owner): the
+   * phase, `cardOnFile` and the `offer` (`{ eligible: true, freeOptIn? }` or
+   * `{ eligible: false, reason }`).
+   */
+  getUsageSwitch?(companyUid: string): AdapterPromise<Json>;
+  /** `POST /v1/billing/usage-switch { companyUid }` (owner): switch now. 409 `USAGE_SWITCH_NOT_OFFERED` / `USAGE_SWITCH_CONFLICT`. */
+  switchToUsagePricing?(companyUid: string): AdapterPromise<Json>;
+  /** `GET /v1/billing/usage-switch?scope=person`: the caller's own switch status. */
+  getPersonalUsageSwitch?(): AdapterPromise<Json>;
+  /** `POST /v1/billing/usage-switch { scope: "person" }`: switch the caller's own account. */
+  switchPersonalToUsagePricing?(): AdapterPromise<Json>;
   /** Membership-scoped, aggregate eligibility for the first-week return nudge. */
   getFirstWeekReturnNudge(companyUid: string): AdapterPromise<Json>;
 }

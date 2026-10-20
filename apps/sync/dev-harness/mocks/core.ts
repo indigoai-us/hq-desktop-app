@@ -2106,6 +2106,13 @@ function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; b
     const uid = typeof body?.companyUid === 'string' ? body.companyUid : 'cmp_unknown';
     return { status: 200, body: JSON.stringify({ url: `https://billing.stripe.com/p/session/test_harness_${uid}` }) };
   }
+  // Settings > Usage for `?persona=usage-owner` (US-018 accordion): one
+  // company on each billing plan, Personal on Starter, and the usage-switch
+  // routes from hq-pro #5081. A switch made here sticks until reload.
+  if (new URLSearchParams(window.location.search).get('persona') === 'usage-owner') {
+    const owner = usageOwnerMock(url, method, body);
+    if (owner) return owner;
+  }
   // Core menu "Usage this month" and Settings > Usage (hq-pro owner-gated
   // billing reads, US-018). `?usage=forbidden` previews a non-owner,
   // `?usage=fail` a failed lookup, `?usage=paid` a company with a card on
@@ -2359,4 +2366,88 @@ export function transformCallback(_cb?: (response: unknown) => void, _once = fal
 
 export function convertFileSrc(filePath: string, _protocol = 'asset'): string {
   return filePath;
+}
+
+/** Companies switched to usage pricing in this page load (`?persona=usage-owner`). */
+const usageOwnerSwitched = new Set<string>();
+
+function usageOwnerStatement(usageCents: number) {
+  const split = (share: number) => Math.round(usageCents * share);
+  const line = (key: string, displayName: string, unit: string, unitCents: number, costCents: number, extra: Record<string, unknown> = {}) => ({
+    key, displayName, unit, unitCents, kind: 'counter', status: 'measured', billed: true, interim: false,
+    units: unitCents ? costCents / unitCents : 0, usage: unitCents ? costCents / unitCents : 0, costCents,
+    projectedUnits: 0, projectedCostCents: costCents * 2, ...extra,
+  });
+  const agent = split(0.4);
+  const gateway = split(0.2);
+  const mcp = split(0.05);
+  const sync = split(0.2);
+  const storage = split(0.1);
+  const secret = usageCents - agent - gateway - mcp - sync - storage;
+  return {
+    scope: 'company', window: 'month', periodStart: '2026-10-01', periodEnd: '2026-10-31', asOf: '2026-10-17', complete: true,
+    allowanceCents: 1000, usageCents, allowanceLeftCents: Math.max(0, 1000 - usageCents), billCents: Math.max(0, usageCents - 1000),
+    projectedUsageCents: usageCents * 2, projectedBillCents: Math.max(0, usageCents * 2 - 1000),
+    lines: [
+      line('agent-run', 'Agent run', 'run', 5, agent),
+      line('integration-call', 'Gateway call', 'call', 5, gateway),
+      line('hq-mcp-call', 'HQ MCP call', 'call', 5, mcp),
+      line('member-sync', 'Sync', 'sync', 10, sync),
+      line('storage', 'Storage', 'GB-month', 200, storage, { kind: 'gauge' }),
+      line('secret', 'Secret', 'secret-month', 50, secret, { kind: 'gauge' }),
+      line('vault', 'Vault', 'vault-month', 500, 0, { kind: 'gauge' }),
+    ],
+    free: [{ key: 'free', text: 'Deploys, DMs and background AI are free.' }],
+  };
+}
+
+function usageOwnerMock(url: string, method: string, body: Record<string, unknown> | null | undefined): { status: number; body: string } | null {
+  const json = (value: unknown, status = 200) => ({ status, body: JSON.stringify(value) });
+  const uidOf = () => new URLSearchParams(url.split('?')[1] ?? '').get('companyUid') ?? '';
+  const trialEndsAt = new Date(Date.now() + 11.5 * 86_400_000).toISOString();
+  const summaries: Record<string, Record<string, unknown>> = {
+    cmp_ux_northwind: { billingConfigured: true, pricingPlan: 'usage-only', defaultPaymentMethod: { present: true, brand: 'visa' }, usageTrial: { status: 'ended', allowanceCents: 1000, cardOnFile: true } },
+    cmp_ux_birch: { billingConfigured: true, pricingPlan: 'usage-only', defaultPaymentMethod: { present: false, brand: null }, usageTrial: { status: 'active', endsAt: trialEndsAt, capCents: 50000, usedCents: 42000, allowanceCents: 1000, cardOnFile: false } },
+    cmp_ux_cedar: { billingConfigured: true, pricingPlan: 'current', plan: 'team', subscriptionStatus: 'active', defaultPaymentMethod: { present: true, brand: 'visa' } },
+    cmp_ux_dogwood: { billingConfigured: true, pricingPlan: 'current', subscriptionStatus: null, defaultPaymentMethod: { present: true, brand: 'visa' } },
+    cmp_ux_elm: { billingConfigured: true, pricingPlan: 'usage-only', defaultPaymentMethod: { present: false, brand: null }, usageTrial: { status: 'ended', allowanceCents: 1000, cardOnFile: false } },
+    cmp_ux_fir: { billingConfigured: false, pricingPlan: 'current', subscriptionStatus: null, defaultPaymentMethod: { present: false, brand: null } },
+  };
+  const usageCents: Record<string, number> = { cmp_ux_northwind: 800, cmp_ux_birch: 0, cmp_ux_elm: 120, cmp_ux_dogwood: 0 };
+  if (url.startsWith('/v1/billing/summary?')) {
+    const uid = uidOf();
+    if (usageOwnerSwitched.has(uid)) {
+      return json({ ...summaries[uid], pricingPlan: 'usage-only', usageTrial: { status: 'none', allowanceCents: 1000, cardOnFile: true } });
+    }
+    return summaries[uid] ? json(summaries[uid]) : json({ error: 'Requires owner role on this company', code: 'FORBIDDEN' }, 403);
+  }
+  if (url.startsWith('/v1/billing/usage?') && !url.includes('scope=person')) {
+    return json(usageOwnerStatement(usageCents[uidOf()] ?? 0));
+  }
+  if (url.startsWith('/v1/billing/spend-limit?')) {
+    return uidOf() === 'cmp_ux_northwind'
+      ? json({ limitCents: 25000, custom: true, defaultLimitCents: 10000, paused: false, spend: null })
+      : json({ limitCents: 10000, custom: false, defaultLimitCents: 10000, paused: false, spend: null });
+  }
+  if (url === '/v1/billing/person/summary') return json({ cardOnFile: false, subscriptionStatus: null });
+  if (url.startsWith('/v1/billing/usage-switch?scope=person')) {
+    return json({ personUid: 'prs_riley', enabled: true, phase: 'none', switchedEarlyAt: null, billingStartsAt: null, cardOnFile: false, offer: { eligible: false, reason: 'card-required' } });
+  }
+  if (url.startsWith('/v1/billing/usage-switch?')) {
+    const uid = uidOf();
+    const base = { companyUid: uid, enabled: true, phase: 'none', switchDate: null, previewDays: 30, previewEndsAt: null, billingStartsAt: null, switchedEarlyAt: null, todayMonthlyCents: null, estimateCents: null, estimateComplete: null };
+    if (usageOwnerSwitched.has(uid)) return json({ ...base, phase: 'usage', cardOnFile: true, offer: { eligible: false, reason: 'already-on-usage' } });
+    if (uid === 'cmp_ux_dogwood') return json({ ...base, cardOnFile: true, offer: { eligible: true, freeOptIn: true } });
+    if (uid === 'cmp_ux_fir') return json({ ...base, cardOnFile: false, offer: { eligible: false, reason: 'card-required' } });
+    return json({ ...base, cardOnFile: null, offer: { eligible: false, reason: 'already-on-usage' } });
+  }
+  if (url === '/v1/billing/usage-switch' && method === 'POST') {
+    const uid = typeof body?.companyUid === 'string' ? body.companyUid : '';
+    if (uid !== 'cmp_ux_dogwood') {
+      return json({ error: 'This company cannot switch to usage pricing early', code: 'USAGE_SWITCH_NOT_OFFERED', reason: 'card-required' }, 409);
+    }
+    usageOwnerSwitched.add(uid);
+    return json({ outcome: 'switched', switchedEarlyAt: new Date().toISOString(), flatPlanEnded: false, flatPlanPending: false, prorationCreditCents: null });
+  }
+  return null;
 }
