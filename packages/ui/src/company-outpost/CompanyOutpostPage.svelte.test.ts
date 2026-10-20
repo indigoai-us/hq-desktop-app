@@ -360,18 +360,13 @@ describe("Company Outpost page", () => {
     expect(onSignIn).toHaveBeenCalledTimes(1);
   });
 
-  it("refuses a rename that breaks the name rule and a remove until the name matches", async () => {
+  it("refuses a remove until the name matches, and shows no Rename control", async () => {
     const { target, client } = await show("admin");
     click(target, "open-demo-1");
-    await Promise.resolve();
-    flushSync();
-    click(target, "rename");
-    const input = target.querySelector<HTMLInputElement>("[data-testid='rename-name']")!;
-    input.value = "Main Box";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    flushSync();
-    click(target, "rename-save");
-    expect(target.querySelector("[data-testid='rename-error']")?.textContent).toContain("lowercase letters");
+    await settle();
+    // The server has no rename action, so the page does not offer one.
+    expect(target.querySelector("[data-testid='rename']")).toBeNull();
+    expect(target.textContent).not.toMatch(/rename/i);
     click(target, "remove");
     const typed = target.querySelector<HTMLInputElement>("[data-testid='remove-name']")!;
     typed.value = "other";
@@ -385,6 +380,103 @@ describe("Company Outpost page", () => {
     await Promise.resolve();
     flushSync();
     expect(client.readItems().map((item) => item.id)).not.toContain("demo-1");
+  });
+
+  it("does not show Outpost A while Outpost B loads, and shows an error when B's read fails", async () => {
+    const { target, client } = await show("admin");
+    click(target, "open-demo-1");
+    await settle();
+    expect(target.querySelector("[data-testid='machine']")?.textContent).toContain("demo-1");
+    click(target, "back-list");
+    const read = client.detail.bind(client);
+    let fail: (() => void) | null = null;
+    client.detail = (id) => id === "demo-2"
+      ? new Promise((resolve) => { fail = () => resolve({ ok: false, message: "Could not load. Retry." }); })
+      : read(id);
+    click(target, "open-demo-2");
+    await settle();
+    const text = () => target.querySelector("[data-testid='company-outpost']")?.textContent ?? "";
+    expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-screen")).toBe("detail");
+    expect(target.querySelector("h1")?.textContent).toBe("bright-maple");
+    expect(text()).not.toContain("demo-1");
+    expect(text()).not.toContain("daily-digest");
+    expect(target.querySelector("[data-testid='machine']")).toBeNull();
+    expect(target.querySelector("[data-testid='detail-loading']")).not.toBeNull();
+    fail!();
+    await settle();
+    expect(target.querySelector("[data-testid='detail-error']")?.textContent).toContain("Could not load. Retry.");
+    expect(target.querySelector("[data-testid='no-jobs']")).toBeNull();
+    expect(text()).not.toContain("No recent runs.");
+    expect(text()).not.toContain("demo-1");
+    expect(target.querySelector("h1")?.textContent).toBe("bright-maple");
+    client.detail = read;
+    click(target, "detail-retry");
+    await settle();
+    expect(target.querySelector("[data-testid='machine']")?.textContent).toContain("demo-2");
+  });
+
+  it("clears the earlier Outpost when an add opens the new one", async () => {
+    const { target, client } = await show("admin", { plan: [successOutpost()] });
+    click(target, "open-demo-1");
+    await settle();
+    click(target, "back-list");
+    const read = client.detail.bind(client);
+    client.detail = (id) => id === "demo-new" ? new Promise(() => {}) : read(id);
+    await addOutpost(target);
+    await settle();
+    expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-screen")).toBe("detail");
+    expect(target.querySelector("h1")?.textContent).toBe("quiet-pine");
+    expect(target.textContent).not.toContain("demo-1");
+    expect(target.textContent).not.toContain("daily-digest");
+  });
+
+  it("refreshes the list on Back from Preparing", async () => {
+    const { target, client } = await show("admin", { items: [], plan: [{ status: "pending", attemptId: "op_1" }] });
+    await addOutpost(target);
+    expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-screen")).toBe("preparing");
+    const lists = client.listCount();
+    click(target, "back-list");
+    await settle();
+    expect(client.listCount()).toBe(lists + 1);
+    expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-screen")).toBe("list");
+  });
+
+  it("shows its own state for each blocked add reason, never success", async () => {
+    const copy = {
+      failed_cleaned_up: "safe to add a new one",
+      not_started: "The add did not start.",
+      outcome_unknown: "could not confirm whether this Outpost was added",
+    } as const;
+    for (const reason of ["failed_cleaned_up", "not_started", "outcome_unknown"] as const) {
+      const { target } = await show("admin", { items: [], plan: [{ status: "blocked", reason }] });
+      await addOutpost(target);
+      expect(target.querySelector("[data-testid='company-outpost']")?.getAttribute("data-screen"), reason).toBe("add-blocked");
+      expect(target.querySelector("[data-testid='add-blocked']")?.textContent, reason).toContain(copy[reason]);
+      expect(target.textContent, reason).not.toContain("follow up by email");
+      expect(target.querySelector("[data-testid='add-blocked-retry']") !== null, reason).toBe(reason !== "outcome_unknown");
+      await unmount(component!);
+      component = null;
+    }
+  });
+
+  it("gives a member the member copy when the list read returns code forbidden", async () => {
+    const { target } = await show("member", {
+      listError: { ok: false, code: "forbidden Forbidden", message: "You do not have access to this company's Outposts." },
+    });
+    expect(target.querySelector("[data-testid='company-outpost-error']")?.textContent).toBe("Outposts are not available to members yet.");
+  });
+
+  it("says when list rows could not be read instead of showing an empty company", async () => {
+    const client = createCompanyOutpostStub({ role: "admin", items: [] });
+    client.list = async () => ({ ok: true, items: [], cap: 5, unreadable: 2 });
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    component = mount(CompanyOutpostPage, { target, props: { companyUid: "cmp_1", role: "admin", client, now: FIXTURE_NOW, pollMs: null } });
+    await settle();
+    expect(target.querySelector("[data-testid='unreadable-rows']")?.textContent).toContain("2 Outposts could not be read");
+    expect(target.querySelector("[data-testid='empty-outposts']")).toBeNull();
+    expect(target.querySelector("[data-testid='add-outpost-empty']")).toBeNull();
+    expect(target.querySelector("[data-testid='add-outpost']")).toBeNull();
   });
 
   it("shows a blocked Outpost that is not available with the neutral state, for admin and member, light and dark", async () => {
@@ -426,22 +518,14 @@ describe("Company Outpost page", () => {
     expect(target.querySelector("[data-testid='blocked-unavailable']")).toBeNull();
   });
 
-  it("keeps an open rename form and the Remove screen while the check runs", async () => {
+  it("keeps the Remove screen while the check runs", async () => {
     vi.useFakeTimers();
     const { target, client } = await show("admin", {}, { pollMs: 1000, initialScreen: "detail", initialOutpostId: "demo-2" });
     await settle();
-    click(target, "rename");
-    const input = target.querySelector<HTMLInputElement>("[data-testid='rename-name']")!;
-    input.value = "new-name";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    flushSync();
     const lists = client.listCount();
     await vi.advanceTimersByTimeAsync(1000);
     await settle();
     expect(client.listCount()).toBeGreaterThan(lists);
-    expect(target.querySelector("[data-testid='rename-form']")).not.toBeNull();
-    expect(target.querySelector<HTMLInputElement>("[data-testid='rename-name']")?.value).toBe("new-name");
-    click(target, "rename-cancel");
 
     const list = client.list.bind(client);
     let release: (() => void) | null = null;

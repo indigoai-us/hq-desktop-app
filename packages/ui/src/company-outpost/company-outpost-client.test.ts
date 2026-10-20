@@ -31,7 +31,7 @@ describe("company outpost client", () => {
       ],
     });
     expect(parsed?.items[0]).toMatchObject({ id: "demo-1", name: "main", state: "running", jobsCount: 2 });
-    expect(parsed).toEqual({ items: parsed?.items, cap: 5 });
+    expect(parsed).toEqual({ items: parsed?.items, cap: 5, unreadable: 0 });
     expect(JSON.stringify(parsed)).not.toMatch(/USD|price|payer|billed/i);
   });
 
@@ -211,5 +211,39 @@ describe("company outpost client", () => {
     expect(parseProvisionStatus({ ok: false, reason: "error", code: "conflict", message: "x", status: 409 })).toEqual(backoff);
     expect(parseProvisionStatus({ ok: false, reason: "error", code: "http-429", message: "slow down" })).toEqual(backoff);
     expect(parseProvisionStatus({ ok: false, reason: "error", code: "network", message: "offline" })).toEqual({ status: "checking", signIn: false });
+  });
+});
+
+describe("company outpost client: review fixes", () => {
+  it("counts unreadable list rows instead of dropping them", async () => {
+    const parsed = parseCompanyOutpostList({ outposts: [{ outpostId: "a", name: "main", lifecycle: "ready" }, { junk: true }, "x"] });
+    expect(parsed?.items.map((item) => item.id)).toEqual(["a"]);
+    expect(parsed?.unreadable).toBe(2);
+    const client = createCompanyOutpostClient({
+      companyUid: "cmp_1",
+      canManage: true,
+      api: { listCompanyOutposts: async () => ok({ outposts: [{ junk: true }] }) },
+    });
+    expect(await client.list()).toEqual({ ok: true, items: [], cap: 5, unreadable: 1 });
+  });
+
+  it("reads Created from body.outpost.createdAt", () => {
+    const detail = parseCompanyOutpostDetail({
+      outpost: { outpostId: "demo-1", name: "main", lifecycle: "ready", createdAt: "2026-10-18T12:00:00.000Z" },
+    });
+    expect(detail?.machine.createdAt).toBe("2026-10-18T12:00:00.000Z");
+  });
+
+  for (const reason of ["outcome_unknown", "failed_cleaned_up", "not_started"] as const) {
+    it(`does not count a blocked ${reason} add as success, on create or poll`, () => {
+      const body = { status: "", outpost: { outpostId: "op_1", name: "main", lifecycle: "blocked", blockedReason: reason } };
+      expect(parseProvision(ok(body))).toEqual({ status: "blocked", reason });
+      expect(parseProvisionStatus(ok(body))).toEqual({ status: "blocked", reason });
+    });
+  }
+
+  it("still counts a blocked add with another reason as an existing Outpost", () => {
+    const body = { outpost: { outpostId: "op_1", name: "main", lifecycle: "blocked", blockedReason: "host_unhealthy" } };
+    expect(parseProvision(ok(body)).status).toBe("success");
   });
 });

@@ -12,6 +12,7 @@ import type { AdapterResult, Json } from "@hq/platform";
 import {
   COMPANY_OUTPOST_CAP,
   asString,
+  blockedAddReason,
   countsFromJobs,
   emptyHealth,
   failureCopy,
@@ -40,7 +41,7 @@ export interface CompanyOutpostApi {
 }
 
 export type ListResult =
-  | { ok: true; items: CompanyOutpostListItem[]; cap: number }
+  | { ok: true; items: CompanyOutpostListItem[]; cap: number; unreadable?: number }
   | { ok: false; code: string; message: string };
 
 export interface ManageResult {
@@ -148,19 +149,21 @@ export function parseListItem(value: unknown): CompanyOutpostListItem | null {
   };
 }
 
-export function parseCompanyOutpostList(value: unknown): { items: CompanyOutpostListItem[]; cap: number } | null {
+export function parseCompanyOutpostList(
+  value: unknown,
+): { items: CompanyOutpostListItem[]; cap: number; unreadable: number } | null {
   const body = rec(value);
   if (!body) return null;
   const rows = Array.isArray(body.outposts) ? body.outposts : Array.isArray(body.items) ? body.items : null;
   if (!rows) {
     const one = parseListItem(body);
     if (!one) return null;
-    return { items: [one], cap: num(body.cap) || COMPANY_OUTPOST_CAP };
+    return { items: [one], cap: num(body.cap) || COMPANY_OUTPOST_CAP, unreadable: 0 };
   }
-  return {
-    items: rows.map(parseListItem).filter((item): item is CompanyOutpostListItem => item !== null),
-    cap: num(body.cap) || COMPANY_OUTPOST_CAP,
-  };
+  const items = rows.map(parseListItem).filter((item): item is CompanyOutpostListItem => item !== null);
+  // Rows the app cannot read are counted, not dropped, so the page never
+  // shows "No Outposts yet" while boxes exist.
+  return { items, cap: num(body.cap) || COMPANY_OUTPOST_CAP, unreadable: rows.length - items.length };
 }
 
 export function parseCompanyOutpostDetail(value: unknown, jobsValue?: unknown): CompanyOutpostDetail | null {
@@ -185,7 +188,8 @@ export function parseCompanyOutpostDetail(value: unknown, jobsValue?: unknown): 
       .filter((job) => job.lastRunAt)
       .map((job) => ({ id: `${job.id}@${job.lastRunAt}`, jobId: job.id, jobName: job.name, at: job.lastRunAt, health: job.health }));
   const machine = publicMachine(rec(body.machine));
-  if (!machine.createdAt) machine.createdAt = asString(body.createdAt);
+  // The server nests createdAt under body.outpost.
+  if (!machine.createdAt) machine.createdAt = asString(rec(body.outpost)?.createdAt) || asString(body.createdAt);
   return {
     ...item,
     jobsCount: item.jobsCount || jobs.length,
@@ -248,6 +252,11 @@ export function parseProvision(result: AdapterResult<Json>): ProvisionResult {
   if (lifecycle === "ready" && asString(outpostRec?.runtimeConfirmation) === "pending") return { status: "pending", attemptId };
   const outpost = parseListItem(body.outpost ?? body);
   if (outpost?.unavailable) return { status: "unavailable" };
+  // A blocked add whose reason says it did not succeed is never a success.
+  const reason = blockedAddReason(asString(outpostRec?.blockedReason) || asString(body.blockedReason));
+  if (reason && (lifecycle === "blocked" || outpost?.state === "blocked" || status === "blocked")) {
+    return { status: "blocked", reason };
+  }
   if (outpost && (status === "success" || status === "ready" || status === "running" || status === "preparing" || lifecycle === "ready" || lifecycle === "running" || status === "")) {
     return { status: "success", outpost };
   }
@@ -336,7 +345,7 @@ export function createCompanyOutpostClient(options: {
       if (!parsed) return { ok: false, code: "unrecognized", message: "Could not load. Retry." };
       cap = parsed.cap;
       const items = await Promise.all(parsed.items.map((item) => fillHealth(item)));
-      return { ok: true, items, cap: parsed.cap };
+      return { ok: true, items, cap: parsed.cap, unreadable: parsed.unreadable };
     },
     async detail(outpostId) {
       if (!api?.getCompanyOutpost) return { ok: false, message: "Could not load. Retry." };

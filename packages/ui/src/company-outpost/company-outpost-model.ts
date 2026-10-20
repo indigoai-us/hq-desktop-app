@@ -121,6 +121,14 @@ export interface CompanyOutpostDetail extends CompanyOutpostListItem {
   stopped: boolean;
 }
 
+export const BLOCKED_ADD_REASONS = ["outcome_unknown", "failed_cleaned_up", "not_started"] as const;
+export type BlockedAddReason = (typeof BLOCKED_ADD_REASONS)[number];
+
+export function blockedAddReason(value: string): BlockedAddReason | null {
+  const raw = value.trim().toLowerCase().replace(/-/g, "_");
+  return (BLOCKED_ADD_REASONS as readonly string[]).includes(raw) ? (raw as BlockedAddReason) : null;
+}
+
 export type ProvisionResult =
   | { status: "pending"; attemptId: string }
   | { status: "success"; outpost: CompanyOutpostListItem }
@@ -128,6 +136,10 @@ export type ProvisionResult =
   | { status: "unavailable" }
   | { status: "failure"; message: string }
   | { status: "forbidden" }
+  // The server reported a blocked add that is not a success. failed_cleaned_up
+  // and not_started mean nothing was created; outcome_unknown means HQ cannot
+  // tell yet.
+  | { status: "blocked"; reason: BlockedAddReason }
   // A status read failed. The add may still be in progress, so the screen
   // keeps checking. signIn is set when the HQ sign-in expired. backoff is set
   // on an unexpected 400, 409, or 429 so the screen waits longer each time.

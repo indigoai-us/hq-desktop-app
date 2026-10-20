@@ -24,7 +24,6 @@
     needsAttentionNote,
     nextPollDelay,
     prepStepAt,
-    renameError,
     stateLabel,
     whenLabel,
     type CompanyOutpostDetail,
@@ -42,7 +41,7 @@
     client: CompanyOutpostClient;
     now?: number;
     pollMs?: number | null;
-    initialScreen?: "list" | "add" | "confirm" | "detail" | "remove" | "preparing" | "unavailable" | "job";
+    initialScreen?: "list" | "add" | "confirm" | "detail" | "remove" | "preparing" | "unavailable" | "add-blocked" | "job";
     initialOutpostId?: string;
     initialJobId?: string;
     initialNotice?: string;
@@ -86,9 +85,12 @@
   // svelte-ignore state_referenced_locally
   let ready = $state(role === "guest");
   let previewName = $state("");
-  let renaming = $state(false);
-  let renameName = $state("");
-  let renameMessage = $state("");
+  // A failed detail read. The detail screen shows it instead of empty jobs.
+  let detailError = $state("");
+  // Rows the list read returned but the app could not read.
+  let unreadable = $state(0);
+  // The add ended blocked: the server reported an outcome other than success.
+  let addBlocked = $state<"outcome_unknown" | "failed_cleaned_up" | "not_started" | "">("");
   let removeTyped = $state("");
   let busy = $state(false);
   let attemptId = $state("");
@@ -108,39 +110,50 @@
   let signInNeeded = $state(false);
   let polling = false;
 
-  const atCap = $derived(manage && items.length >= cap);
+  const atCap = $derived(manage && items.length + unreadable >= cap);
   const selected = $derived(items.find((item) => item.id === selectedId) ?? null);
 
-  function applyList(next: CompanyOutpostListItem[], nextCap: number) {
+  function applyList(next: CompanyOutpostListItem[], nextCap: number, nextUnreadable = 0) {
     items = next;
     cap = nextCap;
+    unreadable = nextUnreadable;
   }
 
   async function refresh() {
     const result = await client.list();
     if (!result.ok) {
-      loadMessage = role === "member" && result.code.includes("403")
+      // The server answers a member with 403 and code "forbidden".
+      const code = result.code.toLowerCase();
+      loadMessage = role === "member" && (code.includes("403") || code.includes("forbidden"))
         ? "Outposts are not available to members yet."
         : result.message;
       return false;
     }
     loadMessage = "";
-    applyList(result.items, result.cap);
+    applyList(result.items, result.cap, result.unreadable ?? 0);
     return true;
   }
 
   async function openDetail(id: string) {
     selectedId = id;
+    // Never show the Outpost opened before while this one loads.
+    detail = null;
+    detailError = "";
     screen = "detail";
-    renaming = false;
     await loadDetail(id);
   }
 
   // Reads the detail again without changing the screen, so a check never
-  // closes the rename form or leaves the Remove screen.
+  // leaves the Remove screen.
   async function loadDetail(id: string) {
     const result = await client.detail(id);
-    if (result.ok && selectedId === id) detail = result.outpost;
+    if (selectedId !== id) return;
+    if (result.ok) {
+      detail = result.outpost;
+      detailError = "";
+    } else {
+      detailError = result.message;
+    }
     syncPrepStep();
   }
 
@@ -203,6 +216,13 @@
       screen = "unavailable";
       return;
     }
+    if (result.status === "blocked") {
+      notice = "";
+      addBlocked = result.reason;
+      screen = "add-blocked";
+      void refresh();
+      return;
+    }
     if (result.status === "forbidden") {
       notice = "Only company owners and admins can manage Outposts.";
       screen = "list";
@@ -260,20 +280,6 @@
     }
   }
 
-  async function saveName() {
-    renameMessage = renameError(renameName);
-    if (renameMessage || !selectedId) return;
-    const result = await client.rename(selectedId, renameName);
-    if (!result.ok) {
-      renameMessage = result.message;
-      return;
-    }
-    notice = result.message;
-    renaming = false;
-    await refresh();
-    if (detail && detail.id === selectedId) detail = { ...detail, name: renameName.trim() };
-  }
-
   async function confirmRemove() {
     if (!selected || removeTyped.trim() !== selected.name || busy) return;
     busy = true;
@@ -313,6 +319,7 @@
       if (!live) return;
       if (ok && initialOutpostId) {
         const result = await client.detail(initialOutpostId);
+        if (live && !result.ok) detailError = result.message;
         if (live && result.ok) {
           detail = result.outpost;
           syncPrepStep();
@@ -389,7 +396,15 @@
     {#if notice}
       <div class="co-note" role="status">{notice}</div>
     {/if}
-    {#if items.length === 0}
+    {#if unreadable > 0}
+      <div class="co-note" role="alert" data-testid="unreadable-rows">
+        {unreadable === 1 ? "1 Outpost" : `${unreadable} Outposts`} could not be read. Retry, or ask HQ support if this keeps happening.
+        <RailButton icon="refresh" data-testid="unreadable-retry" onclick={() => void refresh()}>Retry</RailButton>
+      </div>
+    {/if}
+    {#if items.length === 0 && unreadable > 0}
+      <!-- Rows exist but none could be read: no empty state and no Add. -->
+    {:else if items.length === 0}
       <div class="co-card co-empty" data-testid="empty-outposts">
         <h2>No Outposts yet</h2>
         <h3>What is an Outpost?</h3>
@@ -454,7 +469,7 @@
           <div class="co-generated" data-testid="generated-name">
             <span class="co-hint">Generated name</span>
             <h2>{previewName}</h2>
-            <p class="co-hint">HQ chose this name. You can rename it later.</p>
+            <p class="co-hint">HQ chose this name.</p>
           </div>
         {/if}
         <p class="co-hint">Only company owners and admins can add Outposts. You can remove it at any time.</p>
@@ -483,8 +498,26 @@
         <RailButton icon="refresh" data-testid="unavailable-retry" onclick={() => { screen = "confirm"; }}>Try again</RailButton>
       </div>
     </div>
+  {:else if screen === "add-blocked"}
+    <button type="button" class="co-link" data-testid="back-list" onclick={() => { screen = "list"; void refresh(); }}>‹ Outposts</button>
+    <header class="co-head"><h1>Add an Outpost</h1></header>
+    <div class="co-card" data-testid="add-blocked" data-reason={addBlocked}>
+      {#if addBlocked === "failed_cleaned_up"}
+        <p>The Outpost was not added. HQ cleaned up the attempt, so it is safe to add a new one.</p>
+        <div class="co-row">
+          <RailButton icon="plus" variant="primary" data-testid="add-blocked-retry" onclick={continueAdd}>Add a new Outpost</RailButton>
+        </div>
+      {:else if addBlocked === "not_started"}
+        <p>The Outpost was not added. The add did not start.</p>
+        <div class="co-row">
+          <RailButton icon="refresh" data-testid="add-blocked-retry" onclick={continueAdd}>Try again</RailButton>
+        </div>
+      {:else}
+        <p>HQ could not confirm whether this Outpost was added. HQ has been notified. Check the Outposts list before adding another.</p>
+      {/if}
+    </div>
   {:else if screen === "preparing"}
-    <button type="button" class="co-link" data-testid="back-list" onclick={() => { screen = "list"; }}>‹ Outposts</button>
+    <button type="button" class="co-link" data-testid="back-list" onclick={() => { screen = "list"; void refresh(); }}>‹ Outposts</button>
     <header class="co-head"><h1>Preparing this Outpost</h1></header>
     <div class="co-note" data-testid="prep-note">
       <p>Preparing this Outpost. This can take up to about 7 minutes. This page updates on its own. You can leave and come back.</p>
@@ -520,7 +553,7 @@
       <p>This job opens on the {OUTPOST_JOBS_ROUTE} screen.</p>
       <p>{selectedJob.summary}</p>
     </div>
-  {:else if screen === "detail" && (detail || selected)}
+  {:else if screen === "detail"}
     {@const box = detail}
     {@const name = box?.name ?? selected?.name ?? "Outpost"}
     {@const state = box?.state ?? selected?.state ?? "needs_attention"}
@@ -558,19 +591,12 @@
     {:else if state === "needs_attention"}
       <div class="co-note" data-testid="attention-note">{needsAttentionNote(box?.stopped ?? false)}</div>
     {/if}
-    {#if renaming && manage}
-      <div class="co-card" data-testid="rename-form">
-        <h2>Rename Outpost</h2>
-        <label for="rename-name">Outpost name</label>
-        <input id="rename-name" data-testid="rename-name" maxlength="40" bind:value={renameName} />
-        <p class="co-hint">Use 1 to 40 lowercase letters, numbers, and single dashes between words.</p>
-        {#if renameMessage}<p class="co-error" role="alert" data-testid="rename-error">{renameMessage}</p>{/if}
-        <div class="co-row">
-          <RailButton icon="x" data-testid="rename-cancel" onclick={() => { renaming = false; }}>Cancel</RailButton>
-          <RailButton icon="check" variant="primary" data-testid="rename-save" onclick={() => void saveName()}>Save name</RailButton>
-        </div>
-      </div>
-    {/if}
+    {#if !box && detailError}
+      <div class="co-note" role="alert" data-testid="detail-error">{detailError}</div>
+      <RailButton icon="refresh" data-testid="detail-retry" onclick={() => { detailError = ""; void loadDetail(selectedId); }}>Retry</RailButton>
+    {:else if !box}
+      <div class="co-card" data-testid="detail-loading"><p>Loading this Outpost.</p></div>
+    {:else}
     <h2>Jobs</h2>
     {#if box && box.jobs.length > 0}
       <div class="co-card">
@@ -611,6 +637,7 @@
     {:else}
       <div class="co-card"><p>No recent runs.</p></div>
     {/if}
+    {/if}
     {#if manage && box}
       <h2>Machine</h2>
       <dl class="co-card co-machine" data-testid="machine">
@@ -618,7 +645,6 @@
         <div><dt>Created</dt><dd>{box.machine.createdAt || "Not reported"}</dd></div>
       </dl>
       <div class="co-row" data-testid="manage-actions">
-        <RailButton icon="pencil" data-testid="rename" onclick={() => { renaming = true; renameName = box.name; renameMessage = ""; }}>Rename</RailButton>
         <RailButton icon="trash" variant="danger" data-testid="remove" onclick={() => { removeTyped = ""; screen = "remove"; }}>Remove</RailButton>
       </div>
       {#if signInCard && (state === "running" || state === "needs_attention")}
@@ -688,7 +714,6 @@
     color: inherit;
     font: inherit;
   }
-  .co-error { color: #a12622; }
   .co-machine { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   dt { color: var(--c-muted, #666); }
   dd { margin: 0; }
