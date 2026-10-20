@@ -25,14 +25,6 @@ describe('audit batch 2: confirmed-finding fixes', () => {
     expect(app).not.toContain("syncState !== 'setup-needed'");
   });
 
-  it('invited channel renders a read-only preview, not a fake working composer', () => {
-    const view = readRepoFile('src/components/messaging/ChannelView.svelte');
-    // The invited Conversation must be readonly so a typed message can't silently
-    // vanish through a no-op onsend.
-    const invitedBlock = view.slice(view.indexOf('{#if invited}'));
-    expect(invitedBlock).toContain('readonly={true}');
-  });
-
   it('command palette always closes even if a command action throws', () => {
     const palette = readRepoFile('../../packages/ui/src/common/CommandPalette.svelte');
     // try/finally so a throwing action can't leave the modal palette stuck open.

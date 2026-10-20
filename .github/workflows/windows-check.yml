@@ -28,6 +28,14 @@
 # Windows minutes instead of an eternal pending.
 name: Windows check (Phase 3)
 
+# Runner variables (repo-level Actions variables; docs/ci/self-hosted-runners.md).
+# Every job reads its runs-on from one of these. Unset means the current hosted
+# label, so nothing queues on a pool that does not exist yet:
+#   HQ_DESKTOP_RUNNER_LINUX          ["self-hosted","linux","X64","indigo-x64"]           default "ubuntu-latest"
+#   HQ_DESKTOP_RUNNER_WINDOWS        ["self-hosted","Windows","X64","hq-windows"]         default "windows-latest"
+# Set a variable to the JSON array (or a JSON string label) to move every job
+# that reads it. Job names, and so required check names, do not change.
+
 on:
   workflow_dispatch:
   pull_request:
@@ -54,7 +62,7 @@ jobs:
   # have anything to check. A manual dispatch always runs them.
   changes:
     name: Windows-relevant changes
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX || '"ubuntu-latest"') }}
     # A checkout and a path diff; healthy runs finish in about six seconds.
     # Every downstream Windows job needs this one's output, so a stall here
     # stalls the whole workflow -- and it is the gate's own required check.
@@ -137,7 +145,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     name: Windows crate tests (shared crates on msvc)
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_WINDOWS || '"windows-latest"') }}
     # Its own compile plus ~200s of tests; git_mirror alone is ~3m15s.
     timeout-minutes: 30
     defaults:
@@ -172,7 +180,10 @@ jobs:
       # BOTH workspaces. shared-key is shared with cache-warm.yml on main so
       # new PRs restore from main instead of starting cold, and so PRs with an
       # exact hit do not each save their own copy.
+      # Self-hosted runners keep target/ between runs; restoring it from the
+      # Actions cache there only costs download time.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ runner.environment == 'github-hosted' }}
         with:
           workspaces: |
             .
@@ -297,7 +308,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     name: Windows app tests (msvc bins)
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_WINDOWS || '"windows-latest"') }}
     timeout-minutes: 30
     defaults:
       run:
@@ -333,7 +344,10 @@ jobs:
       # BOTH workspaces. shared-key is shared with cache-warm.yml on main so
       # new PRs restore from main instead of starting cold, and so PRs with an
       # exact hit do not each save their own copy.
+      # Self-hosted runners keep target/ between runs; restoring it from the
+      # Actions cache there only costs download time.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ runner.environment == 'github-hosted' }}
         with:
           workspaces: |
             .
@@ -517,7 +531,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     name: Windows live app (e2e automation)
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_WINDOWS || '"windows-latest"') }}
     # The longest of the three: ~11.5 min, dominated by three compiles.
     timeout-minutes: 40
     defaults:
@@ -555,7 +569,10 @@ jobs:
       # BOTH workspaces. shared-key is shared with cache-warm.yml on main so
       # new PRs restore from main instead of starting cold, and so PRs with an
       # exact hit do not each save their own copy.
+      # Self-hosted runners keep target/ between runs; restoring it from the
+      # Actions cache there only costs download time.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ runner.environment == 'github-hosted' }}
         with:
           workspaces: |
             .
@@ -734,7 +751,7 @@ jobs:
     needs: [changes, windows-check-crates, windows-check-app, windows-check-live]
     if: ${{ always() && needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     name: cargo check (x86_64-pc-windows-msvc)
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_LINUX || '"ubuntu-latest"') }}
     timeout-minutes: 5
 
     steps:
@@ -770,7 +787,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     name: Build bridge installers (x64 MSI + NSIS)
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_WINDOWS || '"windows-latest"') }}
     timeout-minutes: 45
     defaults:
       run:
@@ -810,7 +827,10 @@ jobs:
       # This is the only writer of that key. The sibling build job and the E2E
       # job compute the identical key, so letting them save too would just race
       # for the same entry and add nothing.
+      # Self-hosted runners keep target/ between runs; restoring it from the
+      # Actions cache there only costs download time.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ runner.environment == 'github-hosted' }}
         with:
           workspaces: |
             .
@@ -917,7 +937,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     name: Build target updater (x64 NSIS)
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_WINDOWS || '"windows-latest"') }}
     timeout-minutes: 45
     defaults:
       run:
@@ -948,7 +968,10 @@ jobs:
       # Same key as the bridge build -- same profile, same lockfiles, same
       # RUST*/CARGO* env -- so this restores exactly what that job restores.
       # save-if:false because both jobs would otherwise race to write one entry.
+      # Self-hosted runners keep target/ between runs; restoring it from the
+      # Actions cache there only costs download time.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ runner.environment == 'github-hosted' }}
         with:
           workspaces: |
             .
@@ -1029,7 +1052,7 @@ jobs:
     needs: [changes, build-bridge-installers, build-target-updater]
     if: ${{ always() && needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     name: installer E2E (x64 MSI + NSIS)
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_WINDOWS || '"windows-latest"') }}
     timeout-minutes: 30
     defaults:
       run:
