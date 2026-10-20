@@ -914,6 +914,8 @@ pub async fn sign_out(app: AppHandle) -> Result<(), String> {
         crate::commands::dm_mqtt::reset_dm_push_for_auth_session_change();
     }
     clear_sentry_user();
+    // The next account must not be greeted as this one (US-023).
+    crate::commands::first_run::forget_account_kind();
     // The next account must not inherit this one's plan-limit upload pause.
     crate::commands::uploads_paused::clear(&app);
     // Nor this one's active company: a later connector import or scoped read

@@ -8,6 +8,7 @@
   import {
     HEADS_UP_SCREEN_ID,
     HEADS_UP_WINDOW_SIZE,
+    remembersReturningAccount,
     runHeadsUpAction,
     startSessionScan,
     type HeadsUpAction,
@@ -95,6 +96,8 @@
   let welcomeWindowReady = $state(false);
   /** The heads-up card paints only once the window is at card size. */
   let headsUpReady = $state(false);
+  /** US-023: this Mac remembers a returning account, so the card says welcome back. */
+  let headsUpReturning = $state(false);
 
   const headsUpTimer = createScreenTimer('welcome', (message) => {
     if (typeof invoke !== 'function') return;
@@ -252,6 +255,9 @@
     if (opensOnHeadsUp) {
       headsUpTimer.show(HEADS_UP_SCREEN_ID);
       void startSessionScan(typeof invoke === 'function' ? invoke : undefined);
+      void remembersReturningAccount(typeof invoke === 'function' ? invoke : undefined).then((returning) => {
+        if (!destroyed) headsUpReturning = returning;
+      });
       void enterHeadsUpWindow();
     } else {
       void takeWelcomeWindow().then(paintWelcomeBackdrop);
@@ -312,7 +318,7 @@
 </script>
 
 {#if showHeadsUp}
-  <HeadsUpWindow ready={headsUpReady} onaction={handleHeadsUpAction} />
+  <HeadsUpWindow ready={headsUpReady} returning={headsUpReturning} onaction={handleHeadsUpAction} />
 {:else if welcomeWindowReady}
   <OnboardingWizard
     {initialStep}

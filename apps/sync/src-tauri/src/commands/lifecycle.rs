@@ -92,6 +92,13 @@ pub(crate) fn publish_sync_setup_gate(state: LifecycleState) -> bool {
     was_held && !hold
 }
 
+/// Release the setup hold for the returning-account pull (US-023) once the
+/// HQ folder is in place, before the background phase and the wizard end.
+/// Returns true when this call released it.
+pub(crate) fn release_sync_setup_hold_for_company_pull(hq_folder_ready: bool) -> bool {
+    hq_folder_ready && publish_sync_setup_gate(LifecycleState::InstalledFirstRun)
+}
+
 /// Current lifecycle verdict for the running process, if one was resolved.
 pub fn current_lifecycle_state(app: &AppHandle) -> Option<LifecycleState> {
     app.try_state::<LifecycleStateHandle>()
@@ -662,6 +669,10 @@ pub struct SetupStatus {
     /// The desktop window's first-run guided tour was already shown here.
     /// See `hq_desktop_core::lifecycle::welcome_tour_shown`.
     pub welcome_tour_shown: bool,
+    /// The account kind setup recorded at sign-in ("returning" or "new"), or
+    /// None before setup recorded one or after sign-out. Never the email.
+    /// See `hq_desktop_core::first_run::account_kind_in`.
+    pub account_kind: Option<&'static str>,
 }
 
 #[tauri::command]
@@ -696,6 +707,7 @@ pub fn get_setup_status() -> SetupStatus {
         hq_folder_path: hq_root.to_string_lossy().to_string(),
         welcome_setup_owed: welcome_setup_owed_here(settings_unavailable, &menubar, root_valid),
         welcome_tour_shown: hq_desktop_core::lifecycle::welcome_tour_shown(&menubar),
+        account_kind: hq_desktop_core::first_run::account_kind_in(&menubar),
     }
 }
 
@@ -1056,6 +1068,28 @@ mod tests {
         Map::new()
     }
 
+    /// US-023: the desktop window reads the recorded account kind as
+    /// `accountKind`, null when setup recorded none.
+    #[test]
+    fn setup_status_carries_the_recorded_account_kind() {
+        let status = |menubar: &Map<String, Value>| {
+            serde_json::to_value(SetupStatus {
+                hq_root_valid: true,
+                configured: true,
+                hq_folder_path: "/tmp/hq".to_string(),
+                welcome_setup_owed: true,
+                welcome_tour_shown: false,
+                account_kind: hq_desktop_core::first_run::account_kind_in(menubar),
+            })
+            .expect("serialize")
+        };
+        let returning = serde_json::json!({ "accountKind": "returning", "accountKindAt": "2026-10-19T10:00:00Z" });
+        assert_eq!(status(returning.as_object().unwrap())["accountKind"], "returning");
+        assert_eq!(status(&fresh_menubar())["accountKind"], Value::Null);
+        let email = serde_json::json!({ "accountKind": "someone@example.com" });
+        assert_eq!(status(email.as_object().unwrap())["accountKind"], Value::Null);
+    }
+
     #[test]
     fn welcome_setup_is_owed_to_a_person_on_a_fresh_machine() {
         let _serial = SOURCE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -1167,6 +1201,21 @@ mod tests {
             LifecycleState::InstalledLegacyUpdate
         ));
         assert!(!sync_held_for_setup());
+    }
+
+    /// A returning account's pull runs before setup finishes. The hold lifts
+    /// only once the HQ folder is in place, so the pull's sync start is not refused.
+    #[test]
+    fn the_hold_lifts_for_the_returning_pull_only_once_the_folder_is_ready() {
+        assert!(!publish_sync_setup_gate(LifecycleState::NeedsInstall));
+        assert!(sync_held_for_setup());
+        assert!(!release_sync_setup_hold_for_company_pull(false));
+        assert!(sync_held_for_setup());
+        assert!(crate::commands::daemon::ensure_setup_allows_sync().is_err());
+        assert!(release_sync_setup_hold_for_company_pull(true));
+        assert!(!sync_held_for_setup());
+        assert!(crate::commands::daemon::ensure_setup_allows_sync().is_ok());
+        assert!(!release_sync_setup_hold_for_company_pull(true));
     }
 
     #[test]
