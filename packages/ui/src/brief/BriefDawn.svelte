@@ -50,6 +50,9 @@
     layout?: "center" | "welcome";
     /** The welcome sea under the horizon. The welcome edition turns it off so its cards sit on clear sky (round 11b final). */
     sea?: boolean;
+    /** Welcome layout: the horizon and the sea's end, in px from the top. The rise sizes them to its window. */
+    horizon?: number;
+    seaBottom?: number;
     onbloomdone?: () => void;
     /** Called once on mount when the scene can draw (so its ready ripple will play and end). */
     onlive?: () => void;
@@ -60,7 +63,7 @@
     /** What the run has found so far, beside the sun field. */
     children?: Snippet;
   }
-  let { progress, phase, headline = "", step = "", size = "page", theme = "dark", reflection = true, layout = "center", sea = true, onbloomdone, onlive, actions, status, children }: Props = $props();
+  let { progress, phase, headline = "", step = "", size = "page", theme = "dark", reflection = true, layout = "center", sea = true, horizon = WELCOME_HORIZON_Y, seaBottom = WELCOME_SEA_BOTTOM, onbloomdone, onlive, actions, status, children }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
   let canvas = $state<HTMLCanvasElement | null>(null);
@@ -138,7 +141,7 @@
     bg.addColorStop(1, `rgb(${s2.join(",")})`);
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, W, H);
-    const hz = Math.round(WELCOME_HORIZON_Y / 8);
+    const hz = Math.round(horizon / 8);
     const cx = welcomeSunX(W) / 8;
     const R = WELCOME_SUN_R;
     const sy = welcomeSunRow(hz, e);
@@ -183,8 +186,8 @@
     // The striped sea runs edge to edge, every other row, and fades into the progress block.
     const seaTint = light ? [176, 100, 98] : [255, 150, 150];
     const seaTop = (hz + 1) * 8;
-    for (let yy = seaTop; sea && yy < Math.min(H, WELCOME_SEA_BOTTOM); yy += 16) {
-      const fadeOut = Math.min(1, (WELCOME_SEA_BOTTOM - yy) / 16);
+    for (let yy = seaTop; sea && yy < Math.min(H, seaBottom); yy += 16) {
+      const fadeOut = Math.min(1, (seaBottom - yy) / 16);
       const a = (light ? 0.4 : 0.26) * fadeOut * Math.max(0.5, lit);
       const c = tint(seaTint);
       ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${a.toFixed(3)})`;
@@ -331,6 +334,8 @@
   $effect(() => {
     void progress;
     void phase;
+    void horizon;
+    void seaBottom;
     if (!reduced || !canvas) return;
     fade = true;
     const t = setTimeout(() => {

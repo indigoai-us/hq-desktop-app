@@ -49,6 +49,9 @@ export function runnableEdition(edition: WelcomeEdition, canRun: (action: Welcom
   };
 }
 
+/** The connect card's integration rows lead with these, by name, in this order (frame 1). */
+const INTEGRATION_ORDER: readonly string[] = ["github", "linear", "slack"];
+
 /** What the connect card's Connect button does. 'expand' opens the connect flow inside the card; 'settings' opens the Settings integrations page. */
 export type FirstViewConnectMode = "expand" | "settings";
 /** The owner has not decided yet; switching to the Settings page is this one line. */
@@ -205,6 +208,8 @@ export interface FirstView {
   count: number;
   /** "N sessions over N days in A and B. Top threads: x, y, z."; null when hidden. */
   countLine: string | null;
+  /** The tools found, by name: the Tools pill, its caption and the count line. */
+  tools: string[];
   pills: FirstViewPills;
   connect: FirstViewConnect;
   oneThing: WelcomeAction | null;
@@ -228,13 +233,14 @@ function listOf(names: readonly string[]): string {
 }
 
 /**
- * The session count and its days: the import report's sessions.total, then
- * sessions.imported + sessions.local, then sessions.total. The days always
+ * The session count and its days: the import report's sessions block when it
+ * has one (a zero total included), then the welcome row's sessions.imported +
+ * sessions.local, then sessions.total. The days always
  * come from the same source as the count; a source with no days gives 0,
  * so the count line never pairs one source's sessions with another's days.
  */
 function sessionCount(f: WelcomeBriefFields, report: ImportReport | null): { total: number; days: number } {
-  if (report?.sessions?.total) return { total: report.sessions.total, days: report.sessions.days_seen };
+  if (report?.sessions) return { total: report.sessions.total, days: report.sessions.days_seen };
   const s = f.sessions;
   const days = s?.days_seen ?? 0;
   if (s && (s.imported !== undefined || s.local !== undefined)) {
@@ -277,8 +283,7 @@ function welcomeActions(f: WelcomeBriefFields): WelcomeAction[] {
 }
 
 /** The harnesses with sessions, the primary first; legacy `apps` names when no counts were read. */
-function toolsFound(f: WelcomeBriefFields, welcome: Record<string, unknown> | null, report: ImportReport | null): WelcomeHarnessId[] {
-  if (report?.tools.length) return report.tools;
+function toolsFound(f: WelcomeBriefFields, welcome: Record<string, unknown> | null): WelcomeHarnessId[] {
   if (f.harness) {
     const primary = f.harness.primary;
     const counts = f.harness.counts;
@@ -297,20 +302,29 @@ export function buildFirstView(input: FirstViewInput): FirstView {
   const now = input.now instanceof Date ? input.now : new Date(input.now);
 
   const { total, days } = sessionCount(f, report);
-  const tools = toolsFound(f, welcome, report);
+  // One source for every count on the page: the report's sessions block when
+  // it has one (even a zero total), else the welcome row. Never one source's
+  // total or tool list beside the other's per-tool counts.
+  const fromReport = report?.sessions ?? null;
+  const counts: WelcomeHarness["counts"] = fromReport
+    ? { claude_code: fromReport.claude, codex: fromReport.codex, cursor: fromReport.cursor }
+    : f.harness?.counts ?? { claude_code: f.sessions?.claude ?? 0, codex: f.sessions?.codex ?? 0, cursor: f.sessions?.cursor ?? 0 };
+  const tools = fromReport
+    ? report!.tools.length
+      ? report!.tools
+      : HARNESSES.filter((h) => counts[COUNT_KEY[h]] > 0)
+    : toolsFound(f, welcome);
 
+  // Projects follow the same rule: a contract report (it has a sessions block
+  // or project names) is the only source, with names and no per-project
+  // counts; the welcome row's top_projects and tree.projects only without one.
+  const projectsFromReport = !!report && (!!report.sessions || report.projects.length > 0);
   const fromWelcome = (f.top_projects ?? []).flatMap((p): FirstViewProject[] => {
     const name = welcomeName(p.name);
     return name ? [{ name, sessions: p.sessions || null }] : [];
   });
-  const topProjects = (fromWelcome.length ? fromWelcome : (report?.projects ?? []).map((name) => ({ name, sessions: null }))).slice(0, LIMIT);
-  const projectCount = f.tree?.projects || fromWelcome.length || report?.projects?.length || 0;
-
-  const counts = f.harness?.counts ?? {
-    claude_code: report?.sessions?.claude ?? f.sessions?.claude ?? 0,
-    codex: report?.sessions?.codex ?? f.sessions?.codex ?? 0,
-    cursor: report?.sessions?.cursor ?? f.sessions?.cursor ?? 0,
-  };
+  const topProjects = (projectsFromReport ? report!.projects.map((name) => ({ name, sessions: null })) : fromWelcome).slice(0, LIMIT);
+  const projectCount = projectsFromReport ? report!.projects.length : f.tree?.projects || fromWelcome.length;
 
   // The past-work step goes first, so it can never be the lead or a watch row.
   const done = pastWorkDone(f, welcome, report, total);
@@ -318,7 +332,7 @@ export function buildFirstView(input: FirstViewInput): FirstView {
   const oneThing = primaryAction(actions);
 
   const open = actions.find((a) => a.kind === "open_harness") ?? null;
-  const whereTools = (f.harness ? tools : tools.filter((h) => counts[COUNT_KEY[h]] > 0)).flatMap((h): FirstViewTool[] => {
+  const whereTools = tools.flatMap((h): FirstViewTool[] => {
     const sessions = counts[COUNT_KEY[h]];
     return sessions > 0 ? [{ harness: h, name: WELCOME_HARNESS_NAME[h], sessions }] : [];
   });
@@ -333,6 +347,12 @@ export function buildFirstView(input: FirstViewInput): FirstView {
     const name = welcomeName(s.name);
     if (name && s.slug.trim() && !integrations.some((i) => i.slug === s.slug)) integrations.push({ slug: s.slug, name, action: null });
   }
+  // Frame 1's order: GitHub, Linear, Slack first, then the rest in source order (sort is stable).
+  const rank = (i: FirstViewIntegration) => {
+    const r = INTEGRATION_ORDER.indexOf(i.name.toLowerCase());
+    return r < 0 ? INTEGRATION_ORDER.length : r;
+  };
+  integrations.sort((a, b) => rank(a) - rank(b));
   const aiAction = actions.find((a) => a.kind === "connect_ai_apps") ?? null;
   const connected = new Set(input.connectedAiApps ?? []);
   const aiApps = aiAction
@@ -361,6 +381,7 @@ export function buildFirstView(input: FirstViewInput): FirstView {
     greeting: welcomeGreeting(now, input.userName),
     count: total,
     countLine,
+    tools: toolNames,
     pills: {
       sessions: total || null,
       days: days || null,

@@ -13,6 +13,8 @@ export interface BriefWelcome {
   error?: string;
   /** The contract fields the welcome edition draws from (brief-welcome-contract.ts). */
   fields: WelcomeBriefFields;
+  /** The brief.json `welcome` object as read, for the first view's model (brief-first-view.ts). */
+  raw?: Record<string, unknown>;
 }
 const object = (value: unknown): Record<string, unknown> | null => value != null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const count = (value: unknown): number => typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
@@ -27,6 +29,7 @@ export function parseWelcome(value: unknown): BriefWelcome | null {
   const sessions = object(row.sessions);
   return {
     fields,
+    raw: row,
     skills: count(imported?.skills),
     conversations: count(imported?.conversations),
     sessions: count(sessions?.total),

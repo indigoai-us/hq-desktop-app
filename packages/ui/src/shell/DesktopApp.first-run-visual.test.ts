@@ -2976,9 +2976,9 @@ describe("visual first run, the detected tool's sign-in", () => {
       const key = Object.keys(files).find((k) => path.endsWith(k));
       return key ? ok(files[key]) : { ok: false as const, reason: "not found" };
     };
-    await vi.waitFor(() => expect(q('[data-testid="welcome-edition"]')).toBeTruthy(), { timeout: 15_000 });
-    const open = () =>
-      [...document.querySelectorAll<HTMLButtonElement>('[data-testid="welcome-edition-action"]')].find((b) => b.dataset.action === "open-hq-in-harness");
+    // The brief is the first view; its "Where you work" open button carries the harness action.
+    await vi.waitFor(() => expect(q('[data-testid="first-view-grid"]')).toBeTruthy(), { timeout: 15_000 });
+    const open = () => q<HTMLButtonElement>('[data-testid="first-view-where-open"]');
     await vi.waitFor(() => expect(open()?.textContent?.trim()).toBe("Open HQ in Codex"));
     // The brief owns the open action: no Open Claude Code bar anywhere.
     expect(q('[data-testid="brief-open-tool"]')).toBeNull();
