@@ -51,6 +51,7 @@
   import {
     brainPageDoor,
     teamPageDoor,
+    officeDoor,
     vaultExplorerDoor,
     filesConnectDoor,
     meetingCanvasDoor,
@@ -128,6 +129,7 @@
   import Sidepane from "./Sidepane.svelte";
   import { SidepaneScrollMemory, sidepaneModelKey } from "./sidepane-models.js";
   import CompanySidepane from "./CompanySidepane.svelte";
+  import { resolveOfficeFeature } from "./office-feature.js";
   import { configureCompanyApi } from "../company/company-store.svelte.js";
   import {
     companyPagePlaceholderForPage,
@@ -10787,6 +10789,18 @@
       };
     }
     if (destination.kind === "extra") {
+      if (companyRowForPage(destination.page) === "office") {
+        const uid = destination.companyUid;
+        const denied = accessOutcome(destination, uid);
+        if (denied) return denied;
+        const company = railCompanyRoster.find((entry) => entry.uid === uid);
+        return resolveOfficeFeature(adapter, company, Boolean(self?.uid)).then((allowed) => {
+          if (context.isStale()) return { status: "cancelled" };
+          return allowed && callsHost
+            ? { status: "ready", destination }
+            : { status: "unavailable", destination, reason: "Office is not available for this company on this device." };
+        });
+      }
       if (
         railPlaceholderForPage(destination.page) ||
         accountPlaceholderForPage(destination.page) ||
@@ -12708,6 +12722,30 @@
   });
   const railGate = (key: IndigoOnlyGateKey): boolean =>
     isIndigoOnlySurface(key, gateCompany, railGateValues);
+  // Bind each answer to the company and signed-in identity that requested it.
+  let officeGrant = $state<string | null>(null);
+  const officeScope = $derived(`${self?.uid ?? ""}:${gateCompany?.uid ?? ""}`);
+  const officeVisible = $derived(Boolean(callsHost && self?.uid && officeGrant === officeScope));
+  $effect(() => {
+    const company = gateCompany;
+    const scope = officeScope;
+    const signedIn = Boolean(self?.uid);
+    const host = callsHost;
+    const platform = adapter;
+    officeGrant = null;
+    if (!host || !company?.uid || !companyIsAccessible(company.uid)) return;
+    let live = true;
+    let sequence = 0;
+    const refresh = async () => {
+      const request = ++sequence;
+      const allowed = await resolveOfficeFeature(platform, company, signedIn);
+      if (live && request === sequence) officeGrant = allowed ? scope : null;
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), 60_000);
+    window.addEventListener("focus", refresh);
+    return () => { live = false; clearInterval(timer); window.removeEventListener("focus", refresh); };
+  });
   // OWNER-D 3: Telemetry is hidden (rail, palette, deep links) for members
   // without the feature, instead of a "Coming soon" page.
   // The entry belongs to the person: Indigo members keep it on Home and in
@@ -14043,6 +14081,7 @@
             company={companyPaneCompany}
             canManage={companyPaneRole === "Owner" || companyPaneRole === "Admin"}
             selectedId={companyPaneSelectedId}
+            {officeVisible}
             onselect={selectCompanyPaneRow}
             memory={sidepaneScrollMemory}
             companyApi={adapter.company ?? null}
@@ -14249,6 +14288,20 @@
               messagePersonByUid(personUid, { companyUid: companyPaneCompany?.uid });
             }}
           />
+        {:else if railPlaceholder?.id === "office" && companyPaneCompany}
+          {#if officeVisible}
+            {#key officeScope}
+              <LazyDoor door={officeDoor} props={{
+                adapter,
+                callsHost,
+                companyUid: companyPaneCompany.uid,
+                companyLabel: companyPaneCompany.label,
+                displayName: (uid: string) => atlasRosterNames.get(uid) ?? uid,
+              }} />
+            {/key}
+          {:else}
+            <section class="rail-placeholder" role="status"><h1>Office</h1><p>Office is not available for this company on this device.</p></section>
+          {/if}
         {:else if railPlaceholder?.id === "team" && companyPaneCompany}
           <LazyDoor
             door={teamPageDoor}

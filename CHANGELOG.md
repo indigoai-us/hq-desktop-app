@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Indigo beta: open Office directly from Company navigation to see your company's office hours and start native calls. Office stays hidden outside the enabled company and in browser hosts.
+
 - Settings › Sync now has one place to turn cloud sync off on this computer, so its syncs stop counting toward your bill (storage and vault fees still apply, and teammates who sync still add usage): a switch for your personal vault, a switch for each company vault you belong to, and one "Turn off all cloud sync" switch. Each switch says what turning it off does. An off vault shows "Sync is off for <vault>" and how to turn it back on, and other vaults keep syncing. The choice applies only to this computer, survives restarts and app updates, and the `hq sync` command honours it. Sign-in, messages, deploys and local HQ keep working. The Core menu's usage panel and the account menu open this section in one click.
 - Projects board: a story that is queued in the Work Mesh now shows under Not started, and its badge reads To do. Before, the first queued story whose dependencies were done showed under In progress, so Not started could look empty while nothing was being worked on. Stories that are in progress or in review still show under In progress. Projects without live Work Mesh status sort the same way as before.
 - Badges: four new one-of-one honors, The Architect, The Angel, The Optimist and The Visionary. Honors that are given rather than earned (OG, Captain, Patient Zero, Ecom Rat and these four) no longer show as locked placeholders on the Badges page of people who were not given them.
