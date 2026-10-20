@@ -452,6 +452,12 @@ pub struct VaultSyncSwitchesView {
 #[tauri::command]
 pub async fn get_vault_sync_switches() -> VaultSyncSwitchesView {
     let switches = VaultSyncSwitches::read();
+    if hq_desktop_core::vault_sync::settings_file_unreadable() {
+        crate::util::logfile::log(
+            "cloud-switch",
+            hq_desktop_core::vault_sync::SETTINGS_UNREADABLE_WARNING,
+        );
+    }
     // The CLI check may probe the CLI the first time; keep it off the
     // main thread, and skip it when nothing is off.
     let cli_honours_switches = if switches.any_off() {

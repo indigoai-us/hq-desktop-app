@@ -317,6 +317,35 @@ pub fn cli_honours_vault_switches() -> Option<bool> {
     }
 }
 
+// ── Unreadable settings file ──────────────────────────────────────────────
+//
+// A settings file that exists but cannot be read or parsed counts as every
+// switch on, so a corrupt file never silently stops sync. The CLI warns when
+// that happens; the desktop logs a warning so the fallback is visible.
+
+/// The warning logged when the settings file cannot be read.
+pub const SETTINGS_UNREADABLE_WARNING: &str =
+    "menubar.json could not be read; every sync switch counts as on until it is fixed";
+
+/// True when the settings file at `path` exists but cannot be read, or is not
+/// a JSON object. A missing file is not unreadable (it means all on).
+pub fn settings_file_unreadable_at(path: &std::path::Path) -> bool {
+    match std::fs::read_to_string(path) {
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+        Ok(raw) => !matches!(
+            serde_json::from_str::<serde_json::Value>(&raw),
+            Ok(serde_json::Value::Object(_))
+        ),
+    }
+}
+
+/// [`settings_file_unreadable_at`] for the real settings file.
+pub fn settings_file_unreadable() -> bool {
+    crate::paths::menubar_json_path()
+        .map(|path| settings_file_unreadable_at(&path))
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -570,5 +599,23 @@ mod tests {
             vault_for_hq_relative_path("./knowledge/a.md"),
             SyncVault::Personal
         );
+    }
+
+    #[test]
+    fn an_unreadable_settings_file_is_reported_and_a_missing_one_is_not() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("menubar.json");
+        assert!(!settings_file_unreadable_at(&path), "missing means all on, no warning");
+        std::fs::write(&path, "{\"cloudPaused\": false}").unwrap();
+        assert!(!settings_file_unreadable_at(&path));
+        std::fs::write(&path, "{not json").unwrap();
+        assert!(settings_file_unreadable_at(&path));
+        std::fs::write(&path, "").unwrap();
+        assert!(settings_file_unreadable_at(&path));
+        std::fs::write(&path, "[1]").unwrap();
+        assert!(settings_file_unreadable_at(&path));
+        let dir = tmp.path().join("dir.json");
+        std::fs::create_dir(&dir).unwrap();
+        assert!(settings_file_unreadable_at(&dir), "a read error is unreadable");
     }
 }
