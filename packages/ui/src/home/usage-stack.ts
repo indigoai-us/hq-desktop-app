@@ -28,7 +28,7 @@ export function segmentColor(id: string): string {
       return "var(--ice-ink, #5b7a99)";
     // Trial usage is one total, not a group: a neutral ink no group uses.
     case "trial":
-      return "var(--t1, #222)";
+      return "color-mix(in srgb, var(--t1, #222) 72%, transparent)";
     case "storage":
       return "var(--t2, #888)";
     default:

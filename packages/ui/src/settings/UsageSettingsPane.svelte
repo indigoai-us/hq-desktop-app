@@ -372,7 +372,7 @@
                 {/if}
                 {#if view.trial && bar}
                   <div class="trial-bar">
-                    <span class="g-label"><span class="dot" style={`background:${segmentColor("trial")}`} aria-hidden="true"></span>Trial usage</span>
+                    <span class="g-label">Trial usage</span>
                     <span class="g-amt" data-testid="usage-trial-usage">{view.trial.unknownMeters?.length ? "At least " : ""}{formatUsd(view.trial.usedCents ?? 0)} of {formatUsd(view.trial.capCents ?? 0)}</span>
                   </div>
                   <p class="note small" data-testid="usage-trial-note">Trial days are free. Costs by group start when the trial ends.</p>
