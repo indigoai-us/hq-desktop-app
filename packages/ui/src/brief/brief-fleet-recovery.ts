@@ -196,3 +196,201 @@ export function inspectPrompt(agent: StuckAgent, fi: Pick<BriefFleetIncident, "v
 export function agentPromptKey(incidentId: string, agentName: string): string {
   return `${incidentId}:${agentName}`;
 }
+
+/* ------------------------------------------------------------------------
+   Layout helpers for the redesigned card (hero number, slim chart, open rows).
+   Pure and pixel-based: the component measures the plot and hands the size in,
+   so labels are placed once and never drawn on top of each other.
+   ------------------------------------------------------------------------ */
+
+/** Mono caps label metrics (var(--b-code), 10px, .08em): one glyph's advance in px. */
+export const MONO_CHAR_PX = 6.8;
+
+/** The rendered width of a mono caps label, in px. */
+export function monoWidth(text: string, charPx = MONO_CHAR_PX): number {
+  return Math.ceil(text.length * charPx);
+}
+
+/** An age is "old" (the warm tint) once an agent has been stuck a day or more. */
+export const OLD_STUCK_MS = 24 * HOUR_MS;
+
+export function stuckOld(since: string | null | undefined, nowMs: number): boolean {
+  if (!since) return false;
+  const ms = nowMs - Date.parse(since);
+  return Number.isFinite(ms) && ms >= OLD_STUCK_MS;
+}
+
+/** The hero's small line: where the count came down from and how long the incident has run. */
+export function heroMeta(fi: Pick<BriefFleetIncident, "series" | "stillStuck" | "incidentStart" | "incidentEnd">, nowMs: number): string {
+  const parts: string[] = [];
+  const stuck = fi.stillStuck.length;
+  const peak = peakOf(fi.series);
+  if (peak && peak.stuck > stuck) parts.push(`down from ${Math.round(peak.stuck)}`);
+  else if (peak && stuck > 0 && peak.stuck <= stuck) parts.push("at its peak");
+  const end = fi.incidentEnd ? Date.parse(fi.incidentEnd) : NaN;
+  if (Number.isFinite(end)) {
+    const ago = stuckFor(fi.incidentEnd, nowMs);
+    if (ago) parts.push(`closed ${ago} ago`);
+  } else {
+    const open = stuckFor(fi.incidentStart, nowMs);
+    if (open) parts.push(`open ${open}`);
+  }
+  return parts.join(" · ");
+}
+
+/** A label box on one line: left edge and width in px. */
+export interface LabelBox {
+  label: string;
+  left: number;
+  w: number;
+}
+
+const clash = (a: { left: number; w: number }, b: { left: number; w: number }, gap: number) => a.left < b.left + b.w + gap && b.left < a.left + a.w + gap;
+
+/**
+ * The time axis under the chart: "now" pinned to the right edge, then each
+ * day tick centred on its x (px) and kept inside the axis. A tick that would
+ * touch the label before it or "now" (closer than `gap`) is dropped, so two
+ * labels never share the same x and never overlap.
+ */
+export function placeAxisLabels(ticks: readonly { x: number; label: string }[], width: number, nowLabel = "now", gap = 10, charPx = MONO_CHAR_PX): LabelBox[] {
+  const nowW = monoWidth(nowLabel, charPx);
+  const now: LabelBox = { label: nowLabel, left: Math.max(0, width - nowW), w: nowW };
+  const kept: LabelBox[] = [];
+  for (const t of [...ticks].sort((a, b) => a.x - b.x)) {
+    const w = monoWidth(t.label, charPx);
+    const left = Math.min(Math.max(0, t.x - w / 2), Math.max(0, width - w));
+    const box = { label: t.label, left, w };
+    if (clash(box, now, gap)) continue;
+    if (kept.some((k) => clash(box, k, gap))) continue;
+    kept.push(box);
+  }
+  return [...kept, now];
+}
+
+/**
+ * Fix labels above the plot: each starts just right of its pin (or ends just
+ * left of it near the right edge), in the first of `rows` lines where it does
+ * not touch another label or a `reserved` box on the first line (the value
+ * pill, when it sits up there). A label with no room gets row null: its pin
+ * stays, hoverable, without words.
+ */
+export function placePinLabels(
+  pins: readonly { x: number; label: string }[],
+  width: number,
+  reserved: readonly { left: number; w: number }[] = [],
+  rows = 2,
+  gap = 8,
+  charPx = MONO_CHAR_PX,
+): { row: number | null; left: number; w: number }[] {
+  const lines: { left: number; w: number }[][] = Array.from({ length: rows }, (_, r) => (r === 0 ? [...reserved] : []));
+  return pins.map((p) => {
+    const w = monoWidth(p.label, charPx);
+    let left = p.x + 4;
+    if (left + w > width) left = p.x - 4 - w;
+    if (left < 0) return { row: null, left: 0, w };
+    const box = { left, w };
+    for (let r = 0; r < rows; r += 1) {
+      if (!lines[r]!.some((b) => clash(box, b, gap))) {
+        lines[r]!.push(box);
+        return { row: r, left, w };
+      }
+    }
+    return { row: null, left, w };
+  });
+}
+
+/** The readings worth a dot: the series' own points inside the window, thinned so dots never touch; the last (now) and the peak always stay. */
+export function readingDots(geo: Pick<FleetGeometry, "points" | "from" | "to">, series: readonly { at: string }[], widthPx: number, minGap = 14): { x: number; y: number; at: number; stuck: number; current: boolean; peak: boolean }[] {
+  const stamps = new Set(series.map((p) => Date.parse(p.at)).filter((t) => Number.isFinite(t) && t >= geo.from && t <= geo.to));
+  const all = geo.points.filter((p) => stamps.has(p.at));
+  const pts = all.length ? all : geo.points.slice(-1);
+  if (!pts.length) return [];
+  const peakStuck = Math.max(...pts.map((p) => p.stuck));
+  const peakIdx = pts.findIndex((p) => p.stuck === peakStuck);
+  const last = pts.length - 1;
+  const px = (x: number) => (x / CHART.w) * widthPx;
+  const keep = new Set<number>([last]);
+  if (peakStuck > 0) keep.add(peakIdx);
+  const anchors = [...keep].map((i) => px(pts[i]!.x));
+  let prev = -Infinity;
+  for (let i = 0; i < pts.length; i += 1) {
+    if (keep.has(i)) {
+      prev = px(pts[i]!.x);
+      continue;
+    }
+    const x = px(pts[i]!.x);
+    if (x - prev < minGap) continue;
+    if (anchors.some((a) => Math.abs(a - x) < minGap)) continue;
+    keep.add(i);
+    prev = x;
+  }
+  return pts
+    .map((p, i) => ({ ...p, i }))
+    .filter((p) => keep.has(p.i))
+    .map(({ x, y, at, stuck, i }) => ({ x, y, at, stuck, current: i === last, peak: peakStuck > 0 && i === peakIdx && i !== last }));
+}
+
+/** The line's y (px) at x (px), from its points (px), linear between them. */
+function lineYAt(pts: readonly { x: number; y: number }[], x: number): number {
+  if (!pts.length) return 0;
+  if (x <= pts[0]!.x) return pts[0]!.y;
+  for (let i = 1; i < pts.length; i += 1) {
+    const a = pts[i - 1]!;
+    const b = pts[i]!;
+    if (x <= b.x) return b.x === a.x ? b.y : a.y + ((b.y - a.y) * (x - a.x)) / (b.x - a.x);
+  }
+  return pts[pts.length - 1]!.y;
+}
+
+/** Where the value pill went: beside the dot (above or below it), at the plot's top, or in the readout strip above the plot. */
+export type PillSide = "above" | "below" | "top" | "strip";
+
+/**
+ * Where the value pill sits for the current dot (all px, in the plot box). It
+ * ends just right of the dot and stays inside the plot's width. Tried in turn:
+ * above the dot, hugging the line, then below it, then at the plot's top; the
+ * first spot where the line stays at least `clear` px away over the pill's
+ * whole width wins. When the line leaves no room anywhere, the pill moves up into the
+ * readout strip above the plot (top = -strip). It never covers the line; a
+ * pill that is not beside its dot gets a dotted leader down to it.
+ */
+export function pillSpot(
+  line: readonly { x: number; y: number }[],
+  dot: { x: number; y: number },
+  pill: { w: number; h: number },
+  plot: { w: number; h: number },
+  strip = 22,
+  gap = 8,
+  clear = 3,
+): { left: number; top: number; side: PillSide; leader: boolean } {
+  const left = Math.max(0, Math.min(plot.w - pill.w, dot.x + 6 - pill.w));
+  const ys: number[] = [];
+  for (let i = 0; i <= 16; i += 1) ys.push(lineYAt(line, left + (pill.w * i) / 16));
+  const free = (top: number) => top >= 0 && top + pill.h <= plot.h && ys.every((y) => y < top - clear || y > top + pill.h + clear) && (dot.y < top - clear || dot.y > top + pill.h + clear);
+  const tries: [PillSide, number][] = [
+    // Hugging the line from above, then from below, as close to the dot as the line allows.
+    ["above", Math.min(dot.y - gap, ...ys.map((y) => y - clear - 1)) - pill.h],
+    ["below", Math.max(dot.y + gap, ...ys.map((y) => y + clear + 1))],
+    ["top", 0],
+  ];
+  for (const [side, top] of tries) {
+    if (!free(top)) continue;
+    const away = side === "below" ? top - dot.y : dot.y - (top + pill.h);
+    return { left, top, side, leader: away > 2 * gap };
+  }
+  return { left, top: -strip, side: "strip", leader: true };
+}
+
+/** The pill's words: the latest reading, with its age when it is an hour or more old. */
+export function pillText(reading: { at: number; stuck: number }, nowMs: number): string {
+  const n = Math.round(reading.stuck);
+  const age = nowMs - reading.at >= HOUR_MS ? stuckFor(new Date(reading.at).toISOString(), nowMs) : "";
+  return age ? `${n} · ${age} ago` : `${n} now`;
+}
+
+/** Initial for an agent's circle. */
+export function initialOf(name: string): string {
+  const c = name.trim().match(/[\p{L}\p{N}]/u);
+  return c ? c[0]!.toUpperCase() : "?";
+}

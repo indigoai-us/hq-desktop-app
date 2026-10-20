@@ -70,8 +70,11 @@ export const ALLOWLISTED_DEAD_ROUTES = [
 /** Turns any of hq-pro's placeholder spellings into one canonical form so
  * `{companyUid}`, `{uid}`, `{slug}`, `{}`, and `{proxy+}` all compare equal. */
 export function normalizeRoute(route) {
+  // API Gateway route keys never carry a query string: `GET /v1/x?a={param}`
+  // is the `GET /v1/x` route.
   return route
     .trim()
+    .replace(/\?\S*/, "")
     .replace(/\{[^}]*\}/g, "{param}")
     .replace(/\s+/g, " ");
 }
@@ -88,7 +91,10 @@ export function extractRegistryRoutes(sourceText) {
   const routes = new Set();
   const literalRouteKey = /routeKey:\s*"([A-Z]+\s+\/[^"]*)"/g;
   const literalKeyEntry = /\bkey:\s*"([A-Z]+\s+\/[^"]*)"/g;
-  for (const re of [literalRouteKey, literalKeyEntry]) {
+  // `for (const [name, routeKey] of [["BillingCheckoutOrgRoute", "POST /v1/billing/checkout/org"], ...])`
+  // — a two-literal tuple whose second element is the route key.
+  const literalNameKeyTuple = /\[\s*"\w+"\s*,\s*"([A-Z]+\s+\/[^"]*)"\s*\]/g;
+  for (const re of [literalRouteKey, literalKeyEntry, literalNameKeyTuple]) {
     for (const match of sourceText.matchAll(re)) {
       routes.add(normalizeRoute(match[1]));
     }

@@ -42,6 +42,7 @@
   } from "../settings/update-store.svelte";
   import "./tokens.css";
   import BrowsePacksDoor from "./overlays/browse-packs-door.svelte";
+  import CoreUsagePanel from "./CoreUsagePanel.svelte";
 
   interface Props {
     /** Platform seam — updates/packages slices + capability flags.
@@ -105,6 +106,11 @@
     uploadsPaused?: readonly CoreUploadsPausedInput[] | null;
     /** Open an external link (the plan upgrade page). */
     onopenurl?: (url: string) => void;
+    /**
+     * The company whose usage this month shows under the sync row. Null (or
+     * fixture mode) hides the panel.
+     */
+    usageCompany?: import("./core-usage-model.js").UsageCompany | null;
   }
 
   interface CoreStateWire {
@@ -139,6 +145,7 @@
     onopenMarketplace,
     uploadsPaused = null,
     onopenurl,
+    usageCompany = null,
   }: Props = $props();
 
   let packsExpanded = $state(true);
@@ -601,6 +608,16 @@
       </button>
     {/if}
   </header>
+
+  {#if usageCompany && !useFixtures && adapter.company}
+    <CoreUsagePanel
+      source={adapter.company}
+      companyUid={usageCompany.uid}
+      companyName={usageCompany.name}
+      role={usageCompany.role}
+      {onopenurl}
+    />
+  {/if}
 
   {#if recovery}
     <div

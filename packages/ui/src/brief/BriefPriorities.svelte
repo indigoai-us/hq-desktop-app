@@ -64,7 +64,7 @@
         <span class="n">{i + 1}</span>
         <span class="tx"><b>{p.text}</b>{#if p.because}<span class="why">{" · "}{p.because}</span>{/if}</span>
         {#if o}
-          <span class="lg" title={o.product} data-testid="brief-priority-logo"><BriefLogo company={brief.company(o.companyUid)} fallback={o.companyUid} size={14} /></span>
+          <span class="lg" data-testid="brief-priority-logo"><BriefLogo company={brief.company(o.companyUid)} fallback={o.companyUid} size={14} /></span>
         {/if}
       </li>
     {/each}
@@ -74,7 +74,7 @@
 <style>
   .prio {
     margin-top: 14px;
-    padding: 12px 18px 10px;
+    padding: 14px 20px;
     animation: none;
   }
   ol {
@@ -97,14 +97,14 @@
     transition: background 0.15s;
   }
   li:hover {
-    background: rgba(255, 255, 255, 0.05);
+    background: rgb(var(--b-ink) / 0.05);
   }
   .n {
     flex: none;
     width: 14px;
     font-family: var(--b-mono);
-    font-size: 12px;
-    font-weight: 300;
+    font-size: 13px;
+    font-weight: 400;
     color: var(--b-t3);
     font-variant-numeric: tabular-nums;
   }
@@ -135,7 +135,7 @@
   }
   li.done .tx {
     text-decoration: line-through;
-    text-decoration-color: rgba(255, 255, 255, 0.35);
+    text-decoration-color: rgb(var(--b-ink) / 0.35);
     opacity: 0.5;
   }
 </style>

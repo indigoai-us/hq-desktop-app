@@ -7,8 +7,13 @@
  *   2 cloud     company cloud orbit                   (wizard step setup; install runs)
  *   3 shortcut  the Option-Shift-O keyboard           (wizard step setup; install runs)
  *   4 ready     "HQ is ready." + install progress     (wizard step ready)
- *               and the usage-data checkbox; no
- *               buttons, it finishes by itself
+ *               and the usage-data checkbox. It finishes
+ *               by itself, unless a required step failed:
+ *               then the heading names that step, Try
+ *               again re-runs it, and it never finishes by
+ *               itself. Once the watchdog fires, the
+ *               Finish setup note shows beside Try again,
+ *               and hides while Try again runs.
  *
  * The usage-data question is not a screen of its own in the first-run flow:
  * it is one checkbox line on the ready screen, recorded when the flow
@@ -401,7 +406,62 @@ export function readyProgressLine({ itemId, retrying, elapsedMs }: ReadyProgress
   return setupActivityLabel(itemId, READY_PROGRESS_FALLBACK)!;
 }
 
+/**
+ * Heading once a required setup step has ended in failure. One sentence,
+ * built from that step's existing activity phrase, so the screen does not
+ * say "HQ is ready." Null when no named step failed.
+ */
+export function readyRequiredFailureHeading(failedIds: readonly string[]): string | null {
+  const phrases: string[] = [];
+  for (const id of failedIds) {
+    const phrase = setupActivityPhrase(id);
+    if (phrase && !phrases.includes(phrase)) phrases.push(phrase);
+  }
+  if (phrases.length === 0) return null;
+  const first = phrases[0]!.charAt(0).toUpperCase() + phrases[0]!.slice(1);
+  const named = phrases.length === 1 ? first : `${first} and ${phrases.slice(1).join(' and ')}`;
+  return `${named} did not finish.`;
+}
+
 /** Possible activity lines keep the corner card's width steady. */
 export function installCardActivityLines(): string[] {
   return [...new Set(Object.keys(SETUP_ACTIVITY_PHRASES).map(id => setupActivityLabel(id)!))];
+}
+
+/**
+ * Bookkeeping for one Try again run on the ready screen. `begin` returns a
+ * token. `end(token)` stops the run only while that token is current, so the
+ * `finally` of a retry that was superseded cannot stop a newer one. `clear`
+ * stops any run and makes every earlier token stale; a new or cancelled setup
+ * run calls it, so the retry flag cannot stay set across runs.
+ */
+export interface BlockingRetryGate {
+  readonly running: boolean;
+  begin(): number;
+  end(token: number): boolean;
+  clear(): void;
+}
+
+export function createBlockingRetryGate(): BlockingRetryGate {
+  let current = 0;
+  let running = false;
+  return {
+    get running() {
+      return running;
+    },
+    begin() {
+      current += 1;
+      running = true;
+      return current;
+    },
+    end(token) {
+      if (token !== current) return false;
+      running = false;
+      return true;
+    },
+    clear() {
+      current += 1;
+      running = false;
+    },
+  };
 }

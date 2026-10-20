@@ -28,7 +28,7 @@
     <p class="muted" data-testid="brief-peek-dms-loading">Loading messages…</p>
   {:else if load.state === "error"}
     <p class="muted" data-testid="brief-peek-dms-error">{load.message}</p>
-    <button type="button" class="link" onclick={() => void brief.loadDms(uid, true)}>Try again</button>
+    <button type="button" class="ghost" onclick={() => void brief.loadDms(uid, true)}>Try again</button>
   {:else if !dms.length}
     <p class="muted" data-testid="brief-peek-dms-empty">No recent messages from {name}.</p>
   {:else}
@@ -50,11 +50,11 @@
       <button type="button" class="link" onclick={() => (showAll = true)}>Show {dms.length - 5} more</button>
     {/if}
   {/if}
-  <div class="acts">
-    {#if brief.canOpenThread}
+  {#if brief.canOpenThread}
+    <div class="acts">
       <button type="button" class="primary" onclick={() => brief.openThread(uid)} data-testid="brief-peek-open-thread">Open thread</button>
-    {/if}
-  </div>
+    </div>
+  {/if}
 </div>
 {#if load.state === "ready"}
   <div class="sec">
@@ -66,6 +66,7 @@
 
 <style>
   .muted {
+    margin: 0;
     color: var(--b-t2);
   }
   .dms {
@@ -82,15 +83,15 @@
     width: 100%;
     box-sizing: border-box;
     padding: 8px 10px;
-    border-radius: 10px;
-    box-shadow: var(--b-well);
+    border-radius: 8px;
+    background: rgb(var(--b-ink) / 0.04);
   }
   .meta {
     display: flex;
     align-items: center;
     gap: 6px;
     font-family: var(--b-mono);
-    font-size: 10.5px;
+    font-size: 11px;
     color: var(--b-t3);
   }
   .dot {
@@ -106,7 +107,7 @@
     -webkit-box-orient: vertical;
     overflow: hidden;
     margin-top: 3px;
-    font-size: 12.5px;
+    font-size: 13px;
     line-height: 1.4;
     color: var(--b-t1);
     white-space: pre-wrap;
@@ -121,17 +122,40 @@
     all: unset;
     cursor: pointer;
     margin-top: 6px;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--b-sun);
   }
-  .primary {
+  /* Buttons at the app's one button height, 8px corners; primary filled in page ink, Try again outlined. */
+  .primary,
+  .ghost {
     all: unset;
+    box-sizing: border-box;
     cursor: pointer;
-    font-size: 12.5px;
+    display: inline-flex;
+    align-items: center;
+    height: var(--hq-btn-h, 30px);
+    padding: 0 12px;
+    border-radius: 8px;
+    font-family: var(--b-code);
+    font-size: 10px;
     font-weight: 500;
-    padding: 6px 14px;
-    border-radius: 999px;
-    color: #1b1b1e;
-    background: rgba(255, 255, 255, 0.92);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    transition: background 0.15s;
+  }
+  .primary {
+    color: var(--b-bg);
+    background: rgb(var(--b-ink) / 0.92);
+  }
+  .primary:hover {
+    background: rgb(var(--b-ink) / 0.8);
+  }
+  .ghost {
+    margin-top: 12px;
+    color: var(--b-t1);
+    box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.14);
+  }
+  .ghost:hover {
+    background: rgb(var(--b-ink) / 0.05);
   }
 </style>

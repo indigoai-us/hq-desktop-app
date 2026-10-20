@@ -28,16 +28,32 @@
     compact?: boolean;
     /** For a decide item: the two answers the pill splits into on hover. */
     choices?: [string, string] | null;
+    /** What the start button does, when a card names it ("Write post-incident note"); the engine shows in the switch. */
+    label?: string | null;
   }
-  let { id, prompt, compact = false, choices = null }: Props = $props();
+  let { id, prompt, compact = false, choices = null, label: named = null }: Props = $props();
   const brief = useBrief();
   let copied = $state(false);
   const engine = $derived(ENGINES.find((e) => e.id === brief.engine)!);
-  const label = $derived(compact ? engine.label : `Start in ${engine.label}`);
+  const label = $derived(named ?? (compact ? engine.label : `Start in ${engine.label}`));
 
   async function copy(): Promise<void> {
     copied = await copyBriefPrompt(prompt);
     if (copied) setTimeout(() => (copied = false), 1400);
+  }
+  /** A launch in flight: the start buttons are disabled so a double click starts one session. */
+  let starting = $state(false);
+  async function go(text: string): Promise<void> {
+    if (starting) return;
+    starting = true;
+    try {
+      await brief.start(id, text);
+    } catch (err) {
+      // The start button stays, so the person can try again.
+      console.error("brief launch failed", err);
+    } finally {
+      starting = false;
+    }
   }
 </script>
 
@@ -47,12 +63,12 @@
     <span class="go choice" role="group" aria-label="Choose an answer" data-testid="brief-start-split">
       <span class="lbl" aria-hidden="true">{label}</span>
       <span class="alt">
-        <button type="button" data-testid="brief-choice" onclick={() => void brief.start(id, promptWithPick(prompt, choices[0]))}>{choices[0]}</button>
-        <button type="button" data-testid="brief-choice" onclick={() => void brief.start(id, promptWithPick(prompt, choices[1]))}>{choices[1]}</button>
+        <button type="button" data-testid="brief-choice" onclick={() => void go(promptWithPick(prompt, choices[0]))} disabled={starting}>{choices[0]}</button>
+        <button type="button" data-testid="brief-choice" onclick={() => void go(promptWithPick(prompt, choices[1]))} disabled={starting}>{choices[1]}</button>
       </span>
     </span>
   {:else}
-    <button type="button" class="go" data-testid="brief-start" onclick={() => void brief.start(id, prompt)}>
+    <button type="button" class="go" data-testid="brief-start" title={named ? `${named} in ${engine.label}` : undefined} disabled={starting} onclick={() => void go(prompt)}>
       {label}
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
     </button>
@@ -80,51 +96,58 @@
 </span>
 
 <style>
-  /* The label and the two answers share one cell, so the pill keeps one width
-     and only its contents swap on hover (or when an answer has focus). */
+  /* At rest the pill is just its label, sized to it; on hover (or when an answer
+     has focus) it swaps to the two answers. The answers never widen the resting pill. */
+  /* A floor wide enough for the two answers, so the pill does not grow when they open. */
   .choice {
-    display: inline-grid;
-    place-items: center;
-    cursor: default;
-  }
-  .choice > .lbl,
-  .choice > .alt {
-    grid-area: 1 / 1;
-    transition: opacity 0.2s;
-  }
-  .choice > .alt {
     display: inline-flex;
     align-items: center;
-    opacity: 0;
-    pointer-events: none;
+    justify-content: center;
+    min-width: 132px;
+    box-sizing: border-box;
+    cursor: default;
+  }
+  .choice > .alt {
+    display: none;
+    align-items: center;
   }
   .choice:hover > .lbl,
   .choice:focus-within > .lbl {
-    opacity: 0;
+    display: none;
   }
   .choice:hover > .alt,
   .choice:focus-within > .alt {
-    opacity: 1;
-    pointer-events: auto;
+    display: inline-flex;
+  }
+  /* The two answers as a segmented control inside the white pill: equal segments, 6px
+     corners, the one under the pointer on a soft grey, no divider and no heavy fill. */
+  /* Open: the two segments fill the pill edge to edge, 2px inside it. */
+  .launch .go.choice:is(:hover, :focus-within) {
+    padding: 0 2px;
+  }
+  .alt {
+    flex: 1;
+    gap: 2px;
   }
   .alt button {
     all: unset;
+    box-sizing: border-box;
     cursor: pointer;
     font: inherit;
     font-weight: 500;
-    color: inherit;
-    padding: 1px 9px;
-    border-radius: 999px;
-    transition: background 0.2s, color 0.2s;
-  }
-  .alt button + button {
-    border-left: 1px solid rgba(42, 26, 92, 0.2);
-    border-radius: 0 999px 999px 0;
+    color: #3f3f46;
+    flex: 1 1 0;
+    height: 24px;
+    padding: 0 10px;
+    display: inline-grid;
+    place-items: center;
+    border-radius: 6px;
+    transition: background 0.15s, color 0.15s;
   }
   .alt button:hover,
   .alt button:focus-visible {
-    background: #2a1a5c;
-    color: #fff;
+    background: rgba(24, 24, 27, 0.08);
+    color: #18181b;
     outline: none;
   }
 </style>

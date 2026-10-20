@@ -29,6 +29,7 @@
   import { focusIntoDialog, inertOutside, restoreFocus, trapTab } from "../chat/messaging/card-modal.js";
   import BadgeCard from "./BadgeCard.svelte";
   import BadgeCardBack from "./BadgeCardBack.svelte";
+  import CardBackLogo from "./CardBackLogo.svelte";
   import BadgeShareMenu from "./BadgeShareMenu.svelte";
   import { TIER_NAME, isAwarded, type ResolvedBadge } from "./badge-catalog.js";
   import { REVEAL_FLIP_MS, REVEAL_GLOW_MS, prefersReducedMotion } from "./badge-card.js";
@@ -47,9 +48,15 @@
     returnFocus?: HTMLElement | null;
     /** The pocket the card was tapped in: it flies out of it and back. */
     origin?: HTMLElement | null;
+    /**
+     * Draw inside this element instead of the app shell. The launch
+     * announcement passes its own layer: it sits above the shell and makes
+     * the shell inert, so a card drawn there would be hidden and unclickable.
+     */
+    host?: HTMLElement | null;
   }
 
-  let { open, badge, owner = null, reveal = false, onclose, returnFocus = null, origin = null }: Props = $props();
+  let { open, badge, owner = null, reveal = false, onclose, returnFocus = null, origin = null, host = null }: Props = $props();
 
   /** The card is flying back to its pocket; the stage fades out with it. */
   let closing = $state(false);
@@ -109,7 +116,8 @@
     // reveal opens from a notice that is gone by the time the card closes.
     const active = document.activeElement;
     const opener = active instanceof HTMLElement && active !== document.body ? active : null;
-    const ported = portal(node);
+    // Moved out of its place, so it removes itself on close either way.
+    const ported = host ? (host.appendChild(node), { destroy: () => node.remove() }) : portal(node);
     const releaseInert = inertOutside(node);
     const releaseShortcuts = suspendShortcuts();
     focusIntoDialog(node.querySelector<HTMLElement>('[role="dialog"]'));
@@ -186,7 +194,7 @@
           <div class="bc-back" aria-hidden={flipped ? undefined : "true"}>
             {#if reveal && phase !== "done"}
               <span class="bc-back-frame"></span>
-              <svg class="bc-back-logo" viewBox="0 0 577 330"><path d="M176.594 7.54293H243.149V318.135H176.594V185.024H66.5555V318.135H0V7.54293H66.5555V118.469H176.594V7.54293Z"/><path d="M529.768 329.671L496.49 296.837C484.806 304.824 471.938 311.036 457.888 315.473C443.985 319.91 429.343 322.128 413.961 322.128C392.959 322.128 373.214 317.987 354.727 309.705C336.239 301.274 319.97 289.738 305.919 275.096C291.869 260.306 280.85 243.223 272.863 223.848C264.877 204.325 260.883 183.397 260.883 161.064C260.883 138.879 264.877 118.099 272.863 98.7239C280.85 79.201 291.869 62.0445 305.919 47.2544C319.97 32.4642 336.239 20.928 354.727 12.6455C373.214 4.21517 392.959 0 413.961 0C435.111 0 454.93 4.21517 473.417 12.6455C491.905 20.928 508.174 32.4642 522.225 47.2544C536.275 62.0445 547.22 79.201 555.059 98.7239C563.045 118.099 567.039 138.879 567.039 161.064C567.039 177.185 564.82 192.641 560.383 207.431C556.094 222.073 550.178 235.754 542.635 248.474L576.8 282.639L529.768 329.671ZM413.961 255.573C420.025 255.573 425.867 254.907 431.487 253.576C437.255 252.245 442.802 250.396 448.126 248.03L429.491 229.394L476.523 182.362L492.94 198.779C495.454 193.011 497.303 186.947 498.486 180.587C499.818 174.227 500.483 167.72 500.483 161.064C500.483 148.049 498.191 135.847 493.606 124.459C489.169 113.07 482.957 103.087 474.97 94.5087C466.984 85.7826 457.74 78.9791 447.239 74.0984C436.886 69.0698 425.793 66.5554 413.961 66.5554C402.129 66.5554 390.962 69.0698 380.461 74.0984C370.108 78.9791 360.939 85.7826 352.952 94.5087C344.965 103.087 338.679 113.07 334.094 124.459C329.657 135.847 327.439 148.049 327.439 161.064C327.439 174.079 329.657 186.355 334.094 197.892C338.679 209.28 344.965 219.337 352.952 228.063C360.939 236.642 370.108 243.371 380.461 248.252C390.962 253.133 402.129 255.573 413.961 255.573Z"/></svg>
+              <CardBackLogo class="bc-back-logo" />
             {:else}
               <BadgeCardBack {badge} {owner} interactive={canFlip && flipped} />
             {/if}
@@ -258,7 +266,8 @@
   [data-phase="done"] .bc-flip.flipped .bc-face { visibility: hidden; }
   [data-phase="done"] .bc-back { visibility: hidden; transition: visibility 0s linear 236ms; }
   [data-phase="done"] .bc-flip.flipped .bc-back { visibility: visible; }
-  .bc-foot { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  /* Room between the owner line and the actions (owner review 2026-10-16). */
+  .bc-foot { display: flex; flex-direction: column; align-items: center; gap: 12px; }
   .bc-actions { display: flex; align-items: center; gap: 12px; }
   .bc-owner { margin: 0; color: rgba(250, 250, 250, 0.56); }
   /* A quiet text button under the card; it dims on hover, no underline. */
@@ -283,7 +292,7 @@
     backface-visibility: hidden; -webkit-backface-visibility: hidden;
   }
   .bc-back-frame { position: absolute; inset: 2.9%; border-radius: 3.2% / 2.3%; border: 1px solid var(--edge); }
-  .bc-back-logo { width: 26%; fill: rgba(244, 239, 232, 0.5); }
+  .bc-back :global(.bc-back-logo) { width: 26%; fill: rgba(244, 239, 232, 0.5); }
   .t1 { --edge: #785037; --glow: rgba(199, 128, 79, 0.5); }
   .t2 { --edge: #686b79; --glow: rgba(170, 176, 198, 0.5); }
   .t3 { --edge: #917125; --glow: rgba(227, 173, 44, 0.5); }

@@ -520,7 +520,9 @@ mod tests {
             .find(|(key, _)| key == "folder")
             .map(|(_, value)| value.into_owned())
             .unwrap();
-        assert_eq!(folder, child.to_string_lossy());
+        // On Windows `canonicalize` adds `\\?\`; the link must carry the
+        // plain path instead. No-op on macOS and Linux.
+        assert_eq!(folder, child.to_string_lossy().trim_start_matches(r"\\?\"));
         assert!(parsed.query_pairs().any(|(key, _)| key == "q"));
     }
 
@@ -559,7 +561,9 @@ mod tests {
             .find(|(key, _)| key == "folder")
             .map(|(_, value)| value.into_owned())
             .unwrap();
-        assert_eq!(folder, root.to_string_lossy());
+        // On Windows `canonicalize` adds `\\?\`; the link must carry the
+        // plain path instead. No-op on macOS and Linux.
+        assert_eq!(folder, root.to_string_lossy().trim_start_matches(r"\\?\"));
         assert!(parsed
             .query_pairs()
             .any(|(key, value)| key == "q" && value.contains("/setup")));
@@ -638,6 +642,67 @@ mod tests {
         assert!(
             !folder.starts_with(r"\\?\"),
             "deep link folder must not carry the Win32 verbatim prefix: {folder}"
+        );
+    }
+
+    #[test]
+    fn encoded_deep_link_never_carries_an_encoded_verbatim_prefix() {
+        // The Windows bug report showed `folder=%5C%5C%3F%5CC%3A%5C...` in
+        // the link Claude received. Encode the rendered folder exactly as the
+        // preflight does and check the encoded prefix is gone.
+        let mut url = Url::parse("claude://code/new?q=%2Fsetup").unwrap();
+        url.query_pairs_mut().append_pair(
+            "folder",
+            &deep_link_folder_value(Path::new(r"\\?\C:\Users\person\hq")),
+        );
+        let encoded = url.to_string();
+        assert!(
+            !encoded.to_ascii_uppercase().contains("%5C%5C%3F%5C"),
+            "deep link must not carry the encoded verbatim prefix: {encoded}"
+        );
+        assert!(
+            encoded.contains("folder=C%3A%5CUsers%5Cperson%5Chq"),
+            "deep link folder must be the plain drive path: {encoded}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn preflight_rewrites_an_encoded_verbatim_folder_to_a_plain_drive_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("HQ");
+        scaffold_hq(&root);
+        let root = fs::canonicalize(&root).unwrap();
+        let verbatim = root.to_string_lossy().into_owned();
+        assert!(
+            verbatim.starts_with(r"\\?\"),
+            "canonicalize on Windows yields a verbatim path: {verbatim}"
+        );
+        let mut incoming = Url::parse("claude://code/new?q=%2Fsetup").unwrap();
+        incoming.query_pairs_mut().append_pair("folder", &verbatim);
+        assert!(incoming
+            .to_string()
+            .to_ascii_uppercase()
+            .contains("%5C%5C%3F%5C"));
+
+        let rebound = preflight_claude_code_url(incoming.as_str()).unwrap();
+        assert!(
+            !rebound.to_ascii_uppercase().contains("%5C%5C%3F%5C"),
+            "rebound deep link must not carry the encoded verbatim prefix: {rebound}"
+        );
+        let folder = Url::parse(&rebound)
+            .unwrap()
+            .query_pairs()
+            .find(|(key, _)| key == "folder")
+            .map(|(_, value)| value.into_owned())
+            .unwrap();
+        let bytes = folder.as_bytes();
+        assert!(
+            bytes.len() > 3
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && bytes[2] == b'\\',
+            "deep link folder must be a plain drive path: {folder}"
         );
     }
 

@@ -602,10 +602,11 @@ describe('master automatic-updates switch', () => {
     expect(updater.match(/\.envs\(NPM_INSTALL_CHILD_ENV\.iter\(\)\.copied\(\)\)/g) ?? [])
       .toHaveLength(3);
     // First-run qmd/hq-cli installs use the same updater command builder, via
-    // the managed install's cache-aware streaming seam.
+    // the managed install's cache-aware streaming seam, run on a blocking
+    // thread under the install heartbeat.
     expect(installer).toContain('crate::commands::hq_cli_update::npm_install_command(');
     expect(installer).toContain(
-      'run_streaming_with_npm_cache(app, npm, &arg_refs, Some(npm_cache)).await',
+      'run_blocking_with_install_heartbeat( move || { let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>(); run_streaming_with_npm_cache_blocking( &runner_app, &runner_npm, &arg_refs, Some(&runner_cache), ) },',
     );
     expect(cliUpdateCore).not.toContain('NODE_LLAMA_CPP_POSTINSTALL');
   });

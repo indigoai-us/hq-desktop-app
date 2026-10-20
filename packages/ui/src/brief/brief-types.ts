@@ -160,6 +160,8 @@ export interface BriefDecision {
   important?: boolean;
   /** Launch prompt written by the brief run; replaces the built-in one. */
   prompt?: string;
+  /** The piece of work this item is about ("owner/repo#248"). Items that share one are the same thing to the person. */
+  thread?: string;
   detail?: {
     why: string;
     unlocks: BriefLine[];
@@ -400,6 +402,10 @@ export interface BriefInput {
   prWindow?: { from: string; to: string; total: number; merged: number; byRepo: { repo: string; total: number; merged: number }[] } | null;
   /** The calendar strip is illustrative (no live calendar). */
   calendarSample?: boolean;
+  /** One quiet line per source that could not be read ("Calendar could not be read."). Never a priority. */
+  sourceNotes?: string[];
+  /** The count line the welcome reveal ended on ("412 sessions read · 6 repos"), carried into the welcome edition. */
+  runStats?: string | null;
   /** Local calendar date of the brief, YYYY-MM-DD, from brief-data.json window.today. The only source of weekday. */
   today?: string;
   /** brief.json lead_hint. */

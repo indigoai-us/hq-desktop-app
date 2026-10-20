@@ -1,5 +1,6 @@
 import type { BriefSweepSource } from "./brief-data.js";
 import { briefRunPath } from "./brief-runs.js";
+import { parseWelcomeFields, type WelcomeBriefFields } from "./brief-welcome-contract.js";
 
 export interface BriefWelcome {
   skills: number;
@@ -10,6 +11,10 @@ export interface BriefWelcome {
   gettingStarted?: string;
   nextSteps?: string[];
   error?: string;
+  /** The contract fields the welcome edition draws from (brief-welcome-contract.ts). */
+  fields: WelcomeBriefFields;
+  /** The brief.json `welcome` object as read, for the first view's model (brief-first-view.ts). */
+  raw?: Record<string, unknown>;
 }
 const object = (value: unknown): Record<string, unknown> | null => value != null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const count = (value: unknown): number => typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
@@ -17,10 +22,14 @@ const count = (value: unknown): number => typeof value === "number" && Number.is
 /** Welcome is optional. A failed enrichment must never hide the useful brief. */
 export function parseWelcome(value: unknown): BriefWelcome | null {
   const row = object(value);
-  if (!row || (row.first_run !== true && typeof row.getting_started !== "string" && typeof row.error !== "string")) return null;
+  if (!row) return null;
+  const fields = parseWelcomeFields(row);
+  if (row.first_run !== true && typeof row.getting_started !== "string" && typeof row.error !== "string" && !Object.keys(fields).some((k) => k !== "sessions")) return null;
   const imported = object(row.import);
   const sessions = object(row.sessions);
   return {
+    fields,
+    raw: row,
     skills: count(imported?.skills),
     conversations: count(imported?.conversations),
     sessions: count(sessions?.total),

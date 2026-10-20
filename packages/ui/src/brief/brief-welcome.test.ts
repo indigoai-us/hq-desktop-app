@@ -10,12 +10,21 @@ describe("welcome edition", () => {
     expect(parseWelcome({first_run: false, getting_started: "A personal task first.", next_steps: [{kind: "connect_company", reason: "Join your team."}]})).toMatchObject({gettingStarted: "A personal task first.", nextSteps: ["Join your team."], connectCompany: true});
   });
   it("reads personal welcome content in the skill's schema", () => {
-    expect(parseWelcome({ first_run: true, import: { skills: 4, conversations: 12 }, sessions: { total: 31 }, apps: ["Claude Code", "Codex"], next_steps: [{kind: "connect_company"}] })).toEqual({ skills: 4, conversations: 12, sessions: 31, apps: ["Claude Code", "Codex"], connectCompany: true });
+    const raw = { first_run: true, import: { skills: 4, conversations: 12 }, sessions: { total: 31 }, apps: ["Claude Code", "Codex"], next_steps: [{kind: "connect_company"}] };
+    expect(parseWelcome(raw)).toEqual({
+      raw,
+      skills: 4, conversations: 12, sessions: 31, apps: ["Claude Code", "Codex"], connectCompany: true,
+      fields: {
+        sessions: { total: 31, claude: 0, codex: 0, days_seen: 0 },
+        actions: [{ id: "connect-company", kind: "connect_company", label: "Create or join a company", reason: "", launch_prompt: "", primary: false }],
+      },
+    });
   });
   it("ignores absent and malformed welcome data while retaining enrichment errors", () => {
     for (const value of [null, {}, [], "welcome"]) expect(parseWelcome(value)).toBeNull();
     expect(parseWelcome({error: "unavailable"})).toMatchObject({error: "unavailable"});
-    expect(parseWelcome({first_run: true, apps: {}, sessions: {total: -5}, next_steps: "bad"})).toEqual({skills: 0, conversations: 0, sessions: 0, apps: [], connectCompany: false});
+    const malformed = {first_run: true, apps: {}, sessions: {total: -5}, next_steps: "bad"};
+    expect(parseWelcome(malformed)).toEqual({raw: malformed, skills: 0, conversations: 0, sessions: 0, apps: [], connectCompany: false, fields: {sessions: {total: 0, claude: 0, codex: 0, days_seen: 0}}});
   });
   it("falls back to raw sweep welcome when synthesized output omits it", async () => {
     expect(await readRunWelcome({readHqFile: async p => p.endsWith("brief-data.json") ? JSON.stringify({welcome: {first_run: true}}) : "{}"}, "brief-20261017-090000")).not.toBeNull();

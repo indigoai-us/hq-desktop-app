@@ -241,3 +241,103 @@ export function calendarDraft(gap: FocusGap, task: string | null, dateLabel: str
     "Protected focus time from your Daily Brief. Not booked yet: paste this into your calendar.",
   ].join("\n");
 }
+
+/**
+ * The card's headline split for the hero: the protected block's length on its
+ * own, and the rest of the sentence as a two-line caption. Null when the line
+ * does not lead with the protected block (whole day open, booked solid, after
+ * hours), so the card says it plainly.
+ */
+export function runwayHero(r: Runway): { num: string; lines: string[] } | null {
+  if (!r.protect) return null;
+  const title = runwayTitle(r);
+  const num = minutesText(r.protect.minutes);
+  if (!title.startsWith(`${num} `)) return null;
+  const rest = title.slice(num.length + 1);
+  return { num, lines: rest.split(/(?<=\.)\s+/) };
+}
+
+/** Where a caption hangs under the runway (percentages of the track's width). */
+export interface CaptionSpot {
+  left: number;
+  width: number;
+  /** "start": the stem is the caption's left edge, text reads from it; "end": its right edge, text right-aligned. */
+  side: "start" | "end";
+  /** No room under its own block: the stem cannot drop straight, an elbow leads to it from `reach`. */
+  moved: boolean;
+  /** Where on the block the stem (or elbow) leaves it. */
+  reach: number;
+}
+
+const r3 = (x: number) => Math.floor(x * 1000 + 1e-6) / 1000;
+
+/**
+ * Where each caption sits under the runway, as percentages of its width, so
+ * each one hangs straight down from its own block. `blocks` are the shown
+ * gaps' [start, end] in time order; `mins` the width each caption needs. A
+ * caption hangs from its block's start (or anywhere along the block when a
+ * neighbour crowds it) and reads rightwards; when the day runs out to the
+ * right it hangs from the block's end and reads leftwards. Captions then grow
+ * into the free space beside them, up to `maxPct`. When no straight hang fits
+ * every caption (a crowded day), they are spread in time order and each one
+ * that missed its block is marked `moved`, for an elbow.
+ */
+export function captionLayout(blocks: readonly { start: number; end: number }[], mins: readonly number[], maxPct = 50, inset = 1.5): CaptionSpot[] {
+  const n = blocks.length;
+  if (!n) return [];
+  const total = mins.reduce((a, b) => a + b, 0);
+  const m = mins.map((x) => (total > 100 ? (x * 100) / total : x));
+  const after = (i: number) => m.slice(i + 1).reduce((a, b) => a + b, 0);
+  const eps = 1e-9;
+  const spots: { l: number; r: number; side: "start" | "end"; reach: number }[] = [];
+  let c = 0;
+  for (let i = 0; i < n; i++) {
+    const { start: s, end: e } = blocks[i]!;
+    const limit = 100 - after(i);
+    const l = Math.max(s, c);
+    if (l <= Math.max(s, e - inset) + eps && l + m[i]! <= limit + eps) {
+      spots.push({ l, r: l + m[i]!, side: "start", reach: l });
+      c = l + m[i]!;
+      continue;
+    }
+    const r = Math.min(e, limit);
+    if (r + eps >= Math.max(c + m[i]!, Math.min(e, s + inset))) {
+      spots.push({ l: r - m[i]!, r, side: "end", reach: r });
+      c = r;
+      continue;
+    }
+    break;
+  }
+
+  if (spots.length === n) {
+    // Grow into the free space: a start caption rightwards, an end caption leftwards; two
+    // captions reading towards each other split what lies between them.
+    for (let i = 0; i <= n; i++) {
+      const a = spots[i - 1];
+      const b = spots[i];
+      if (a && b) {
+        if (a.side === "start" && b.side === "end") a.r = b.l = (a.r + b.l) / 2;
+        else if (a.side === "start") a.r = b.l;
+        else if (b.side === "end") b.l = a.r;
+      } else if (a && a.side === "start") a.r = 100;
+      else if (b && b.side === "end") b.l = 0;
+    }
+    return spots.map((o, i) => {
+      const cap = Math.max(m[i]!, maxPct);
+      if (o.side === "start") o.r = Math.min(o.r, o.l + cap);
+      else o.l = Math.max(o.l, o.r - cap);
+      return { left: r3(o.l), width: r3(o.r - o.l), side: o.side, moved: false, reach: r3(o.reach) };
+    });
+  }
+
+  // Crowded: spread in time order, as close to each block's start as the widths allow.
+  const left = blocks.map((b) => Math.max(0, Math.min(100, b.start)));
+  for (let i = 1; i < n; i++) left[i] = Math.max(left[i]!, left[i - 1]! + m[i - 1]!);
+  for (let i = n - 1; i >= 0; i--) left[i] = Math.max(0, Math.min(left[i]!, i === n - 1 ? 100 - m[i]! : left[i + 1]! - m[i]!));
+  return left.map((l, i) => {
+    const { start: s, end: e } = blocks[i]!;
+    const hi = Math.max(s, e - inset);
+    const moved = l < s - 0.25 || l > hi + 0.25;
+    return { left: r3(l), width: r3((i === n - 1 ? 100 : left[i + 1]!) - l), side: "start" as const, moved, reach: r3(l < s ? s : Math.min(l, hi)) };
+  });
+}

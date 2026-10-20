@@ -12,14 +12,17 @@
  * means it never opens again.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { desktopFileReader, desktopPathError } from "../test-support/desktop-file-read.js";
 import { mount, tick, unmount } from "svelte";
 import { failure, FIRST_RUN_FOUND_APPS_FLAG, HQ_ANYWHERE_RUNTIME_FLAG, ok, VISUAL_FIRST_RUN_FLAG, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
+import core from "../brief/fixtures/core-1432-welcome.json";
 import { clearToasts } from "./toast-stack.svelte.js";
 import ExtraPageProbe from "./ExtraPageProbe.test.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
+import { takePendingChannelOpen, takePendingDmRequests } from "../chat/open-target.js";
 import { SETUP_ROW_ID, WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
 import { dismissToast, toastItems } from "./toast-stack.svelte.js";
 import { SETUP_BOT_COPY_STATIC, SETUP_BOT_KICKOFF, SETUP_BOT_NAMES, setupBotIntro } from "../chat/setup-bot.js";
@@ -86,6 +89,9 @@ interface AdapterOptions {
   /** The host's hq-sync.log writer; absent leaves the host without one. */
   logToFile?: (tag: string, message: string) => Promise<unknown>;
 }
+
+/** The daily-brief skill the brief dispatch looks for before it sends the job. */
+const DAILY_BRIEF_SKILL = ".claude/skills/daily-brief/SKILL.md";
 
 function adapter({
   create,
@@ -188,7 +194,14 @@ function adapter({
     },
     ...(activeCompany !== undefined
       ? {
-          files: { getFileContent: async () => ({ ok: false as const, reason: "not found" }) },
+          files: {
+            // The daily-brief skill is installed in this person's HQ (the
+            // brief dispatch checks for it first); every other read misses.
+            getFileContent: async (path: string) =>
+              path === DAILY_BRIEF_SKILL
+                ? ok("# daily-brief")
+                : { ok: false as const, reason: "not found" },
+          },
         }
       : {}),
     ...(aiApps ? { integrations: {} } : {}),
@@ -228,6 +241,11 @@ let component: ReturnType<typeof mount> | null = null;
 
 beforeEach(() => {
   window.localStorage.clear();
+  window.sessionStorage.clear();
+  // A channel open an earlier test asked for (and that test's shell did not
+  // live to take) must not open in this one.
+  takePendingChannelOpen();
+  takePendingDmRequests();
 });
 
 afterEach(async () => {
@@ -372,6 +390,17 @@ describe("visual first run, flag off", () => {
     await vi.waitFor(() => expect(q('[data-testid="bot-progress-card"]')).toBeTruthy());
     expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1");
     expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBeNull();
+  });
+
+  // PR 1670: a relaunch mid first run landed the person on #welcome and the
+  // log could not say what moved them there.
+  it("logs the automatic boot pick of #welcome with its reason and no names", async () => {
+    const log = logSink();
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const { platform } = adapter({ create, flag: false, logToFile: log.logToFile });
+    await boot(platform);
+    await vi.waitFor(() => expect(log.of("nav")).toContain("kind=nav event=auto-welcome reason=boot-welcome-first"));
+    expect(log.of("shell")).toEqual(["kind=shell event=mount reason=none"]);
   });
 
   it("does not ask for the flag at all once setup has run here", async () => {
@@ -1243,15 +1272,18 @@ describe("welcome report (US-009)", () => {
   it("with no company the welcome report's job still goes out, in personal scope, and is marked sent with no company note", async () => {
     const log = logSink();
     const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: null, logToFile: log.logToFile });
-    await boot(platform);
+    await boot(platform, DesktopApp, mount, { companies: [], rosterStatus: "ready" });
     await decisionShown();
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
     await settle();
     await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
     const [to, body] = briefJobs(sendDm)[0]!;
     expect(to).toBe(SETUP_BOT_UID);
-    expect(body.split("\n")[0]).toMatch(/^\/daily-brief --all --run-id brief-\d{8}-\d{6} --welcome$/);
-    expect(body).toContain("every company in the person's lock");
+    // hq-core 16.0.30's daily-brief: no company is `--personal`, and the skill
+    // decides the welcome edition on its own, so the job never says `--welcome`.
+    expect(body.split("\n")[0]).toMatch(/^\/daily-brief --personal --run-id brief-\d{8}-\d{6}$/);
+    expect(body).not.toContain("--welcome");
+    expect(body).toContain("Build a personal brief");
     await vi.waitFor(() => expect(localStorage.getItem("hq.welcome-report.sent")).toBe(SETUP_BOT_UID));
     await vi.waitFor(() => expect(log.of("welcome-report")).toEqual(["kind=welcome-report event=dispatched"]));
     await vi.waitFor(() => expect(q('[data-testid="welcome-report-loading"]')).toBeTruthy());
@@ -1260,10 +1292,93 @@ describe("welcome report (US-009)", () => {
     expect(briefJobs(sendDm)).toHaveLength(1);
   }, 15_000);
 
+  it("while the roster is still loading the welcome report's job keeps all scope, never the personal brief", async () => {
+    const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: null });
+    // The shell starts `companies` as an empty list before the roster lands.
+    await boot(platform, DesktopApp, mount, { companies: [], rosterStatus: "loading" });
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
+    const [, body] = briefJobs(sendDm)[0]!;
+    expect(body.split("\n")[0]).toMatch(/^\/daily-brief --all --run-id brief-\d{8}-\d{6}$/);
+    expect(body).not.toContain("--personal");
+  }, 15_000);
+
+  it("with no daily-brief skill in the person's HQ (a core older than 16.0.30) the welcome report's job is never sent and the update line shows at once", async () => {
+    const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: null });
+    // The desktop file command's own path check and missing-file error.
+    const desktop = desktopFileReader({});
+    (platform as unknown as { files: { getFileContent: (path: string) => Promise<unknown> } }).files.getFileContent = desktop.getFileContent;
+    await boot(platform, DesktopApp, mount, { companies: [], rosterStatus: "ready" });
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"] [data-testid="brief-retry"]')).toBeTruthy(), {
+      timeout: 10_000,
+    });
+    expect(briefJobs(sendDm)).toHaveLength(0);
+    const report = q('[data-testid="welcome-report"]')!;
+    expect(report.querySelector('[data-testid="brief-dawn-step"]')?.textContent?.trim()).toBe(
+      "Your HQ needs an update before it can build a brief. Update HQ Core in Settings, under Updates, then try again.",
+    );
+    expect(report.querySelector('[data-testid="brief-retry"]')?.textContent?.trim()).toBe("Try again");
+    expect(report.textContent ?? "").not.toMatch(/bot|skill|check that|is running|taking longer/i);
+    // Every place the bot can find the skill was looked at, each a path the desktop accepts.
+    // The report also reads its own brief files; only the skill reads are listed here.
+    expect([...new Set(desktop.reads.filter((path) => path.endsWith("/SKILL.md")))]).toEqual([
+      ".claude/skills/daily-brief/SKILL.md",
+      "personal/skills/daily-brief/SKILL.md",
+    ]);
+    expect(desktop.reads.filter((path) => desktopPathError(path) != null)).toEqual([]);
+  }, 15_000);
+
+  it("with only the personal daily-brief skill the welcome report's job is sent after reading personal/skills/daily-brief/SKILL.md", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: null });
+    const desktop = desktopFileReader({ "personal/skills/daily-brief/SKILL.md": "---\nname: daily-brief\n---" });
+    (platform as unknown as { files: { getFileContent: (path: string) => Promise<unknown> } }).files.getFileContent = desktop.getFileContent;
+    await boot(platform, DesktopApp, mount, { companies: [], rosterStatus: "ready" });
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
+    expect(desktop.served).toContain("personal/skills/daily-brief/SKILL.md");
+    expect(desktop.reads.filter((path) => desktopPathError(path) != null)).toEqual([]);
+    expect(warn.mock.calls.map((c) => c.join(" ")).join("\n")).not.toMatch(/could not check the skill/);
+    expect(q('[data-testid="welcome-report"] [data-testid="brief-dawn-step"]')?.textContent ?? "").not.toMatch(/needs an update|taking longer/);
+    warn.mockRestore();
+  }, 15_000);
+
+  it("an HQ folder that cannot be read is not called a missing skill: no job, the HQ folder line, an HQ folder log", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: null });
+    (platform as unknown as { files: { getFileContent: (path: string) => Promise<unknown> } }).files.getFileContent = async () => ({
+      ok: false as const,
+      reason: "read failed",
+      message: "could not resolve HQ folder: No such file or directory (os error 2)",
+    });
+    await boot(platform, DesktopApp, mount, { companies: [], rosterStatus: "ready" });
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"] [data-testid="brief-retry"]')).toBeTruthy(), {
+      timeout: 10_000,
+    });
+    expect(briefJobs(sendDm)).toHaveLength(0);
+    expect(q('[data-testid="welcome-report"] [data-testid="brief-dawn-step"]')?.textContent?.trim()).toBe(
+      "HQ could not open your HQ folder. Change it in Settings, under Sync, then try again.",
+    );
+    const logged = warn.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(logged).toMatch(/could not read the HQ folder/);
+    expect(logged).not.toMatch(/could not check the skill/);
+    warn.mockRestore();
+  }, 15_000);
+
   it("a brief made by hand with no company goes out across personal scope without a company toast", async () => {
     localStorage.setItem("hq.welcome-report.sent", SETUP_BOT_UID);
     const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: null });
-    await boot(platform);
+    await boot(platform, DesktopApp, mount, { companies: [], rosterStatus: "ready" });
     await decisionShown();
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
     await settle();
@@ -1273,7 +1388,7 @@ describe("welcome report (US-009)", () => {
     expect(briefJobs(sendDm)).toHaveLength(0);
     q<HTMLButtonElement>('[data-testid="brief-create"]')!.click();
     await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
-    expect(briefJobs(sendDm)[0]![1].split("\n")[0]).toMatch(/^\/daily-brief --all --run-id /);
+    expect(briefJobs(sendDm)[0]![1].split("\n")[0]).toMatch(/^\/daily-brief --personal --run-id /);
     expect(q('[data-testid="brief-failed"]')?.textContent ?? "").not.toContain("Open a company first");
     expect(toastItems().some(t => t.key === "brief-add-company")).toBe(false);
     expect(q('[data-testid="new-company-sheet"]')).toBeNull();
@@ -1394,9 +1509,113 @@ describe("welcome report (US-009)", () => {
     expect(q('[data-testid="welcome-report"]')).toBeTruthy();
   });
 
+  /** Unmount the shell and mount it again, as a reload of the window does. */
+  async function reloadShell(platform: PlatformAdapter): Promise<void> {
+    if (component) await unmount(component);
+    component = null;
+    host.remove();
+    await boot(platform);
+  }
+  const briefInRail = () => Boolean(q('[data-rail-id="brief"]'));
+
+  // VM run 2026-10-16 (6a52505e7): the window reloaded about 30 s after the
+  // held report showed. The report state was only in memory, so the reload
+  // dropped Daily Brief from the rail and sent the person to #welcome.
+  it("a reload while the welcome report is open keeps Daily Brief in the rail and puts the report back", async () => {
+    const { platform } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: "indigo" });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    expect(briefInRail()).toBe(true);
+
+    await reloadShell(platform);
+    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy(), { timeout: 5000 });
+    await settle(20);
+    expect(q('[data-testid="welcome-report"]')).toBeTruthy();
+    expect(q('[data-testid="setup-hero"]')).toBeNull();
+    expect(briefInRail()).toBe(true);
+  }, 20_000);
+
+  it("logs each shell mount with what the session marker restored", async () => {
+    const log = logSink();
+    const { platform } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: "indigo", logToFile: log.logToFile });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+
+    await reloadShell(platform);
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy(), { timeout: 5000 });
+    q<HTMLButtonElement>('[data-rail-id="home"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeNull());
+
+    await reloadShell(platform);
+    await settle(20);
+    expect(log.of("shell")).toEqual([
+      "kind=shell event=mount reason=none",
+      "kind=shell event=mount reason=report-open",
+      "kind=shell event=mount reason=report-left",
+    ]);
+    for (const line of log.of("nav")) expect(line).toMatch(/^kind=nav event=auto-welcome reason=[a-z0-9-]+$/);
+  }, 20_000);
+
+  it("a reload after the person left the welcome report keeps Daily Brief in the rail and does not open it again", async () => {
+    const { platform } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: "indigo" });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    q<HTMLButtonElement>('[data-rail-id="home"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeNull());
+
+    await reloadShell(platform);
+    await settle(20);
+    expect(q('[data-testid="welcome-report"]')).toBeNull();
+    expect(briefInRail()).toBe(true);
+    q<HTMLButtonElement>('[data-rail-id="brief"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    await settle(10);
+    expect(q('[data-testid="welcome-report"]')).toBeTruthy();
+  }, 20_000);
+
+  it("signing out forgets the welcome report, so the next sign-in starts without it", async () => {
+    const { platform } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: "indigo" });
+    const onsignout = vi.fn(async () => {});
+    await boot(platform, DesktopApp, mount, { onsignout });
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    expect(window.sessionStorage.getItem("hq.welcome-report.session")).toBe("open:prs_test");
+
+    q<HTMLButtonElement>('[data-testid="rail-you"]')!.click();
+    await settle();
+    q<HTMLButtonElement>('[data-testid="account-sign-out"]')!.click();
+    await settle();
+    document.querySelector<HTMLButtonElement>('[data-testid="confirm-dialog-ok"]')!.click();
+    await vi.waitFor(() => expect(onsignout).toHaveBeenCalledOnce());
+    expect(window.sessionStorage.getItem("hq.welcome-report.session")).toBeNull();
+  }, 20_000);
+
+  it("the welcome report kept for one person does not carry over to another account in the same window", async () => {
+    window.sessionStorage.setItem("hq.welcome-report.session", "open:prs_someone_else");
+    const { platform } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: "indigo" });
+    window.localStorage.setItem(VISUAL_FIRST_RUN_DONE_KEY, "1");
+    window.localStorage.setItem(WELCOME_SETUP_RUN_KEY, "1");
+    await boot(platform);
+    await settle(20);
+    expect(q('[data-testid="welcome-report"]')).toBeNull();
+    expect(briefInRail()).toBe(false);
+  });
+
   /**
-   * A host whose scan finds Linear. By default the person has one company,
-   * the one the takeover would have picked; `companies` lists their slugs.
+   * A host whose scan finds Linear. By default the person has one company;
+   * `companies` lists their slugs.
    */
   async function bootWithApps(foundApps: boolean, companies: readonly string[] = ["northwind"]): Promise<void> {
     const hasFeatureImpl = async (name: string) =>
@@ -1435,24 +1654,45 @@ describe("welcome report (US-009)", () => {
     await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
   }
 
-  it("found-apps flag on: the connect card offers the apps the scan found", async () => {
+  it("found-apps flag on: the report suggests the apps the scan found, under the status card, with Connect", async () => {
     await bootWithApps(true);
     await vi.waitFor(() =>
-      expect(q('[data-testid="welcome-connect-card"] [data-testid="first-run-app-linear.app"]')).toBeTruthy(),
+      expect(q('[data-testid="welcome-report-connect"] [data-testid="suggested-app-connect-linear.app"]')).toBeTruthy(),
     );
+    expect(q<HTMLElement>('[data-testid="suggested-app-linear.app"]')?.dataset.kind).toBe("tile");
   });
 
-  it("found-apps flag on, but no company the person picked: no connect card, so no app lands in an arbitrary company", async () => {
+  it("found-apps flag on, two companies and none picked: the report connects in the first company, with no new-company step", async () => {
     await bootWithApps(true, ["northwind", "acme"]);
-    await settle(20);
-    expect(q('[data-testid="welcome-report"]')).toBeTruthy();
-    expect(q('[data-testid="welcome-connect-card"]')).toBeNull();
+    await vi.waitFor(() =>
+      expect(q('[data-testid="welcome-report-connect"] [data-testid="suggested-app-connect-linear.app"]')).toBeTruthy(),
+    );
+    expect(q<HTMLElement>('[data-testid="suggested-app-linear.app"]')?.dataset.kind).toBe("tile");
+    expect(q('[data-testid="new-company-sheet"]')).toBeNull();
   });
 
-  it("found-apps flag off: the welcome report has no connect card", async () => {
+  it("found-apps flag on, but no company at all: the suggestions show, and Connect opens a new company", async () => {
+    await bootWithApps(true, []);
+    await vi.waitFor(() => expect(q('[data-testid="suggested-app-linear.app"]')).toBeTruthy());
+    expect(q<HTMLElement>('[data-testid="suggested-app-linear.app"]')?.dataset.kind).toBe("found");
+    expect(q('[data-testid="new-company-sheet"]')).toBeNull();
+    q<HTMLButtonElement>('[data-testid="suggested-app-connect-linear.app"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="new-company-sheet"]')).toBeTruthy());
+    expect(q('[data-testid="suggested-app-connect-linear.app"]')?.textContent?.trim()).toBe("Waiting");
+    q<HTMLButtonElement>('[data-testid="new-company-scrim"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="new-company-sheet"]')).toBeNull());
+    await vi.waitFor(() =>
+      expect(q('[data-testid="suggested-app-connect-linear.app"]')?.textContent?.trim()).toBe("Connect"),
+    );
+    expect(q('[data-testid="welcome-report"]')).toBeTruthy();
+  });
+
+  it("found-apps flag off: the welcome report suggests no apps", async () => {
     await bootWithApps(false);
     await settle(20);
-    expect(q('[data-testid="welcome-connect-card"]')).toBeNull();
+    expect(q('[data-testid="welcome-report"]')).toBeTruthy();
+    expect(q('[data-testid="connect-suggested-apps"]')).toBeNull();
   });
 });
 
@@ -2695,6 +2935,60 @@ describe("visual first run, the detected tool's sign-in", () => {
     expect(launchClaudeCode).not.toHaveBeenCalled();
     expect(launchCliInTerminal).not.toHaveBeenCalled();
   }, 20_000);
+
+  it("Open HQ in Codex on a Codex-primary welcome brief opens Codex, even after Continue in Claude Code (US-019)", async () => {
+    const tool = signsInThroughBrowser("claude");
+    tool.state.connect = true;
+    const launchClaudeCode = vi.fn(async () => ok(undefined));
+    const openClaudeCodeLink = vi.fn(async () => ok(undefined));
+    const launchCodexWorkspace = vi.fn(async () => ok(undefined));
+    const launchCliInTerminal = vi.fn(async () => ok(undefined));
+    const { platform, sendDm } = adapter({
+      flag: true,
+      bots: [runningSetupBot],
+      activeCompany: "indigo",
+      preflightImpl: tool.preflightImpl,
+      loginStart: tool.loginStart,
+      loginStatus: tool.loginStatus,
+      shell: {
+        detectAiTools: async () => ok({ claude_cli: true, claude_desktop: false, codex_cli: false, codex_desktop: true, grok_cli: false, any: true }),
+        launchClaudeCode,
+        openClaudeCodeLink,
+        launchCodexWorkspace,
+        launchCliInTerminal,
+      },
+    });
+    scanFinds(platform, "claude-code");
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    // The welcome report's job goes out; its run writes a Codex-primary brief.
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
+    const run = /--run-id (\S+)/.exec(briefJobs(sendDm)[0]![1])![1]!;
+    const files: Record<string, string> = {
+      [DAILY_BRIEF_SKILL]: "# daily-brief",
+      "workspace/brief/index.jsonl": JSON.stringify({ run_id: run, created_at: "2026-10-18T16:00:00Z", state: "ready", counts: {} }),
+      [`workspace/brief/${run}/status.json`]: JSON.stringify({ run_id: run, state: "ready" }),
+      [`workspace/brief/${run}/brief.json`]: JSON.stringify({ items: { decisions: [] }, welcome: core.codex_company }),
+      [`workspace/brief/${run}/brief-data.json`]: "{}",
+    };
+    (platform as unknown as { files: { getFileContent: (path: string) => Promise<unknown> } }).files.getFileContent = async (path: string) => {
+      const key = Object.keys(files).find((k) => path.endsWith(k));
+      return key ? ok(files[key]) : { ok: false as const, reason: "not found" };
+    };
+    // The brief is the first view; its "Where you work" open button carries the harness action.
+    await vi.waitFor(() => expect(q('[data-testid="first-view-grid"]')).toBeTruthy(), { timeout: 15_000 });
+    const open = () => q<HTMLButtonElement>('[data-testid="first-view-where-open"]');
+    await vi.waitFor(() => expect(open()?.textContent?.trim()).toBe("Open HQ in Codex"));
+    // The brief owns the open action: no Open Claude Code bar anywhere.
+    expect(q('[data-testid="brief-open-tool"]')).toBeNull();
+    open()!.click();
+    await vi.waitFor(() =>
+      expect(launchCodexWorkspace).toHaveBeenCalledWith("/tmp/HQ", "Catch me up on what I worked on recently and suggest what to do next."),
+    );
+    expect(launchClaudeCode).not.toHaveBeenCalled();
+    expect(openClaudeCodeLink).not.toHaveBeenCalled();
+  }, 30_000);
 
   it("Open can be pressed again after it fails, without signing in or making the assistant again", async () => {
     const tool = signsInThroughBrowser("claude");

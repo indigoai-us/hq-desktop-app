@@ -157,16 +157,21 @@ describe('provisioning states', () => {
 });
 
 describe('priorPlanFromPayload', () => {
-  it('reads a website plan pick from /membership/me', () => {
-    expect(priorPlanFromPayload({ planIntent: 'free', memberships: [] })).toBe('starter');
-    expect(priorPlanFromPayload({ planIntent: 'Starter' })).toBe('starter');
-    expect(priorPlanFromPayload({ signupPlan: 'team' })).toBe('workforce');
-    expect(priorPlanFromPayload({ planIntent: 'workforce' })).toBe('workforce');
+  it('reads a website free-start pick from /membership/me', () => {
+    expect(priorPlanFromPayload({ planIntent: 'free', memberships: [] })).toBe('free');
+    expect(priorPlanFromPayload({ planIntent: 'Starter' })).toBe('free');
+    expect(priorPlanFromPayload({ signupPlan: 'usage-only' })).toBe('free');
   });
 
   it('reads it from the visitor block of the anonId lookup', () => {
-    expect(priorPlanFromPayload({ webIdentity: { plan: 'team' } })).toBe('workforce');
-    expect(priorPlanFromPayload({ visitorIdentity: { planIntent: 'free' } })).toBe('starter');
+    expect(priorPlanFromPayload({ visitorIdentity: { planIntent: 'free' } })).toBe('free');
+    expect(priorPlanFromPayload({ webIdentity: { plan: 'usage' } })).toBe('free');
+  });
+
+  it('ignores a Workforce or team pick: it closed to new signups, so the step shows the usage card', () => {
+    expect(priorPlanFromPayload({ signupPlan: 'team' })).toBeNull();
+    expect(priorPlanFromPayload({ planIntent: 'workforce' })).toBeNull();
+    expect(priorPlanFromPayload({ webIdentity: { plan: 'team' } })).toBeNull();
   });
 
   it('is unknown (the step asks) when nothing usable was sent', () => {

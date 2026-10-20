@@ -2858,6 +2858,43 @@ fn updater_disabled_reason_for(
     }
 }
 
+/// The kill switch the HQ UserPromptSubmit hook `31-ensure-hq-desktop.sh`
+/// reads. When the updater is off, this process exports it so children it
+/// spawns inherit it. The hq bot is a launch agent started by hq-cli, so it
+/// does not inherit this process environment. hq-cli 5.345.147 and later
+/// (pull request 1984) writes `HQ_NO_ENSURE_HQ_DESKTOP=1` into that agent
+/// and forces it on model spawns. This desktop's install floor is
+/// `HQ_CLI_MIN_VERSION` (5.345.46), which is older, so a machine still on an
+/// earlier hq-cli is not covered until that CLI updates. A browser or
+/// Terminal launch is not a child of this process.
+const ENSURE_DESKTOP_HOOK_OFF_ENV: &str = "HQ_NO_ENSURE_HQ_DESKTOP";
+
+/// The env pair to export so child Claude runs skip the desktop-update hook,
+/// or `None` when the updater may run (the hook then stays on too).
+fn ensure_desktop_hook_off_env_for(
+    updater_off_reason: Option<&str>,
+) -> Option<(&'static str, &'static str)> {
+    updater_off_reason.map(|_| (ENSURE_DESKTOP_HOOK_OFF_ENV, "1"))
+}
+
+/// Export `HQ_NO_ENSURE_HQ_DESKTOP=1` into this process's environment when
+/// the updater is off, so children this process spawns inherit it. Call from
+/// `main` before any thread starts. This does not reach a launch agent. The
+/// bot path is hq-cli 5.345.147 or later, which stores the same setting.
+pub fn export_ensure_desktop_hook_off_env() {
+    let reason = updater_disabled_reason();
+    if let Some((name, value)) = ensure_desktop_hook_off_env_for(reason) {
+        std::env::set_var(name, value);
+        log(
+            "updater",
+            &format!(
+                "[first-run] desktop-update hook off for child runs ({name}=1, updater off: {})",
+                reason.unwrap_or_default()
+            ),
+        );
+    }
+}
+
 /// `updater_disabled` with its two inputs passed in (testable in any build).
 pub(crate) fn updater_disabled_with(env_switch: bool, non_production_bundle: bool) -> bool {
     env_switch || non_production_bundle
@@ -4205,6 +4242,20 @@ mod tests {
         // The bundle type never matters off Linux.
         assert!(!installed(false, Some(BundleType::Deb)));
         assert!(!installed(false, Some(BundleType::AppImage)));
+    }
+
+    #[test]
+    fn the_desktop_update_hook_is_off_for_children_exactly_when_the_updater_is_off() {
+        use super::ensure_desktop_hook_off_env_for as hook_env;
+        assert_eq!(
+            hook_env(Some("HQ_UPDATER_DISABLED=1")),
+            Some(("HQ_NO_ENSURE_HQ_DESKTOP", "1"))
+        );
+        assert_eq!(
+            hook_env(Some("non-production bundle")),
+            Some(("HQ_NO_ENSURE_HQ_DESKTOP", "1"))
+        );
+        assert_eq!(hook_env(None), None);
     }
 
     #[test]

@@ -84,7 +84,7 @@ describe("stall rule", () => {
 
   it("a bot-reported failure is a hard failure", () => {
     const failed = advanceBriefRun(running(), { text: JSON.stringify({ run_id: RUN, state: "failed", error: "No GitHub." }) }, 1_000);
-    expect(failed).toEqual({ kind: "failed", runId: RUN, message: "No GitHub." });
+    expect(failed).toEqual({ kind: "failed", runId: RUN, message: "The brief stopped before it finished." });
   });
 
   it("fingerprints content and mtime", () => {
@@ -205,7 +205,7 @@ describe("BriefCreateRun liveness and stall watch", () => {
     await startRunning(h);
     h.status("failed", { error: "The sweep could not read GitHub." });
     await h.run.poll();
-    expect(h.run.phase).toEqual({ kind: "failed", runId: RUN, message: "The sweep could not read GitHub." });
+    expect(h.run.phase).toEqual({ kind: "failed", runId: RUN, message: "The brief stopped before it finished." });
     expect(h.run.watching).toBe(false);
     await h.run.start();
     expect(h.run.duplicatePrompt).toBe(false);

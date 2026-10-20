@@ -32,7 +32,7 @@
  *   rotation; absent or unreadable is null, never an error.
  */
 
-import type { AdapterPromise, Json, WhoAmI } from "@hq/platform";
+import type { AdapterPromise, ImportReportApi, Json, WhoAmI } from "@hq/platform";
 import { ownRecordedMeetings, parseRecordedMeetings, signalBodyText, type RecordedMeeting } from "../meetings/recorded-meetings.js";
 import { localSessionsFromNative } from "../telemetry/telemetry-local-sessions.js";
 import { eventEnd, eventMeetingUrl, eventStart, type MeetingEvent } from "../meetings/meetings-model.js";
@@ -79,6 +79,8 @@ export interface BriefAdapter {
       page?: { offset?: number; limit?: number },
     ): AdapterPromise<Json>;
   } | null;
+  /** The newest tree-step import report, for the welcome report's first view. */
+  importReport?: Pick<ImportReportApi, "latest"> | null;
 }
 
 /**
