@@ -136,6 +136,12 @@ fn unix_terminal_tool_command(binary: &str, prompt: Option<&str>) -> String {
 /// `managed` order. A dir that is empty or holds a `:` or a control
 /// character cannot go on PATH and is skipped. No usable dir gives an empty
 /// prefix.
+///
+/// A dir already on PATH is left where it is, so a user's own earlier `hq`
+/// (or a stale `npm -g` copy listed before the managed dir by an rc file)
+/// still wins in that case; only missing dirs are added. Users without the
+/// installer rc block get HQ's Node and npm first in the session, ahead of
+/// volta or nvm project pins.
 pub(crate) fn unix_terminal_path_prefix(managed: &[PathBuf]) -> String {
     let mut dirs: Vec<String> = Vec::new();
     for dir in managed {
@@ -148,17 +154,115 @@ pub(crate) fn unix_terminal_path_prefix(managed: &[PathBuf]) -> String {
     if dirs.is_empty() {
         return String::new();
     }
-    let mut prefix = String::new();
-    for dir in dirs.iter().rev() {
-        prefix.push_str(&format!(
-            "case \":$PATH:\" in *{}*|*{}*) ;; *) PATH={}\"${{PATH:+:$PATH}}\" ;; esac; ",
-            posix_single_quote(&format!(":{dir}:")),
-            posix_single_quote(&format!(":{dir}/:")),
-            posix_single_quote(dir),
-        ));
+    // One loop names each dir once, which keeps the line Terminal types
+    // short (see `TERMINAL_TYPED_LINE_MAX_BYTES`).
+    let list: Vec<String> = dirs
+        .iter()
+        .rev()
+        .map(|dir| posix_single_quote(dir))
+        .collect();
+    format!(
+        "for d in {}; do case \":$PATH:\" in *\":$d:\"*|*\":$d/:\"*) ;; *) PATH=\"$d${{PATH:+:$PATH}}\";; esac; done; export PATH; ",
+        list.join(" ")
+    )
+}
+
+/// Longest line the app types into a new Terminal window. Terminal's
+/// `do script` usually types while the login shell is still reading its rc
+/// files, and macOS drops typed-ahead input over about 1,024 bytes (the
+/// whole line, newline included). Anything longer goes through a script
+/// file (see [`unix_terminal_launch`]).
+pub(crate) const TERMINAL_TYPED_LINE_MAX_BYTES: usize = 900;
+
+/// What a macOS Terminal launch types, and the script file it needs first.
+#[cfg_attr(windows, allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct TerminalLaunch {
+    /// The line typed into Terminal. Always at most
+    /// `TERMINAL_TYPED_LINE_MAX_BYTES` bytes.
+    pub line: String,
+    /// `Some(text)` when `line` runs a script file: the caller must write
+    /// `text` to the script path (new file, mode 0600) before typing `line`.
+    pub script: Option<String>,
+}
+
+/// True when `path` can be typed into any login shell (sh, zsh, bash,
+/// fish, tcsh) unquoted and is read the same way by all of them.
+fn is_plain_shell_word(path: &str) -> bool {
+    !path.is_empty()
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'_' | b'-'))
+}
+
+/// The Terminal launch for a session. When the session line from
+/// [`unix_terminal_session_command`] fits in
+/// `TERMINAL_TYPED_LINE_MAX_BYTES`, it is typed as is. Otherwise (a long
+/// prompt, folder or home path) the `cd`, the PATH change and the tool go
+/// into a `/bin/sh` script at `script_path` and the typed line is only
+/// `/bin/sh <script_path>`. The script deletes itself when it starts.
+/// `script_path` must be a plain shell word (letters, digits, `/._-`) so
+/// every login shell reads it unquoted; the prompt and folder are only ever
+/// inside the script, POSIX-quoted.
+pub(crate) fn unix_terminal_launch(
+    path: &str,
+    binary: &str,
+    prompt: Option<&str>,
+    managed: &[PathBuf],
+    script_path: &std::path::Path,
+) -> Result<TerminalLaunch, String> {
+    let line = unix_terminal_session_command(path, binary, prompt, managed);
+    if line.len() <= TERMINAL_TYPED_LINE_MAX_BYTES {
+        return Ok(TerminalLaunch { line, script: None });
     }
-    prefix.push_str("export PATH; ");
-    prefix
+    let script_path = script_path
+        .to_str()
+        .filter(|p| is_plain_shell_word(p))
+        .ok_or_else(|| "terminal script path is not a plain shell word".to_string())?;
+    let line = format!("/bin/sh {script_path}");
+    if line.len() > TERMINAL_TYPED_LINE_MAX_BYTES {
+        return Err("terminal script path is too long".to_string());
+    }
+    let script = format!(
+        "rm -f -- {}\ncd {} || exit 1\n{}exec {}\n",
+        posix_single_quote(script_path),
+        posix_single_quote(path),
+        unix_terminal_path_prefix(managed),
+        unix_terminal_tool_command(binary, prompt)
+    );
+    Ok(TerminalLaunch {
+        line,
+        script: Some(script),
+    })
+}
+
+/// A new, unused script path for [`unix_terminal_launch`]: the user's temp
+/// dir when its path is a plain shell word, else `/tmp`.
+#[cfg(not(windows))]
+fn terminal_script_path() -> PathBuf {
+    let dir = std::env::temp_dir();
+    let dir = if dir.to_str().is_some_and(is_plain_shell_word) {
+        dir
+    } else {
+        PathBuf::from("/tmp")
+    };
+    dir.join(format!("hq-terminal-{}.sh", uuid::Uuid::new_v4().simple()))
+}
+
+/// Write a launch script as a new file only the user can read. `create_new`
+/// fails rather than following a planted file or symlink.
+#[cfg(not(windows))]
+fn write_terminal_script(path: &std::path::Path, text: &str) -> Result<(), String> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| format!("Failed to create terminal script: {e}"))?;
+    file.write_all(text.as_bytes())
+        .map_err(|e| format!("Failed to write terminal script: {e}"))
 }
 
 #[cfg_attr(windows, allow(dead_code))]
@@ -184,7 +288,7 @@ pub(crate) fn unix_terminal_session_command(
         return unix_terminal_shell_command(path, binary, prompt);
     }
     let script = STANDARD.encode(format!(
-        "{prefix}{}",
+        "{prefix}exec {}",
         unix_terminal_tool_command(binary, prompt)
     ));
     format!(
@@ -442,7 +546,10 @@ pub fn bundled_codex_bin() -> Option<std::path::PathBuf> {
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn bundled_codex_bin_in(app_dirs: &[std::path::PathBuf]) -> Option<std::path::PathBuf> {
     const BUNDLES: [&str; 2] = ["ChatGPT.app", "Codex.app"];
-    const CLI_PATHS: [&str; 2] = ["Contents/Resources/codex-cli/bin/codex", "Contents/Resources/codex"];
+    const CLI_PATHS: [&str; 2] = [
+        "Contents/Resources/codex-cli/bin/codex",
+        "Contents/Resources/codex",
+    ];
     app_dirs
         .iter()
         .flat_map(|dir| BUNDLES.iter().map(move |bundle| dir.join(bundle)))
@@ -657,11 +764,17 @@ fn ps_single_quote(s: &str) -> String {
 /// argument. The mode is allowlisted; the prompt is free text, so it is
 /// flattened to one line (control characters become spaces) and quoted by
 /// `quote` for the target shell. Empty input adds nothing.
-fn claude_args(permission_mode: Option<&str>, prompt: Option<&str>, quote: fn(&str) -> String) -> Result<String, String> {
+fn claude_args(
+    permission_mode: Option<&str>,
+    prompt: Option<&str>,
+    quote: fn(&str) -> String,
+) -> Result<String, String> {
     let mut args: Vec<String> = Vec::new();
     match permission_mode.map(str::trim).filter(|m| !m.is_empty()) {
         None => {}
-        Some(mode) if CLAUDE_PERMISSION_MODES.contains(&mode) => args.push(format!("--permission-mode {mode}")),
+        Some(mode) if CLAUDE_PERMISSION_MODES.contains(&mode) => {
+            args.push(format!("--permission-mode {mode}"))
+        }
         Some(mode) => return Err(format!("unknown Claude permission mode: {mode}")),
     }
     let line = prompt
@@ -681,7 +794,11 @@ fn claude_args(permission_mode: Option<&str>, prompt: Option<&str>, quote: fn(&s
 /// The macOS `claude` command line: `claude [--permission-mode <mode>] ['<prompt>']`.
 fn claude_command(permission_mode: Option<&str>, prompt: Option<&str>) -> Result<String, String> {
     let args = claude_args(permission_mode, prompt, sh_single_quote)?;
-    Ok(if args.is_empty() { "claude".to_string() } else { format!("claude {args}") })
+    Ok(if args.is_empty() {
+        "claude".to_string()
+    } else {
+        format!("claude {args}")
+    })
 }
 
 /// Open a new Terminal window at `path` and auto-run `claude`, optionally in
@@ -689,8 +806,13 @@ fn claude_command(permission_mode: Option<&str>, prompt: Option<&str>) -> Result
 /// `prompt` from the renderer; both absent = the plain launch).
 #[cfg(not(windows))]
 #[tauri::command]
-pub fn launch_claude_code(path: String, permission_mode: Option<String>, prompt: Option<String>) -> Result<(), String> {
-    let result = claude_command(permission_mode.as_deref(), prompt.as_deref()).and_then(|cmd| spawn_cli_terminal_unix(&path, &cmd));
+pub fn launch_claude_code(
+    path: String,
+    permission_mode: Option<String>,
+    prompt: Option<String>,
+) -> Result<(), String> {
+    let result = claude_command(permission_mode.as_deref(), prompt.as_deref())
+        .and_then(|cmd| spawn_cli_terminal_unix(&path, &cmd));
     crate::commands::cdp_mirror::note_agent_session_launched("claude", "terminal", &result);
     result
 }
@@ -699,7 +821,11 @@ pub fn launch_claude_code(path: String, permission_mode: Option<String>, prompt:
 /// optionally with a first prompt (see `sanitize_terminal_prompt`).
 #[cfg(not(windows))]
 #[tauri::command]
-pub fn launch_cli_in_terminal(path: String, tool: String, prompt: Option<String>) -> Result<(), String> {
+pub fn launch_cli_in_terminal(
+    path: String,
+    tool: String,
+    prompt: Option<String>,
+) -> Result<(), String> {
     let prompt = sanitize_terminal_prompt(prompt.as_deref());
     let result = cli_binary_for(&tool)
         .and_then(|binary| spawn_cli_terminal_unix_with_prompt(&path, binary, prompt.as_deref()));
@@ -724,18 +850,30 @@ fn spawn_cli_terminal_unix_with_prompt(
     binary: &str,
     prompt: Option<&str>,
 ) -> Result<(), String> {
-    let script = terminal_applescript(&unix_terminal_session_command(
+    let script_path = terminal_script_path();
+    let launch = unix_terminal_launch(
         path,
         binary,
         prompt,
         &hq_desktop_core::paths::managed_cli_session_dirs(),
-    ));
+        &script_path,
+    )?;
+    if let Some(text) = &launch.script {
+        write_terminal_script(&script_path, text)?;
+    }
+    let script = terminal_applescript(&launch.line);
 
     let output = Command::new("osascript")
         .arg("-e")
         .arg(&script)
         .output()
-        .map_err(|e| format!("Failed to spawn osascript: {e}"))?;
+        .map_err(|e| format!("Failed to spawn osascript: {e}"));
+    let failed = !matches!(&output, Ok(out) if out.status.success());
+    if failed && launch.script.is_some() {
+        // Terminal never ran the script, so nothing else will delete it.
+        let _ = std::fs::remove_file(&script_path);
+    }
+    let output = output?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -753,9 +891,17 @@ fn spawn_cli_terminal_unix_with_prompt(
 /// in a permission mode.
 #[cfg(windows)]
 #[tauri::command]
-pub fn launch_claude_code(path: String, permission_mode: Option<String>, prompt: Option<String>) -> Result<(), String> {
-    let result = claude_args(permission_mode.as_deref(), prompt.as_deref(), ps_single_quote)
-        .and_then(|args| spawn_cli_terminal_windows_args(&path, "claude", &args));
+pub fn launch_claude_code(
+    path: String,
+    permission_mode: Option<String>,
+    prompt: Option<String>,
+) -> Result<(), String> {
+    let result = claude_args(
+        permission_mode.as_deref(),
+        prompt.as_deref(),
+        ps_single_quote,
+    )
+    .and_then(|args| spawn_cli_terminal_windows_args(&path, "claude", &args));
     crate::commands::cdp_mirror::note_agent_session_launched("claude", "terminal", &result);
     result
 }
@@ -765,7 +911,11 @@ pub fn launch_claude_code(path: String, permission_mode: Option<String>, prompt:
 /// the launched binary can never be attacker-controlled.
 #[cfg(windows)]
 #[tauri::command]
-pub fn launch_cli_in_terminal(path: String, tool: String, prompt: Option<String>) -> Result<(), String> {
+pub fn launch_cli_in_terminal(
+    path: String,
+    tool: String,
+    prompt: Option<String>,
+) -> Result<(), String> {
     let prompt = sanitize_terminal_prompt(prompt.as_deref());
     let result = cli_binary_for(&tool).and_then(|binary| {
         spawn_cli_terminal_windows_with_prompt(&path, binary, prompt.as_deref())
@@ -839,7 +989,11 @@ fn spawn_cli_terminal_windows(path: &str, binary: &str) -> Result<(), String> {
 /// (`args` must come from an allowlist, never the renderer's free text).
 #[cfg(windows)]
 fn spawn_cli_terminal_windows_args(path: &str, binary: &str, args: &str) -> Result<(), String> {
-    let command = if args.is_empty() { binary.to_string() } else { format!("{binary} {args}") };
+    let command = if args.is_empty() {
+        binary.to_string()
+    } else {
+        format!("{binary} {args}")
+    };
     spawn_cli_terminal_windows_command(path, binary, &command, None)
 }
 
@@ -1005,10 +1159,18 @@ mod tests {
             "claude --permission-mode bypassPermissions 'Pick up my session \"Daily brief\" (Corey'\\''s) $(rm -rf ~) `x` then continue'"
         );
         // Prompt only, no mode.
-        assert_eq!(claude_command(None, Some("hello")).unwrap(), "claude 'hello'");
+        assert_eq!(
+            claude_command(None, Some("hello")).unwrap(),
+            "claude 'hello'"
+        );
         // Windows (PowerShell) quoting doubles the single quote.
         assert_eq!(
-            claude_args(Some("bypassPermissions"), Some("Corey's brief"), ps_single_quote).unwrap(),
+            claude_args(
+                Some("bypassPermissions"),
+                Some("Corey's brief"),
+                ps_single_quote
+            )
+            .unwrap(),
             "--permission-mode bypassPermissions 'Corey''s brief'"
         );
     }
@@ -1038,13 +1200,19 @@ mod tests {
         let old = user.join("ChatGPT.app/Contents/Resources/codex");
         std::fs::create_dir_all(old.parent().unwrap()).unwrap();
         std::fs::write(&old, b"#!/bin/sh\n").unwrap();
-        assert_eq!(bundled_codex_bin_in(&[system.clone(), user.clone()]), Some(old.clone()));
+        assert_eq!(
+            bundled_codex_bin_in(&[system.clone(), user.clone()]),
+            Some(old.clone())
+        );
 
         // Current ChatGPT.app (26.928): Contents/Resources/codex-cli/bin/codex.
         let current = system.join("ChatGPT.app/Contents/Resources/codex-cli/bin/codex");
         std::fs::create_dir_all(current.parent().unwrap()).unwrap();
         std::fs::write(&current, b"#!/bin/sh\n").unwrap();
-        assert_eq!(bundled_codex_bin_in(&[system.clone(), user.clone()]), Some(current));
+        assert_eq!(
+            bundled_codex_bin_in(&[system.clone(), user.clone()]),
+            Some(current)
+        );
 
         // A standalone Codex.app with the new layout.
         let standalone_root = root.join("standalone");
@@ -1095,10 +1263,7 @@ mod tests {
     /// silently regress when someone adds a scheme parameter.
     #[test]
     fn codex_deep_link_accepts_the_install_prompt_url_shape() {
-        assert!(validate_codex_deep_link(
-            "codex://threads/new?prompt=install%20codex"
-        )
-        .is_ok());
+        assert!(validate_codex_deep_link("codex://threads/new?prompt=install%20codex").is_ok());
         assert!(validate_codex_deep_link("codex://launch").is_ok());
     }
 
@@ -1524,7 +1689,7 @@ end tell"#
             PathBuf::from("/ok/bin"),
         ];
         let prefix = unix_terminal_path_prefix(&managed);
-        assert_eq!(prefix.matches("/ok/bin").count(), 3, "{prefix}");
+        assert_eq!(prefix.matches("/ok/bin").count(), 1, "{prefix}");
         assert!(!prefix.contains("/a"), "{prefix}");
     }
 
@@ -1607,6 +1772,188 @@ end tell"#
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=')),
             "{line}"
         );
+    }
+
+    fn long_home_managed() -> Vec<PathBuf> {
+        let home = format!("/Users/{}", "a".repeat(64));
+        vec![
+            PathBuf::from(format!(
+                "{home}/Library/Application Support/Indigo HQ/toolchain/npm-global/bin"
+            )),
+            PathBuf::from(format!(
+                "{home}/Library/Application Support/Indigo HQ/toolchain/node/bin"
+            )),
+        ]
+    }
+
+    /// The PATH loop names each managed dir once.
+    #[test]
+    fn session_path_prefix_names_each_dir_once() {
+        let managed = long_home_managed();
+        let prefix = unix_terminal_path_prefix(&managed);
+        for dir in &managed {
+            assert_eq!(prefix.matches(dir.to_str().unwrap()).count(), 1, "{prefix}");
+        }
+    }
+
+    /// The typed line stays under macOS's ~1,024-byte typed-ahead limit for
+    /// a long home path, a long folder and prompts up to the 4,000-char cap.
+    #[test]
+    fn typed_line_stays_under_the_bound_for_long_paths_and_prompts() {
+        let managed = long_home_managed();
+        let folder = format!("/Users/{}/HQ/companies/{}", "a".repeat(64), "b".repeat(200));
+        let script_path = PathBuf::from("/var/folders/xy/abc_123/T/hq-terminal-0123.sh");
+        for len in [0usize, 10, 300, 500, 1000, 1500, TERMINAL_PROMPT_MAX_CHARS] {
+            let prompt = "p".repeat(len);
+            let prompt = (len > 0).then_some(prompt.as_str());
+            for binary in ["claude", "codex", "grok"] {
+                for (path, managed) in [
+                    ("/Users/me/HQ", &managed[..]),
+                    (folder.as_str(), &managed[..]),
+                    (folder.as_str(), &[][..]),
+                ] {
+                    let launch =
+                        unix_terminal_launch(path, binary, prompt, managed, &script_path).unwrap();
+                    assert!(
+                        launch.line.len() <= TERMINAL_TYPED_LINE_MAX_BYTES,
+                        "{len}: {}",
+                        launch.line
+                    );
+                    assert!(terminal_applescript(&launch.line).len() < 1024);
+                    assert!(!launch.line.contains('\n'));
+                }
+            }
+        }
+        // A short launch types the session line itself and writes no script.
+        let short =
+            unix_terminal_launch("/Users/me/HQ", "codex", Some("hi"), &managed, &script_path)
+                .unwrap();
+        assert_eq!(short.script, None);
+        assert_eq!(
+            short.line,
+            unix_terminal_session_command("/Users/me/HQ", "codex", Some("hi"), &managed)
+        );
+    }
+
+    /// `launch_claude_code` puts the prompt in the binary string (no length
+    /// cap there), so a long Claude prompt must also go through the script.
+    #[test]
+    fn long_claude_prompt_launch_uses_the_script() {
+        let managed = long_home_managed();
+        let script_path = PathBuf::from("/tmp/hq-terminal-0123.sh");
+        let cmd = claude_command(Some("bypassPermissions"), Some(&"q".repeat(5000))).unwrap();
+        let launch =
+            unix_terminal_launch("/Users/me/HQ", &cmd, None, &managed, &script_path).unwrap();
+        assert_eq!(launch.line, "/bin/sh /tmp/hq-terminal-0123.sh");
+        assert!(launch.script.unwrap().contains(&cmd));
+    }
+
+    #[test]
+    fn script_launch_rejects_a_script_path_that_needs_quoting() {
+        let prompt = "p".repeat(2000);
+        for bad in [
+            "/tmp/it's.sh",
+            "/tmp/a b.sh",
+            "/tmp/$x.sh",
+            "/tmp/!x.sh",
+            "",
+        ] {
+            assert!(
+                unix_terminal_launch(
+                    "/Users/me",
+                    "codex",
+                    Some(&prompt),
+                    &[],
+                    std::path::Path::new(bad)
+                )
+                .is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    /// A long launch runs from the script in every login shell installed
+    /// here: the folder, PATH and the exact prompt (quotes, `$`, backticks,
+    /// `!`) arrive unchanged, nothing in the prompt runs, and the script
+    /// deletes itself.
+    #[cfg(unix)]
+    #[test]
+    fn script_launch_runs_the_tool_with_the_exact_prompt_in_every_login_shell() {
+        let (dir, npm, node) = managed_fixture();
+        let folder = dir.path().join("it's my \"HQ\" $HOME");
+        std::fs::create_dir_all(&folder).unwrap();
+        let folder = folder.canonicalize().unwrap();
+        let folder_str = folder.to_str().unwrap();
+        let managed = [npm.clone(), node.clone()];
+        let marker = dir.path().join("pwned");
+        let prompt = format!(
+            "it's \\ \"q\" !x $HOME `touch {m}` $(touch {m}) ; touch {m} {}",
+            "x".repeat(1200),
+            m = marker.display()
+        );
+        let script_dir = tempfile::tempdir().unwrap();
+        let script_dir = script_dir.path().canonicalize().unwrap();
+        for (i, (shell, flags)) in login_shells().into_iter().enumerate() {
+            let script_path = script_dir.join(format!("hq-terminal-{i}.sh"));
+            if !is_plain_shell_word(script_path.to_str().unwrap()) {
+                return; // temp dir path needs quoting on this host; covered by the rejection test
+            }
+            let echo = unix_terminal_launch(
+                folder_str,
+                "/bin/echo",
+                Some(&prompt),
+                &managed,
+                &script_path,
+            )
+            .unwrap();
+            let text = echo.script.clone().expect("long launch uses a script");
+            assert!(echo.line.len() <= TERMINAL_TYPED_LINE_MAX_BYTES);
+            write_terminal_script(&script_path, &text).unwrap();
+            assert_eq!(
+                run_session_line(shell, flags, &echo.line, "/usr/bin:/bin"),
+                format!("-- {prompt}"),
+                "{shell}"
+            );
+            assert!(!script_path.exists(), "{shell}: script left behind");
+            assert!(!marker.exists(), "{shell}: prompt text ran");
+
+            let long = "y".repeat(1200);
+            let env =
+                unix_terminal_launch(folder_str, "/bin/sh", Some(&long), &managed, &script_path)
+                    .unwrap();
+            // `/bin/sh -- <long>` would try to run a file; check PATH and cwd via the script text instead.
+            let text = env.script.unwrap();
+            let text = text.replace(
+                &format!("exec /bin/sh -- '{long}'"),
+                "/usr/bin/printenv PATH; /bin/pwd",
+            );
+            write_terminal_script(&script_path, &text).unwrap();
+            assert_eq!(
+                run_session_line(shell, flags, &env.line, "/usr/bin:/bin"),
+                format!(
+                    "{}:{}:/usr/bin:/bin\n{folder_str}",
+                    npm.display(),
+                    node.display()
+                ),
+                "{shell}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn script_file_is_new_and_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hq-terminal-x.sh");
+        write_terminal_script(&path, "true\n").unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        // An existing file (or a planted symlink) is never written through.
+        assert!(write_terminal_script(&path, "false\n").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "true\n");
     }
 
     /// The full session line survives AppleScript escaping.
