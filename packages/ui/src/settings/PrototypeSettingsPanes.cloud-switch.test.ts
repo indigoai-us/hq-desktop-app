@@ -212,7 +212,10 @@ describe("Settings Cloud switch (US-016)", () => {
     expect(q("settings-cloud-toggle")?.getAttribute("aria-checked")).toBe("true");
     const off = q("settings-cloud-off");
     expect(off?.textContent).toContain("Cloud sync is off for every vault");
-    expect(off?.textContent).toContain("switch off Turn off all cloud sync");
+    expect(q("settings-cloud-off-hint")?.textContent).toBe(
+      "Cloud sync is turned off. Turn it back on in Settings › Sync.",
+    );
+    expect(off?.textContent).not.toContain("switch off Turn off all cloud sync");
     expect(off?.textContent).toContain("Sign-in, messages, deploys and local HQ keep working");
     expect(q("settings-cloud-per-sync-note")?.textContent).toContain(
       "apply when cloud sync is on",

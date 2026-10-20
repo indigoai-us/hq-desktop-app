@@ -1617,7 +1617,7 @@
           <div class="cloud-off" role="status" data-testid="settings-cloud-off">
             <div class="cloud-off-title">{VAULT_SYNC_COPY.allOffTitle}</div>
             <div class="cloud-off-body">{VAULT_SYNC_COPY.allOffBody}</div>
-            <div class="cloud-off-body">{VAULT_SYNC_COPY.allOffHint}</div>
+            <div class="cloud-off-body" data-testid="settings-cloud-off-hint">{VAULT_SYNC_COPY.allOffHint}</div>
           </div>
         {/if}
         {#if cloudNotice}

@@ -408,6 +408,21 @@
     }
   }
 
+  // A nudge already on screen goes away when its company's sync is switched
+  // off on this computer (Settings › Sync, US-016).
+  $effect(() => {
+    const nudge = returnNudge;
+    if (!nudge || !workspaces?.length) return;
+    const off = workspaces.some((workspace) =>
+      workspace.syncEnabled === false &&
+      (workspace.cloudUid === nudge.companyUid ||
+        workspace.uid === nudge.companyUid ||
+        workspace.companyUid === nudge.companyUid ||
+        (nudge.slug !== undefined && workspace.slug === nudge.slug)),
+    );
+    if (off) returnNudge = null;
+  });
+
   async function runReturnNudgeSync(): Promise<void> {
     const nudge = returnNudge;
     if (!nudge) return;
@@ -625,9 +640,8 @@
       role="status"
     >
       <span class="core-paused-title">Cloud sync is off</span>
-      <span class="core-paused-body"
-        >Nothing uploads or downloads on this computer. To sync again, open
-        Settings › Sync and switch off Turn off all cloud sync.</span
+      <span class="core-paused-body" data-testid="core-popover-paused-body"
+        >{model.pausedNotice}</span
       >
       {#if onopenCloudSettings}
         <div class="core-uploads-paused-actions">

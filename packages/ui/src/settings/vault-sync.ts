@@ -24,7 +24,7 @@ export const VAULT_SYNC_COPY = {
   allOffTitle: "Cloud sync is off for every vault",
   allOffBody:
     "Nothing uploads or downloads on this computer. Sign-in, messages, deploys and local HQ keep working.",
-  allOffHint: "To sync again, switch off Turn off all cloud sync.",
+  allOffHint: "Cloud sync is turned off. Turn it back on in Settings › Sync.",
   personalName: "Personal vault",
   companyOffDescription:
     "Turn off: this computer stops syncing this vault, and its syncs stop counting toward your bill. Storage and the vault fee still apply, and teammates who sync still add usage. Files stay on this computer, and teammates stop getting this computer's changes.",

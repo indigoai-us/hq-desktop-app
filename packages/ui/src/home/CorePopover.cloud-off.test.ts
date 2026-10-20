@@ -78,8 +78,10 @@ describe("Core popover with Cloud off (US-016)", () => {
     expect(q("core-popover-sync-state")?.textContent).not.toContain("All synced");
     const notice = q("core-popover-paused");
     expect(notice?.textContent).toContain("Cloud sync is off");
-    expect(notice?.textContent).toContain("Nothing uploads or downloads");
-    expect(notice?.textContent).toContain("Settings › Sync");
+    expect(q("core-popover-paused-body")?.textContent).toBe(
+      "Cloud sync is turned off. Turn it back on in Settings › Sync.",
+    );
+    expect(notice?.textContent).not.toContain("switch off Turn off all cloud sync");
 
     q("core-popover-cloud-settings")!.click();
     expect(onopenCloudSettings).toHaveBeenCalledTimes(1);
