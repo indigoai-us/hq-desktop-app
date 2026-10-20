@@ -15,8 +15,10 @@
     onaction?: ((action: WelcomeAction) => void) | null;
     /** The button's words for an action that is not a prompt. */
     actionLabel?: string | null;
+    /** The action is in flight (a harness opening): the button is disabled until it settles. */
+    busy?: boolean;
   }
-  let { action, onaction = null, actionLabel = null }: Props = $props();
+  let { action, onaction = null, actionLabel = null, busy = false }: Props = $props();
   const brief = useBrief();
   const quote = $derived(/[.!?]$/.test(action.label.trim()) ? action.label.trim() : `${action.label.trim()}.`);
   const because = $derived(withoutZeroCounts(plainReason(action.reason)));
@@ -31,7 +33,7 @@
     {#if prompt}
       <BriefLaunch id={action.id} {prompt} compact />
     {:else if onaction && actionLabel}
-      <button type="button" class="fv-btn" onclick={() => onaction?.(action)}>{actionLabel}</button>
+      <button type="button" class="fv-btn" data-testid="first-view-one-thing-action" disabled={busy} aria-busy={busy} onclick={() => onaction?.(action)}>{actionLabel}</button>
     {/if}
   </div>
   {#if brief.notes[action.id]}<div class="note" role="status">{brief.notes[action.id]}</div>{/if}
@@ -72,6 +74,10 @@
     cursor: pointer;
     background: rgb(var(--b-ink) / 0.92);
     color: #1b1b22;
+  }
+  .fv-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
   .note {
     margin-top: 6px;

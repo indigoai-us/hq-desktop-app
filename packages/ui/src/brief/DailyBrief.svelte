@@ -673,13 +673,19 @@
         onconnectintegration={() => void connectIntegration()}
         onconnectai={() => connectAi()}
         onopen={(h) => void openHarness(h)}
+        busy={fvBusy}
         expanded={((CONNECT_MODE === "expand" && connectOpen) || fvCarried) && welcomeAiApps?.current ? fvExpanded : null}
       />
     </div>
     {#if fv.oneThing}
       <div class="slot lit fv-slot" data-field="violet" data-widget="oneThing" style:--b-deco={decoUrl("oneThing")} use:briefHover={{ tilt: true }} style="grid-area:oneThing;animation-delay:140ms">
         {@render fvTag("oneThing", null)}
-        <FirstViewOneThing action={fv.oneThing} onaction={runWelcome} actionLabel={welcomeActionLabel(fv.oneThing)} />
+        <FirstViewOneThing
+          action={fv.oneThing}
+          onaction={runWelcome}
+          actionLabel={welcomeActionLabel(fv.oneThing)}
+          busy={!!(fv.oneThing.kind === "open_harness" && fv.oneThing.harness && fvBusy[fv.oneThing.harness])}
+        />
       </div>
     {/if}
     {#if fv.recentWork.length || fv.topProjects.length}

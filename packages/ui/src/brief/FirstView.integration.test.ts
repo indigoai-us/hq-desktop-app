@@ -419,6 +419,65 @@ describe("the first view inside the welcome report", () => {
     expect(openHarness.open).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps One thing's Open disabled while the open is pending, and enables it again after it resolves or fails", async () => {
+    let settleOpen: { ok: (v: string | null) => void; fail: (e: Error) => void } = { ok: () => undefined, fail: () => undefined };
+    const open = vi.fn(() => new Promise<string | null>((ok, fail) => (settleOpen = { ok, fail })));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await renderWelcome(brief(core.cursor_person), { report: { openHarness: { harnesses: [...WELCOME_OPENABLE_HARNESSES], open } } });
+    const button = (): HTMLButtonElement => oneThingButton() as HTMLButtonElement;
+    expect(oneThing()?.dataset.kind).toBe("open_harness");
+    expect(button().disabled).toBe(false);
+    button().click();
+    await settle();
+    expect(button().disabled).toBe(true);
+    expect(button().getAttribute("aria-busy")).toBe("true");
+    button().click();
+    expect(open).toHaveBeenCalledTimes(1);
+    settleOpen.ok(null);
+    await settle();
+    expect(button().disabled).toBe(false);
+    expect(button().getAttribute("aria-busy")).toBe("false");
+    button().click();
+    await settle();
+    expect(button().disabled).toBe(true);
+    settleOpen.fail(new Error("spawn ENOENT"));
+    await settle();
+    expect(button().disabled).toBe(false);
+    expect(open).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
+
+  it("keeps a found harness's Open disabled while the open is pending, and enables it again after it resolves or fails", async () => {
+    let settleOpen: { ok: (v: string | null) => void; fail: (e: Error) => void } = { ok: () => undefined, fail: () => undefined };
+    const open = vi.fn(() => new Promise<string | null>((ok, fail) => (settleOpen = { ok, fail })));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await renderWelcome(brief(core.showcase_company), {
+      report: { aiApps: { detect: async () => null, cli: { claudeCode: true, codex: false }, onopenaiapps: vi.fn() }, openHarness: { harnesses: ["claude-code", "codex"], open } },
+      page: { onlaunch: vi.fn(async () => null) },
+    });
+    const button = (): HTMLButtonElement => rowButton(connectRow("claude-code")) as HTMLButtonElement;
+    expect(flat(button())).toBe("Open");
+    expect(button().disabled).toBe(false);
+    button().click();
+    await settle();
+    expect(button().disabled).toBe(true);
+    expect(button().getAttribute("aria-busy")).toBe("true");
+    button().click();
+    expect(open).toHaveBeenCalledTimes(1);
+    settleOpen.ok(null);
+    await settle();
+    expect(button().disabled).toBe(false);
+    expect(button().getAttribute("aria-busy")).toBe("false");
+    button().click();
+    await settle();
+    expect(button().disabled).toBe(true);
+    settleOpen.fail(new Error("spawn ENOENT"));
+    await settle();
+    expect(button().disabled).toBe(false);
+    expect(open).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
+
   it("drops an action whose label is raw text", async () => {
     await renderWelcome(
       brief({

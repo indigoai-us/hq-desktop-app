@@ -13,6 +13,9 @@ export const FV_CONNECTED = "Connected";
 export const firstViewOpenFailed = (app: string): string => `${app} could not open. Open your HQ folder in ${app} to keep going.`;
 export const FV_QUIET_LINE = "Your HQ is ready. The sun's up.";
 
+/** A count's unit, singular for 1: "1 session", "2 sessions". */
+export const countUnit = (n: number, one: string, many: string): string => (n === 1 ? one : many);
+
 /** "A", "A and B", "A, B, and C". */
 function listOf(names: readonly string[]): string {
   if (names.length < 3) return names.join(" and ");
@@ -37,10 +40,10 @@ export function firstViewStats(fv: FirstView): FirstViewStat[] {
   const tools = fv.whereYouWork.tools.map((t) => t.name);
   const p = fv.pills;
   const all: (FirstViewStat | null)[] = [
-    p.sessions ? { key: "sessions", label: "Sessions", n: p.sessions, caption: tools.length ? `in ${listOf(tools)}` : "found on this Mac" } : null,
-    p.days ? { key: "days", label: "Days", n: p.days, caption: "of work found" } : null,
-    p.projects ? { key: "projects", label: "Projects", n: p.projects, caption: fv.topProjects.length ? "most active below" : "found on this Mac" } : null,
-    p.tools ? { key: "tools", label: "Tools", n: p.tools, caption: fv.tools.length ? fv.tools.join(", ") : "found on this Mac" } : null,
+    p.sessions ? { key: "sessions", label: countUnit(p.sessions, "Session", "Sessions"), n: p.sessions, caption: tools.length ? `in ${listOf(tools)}` : "found on this Mac" } : null,
+    p.days ? { key: "days", label: countUnit(p.days, "Day", "Days"), n: p.days, caption: "of work found" } : null,
+    p.projects ? { key: "projects", label: countUnit(p.projects, "Project", "Projects"), n: p.projects, caption: fv.topProjects.length ? "most active below" : "found on this Mac" } : null,
+    p.tools ? { key: "tools", label: countUnit(p.tools, "Tool", "Tools"), n: p.tools, caption: fv.tools.length ? fv.tools.join(", ") : "found on this Mac" } : null,
   ];
   return all.filter((s): s is FirstViewStat => !!s);
 }

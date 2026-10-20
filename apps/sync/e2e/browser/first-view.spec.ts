@@ -197,9 +197,19 @@ test('the count line comes from the import report on disk, read through the app 
     JSON.stringify({ ...report, sessions: { ...report.sessions, total: 12, days_seen: 3 } }),
   );
 
-  // The brief run holds only the 16.0.30 welcome row, which saw 1 session.
+  // The brief run holds only the 16.0.30 welcome row, which saw 1 session. Its own projects,
+  // top threads and tree count differ from the report's, so any part that reads the welcome row
+  // instead of the report shows a name or number this test rejects.
   const run = 'brief-20261019-090000';
-  const welcome = { ...fixture('welcome-16030-legacy.json').welcome, sessions: { total: 1, claude: 1, codex: 0, days_seen: 1 } };
+  const welcome = {
+    ...fixture('welcome-16030-legacy.json').welcome,
+    sessions: { total: 1, claude: 1, codex: 0, days_seen: 1 },
+    top_projects: [
+      { name: 'welcome-only-alpha', path: '~/code/welcome-only-alpha', sessions: 1, last_active_at: '2026-10-19T07:00:00Z', harness: 'claude-code' },
+      { name: 'welcome-only-beta', path: '~/code/welcome-only-beta', sessions: 1, last_active_at: '2026-10-18T07:00:00Z', harness: 'claude-code' },
+    ],
+    tree: { companies: 0, projects: 9, knowledge_files: 4 },
+  };
   put(join(E2E_HQ_ROOT, 'workspace/brief', run, 'brief.json'), JSON.stringify({ items: [], welcome }));
   put(join(E2E_HQ_ROOT, 'workspace/brief', run, 'brief-data.json'), '{}');
   put(
@@ -232,6 +242,16 @@ test('the count line comes from the import report on disk, read through the app 
   await expect(stat('tools').locator('.num')).toHaveText('2');
   await expect(stat('tools').locator('.cap')).toHaveText('Claude Code, Codex');
   for (const n of await page.getByTestId('brief-stat').locator('.num').allTextContents()) expect(n.trim()).not.toBe('1');
+
+  // Projects come from the report alone: three names, never the welcome row's tree count (9) or its projects.
+  await expect(stat('projects').locator('.num')).toHaveText('3');
+  await expect(count).toContainText('Top threads: hq, hq-desktop-app, billing-api.');
+  const active = page.getByTestId('first-view-projects').locator('.fv-prow');
+  await expect(active).toHaveText(['hq', 'hq-desktop-app', 'billing-api']);
+  // Report projects carry names only, with no session count beside them.
+  await expect(active.locator('b')).toHaveCount(0);
+  await expect(page.getByTestId('first-view-projects')).not.toContainText('session');
+  await expect(page.getByTestId('first-view-scroller').getByText(/welcome-only/)).toHaveCount(0);
 
   // The suggested integrations (found on this Mac) show as Connect rows, GitHub, Linear, Slack in that order.
   const rows = page.locator('[data-testid="first-view-connect-row"][data-integration]');

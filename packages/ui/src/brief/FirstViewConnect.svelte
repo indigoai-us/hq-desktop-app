@@ -23,10 +23,12 @@
     onconnectintegration?: ((row: FirstViewIntegration) => void) | null;
     onconnectai?: ((app: FirstViewAiApp) => void) | null;
     onopen?: ((harness: WelcomeHarnessId) => void) | null;
+    /** Harnesses whose open is in flight: their Open button is disabled until it settles. */
+    busy?: Readonly<Partial<Record<WelcomeHarnessId, boolean>>>;
     /** "expand" mode: the inline connect section, shown under the rows once Connect is pressed. */
     expanded?: Snippet | null;
   }
-  let { connect, connected = [], installed = [], canOpen = () => false, onconnectintegration = null, onconnectai = null, onopen = null, expanded = null }: Props = $props();
+  let { connect, connected = [], installed = [], canOpen = () => false, onconnectintegration = null, onconnectai = null, onopen = null, busy = {}, expanded = null }: Props = $props();
   const initials = (name: string) =>
     name
       .split(/\s+/)
@@ -56,7 +58,7 @@
         {#if a.connected}
           <span class="fv-chip" data-testid="first-view-connected">{FV_CONNECTED}</span>
         {:else if found && onopen && canOpen(a.harness)}
-          <button type="button" class="fv-btn" aria-label="Open {a.name}" onclick={() => onopen?.(a.harness)}>Open</button>
+          <button type="button" class="fv-btn" aria-label="Open {a.name}" disabled={!!busy[a.harness]} aria-busy={!!busy[a.harness]} onclick={() => onopen?.(a.harness)}>Open</button>
         {:else if found}
           <span class="fv-chip" data-testid="first-view-connected">{FV_CONNECTED}</span>
         {:else if onconnectai}
@@ -152,6 +154,10 @@
     cursor: pointer;
     background: rgb(var(--b-ink) / 0.92);
     color: #1b1b22;
+  }
+  .fv-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
   .fv-chip {
     flex: none;

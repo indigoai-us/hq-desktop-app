@@ -27,7 +27,7 @@
   {/each}
 </div>
 {#if open && onopen}
-  <button type="button" class="fv-open" data-testid="first-view-where-open" disabled={busy} onclick={() => onopen?.(open)}>{open.label}</button>
+  <button type="button" class="fv-open" data-testid="first-view-where-open" disabled={busy} aria-busy={busy} onclick={() => onopen?.(open)}>{open.label}</button>
 {/if}
 
 <style>

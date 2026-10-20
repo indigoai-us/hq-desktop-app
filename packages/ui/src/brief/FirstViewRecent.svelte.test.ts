@@ -67,6 +67,12 @@ describe("FirstViewRecent", () => {
     expect(target.querySelector(".fv-focus")!.classList.contains("solo")).toBe(false);
   });
 
+  it("a project with one session says 1 session (round 5)", async () => {
+    await render({ recent: [], projects: [{ name: "billing", sessions: 1 }, { name: "infra", sessions: 2 }], now: NOW });
+    const proj = target.querySelector('[data-testid="first-view-projects"]')!;
+    expect([...proj.querySelectorAll(".fv-prow")].map(parts)).toEqual([["billing", "1", "session"], ["infra", "2", "sessions"]]);
+  });
+
   it("with no named projects the list stands alone and no projects heading shows", async () => {
     await render({ recent: RECENT, projects: [{ name: "", sessions: 5 }], now: NOW });
     expect(target.querySelector('[data-testid="first-view-projects"]')).toBeNull();

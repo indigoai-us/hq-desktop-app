@@ -83,6 +83,11 @@ describe("firstViewStats", () => {
     expect(stats.find((s) => s.key === "tools")!.caption).toBe("found on this Mac");
   });
 
+  it("a count of one is singular on every pill (round 5)", () => {
+    const stats = firstViewStats(fv({ tools: [TOOLS[0]!], pills: { sessions: 1, days: 1, projects: 1, tools: 1 } }));
+    expect(stats.map((s) => `${s.n} ${s.label}`)).toEqual(["1 Session", "1 Day", "1 Project", "1 Tool"]);
+  });
+
   it("with every pill empty gives no pills", () => {
     expect(firstViewStats(fv({ pills: { sessions: null, days: 0, projects: null, tools: 0 } }))).toEqual([]);
   });

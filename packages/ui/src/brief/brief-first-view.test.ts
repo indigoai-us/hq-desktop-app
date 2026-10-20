@@ -213,6 +213,28 @@ describe("buildFirstView", () => {
     expect(v.pills.projects).toBe(7);
   });
 
+  it("Shawon's probe: a Core 1432 row with one hq project and a 402-session report shows the report's projects, names only (round 5 C1)", () => {
+    const probe = { ...core.claude_person, top_projects: [{ name: "hq", path: "~/hq", sessions: 1, last_active_at: "2026-10-19T07:00:00Z", harness: "claude-code" }], tree: { ...core.claude_person.tree, projects: 1 } };
+    const v = view(probe, { importReport: report });
+    expect(v.pills.projects).toBe(3);
+    expect(v.topProjects).toEqual([
+      { name: "hq", sessions: null },
+      { name: "hq-desktop-app", sessions: null },
+      { name: "billing-api", sessions: null },
+    ]);
+    expect(v.countLine).toBe("402 sessions over 37 days in Claude Code and Codex. Top threads: hq, hq-desktop-app, billing-api.");
+  });
+
+  it("a report with zero sessions still owns every count: nothing falls back to the welcome row (round 5 C1)", () => {
+    const empty = parseImportReport({ ...desktopReport.report, sessions: { total: 0, claude: 0, codex: 0, cursor: 0, days_seen: 0 }, tools: [], projects: [] })!;
+    const v = view(core.showcase_company, { importReport: empty });
+    expect(v.count).toBe(0);
+    expect(v.pills.projects).toBeFalsy();
+    expect(v.topProjects).toEqual([]);
+    expect(v.whereYouWork.tools).toEqual([]);
+    expect(v.countLine).toBeNull();
+  });
+
   it("cursor-primary: Cursor leads where-you-work, and a host that cannot open Cursor gets the next runnable action", () => {
     const v = view(core.cursor_person);
     expect(v.whereYouWork.tools.map((t) => t.harness)).toEqual(["cursor", "claude-code"]);

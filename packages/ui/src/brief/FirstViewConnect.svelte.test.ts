@@ -82,6 +82,21 @@ describe("FirstViewConnect", () => {
     expect(onconnectai).not.toHaveBeenCalled();
   });
 
+  it("Open is disabled and marked busy while that harness is opening, and only that row", async () => {
+    const onopen = vi.fn();
+    const m = model({ aiApps: [{ harness: "claude-code", name: "Claude Code", sessions: 42 }, { harness: "codex", name: "Codex", sessions: 3 }], harnessCounts: { claude_code: 42, codex: 3, cursor: 0 } });
+    await render({ connect: m, onconnectai: () => {}, onopen, canOpen: () => true, busy: { "claude-code": true } });
+    const busyBtn = row('[data-harness="claude-code"]').querySelector("button")!;
+    expect(busyBtn.disabled).toBe(true);
+    expect(busyBtn.getAttribute("aria-busy")).toBe("true");
+    busyBtn.click();
+    expect(onopen).not.toHaveBeenCalled();
+    const other = row('[data-harness="codex"]').querySelector("button")!;
+    expect(other.disabled).toBe(false);
+    other.click();
+    expect(onopen).toHaveBeenCalledWith("codex");
+  });
+
   it("Connect on a missing AI app calls onconnectai with that app", async () => {
     const onconnectai = vi.fn();
     await render({ connect: model(), onconnectai });

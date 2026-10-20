@@ -14,12 +14,13 @@
     onaction?: ((action: WelcomeAction) => void) | null;
     actionLabel?: string | null;
     onlaunch?: BriefLaunch;
+    busy?: boolean;
   }
-  let { action, onaction = null, actionLabel = null, onlaunch = async () => null }: Props = $props();
+  let { action, onaction = null, actionLabel = null, onlaunch = async () => null, busy = false }: Props = $props();
 
   provideBrief(new BriefState((engine, prompt) => onlaunch(engine, prompt), () => []));
 </script>
 
 <div class="daily-brief">
-  <FirstViewOneThing {action} {onaction} {actionLabel} />
+  <FirstViewOneThing {action} {onaction} {actionLabel} {busy} />
 </div>

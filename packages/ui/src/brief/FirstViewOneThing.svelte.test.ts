@@ -67,6 +67,22 @@ describe("FirstViewOneThing", () => {
     expect(q("brief-launch")).toBeNull();
   });
 
+  it("the open button is disabled and marked busy while the open is pending, and enabled again after", async () => {
+    const onaction = vi.fn();
+    await render({ action: action(), onaction, actionLabel: "Open Claude Code", busy: true });
+    const btn = target.querySelector<HTMLButtonElement>(".go-row button")!;
+    expect(btn.disabled).toBe(true);
+    expect(btn.getAttribute("aria-busy")).toBe("true");
+    btn.click();
+    expect(onaction).not.toHaveBeenCalled();
+    unmount(component!);
+    target.remove();
+    await render({ action: action(), onaction, actionLabel: "Open Claude Code", busy: false });
+    const again = target.querySelector<HTMLButtonElement>(".go-row button")!;
+    expect(again.disabled).toBe(false);
+    expect(again.getAttribute("aria-busy")).toBe("false");
+  });
+
   it("a connect action runs through onaction, not the engine", async () => {
     const onaction = vi.fn();
     const onlaunch = vi.fn(async () => null);

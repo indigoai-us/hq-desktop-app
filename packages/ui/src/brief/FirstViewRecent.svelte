@@ -1,7 +1,7 @@
 <script lang="ts">
   /** First view, the focus slot: the latest threads found and the most active projects. */
   import type { FirstViewProject, FirstViewWork } from "./brief-first-view.js";
-  import { firstViewAgo } from "./brief-first-view-copy.js";
+  import { countUnit, firstViewAgo } from "./brief-first-view-copy.js";
 
   interface Props {
     recent: readonly FirstViewWork[];
@@ -26,7 +26,7 @@
       <div class="fv-proj" data-testid="first-view-projects">
         <div class="fv-sub">Most active projects</div>
         {#each shownProjects as p (p.name)}
-          <div class="fv-prow"><span>{p.name}</span>{#if p.sessions}<b>{p.sessions}</b><span class="fv-unit">sessions</span>{/if}</div>
+          <div class="fv-prow"><span>{p.name}</span>{#if p.sessions}<b>{p.sessions}</b><span class="fv-unit">{countUnit(p.sessions, "session", "sessions")}</span>{/if}</div>
         {/each}
       </div>
     {/if}
