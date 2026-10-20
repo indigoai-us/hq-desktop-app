@@ -77,6 +77,9 @@ describe("core-popover-model (US-016)", () => {
       const paused = buildCorePopoverViewModel({ cloudPaused: true });
       expect(paused.cloudPaused).toBe(true);
       expect(paused.pausedNotice).toBe(CLOUD_PAUSED_NOTICE);
+      expect(CLOUD_PAUSED_NOTICE).toBe(
+        "Cloud sync is turned off. Turn it back on in Settings › Sync.",
+      );
       expect(paused.syncNowAllowed).toBe(false);
       expect(isSyncNowAllowed(true)).toBe(false);
 

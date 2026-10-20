@@ -38,6 +38,10 @@ pub struct VaultSyncSwitches {
     pub personal_enabled: bool,
     /// Company slugs with an explicit switch value. Missing means on.
     pub companies: BTreeMap<String, bool>,
+    /// Company display names by slug, for the "Sync is off for" refusal.
+    /// Not sent to the UI, which has its own names.
+    #[serde(skip)]
+    pub company_names: BTreeMap<String, String>,
 }
 
 impl VaultSyncSwitches {
@@ -47,6 +51,7 @@ impl VaultSyncSwitches {
             all_off: crate::daemon::is_cloud_paused(),
             personal_enabled: crate::daemon::is_personal_sync_enabled(),
             companies: crate::workspaces::read_workspace_sync_enabled_map(),
+            company_names: read_company_display_names(),
         }
     }
 
@@ -74,30 +79,114 @@ impl VaultSyncSwitches {
         if self.allows(vault) {
             return None;
         }
-        Some(vault_off_message(vault))
+        let name = match vault {
+            SyncVault::Personal => None,
+            SyncVault::Company(slug) => lookup_ci(&self.company_names, slug).map(String::as_str),
+        };
+        Some(vault_off_message_named(vault, name))
     }
+}
+
+/// Case-insensitive slug lookup, exact match first.
+fn lookup_ci<'a, V>(map: &'a BTreeMap<String, V>, slug: &str) -> Option<&'a V> {
+    map.get(slug).or_else(|| {
+        map.iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(slug))
+            .map(|(_, value)| value)
+    })
 }
 
 /// Slug match is case-insensitive, like the runner's `HQ_SYNC_SKIP_COMPANIES`.
 fn company_enabled(map: &BTreeMap<String, bool>, slug: &str) -> bool {
-    if let Some(enabled) = map.get(slug) {
-        return *enabled;
-    }
-    map.iter()
-        .find(|(key, _)| key.eq_ignore_ascii_case(slug))
-        .map(|(_, enabled)| *enabled)
-        .unwrap_or(true)
+    lookup_ci(map, slug).copied().unwrap_or(true)
 }
 
 /// "Sync is off for <vault> on this computer." plus how to turn it back on.
+/// A company is named by its display name from the saved company names, or
+/// by its slug when no name is known.
 pub fn vault_off_message(vault: &SyncVault) -> String {
+    let names = match vault {
+        SyncVault::Personal => BTreeMap::new(),
+        SyncVault::Company(_) => read_company_display_names(),
+    };
+    let name = match vault {
+        SyncVault::Personal => None,
+        SyncVault::Company(slug) => lookup_ci(&names, slug).map(String::as_str),
+    };
+    vault_off_message_named(vault, name)
+}
+
+/// [`vault_off_message`] with the company's display name given. A missing or
+/// blank name falls back to the slug.
+pub fn vault_off_message_named(vault: &SyncVault, company_name: Option<&str>) -> String {
     let name = match vault {
         SyncVault::Personal => "your personal vault".to_string(),
-        SyncVault::Company(slug) => slug.clone(),
+        SyncVault::Company(slug) => company_name
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(slug)
+            .to_string(),
     };
     format!(
         "Sync is off for {name} on this computer. To sync it again, turn it back on in Settings › Sync."
     )
+}
+
+// ── Company display names ─────────────────────────────────────────────────
+//
+// The refusal names a company by its display name. The one-off sync paths only
+// know the slug, and a switched-off company may have no local folder, so the
+// workspace list (local folders plus cloud memberships) saves slug -> name
+// here each time it is built, and the refusal reads it back.
+
+const COMPANY_NAMES_FILE: &str = "company-display-names.json";
+
+fn company_names_path() -> Option<std::path::PathBuf> {
+    crate::paths::hq_config_dir()
+        .ok()
+        .map(|dir| dir.join(COMPANY_NAMES_FILE))
+}
+
+/// Saved company display names by slug. Missing or unreadable means none.
+pub fn read_company_display_names() -> BTreeMap<String, String> {
+    company_names_path()
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice::<BTreeMap<String, String>>(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// Merge `names` (slug -> display name) into the saved names. Blank names are
+/// ignored. Writes only when something changed, through a temp file renamed
+/// over the original.
+pub fn save_company_display_names<'a>(
+    names: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Result<(), String> {
+    let path = company_names_path().ok_or("no HQ config directory")?;
+    let mut saved = read_company_display_names();
+    let mut changed = false;
+    for (slug, name) in names {
+        let (slug, name) = (slug.trim(), name.trim());
+        if slug.is_empty() || name.is_empty() {
+            continue;
+        }
+        if saved.get(slug).map(String::as_str) != Some(name) {
+            saved.insert(slug.to_string(), name.to_string());
+            changed = true;
+        }
+    }
+    if !changed {
+        return Ok(());
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let body = serde_json::to_vec_pretty(&saved).map_err(|e| e.to_string())?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e.to_string()
+    })
 }
 
 /// `Err(message)` when `vault` may not sync; `Ok(())` otherwise.
@@ -280,6 +369,7 @@ mod tests {
             all_off: false,
             personal_enabled: true,
             companies: BTreeMap::new(),
+            company_names: BTreeMap::new(),
         };
         assert_eq!(offload_refusal(&s), None);
         s.companies.insert("acme".into(), false);
@@ -306,6 +396,7 @@ mod tests {
             all_off: false,
             personal_enabled: true,
             companies: BTreeMap::new(),
+            company_names: BTreeMap::new(),
         };
         assert!(!s.any_off());
         s.companies.insert("acme".into(), true);
@@ -322,6 +413,7 @@ mod tests {
                 .iter()
                 .map(|(slug, on)| (slug.to_string(), *on))
                 .collect(),
+            company_names: BTreeMap::new(),
         }
     }
 
@@ -355,10 +447,77 @@ mod tests {
         assert!(s.allows(&SyncVault::Company("zeta".into())));
         assert!(s.allows(&SyncVault::Company("other".into())));
         assert!(s.allows(&SyncVault::Personal));
-        assert!(s
-            .refusal(&SyncVault::Company("acme".into()))
-            .unwrap()
-            .starts_with("Sync is off for acme on this computer."));
+        assert_eq!(
+            s.refusal(&SyncVault::Company("acme".into())).unwrap(),
+            "Sync is off for acme on this computer. To sync it again, turn it back on in Settings › Sync."
+        );
+    }
+
+    #[test]
+    fn a_company_refusal_uses_its_display_name() {
+        let mut s = switches(false, true, &[("acme", false)]);
+        s.company_names.insert("acme".into(), "Acme Corp".into());
+        assert_eq!(
+            s.refusal(&SyncVault::Company("acme".into())).unwrap(),
+            "Sync is off for Acme Corp on this computer. To sync it again, turn it back on in Settings › Sync."
+        );
+        // The name lookup matches slugs case-insensitively, like the switch.
+        assert_eq!(
+            s.refusal(&SyncVault::Company("ACME".into())).unwrap(),
+            "Sync is off for Acme Corp on this computer. To sync it again, turn it back on in Settings › Sync."
+        );
+    }
+
+    #[test]
+    fn a_company_refusal_falls_back_to_the_slug_without_a_display_name() {
+        let mut s = switches(false, true, &[("acme", false)]);
+        s.company_names.insert("zeta".into(), "Zeta Inc".into());
+        assert_eq!(
+            s.refusal(&SyncVault::Company("acme".into())).unwrap(),
+            "Sync is off for acme on this computer. To sync it again, turn it back on in Settings › Sync."
+        );
+        // A blank saved name also falls back to the slug.
+        assert_eq!(
+            vault_off_message_named(&SyncVault::Company("acme".into()), Some("  ")),
+            "Sync is off for acme on this computer. To sync it again, turn it back on in Settings › Sync."
+        );
+        assert_eq!(
+            vault_off_message_named(&SyncVault::Company("acme".into()), None),
+            "Sync is off for acme on this computer. To sync it again, turn it back on in Settings › Sync."
+        );
+    }
+
+    #[test]
+    fn saved_company_names_round_trip_and_feed_the_refusal() {
+        let _g = crate::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _home = crate::test_support::ScopedEnv::set("HOME", tmp.path());
+        assert!(read_company_display_names().is_empty());
+        assert_eq!(
+            vault_off_message(&SyncVault::Company("acme".into())),
+            "Sync is off for acme on this computer. To sync it again, turn it back on in Settings › Sync."
+        );
+        save_company_display_names([("acme", "Acme Corp"), ("blank", "  ")]).unwrap();
+        save_company_display_names([("zeta", "Zeta Inc")]).unwrap();
+        let names = read_company_display_names();
+        assert_eq!(names.get("acme").map(String::as_str), Some("Acme Corp"));
+        assert_eq!(names.get("zeta").map(String::as_str), Some("Zeta Inc"));
+        assert!(!names.contains_key("blank"));
+        assert_eq!(
+            vault_off_message(&SyncVault::Company("acme".into())),
+            "Sync is off for Acme Corp on this computer. To sync it again, turn it back on in Settings › Sync."
+        );
+        std::fs::write(
+            tmp.path().join(".hq/menubar.json"),
+            r#"{"workspaceSyncEnabled":{"acme":false}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            ensure_vault_sync_allowed(&SyncVault::Company("acme".into())),
+            Err("Sync is off for Acme Corp on this computer. To sync it again, turn it back on in Settings › Sync.".to_string())
+        );
     }
 
     #[test]

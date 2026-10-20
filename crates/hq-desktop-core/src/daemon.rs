@@ -1418,7 +1418,7 @@ pub fn is_instant_sync_enabled() -> bool {
 /// User-facing message every gated sync entry point returns while Cloud is
 /// off. One constant so the popover, the V2 window, and the daemon agree.
 pub const CLOUD_PAUSED_MESSAGE: &str =
-    "Cloud sync is off for every vault on this computer. To sync again, open Settings › Sync and switch off Turn off all cloud sync.";
+    "Cloud sync is turned off. Turn it back on in Settings › Sync.";
 
 /// Check the V2 "Cloud Off" switch (US-001 / US-016) in menubar.json.
 ///
@@ -1806,6 +1806,15 @@ pub fn should_force_clear_stalled_start(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The all-off refusal people read (owner copy, US-016 review).
+    #[test]
+    fn cloud_paused_message_copy() {
+        assert_eq!(
+            CLOUD_PAUSED_MESSAGE,
+            "Cloud sync is turned off. Turn it back on in Settings › Sync."
+        );
+    }
 
     #[cfg(not(target_os = "windows"))]
     fn write_unix_exec(path: &Path) {

@@ -32,6 +32,8 @@ export const VAULT_SYNC_COPY = {
     "Turn off: this computer stops syncing your personal vault, and its syncs stop counting toward your bill. Storage and the vault fee still apply. Files stay on this computer, and your other computers stop getting this computer's changes.",
   vaultOffHint: "To sync it again, turn its switch back on.",
   heldByAllOff: "Off while all cloud sync is off.",
+  /** Shown when the "Turn off all cloud sync" switch could not be saved. */
+  allOffSaveError: "Your sync settings weren’t saved. Try again.",
   noCompanies: "You are not in any company with a cloud vault yet.",
   cliOutdatedTitle: "The HQ command line tool on this computer is out of date",
   cliOutdatedBody:

@@ -401,6 +401,7 @@ mod tests {
             all_off: false,
             personal_enabled: true,
             companies: [("acme".to_string(), false)].into_iter().collect(),
+            company_names: Default::default(),
         }
     }
 
@@ -443,6 +444,7 @@ mod tests {
             all_off: false,
             personal_enabled: true,
             companies: Default::default(),
+            company_names: Default::default(),
         };
         assert!(placeholder_vault_may_sync_with(&all_on, &hq, &outside));
     }

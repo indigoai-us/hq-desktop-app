@@ -8,7 +8,7 @@
     POST_READY_DROP_REASON_FLAG,
     type Json,
   } from '@hq/platform';
-  import { startTraySync } from './lib/traySync';
+  import { classifyTraySyncFailure, startTraySync } from './lib/traySync';
   import { emit, listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { getVersion } from '@tauri-apps/api/app';
@@ -809,12 +809,15 @@
     try {
       await startTraySync(traySyncAdapter);
     } catch (err) {
-      const msg = String(err);
+      const msg = err instanceof Error ? err.message : String(err);
+      const failure = await classifyTraySyncFailure(msg, () =>
+        invoke<boolean>('get_cloud_enabled'),
+      );
       // A sync already holds the runner singleton (the watch daemon or a prior
       // run) — not a failure worth alarming the user with a red error. Reflect
       // it as syncing and let the active sync's events / cross-process file
       // resolve it back to idle.
-      if (msg.toLowerCase().includes('already running')) {
+      if (failure === 'already-running') {
         manualSyncActive = false;
         manualSyncTelemetryPending = false;
         externalSyncActive = true;
@@ -822,10 +825,10 @@
         await invoke('set_tray_state', { state: 'syncing' });
         return;
       }
-      // Sync is off for every vault, or for the vault this run targets
-      // (US-016). That is the person's own choice, not a failure: leave the
-      // tray idle instead of red.
-      if (msg.includes('Cloud sync is off') || msg.includes('Sync is off for')) {
+      // "Turn off all cloud sync" is on (US-016). That is the person's own
+      // choice, not a failure: leave the tray idle instead of red. Read from
+      // the saved switch, not the message wording.
+      if (failure === 'sync-off') {
         manualSyncActive = false;
         manualSyncTelemetryPending = false;
         syncState = 'idle';

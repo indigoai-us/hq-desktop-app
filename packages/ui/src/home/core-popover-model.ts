@@ -287,7 +287,7 @@ export function parseInstalledPacks(raw: unknown): CorePopoverPack[] {
 }
 
 export const CLOUD_PAUSED_NOTICE =
-  "Cloud sync is off for every vault on this computer. To sync again, open Settings › Sync and switch off Turn off all cloud sync.";
+  "Cloud sync is turned off. Turn it back on in Settings › Sync.";
 
 /** Names of vaults whose own switch is off, personal first. */
 export function syncOffVaultNames(

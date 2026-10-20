@@ -4278,6 +4278,7 @@ mod tests {
             all_off: false,
             personal_enabled: true,
             companies,
+            company_names: Default::default(),
         };
         assert!(!first_push_allowed(&switches, "acme"));
         assert!(!first_push_allowed(&switches, "Acme"));

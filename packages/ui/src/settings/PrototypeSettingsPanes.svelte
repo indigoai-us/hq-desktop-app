@@ -774,7 +774,9 @@
     endPending("cloud");
     if (!result.ok) {
       cloudEnabled = previous;
-      nativeError = actionableError("Cloud", result.message);
+      // The host's failure text is logged, never shown.
+      if (result.message) console.warn("[settings] cloud sync switch not saved", result.message);
+      nativeError = VAULT_SYNC_COPY.allOffSaveError;
       return;
     }
     cloudEnabled = result.value.cloudEnabled;

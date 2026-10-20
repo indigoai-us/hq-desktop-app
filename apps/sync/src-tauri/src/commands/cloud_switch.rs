@@ -84,10 +84,8 @@ pub(crate) trait CloudSwitchEffects {
 /// daemon the person paused some other way is left alone.
 pub(crate) const CLI_DAEMON_PAUSED_BY_SWITCH_KEY: &str = "cloudSwitchPausedCliDaemonSync";
 
-pub(crate) const STOP_NOTICE: &str =
-    "Cloud is off. Background sync is still stopping; it will not start again.";
-pub(crate) const START_NOTICE: &str =
-    "Cloud is on. Background sync did not start yet; use Sync now or restart HQ.";
+pub(crate) const STOP_NOTICE: &str = "Cloud sync is off";
+pub(crate) const START_NOTICE: &str = "Cloud sync is on";
 
 /// Apply a switch change through `effects`. Persisting is the only step whose
 /// failure fails the command: once the flag is on disk every sync path honors
@@ -496,6 +494,14 @@ pub async fn set_vault_sync_enabled<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The notices Settings shows after the all-off switch changes (owner
+    /// copy, US-016 review).
+    #[test]
+    fn cloud_switch_notice_copy() {
+        assert_eq!(STOP_NOTICE, "Cloud sync is off");
+        assert_eq!(START_NOTICE, "Cloud sync is on");
+    }
 
     #[derive(Default)]
     struct VaultRecorder {

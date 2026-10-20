@@ -281,27 +281,25 @@ describe("Settings Cloud switch (US-016)", () => {
 
     expect(q("settings-cloud-toggle")?.getAttribute("aria-checked")).toBe("false");
     expect(q("settings-cloud-off")).toBeNull();
-    const error = q("settings-native-error")?.textContent ?? "";
-    expect(error).toContain("Cloud wasn’t saved. Try again.");
+    const error = q("settings-native-error")?.textContent?.trim() ?? "";
+    expect(error).toBe("Your sync settings weren’t saved. Try again.");
     expect(error).not.toContain("disk full");
   });
 
-  it("shows the host's notice when background sync is still stopping", async () => {
+  it("shows the host's notice after the switch is turned off", async () => {
     const { adapter } = cloudAdapter({
       settings: { cloudPaused: false },
       setCloudEnabled: async () =>
         ok({
           cloudEnabled: false,
-          notice: "Cloud is off. Background sync is still stopping; it will not start again.",
+          notice: "Cloud sync is off",
         }),
     });
     mountSync(adapter);
     await flush();
     q("settings-cloud-toggle")!.click();
     await flush();
-    expect(q("settings-cloud-notice")?.textContent).toContain(
-      "Background sync is still stopping",
-    );
+    expect(q("settings-cloud-notice")?.textContent?.trim()).toBe("Cloud sync is off");
   });
 
   it("hides the all-off switch on a host that has no Cloud command", async () => {
