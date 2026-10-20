@@ -32,7 +32,7 @@ export type PersonaId = (typeof PERSONA_IDS)[number];
  *
  *   member       non-owner member of one company, not Indigo, gates off
  *   new-account  signed in, no companies, no local HQ folder, nothing else
- *   usage-owner  owner of six companies and admin of one, one on each billing
+ *   usage-owner  owner of seven companies and admin of one, one on each billing
  *                plan, for Settings > Usage (US-018); billing mocks key off
  *                the company uids in mocks/core.ts
  */
@@ -427,6 +427,15 @@ export const HARNESS_ONLY_PERSONAS: Record<HarnessOnlyPersonaId, ShellPersona> =
         state: 'synced',
         cloudUid: 'cmp_ux_fir',
         bucketName: 'hq-vault-fir',
+        role: 'owner',
+      }),
+      workspace({
+        slug: 'hazel',
+        displayName: 'Hazel & Rowe',
+        kind: 'company',
+        state: 'synced',
+        cloudUid: 'cmp_ux_hazel',
+        bucketName: 'hq-vault-hazel',
         role: 'owner',
       }),
       workspace({

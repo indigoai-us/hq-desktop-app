@@ -70,18 +70,20 @@ test('shows month-to-date usage under the sync row', async ({ page }) => {
   await expect(rows.nth(2)).toContainText('$1.00');
   await expect(page.getByTestId('core-usage-bar')).toHaveAttribute('data-tone', 'near');
 
-  // The bar animates with transform scaleX, never width.
+  // The bar is one coloured part per group against the $10 included. A total
+  // change grows the reveal (clip-path), never the parts' widths.
+  const bar = page.getByTestId('core-usage-bar');
+  await expect(bar.locator('[data-segment]')).toHaveCount(3);
   const fill = await page.evaluate(() => {
-    const el = document.querySelector('.core-usage-fill') as HTMLElement;
-    const cs = getComputedStyle(el);
-    return { transform: cs.transform, property: cs.transitionProperty, ratio: el.style.getPropertyValue('--fill').trim() };
+    const el = document.querySelector('[data-testid="core-usage-bar"] .fill') as HTMLElement;
+    return { property: getComputedStyle(el).transitionProperty, reveal: el.dataset.reveal };
   });
-  expect(fill.ratio).toBe('0.8');
-  expect(fill.property).toBe('transform');
-  // Switching from the personal account animates the bar; wait for it to settle.
+  expect(fill.reveal).toBe('80');
+  expect(fill.property).toContain('clip-path');
+  // Switching from the personal account grows the bar; wait for it to settle at 80%.
   await expect
-    .poll(() => page.evaluate(() => getComputedStyle(document.querySelector('.core-usage-fill') as HTMLElement).transform))
-    .toMatch(/^matrix\(0\.8, 0, 0, 1/);
+    .poll(() => page.evaluate(() => getComputedStyle(document.querySelector('[data-testid="core-usage-bar"] .fill') as HTMLElement).clipPath))
+    .toMatch(/inset\(0(px)? 20%/);
 
   await expect(page.getByTestId('core-usage-billing')).toContainText('Set up billing');
   await expect(page.getByTestId('core-usage-details')).toContainText('Usage details');
@@ -121,7 +123,7 @@ test('Settings > Usage lists one line per account and opens one at a time, and a
   await page.getByTestId('core-usage-details').click();
   await expect(page.getByTestId('settings-usage-pane')).toBeVisible({ timeout: 10_000 });
   const lines = page.getByTestId('usage-account');
-  await expect(lines).toHaveCount(8);
+  await expect(lines).toHaveCount(9);
   await expect(lines.nth(0)).toContainText('Personal');
   await expect(lines.nth(0)).toContainText('Starter (free)');
   const line = (uid: string) => page.locator(`[data-testid="usage-account"][data-key="${uid}"]`);
@@ -129,6 +131,10 @@ test('Settings > Usage lists one line per account and opens one at a time, and a
   await expect(line('cmp_ux_birch')).toContainText('Trial, 12 days left', { timeout: 10_000 });
   await expect(line('cmp_ux_cedar')).toContainText('Legacy plan');
   await expect(line('cmp_ux_northwind')).toContainText('$8.00');
+  // Near the included usage with no card: amber. Paused: red, with a badge.
+  await expect(line('cmp_ux_elm').getByTestId('usage-account-bar')).toHaveAttribute('data-tone', 'near');
+  await expect(line('cmp_ux_hazel').getByTestId('usage-account-bar')).toHaveAttribute('data-tone', 'at');
+  await expect(line('cmp_ux_hazel').getByTestId('usage-account-paused')).toHaveText('Sync paused');
   await line('cmp_ux_northwind').click();
   await expect(line('cmp_ux_northwind')).toHaveAttribute('aria-expanded', 'true');
   await expect(line('personal')).toHaveAttribute('aria-expanded', 'false');

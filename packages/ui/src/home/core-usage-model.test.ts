@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Json } from "@hq/platform";
+import { clearAccountCaches } from "../common/account-caches";
 import {
   OTHER_USAGE_LABEL,
   USAGE_GROUPS,
@@ -619,5 +620,21 @@ describe("personal account usage", () => {
     expect(getPersonalBillingSummary).toHaveBeenCalledTimes(2);
     expect(view.kind).toBe("ready");
     expect((await readAccountUsage({}, { kind: "company", uid: null, name: "Garage", role: null })).kind).toBe("no-usage");
+  });
+});
+
+describe("sign-out clears the usage cache (review critical, 2026-10-19)", () => {
+  it("clearAccountCaches() forgets the personal entry, company entries and the remembered account", async () => {
+    const { cachedCoreUsage, rememberCoreUsage, setPreferredUsageAccount, preferredUsageAccount } = await import("./core-usage-model");
+    const view = { kind: "ready" as const, companyName: "Personal", planLabel: "Usage plan", paid: false, usage: null, usageUnavailable: false, notice: null };
+    rememberCoreUsage("personal", view);
+    rememberCoreUsage("cmp_northwind", { ...view, companyName: "Northwind" });
+    rememberCoreUsage("cmp_widgets", { kind: "owner-only", companyName: "Widgets" });
+    setPreferredUsageAccount("cmp_northwind");
+    clearAccountCaches();
+    expect(cachedCoreUsage("personal")).toBeNull();
+    expect(cachedCoreUsage("cmp_northwind")).toBeNull();
+    expect(cachedCoreUsage("cmp_widgets")).toBeNull();
+    expect(preferredUsageAccount()).toBeNull();
   });
 });

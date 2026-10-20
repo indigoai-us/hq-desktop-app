@@ -13,6 +13,8 @@
   import { untrack } from "svelte";
   import type { AdapterResult } from "@hq/platform";
   import RailIcon from "../common/button/RailIcon.svelte";
+  import UsageStackBar from "./UsageStackBar.svelte";
+  import { segmentColor } from "./usage-stack.js";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import {
     approvedCheckoutUrl,
@@ -199,6 +201,8 @@
 
   const paid = $derived(view.kind === "ready" && view.paid);
   const notice = $derived(view.kind === "ready" ? view.notice : null);
+  /** Sync is paused: the bar turns red whatever the share used. */
+  const paused = $derived(notice?.kind === "paused-trial-cap" || notice?.kind === "paused-card-required");
   // An admin can't read whether a card is on file (the summary is
   // owner-only), so the admin button names both cases instead of implying
   // there is no card yet.
@@ -250,17 +254,19 @@
   function loadRows(): void {
     for (const acct of accounts) {
       const key = usageAccountKey(acct);
-      const cached = cachedCoreUsage(key);
-      if (cached) {
-        rowViews = { ...rowViews, [key]: cached };
-        continue;
-      }
+      // The role decides before any cached view: an admin never paints an
+      // owner's numbers left behind by an earlier session.
       if (acct.kind === "company" && !acct.uid) {
         rowViews = { ...rowViews, [key]: { kind: "no-usage", companyName: acct.name } };
         continue;
       }
       if (acct.kind === "company" && !canReadBilling(acct.role)) {
         rowViews = { ...rowViews, [key]: { kind: "owner-only", companyName: acct.name } };
+        continue;
+      }
+      const cached = cachedCoreUsage(key);
+      if (cached) {
+        rowViews = { ...rowViews, [key]: cached };
         continue;
       }
       // The shown account's row is filled by the meter's own read.
@@ -406,19 +412,20 @@
   {:else if view.usage}
     {@const usage = view.usage}
     <span class="core-usage-label" data-testid="core-usage-label">{usage.mode === "trial" ? "Trial usage" : "Usage this month"}</span>
-    <div
-      class="core-usage-track"
+    <UsageStackBar
+      segments={usage.segments}
+      scaleCents={usage.scaleCents}
+      includedCents={usage.includedCents}
+      tone={paused ? "at" : usage.tone}
+      size="md"
       role="meter"
       aria-label={usage.mode === "trial" ? "Trial usage used" : "Included usage used"}
       aria-valuemin="0"
       aria-valuemax="100"
       aria-valuenow={Math.round(usage.fill * 100)}
       data-testid="core-usage-bar"
-      data-tone={usage.tone}
       data-mode={usage.mode}
-    >
-      <span class="core-usage-fill" data-tone={usage.tone} style={`--fill: ${usage.fill};`}></span>
-    </div>
+    />
     <div class="core-usage-totals">
       <span data-testid="core-usage-used" data-partial={usage.partial ? "true" : undefined}>{usage.usedLine}</span>
       {#if usage.resetLine}
@@ -429,7 +436,7 @@
       <ul class="core-usage-rows" data-testid="core-usage-rows">
         {#each usage.rows as row (row.id)}
           <li class="core-usage-row" data-testid="core-usage-row" data-group={row.id}>
-            <span class="core-usage-row-label">{row.label}</span>
+            <span class="core-usage-row-label"><span class="core-usage-dot" style={`background:${segmentColor(row.id)}`} aria-hidden="true"></span>{row.label}</span>
             {#if row.amount.kind === "amount"}
               <span
                 class="core-usage-row-amount"
@@ -618,39 +625,14 @@
     text-transform: uppercase;
   }
 
-  .core-usage-track {
-    height: 4px;
-    overflow: hidden;
-    border-radius: 999px;
-    background: var(--v4-control-faint, var(--line2));
-  }
-
-  /* Fill ratio via --fill (0..1) + scaleX so the transition runs on the
-     compositor (the ProjectRow pattern); the track clips and rounds it. */
-  .core-usage-fill {
-    display: block;
-    width: 100%;
-    height: 100%;
-    border-radius: 999px;
-    background: var(--warn);
-    transform: scaleX(var(--fill, 0));
-    transform-origin: left center;
-    transition: transform 300ms ease;
-  }
-
-  /* Under 80% of the limit the bar is neutral, amber from 80%, red at it. */
-  .core-usage-fill[data-tone="ok"] {
-    background: var(--t2);
-  }
-
-  .core-usage-fill[data-tone="at"] {
-    background: var(--v4-error, var(--red));
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .core-usage-fill {
-      transition: none;
-    }
+  /* Legend dot: the group's colour on the bar above. */
+  .core-usage-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-right: 6px;
+    border-radius: 2px;
+    vertical-align: 1px;
   }
 
   .core-usage-rows {

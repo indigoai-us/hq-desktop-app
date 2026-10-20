@@ -15,6 +15,8 @@
   import type { AdapterResult } from "@hq/platform";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import Caret from "../common/Caret.svelte";
+  import UsageStackBar from "../home/UsageStackBar.svelte";
+  import { segmentColor } from "../home/usage-stack.js";
   import {
     approvedCheckoutUrl,
     billingPortalHint,
@@ -32,6 +34,8 @@
   import {
     SWITCH_NOT_AVAILABLE_TEXT,
     accountKey,
+    isPaused,
+    lineBar,
     orderedAccounts,
     readAccountRow,
     readPricing,
@@ -135,8 +139,26 @@
     void readAccountRow(company, acct, untrack(() => pricing)).then((view) => {
       if (cancelled()) return;
       views = { ...views, [key]: withPricing(view, untrack(() => pricing)) };
+      // The spend limit is the line's marker and sets its colour, so it is
+      // read with the line, not when it opens.
+      if (view.kind === "ready" && (view.plan === "usage" || view.plan === "trial")) loadSpend(acct);
       if (untrack(() => openKey) === key) loadDetail(acct, view);
     });
+  }
+
+  function loadSpend(acct: UsageAccount): void {
+    const key = accountKey(acct);
+    const current = untrack(() => spend[key]);
+    if (current === "loading") return;
+    spend = { ...spend, [key]: "loading" };
+    void readSpendLimit(company, acct).then((limit) => {
+      spend = { ...spend, [key]: limit };
+    });
+  }
+
+  function spendFor(key: string): SpendLimitDetail | null | undefined {
+    const value = spend[key];
+    return value === "loading" ? undefined : value;
   }
 
   /** The detail's own reads: the spend limit, or the switch offer for a free account. */
@@ -144,11 +166,7 @@
     if (view?.kind !== "ready") return;
     const key = accountKey(acct);
     if (view.plan === "usage" || view.plan === "trial") {
-      if (spend[key] !== undefined && spend[key] !== null) return;
-      spend = { ...spend, [key]: "loading" };
-      void readSpendLimit(company, acct).then((limit) => {
-        spend = { ...spend, [key]: limit };
-      });
+      if (spend[key] === undefined || spend[key] === null) loadSpend(acct);
     } else if (view.plan === "starter") {
       switchStates = { ...switchStates, [key]: { kind: "loading" } };
       void readSwitchState(company, acct).then((state) => {
@@ -276,6 +294,8 @@
         {@const key = accountKey(acct)}
         {@const view = views[key] ?? { kind: "loading" }}
         {@const open = openKey === key}
+        {@const bar = view.kind === "ready" ? lineBar(view, spendFor(key)) : null}
+        {@const paused = view.kind === "ready" && isPaused(view)}
         <li class="account" class:open data-testid="usage-account-row" data-key={key}>
           <h3 class="head">
             <button
@@ -287,14 +307,37 @@
               aria-controls={`usage-detail-${index}`}
               data-testid="usage-account"
               data-key={key}
+              data-tone={bar?.tone ?? "none"}
               onclick={() => toggle(acct)}
               onkeydown={(event) => onHeaderKey(event, index)}
             >
-              <span class="chev" class:open aria-hidden="true"><Caret tone="var(--t3)" /></span>
-              <span class="name" class:personal={acct.kind === "personal"} data-testid="usage-account-name">{#if acct.kind === "personal"}{lineName(acct)}{:else}<CompanyLabel name={acct.name} companyUid={acct.uid} size={14} />{/if}</span>
-              {#if roleTag(acct)}<span class="role">{roleTag(acct)}</span>{/if}
-              <span class="plan" data-testid="usage-account-plan" data-plan={view.kind === "ready" ? view.plan : view.kind}>{view.kind === "ready" ? view.planLabel : ""}</span>
-              <span class="total" data-testid="usage-account-total">{rowTotalText(view)}</span>
+              <span class="top">
+                <span class="chev" class:open aria-hidden="true"><Caret tone="var(--t3)" /></span>
+                <span class="name" class:personal={acct.kind === "personal"} data-testid="usage-account-name">{#if acct.kind === "personal"}{lineName(acct)}{:else}<CompanyLabel name={acct.name} companyUid={acct.uid} size={14} />{/if}</span>
+                {#if roleTag(acct)}<span class="badge">{roleTag(acct)}</span>{/if}
+                <span class="badge plan" class:hidden={view.kind !== "ready"} data-testid="usage-account-plan" data-plan={view.kind === "ready" ? view.plan : view.kind}>{view.kind === "ready" ? view.planLabel : ""}</span>
+                {#if paused}<span class="badge alert" data-testid="usage-account-paused">Sync paused</span>{/if}
+                <span class="sum">
+                  <span class="total" class:quiet={!bar} data-testid="usage-account-total">{rowTotalText(view)}</span>
+                  {#if bar}<span class="helper">{bar.helper}</span>{/if}
+                </span>
+              </span>
+              {#if bar}
+                <span class="bar-row">
+                  <UsageStackBar
+                    segments={bar.segments}
+                    scaleCents={bar.scaleCents}
+                    includedCents={bar.includedCents}
+                    marker={bar.marker}
+                    tone={bar.tone}
+                    size="lg"
+                    grow="change"
+                    role="presentation"
+                    aria-hidden="true"
+                    data-testid="usage-account-bar"
+                  />
+                </span>
+              {/if}
             </button>
           </h3>
           {#if open}
@@ -318,57 +361,55 @@
               {:else}
                 {@const paid = view.cardOnFile === true || view.plan === "legacy"}
                 {#if view.notice}
-                  <p class="notice" role="status" data-testid="usage-notice" data-kind={view.notice.kind}>{view.notice.text}</p>
+                  <p class="notice" class:alert={paused} role="status" data-testid="usage-notice" data-kind={view.notice.kind}>{view.notice.text}</p>
                 {/if}
-                <dl class="kv">
-                  {#if view.usage}
-                    <dt class="muted" data-testid="usage-period">{periodLabel(view.usage.periodStart, view.usage.periodEnd)}</dt>
-                    <dd></dd>
+                {#if view.usage && bar}
+                  <ul class="groups" aria-label="This month by group">
                     {#each view.usage.groups as group (group.id)}
-                      <dt>{group.label}</dt>
-                      <dd class="num" data-testid="usage-group" data-group={group.id}>{group.cents === null ? "Not reported" : `${group.partial ? "At least " : ""}${formatUsd(group.cents)}`}</dd>
-                      <dd class="meters">
-                        {#each group.meters as meter (meter.key)}
-                          <span class="meter" title={meter.rate} data-testid="usage-line" data-key={meter.key}>{meter.label} {meter.waived ? "waived" : meter.costCents === null ? "not reported" : formatUsd(meter.costCents)}</span>
-                        {/each}
-                      </dd>
+                      <li class="group" tabindex="-1" title={group.meters.map((m) => `${m.label}: ${m.waived ? "waived" : m.costCents === null ? "not reported" : formatUsd(m.costCents)}${m.rate ? ` (${m.rate})` : ""}`).join("\n")}>
+                        <span class="g-label"><span class="dot" style={`background:${segmentColor(group.id)}`} aria-hidden="true"></span>{group.label}</span>
+                        <span class="g-amt" data-testid="usage-group" data-group={group.id}>{group.cents === null ? "Not reported" : `${group.partial ? "At least " : ""}${formatUsd(group.cents)}`}</span>
+                        <span class="g-bar">
+                          <UsageStackBar
+                            segments={[{ id: group.id, label: group.label, cents: group.cents ?? 0 }]}
+                            scaleCents={bar.scaleCents}
+                            size="sm"
+                            grow="mount"
+                            label={`${group.label} ${group.cents === null ? "not reported" : formatUsd(group.cents)}`}
+                          />
+                        </span>
+                        <span class="g-meters">
+                          {#each group.meters as meter (meter.key)}
+                            <span class="meter" title={meter.rate} data-testid="usage-line" data-key={meter.key}>{meter.label} {meter.waived ? "waived" : meter.costCents === null ? "not reported" : formatUsd(meter.costCents)}</span>
+                          {/each}
+                        </span>
+                      </li>
                     {/each}
-                    {#if view.trial}
-                      <dd class="meters wide">Trial days are free, so costs by meter count only days after the trial.</dd>
-                    {/if}
-                    <dt>Usage so far</dt>
-                    <dd class="num strong" data-testid="usage-total">{formatUsd(view.usage.usageCents)}</dd>
-                    <dt title="Usage included every month before anything is billed.">Included</dt>
-                    <dd class="num" data-testid="usage-allowance-left">{formatUsd(view.usage.allowanceLeftCents)} of free usage left</dd>
+                  </ul>
+                  {#if view.trial}
+                    <p class="note small">Trial days are free, so costs by group count only days after the trial.</p>
+                  {/if}
+                {/if}
+                <dl class="facts">
+                  {#if view.usage}
+                    <div><dt>Usage so far</dt><dd data-testid="usage-total">{formatUsd(view.usage.usageCents)}</dd><dd class="sub" data-testid="usage-period">{periodLabel(view.usage.periodStart, view.usage.periodEnd)}</dd></div>
+                    <div><dt>Included</dt><dd data-testid="usage-allowance-left">{formatUsd(view.usage.allowanceLeftCents)} of free usage left</dd><dd class="sub">{formatUsd(view.usage.allowanceCents)} each month</dd></div>
                   {:else if view.usageUnavailable}
-                    <dt>This month</dt>
-                    <dd class="num muted" data-testid="usage-unavailable">Not available right now</dd>
-                  {:else}
-                    <dt>Plan</dt>
-                    <dd class="num" data-testid="usage-old-plan">{view.planLabel}</dd>
+                    <div><dt>This month</dt><dd class="quiet" data-testid="usage-unavailable">Not available right now</dd></div>
+                  {:else if !view.trial}
+                    <div><dt>Plan</dt><dd data-testid="usage-old-plan">{view.planLabel}</dd></div>
                   {/if}
                   {#if view.trial}
-                    <dt title={trialEndLabel(view.trial.endsAt)}>Trial</dt>
-                    <dd class="num" data-testid="usage-trial-usage">
-                      {#if view.trial.usedCents !== null && view.trial.capCents !== null}
-                        {view.trial.unknownMeters?.length ? "At least " : ""}{formatUsd(view.trial.usedCents)} of {formatUsd(view.trial.capCents)}
-                        <span class="bar" aria-hidden="true"><span style={`width:${Math.min(100, Math.round((view.trial.usedCents / Math.max(1, view.trial.capCents)) * 100))}%`}></span></span>
-                      {:else}
-                        Not measured yet
-                      {/if}
-                    </dd>
+                    <div><dt>Trial</dt><dd data-testid="usage-trial-usage">{#if view.trial.usedCents !== null && view.trial.capCents !== null}{view.trial.unknownMeters?.length ? "At least " : ""}{formatUsd(view.trial.usedCents)} of {formatUsd(view.trial.capCents)}{:else}Not measured yet{/if}</dd><dd class="sub">{view.trial.daysLeft} {view.trial.daysLeft === 1 ? "day" : "days"} left{trialEndLabel(view.trial.endsAt) ? `, ${trialEndLabel(view.trial.endsAt).toLowerCase()}` : ""}</dd></div>
                   {/if}
                   {#if view.plan === "usage" || view.plan === "trial"}
                     {@const limit = spend[key]}
-                    <dt title="Metered work pauses when the month's bill reaches the limit.">Spend limit</dt>
-                    <dd class="num" data-testid="usage-spend-limit">{limit === "loading" || limit === undefined ? "…" : limit === null ? "Can't be shown" : spendLimitLine(limit)}</dd>
+                    <div><dt>Spend limit</dt><dd data-testid="usage-spend-limit">{limit === "loading" || limit === undefined ? "…" : limit === null ? "Can't be shown" : spendLimitLine(limit)}</dd><dd class="sub">{limit && limit !== "loading" && limit.noLimit ? "Metered work doesn't pause for spending" : "Metered work pauses at the limit"}</dd></div>
                     {#if view.usage}
-                      <dt title="What this month would cost at the current pace, after the included usage.">Projected bill</dt>
-                      <dd class="num" data-testid="usage-projected">{view.usage.projectedBillCents === null ? "Not available yet" : formatUsd(view.usage.projectedBillCents)}</dd>
+                      <div><dt>Projected bill</dt><dd data-testid="usage-projected">{view.usage.projectedBillCents === null ? "Not available yet" : formatUsd(view.usage.projectedBillCents)}</dd><dd class="sub" data-testid="usage-projected-note">At this pace, after the {formatUsd(view.usage.allowanceCents)} included</dd></div>
                     {/if}
                   {/if}
-                  <dt>Card on file</dt>
-                  <dd class="num" data-testid="usage-card">{view.cardOnFile === null ? "Unknown" : view.cardOnFile ? "Yes" : "No"}</dd>
+                  <div><dt>Card on file</dt><dd data-testid="usage-card">{view.cardOnFile === null ? "Unknown" : view.cardOnFile ? "Yes" : "No"}</dd></div>
                 </dl>
 
                 {#if view.plan === "starter"}
@@ -406,29 +447,31 @@
                   <p class="note" class:ok={switchNote[key].ok} role="status" data-testid="usage-switch-result">{switchNote[key].text}</p>
                 {/if}
 
-                <div class="actions">
-                  {#if view.plan === "starter" && confirmKey !== key}
-                    {@const offer = switchStates[key]}
-                    {#if offer?.kind === "offered"}
-                      <button type="button" class="act primary" data-testid="usage-switch-start" onclick={() => (confirmKey = key)}>Switch to usage pricing</button>
-                    {:else if offer?.kind === "not-available"}
-                      <button type="button" class="act" data-testid="usage-switch-start" disabled>Switch to usage pricing</button>
+                {#if confirmKey !== key}
+                  <div class="actions">
+                    {#if view.plan === "starter"}
+                      {@const offer = switchStates[key]}
+                      {#if offer?.kind === "offered"}
+                        <button type="button" class="act primary" data-testid="usage-switch-start" onclick={() => (confirmKey = key)}>Switch to usage pricing</button>
+                      {:else if offer?.kind === "not-available"}
+                        <button type="button" class="act" data-testid="usage-switch-start" disabled>Switch to usage pricing</button>
+                      {/if}
                     {/if}
-                  {/if}
-                  {#if canOpenBilling(acct, paid)}
-                    <button
-                      type="button"
-                      class="act"
-                      data-testid="usage-billing"
-                      disabled={billingKey === key}
-                      aria-busy={billingKey === key}
-                      onclick={() => void openBilling(acct, paid)}
-                    >{billingKey === key ? "Opening…" : paid ? "Manage billing" : (view.notice?.actionLabel ?? "Add a card")}</button>
-                  {/if}
-                  {#if onopensync}
-                    <button type="button" class="act link" data-testid="usage-sync-off" onclick={() => onopensync?.()}>Turn off sync</button>
-                  {/if}
-                </div>
+                    {#if canOpenBilling(acct, paid)}
+                      <button
+                        type="button"
+                        class="act"
+                        data-testid="usage-billing"
+                        disabled={billingKey === key}
+                        aria-busy={billingKey === key}
+                        onclick={() => void openBilling(acct, paid)}
+                      >{billingKey === key ? "Opening…" : paid ? "Manage billing" : (view.notice?.actionLabel ?? "Add a card")}</button>
+                    {/if}
+                    {#if onopensync}
+                      <button type="button" class="act link" data-testid="usage-sync-off" onclick={() => onopensync?.()}>Turn off sync</button>
+                    {/if}
+                  </div>
+                {/if}
                 {#if billingPortalHint(billingOutcome[key] ?? null, lineName(acct))}
                   <p class="note" role="status" data-testid="usage-billing-hint">{billingPortalHint(billingOutcome[key] ?? null, lineName(acct))}</p>
                 {/if}
@@ -466,33 +509,42 @@
   .line {
     appearance: none;
     display: flex;
-    align-items: center;
-    gap: 8px;
+    flex-direction: column;
+    gap: 7px;
     width: 100%;
-    padding: 9px 12px;
+    padding: 10px 14px 11px;
     border: 0;
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 13px;
     text-align: left;
     cursor: pointer;
+    transition: background-color 120ms ease;
   }
 
-  .line:hover {
-    background: var(--hover, rgba(127, 127, 127, 0.08));
+  /* Hover and the open line share one quiet tint: it marks what a click acts on. */
+  .line:hover,
+  .account.open .line {
+    background: var(--hover, rgba(127, 127, 127, 0.06));
   }
 
   .line:focus-visible {
-    outline: 2px solid var(--focus, var(--t2));
+    outline: 2px solid var(--v4-focus-ring, var(--t2));
     outline-offset: -2px;
+  }
+
+  .top {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
   }
 
   .chev {
     display: inline-flex;
     flex: none;
     transform: rotate(-90deg);
-    transition: transform 120ms ease;
+    transition: transform 140ms ease;
   }
 
   .chev.open {
@@ -504,6 +556,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    font-size: 13px;
     font-weight: 500;
   }
 
@@ -512,84 +565,158 @@
     padding-left: 20px;
   }
 
-  .role,
-  .plan {
+  .badge {
     flex: none;
+    padding: 1px 6px;
+    border: 1px solid var(--line2, var(--line));
+    border-radius: 999px;
     color: var(--t3, var(--t2));
-    font-size: 11px;
+    font-size: 10px;
+    line-height: 1.5;
+    white-space: nowrap;
   }
 
-  .plan {
+  .badge.hidden {
+    display: none;
+  }
+
+  .badge.alert {
+    border-color: color-mix(in srgb, var(--v4-error, var(--red, #dc2626)) 45%, transparent);
+    color: var(--v4-error, var(--red, #dc2626));
+  }
+
+  .sum {
+    display: flex;
+    flex: none;
+    align-items: baseline;
+    gap: 6px;
     margin-left: auto;
   }
 
+  /* The month's total is the largest thing on a line. */
   .total {
-    flex: none;
-    min-width: 92px;
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .detail {
-    padding: 2px 12px 12px 32px;
-    font-size: 12px;
-  }
-
-  .kv {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    column-gap: 16px;
-    row-gap: 4px;
-    margin: 0;
-  }
-
-  .kv dt {
-    color: var(--t2);
-  }
-
-  .kv dd {
-    margin: 0;
-  }
-
-  .num {
-    text-align: right;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
     font-variant-numeric: tabular-nums;
     color: var(--t1);
   }
 
-  .strong {
-    font-weight: 500;
+  .line[data-tone="near"] .total {
+    color: var(--warn-ink, var(--warn, #b45309));
   }
 
-  .muted {
+  .line[data-tone="at"] .total {
+    color: var(--v4-error, var(--red, #dc2626));
+  }
+
+  .total.quiet {
+    font-size: 12px;
+    font-weight: 400;
     color: var(--t3, var(--t2));
   }
 
-  .meters {
+  .helper {
+    color: var(--t3, var(--t2));
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .bar-row {
+    display: block;
+    padding-left: 20px;
+  }
+
+  .detail {
+    padding: 4px 14px 14px 34px;
+    font-size: 12px;
+    background: var(--hover, rgba(127, 127, 127, 0.06));
+  }
+
+  .groups {
+    display: grid;
+    gap: 8px;
+    margin: 4px 0 12px;
+    padding: 0;
+    list-style: none;
+  }
+
+  .group {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    row-gap: 4px;
+    outline: none;
+  }
+
+  .g-label {
+    color: var(--t2);
+  }
+
+  .g-amt {
+    color: var(--t1);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+
+  .g-bar {
     grid-column: 1 / -1;
-    display: flex;
+  }
+
+  /* The meters behind a group show on hover or focus: detail on demand. */
+  .g-meters {
+    grid-column: 1 / -1;
+    display: none;
     flex-wrap: wrap;
     gap: 2px 10px;
-    margin-top: -2px;
     color: var(--t3, var(--t2));
     font-size: 11px;
   }
 
-  .bar {
-    display: inline-block;
-    width: 64px;
-    height: 4px;
-    margin-left: 6px;
-    vertical-align: middle;
-    border-radius: 2px;
-    background: var(--line2, var(--line));
-    overflow: hidden;
+  .group:hover .g-meters,
+  .group:focus-within .g-meters {
+    display: flex;
   }
 
-  .bar > span {
-    display: block;
-    height: 100%;
-    background: var(--t2);
+  .dot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    margin-right: 6px;
+    border-radius: 2px;
+    vertical-align: 0;
+  }
+
+  .facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 10px 16px;
+    margin: 0;
+  }
+
+  .facts dt {
+    color: var(--t3, var(--t2));
+    font-size: 11px;
+  }
+
+  .facts dd {
+    margin: 1px 0 0;
+    color: var(--t1);
+    font-size: 13px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .facts dd.sub {
+    margin: 0;
+    color: var(--t3, var(--t2));
+    font-size: 11px;
+    font-weight: 400;
+  }
+
+  .facts dd.quiet {
+    color: var(--t3, var(--t2));
+    font-weight: 400;
   }
 
   .notice,
@@ -599,8 +726,18 @@
     line-height: 1.45;
   }
 
+  .note.small {
+    margin-top: -6px;
+    font-size: 11px;
+    color: var(--t3, var(--t2));
+  }
+
   .notice {
     color: var(--t1);
+  }
+
+  .notice.alert {
+    color: var(--v4-error, var(--red, #dc2626));
   }
 
   .note.ok {
@@ -609,7 +746,7 @@
 
   .switch,
   .confirm {
-    margin-top: 8px;
+    margin-top: 10px;
   }
 
   .confirm p {
@@ -618,27 +755,33 @@
     line-height: 1.45;
   }
 
+  /* Actions sit below the numbers and stay quieter than them. */
   .actions {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 8px;
-    margin-top: 8px;
+    gap: 6px 12px;
+    margin-top: 12px;
   }
 
   .act {
-    padding: 4px 10px;
+    padding: 3px 9px;
     border: 1px solid var(--line2, var(--line));
     border-radius: 6px;
     background: none;
-    color: var(--t1);
+    color: var(--t2);
     font: inherit;
-    font-size: 12px;
+    font-size: 11.5px;
     cursor: pointer;
+  }
+
+  .act:hover:not(:disabled) {
+    color: var(--t1);
   }
 
   .act.primary {
     border-color: var(--t2);
+    color: var(--t1);
   }
 
   .act.link {

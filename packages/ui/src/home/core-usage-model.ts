@@ -19,6 +19,8 @@
 
 import type { AdapterResult, Json } from "@hq/platform";
 import { isUsageOnlySummary } from "../company/usage-billing.js";
+import { registerAccountCache } from "../common/account-caches.js";
+import type { StackSegment } from "./usage-stack.js";
 
 export interface UsageGroupDef {
   id: "agents" | "sync" | "storage";
@@ -95,6 +97,17 @@ export interface UsageMeterView {
   rowsNote: string | null;
   /** The headline total in cents (month usage, or trial usage); null when not measured. */
   totalCents: number | null;
+  /** The stacked bar's parts: one per group, or the trial total. */
+  segments: StackSegment[];
+  /** The bar's right end: the included usage (or the total once past it), or the trial cap. */
+  scaleCents: number;
+  /** Where the included usage ends, for the bar's tick; null in trial mode. */
+  includedCents: number | null;
+}
+
+/** Group rows as bar parts; a group with no measured amount draws nothing. */
+export function groupSegments(rows: readonly UsageGroupRow[]): StackSegment[] {
+  return rows.flatMap((r) => (r.amount.kind === "amount" ? [{ id: r.id, label: r.label, cents: r.amount.cents }] : []));
 }
 
 /** The trial as the summary reports it, when it is running. */
@@ -288,6 +301,9 @@ export function meterView(statement: MonthStatement): UsageMeterView {
     rows,
     rowsNote: null,
     totalCents: usageCents,
+    segments: groupSegments(rows),
+    scaleCents: Math.max(allowanceCents, usageCents, 1),
+    includedCents: allowanceCents > 0 ? allowanceCents : null,
   };
 }
 
@@ -317,6 +333,9 @@ export function trialMeterView(trial: RunningTrial): UsageMeterView {
       rows: [],
       rowsNote: TRIAL_ROWS_NOTE,
       totalCents: null,
+      segments: [],
+      scaleCents: Math.max(trial.capCents ?? 0, 1),
+      includedCents: null,
     };
   }
   const line = `${formatUsd(trial.usedCents)} of ${formatUsd(trial.capCents)} trial usage`;
@@ -332,6 +351,9 @@ export function trialMeterView(trial: RunningTrial): UsageMeterView {
     rows: [],
     rowsNote: TRIAL_ROWS_NOTE,
     totalCents: trial.usedCents,
+    segments: [{ id: "trial", label: "Trial usage", cents: trial.usedCents }],
+    scaleCents: Math.max(trial.capCents, trial.usedCents, 1),
+    includedCents: null,
   };
 }
 
@@ -539,7 +561,11 @@ export async function readCoreUsageWithRetry(
   return view;
 }
 
-/** Last good view per company, so a reopened menu paints at once. */
+/**
+ * Last good view per account, so a reopened menu paints at once. Keys are
+ * company uids and the fixed personal key, so sign-out must clear it: the
+ * next person on this computer never sees the previous person's usage.
+ */
 const lastGood = new Map<string, { view: CoreUsageView; at: number }>();
 
 export function cachedCoreUsage(companyUid: string): CoreUsageView | null {
@@ -848,6 +874,14 @@ export function canSetUpBilling(role: string | null | undefined): boolean {
   const r = billingRole(role);
   return r === "owner" || r === "admin" || r === "unknown";
 }
+
+/** Forget every cached usage view and the remembered account (sign-out). */
+export function clearCoreUsageCache(): void {
+  lastGood.clear();
+  preferredUsageAccountKey = null;
+}
+
+registerAccountCache(clearCoreUsageCache);
 
 export function __resetCoreUsageCacheForTests(): void {
   lastGood.clear();

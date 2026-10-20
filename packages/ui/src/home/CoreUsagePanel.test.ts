@@ -7,6 +7,7 @@ import { flushSync, mount, tick, unmount } from "svelte";
 import CoreUsagePanel from "./CoreUsagePanel.svelte";
 import CoreUsagePanelSwitchProbe from "./CoreUsagePanelSwitchProbe.test.svelte";
 import { __resetCoreUsageCacheForTests } from "./core-usage-model";
+import { clearAccountCaches } from "../common/account-caches";
 
 const ok = (value: unknown) => ({ ok: true as const, value });
 const fail = (code: string) => ({ ok: false as const, reason: "error" as const, code, message: code });
@@ -80,8 +81,12 @@ describe("CoreUsagePanel", () => {
     expect(q("core-usage-label")?.textContent).toBe("Usage this month");
     expect(q("core-usage-used")?.textContent).toBe("$8.00 of $10.00 free");
     expect(q("core-usage-reset")?.textContent).toBe("Resets Nov 1");
-    const fill = host.querySelector(".core-usage-fill") as HTMLElement;
-    expect(fill.getAttribute("style")).toContain("--fill: 0.8");
+    // One coloured part per group, sized against the $10 included, revealed to 80%.
+    const bar = q("core-usage-bar")!;
+    const parts = [...bar.querySelectorAll<HTMLElement>("[data-segment]")].map((el) => [el.dataset.segment, el.style.width]);
+    expect(parts).toEqual([["agents", "51%"], ["sync", "19%"], ["storage", "10%"]]);
+    expect(bar.querySelector(".fill")?.getAttribute("data-reveal")).toBe("80");
+    expect(bar.getAttribute("aria-valuenow")).toBe("80");
     const rows = [...host.querySelectorAll('[data-testid="core-usage-row"]')].map((r) => r.textContent?.replace(/\s+/g, " ").trim());
     expect(rows).toEqual(["Agents and AI $5.10", "Sync $1.90", "Storage and vaults $1.00"]);
     expect(q("core-usage-billing")?.textContent).toContain("Set up billing");
@@ -451,6 +456,39 @@ describe("CoreUsagePanel", () => {
       };
     }
 
+    it("after sign-out the next person never sees the previous person's personal or company numbers", async () => {
+      // Person A, an owner, reads their personal account and a company.
+      await render(multiSource(), vi.fn(), { account: ACCOUNTS[2], accounts: ACCOUNTS });
+      expect(q("core-usage-used")?.textContent).toBe("$3.40 of $10.00 free");
+      await unmount(component!);
+      component = null;
+      host.remove();
+      clearAccountCaches();
+      // Person B signs in on the same computer; every read fails.
+      const failing = multiSource({
+        getPersonalBillingSummary: vi.fn(async () => fail("http-500")),
+        getPersonalUsageStatement: vi.fn(async () => fail("http-500")),
+        getBillingSummary: vi.fn(async () => fail("http-500")),
+      });
+      await render(failing, vi.fn(), { account: ACCOUNTS[2], accounts: ACCOUNTS });
+      expect(q("core-usage")?.dataset.state).toBe("unavailable");
+      expect(host.textContent).not.toContain("$3.40");
+      expect(host.textContent).not.toContain("$8.00");
+      expect(q("core-usage-stale")).toBeNull();
+    });
+
+    it("an admin's row says Owner only even when an owner's total is cached", async () => {
+      const { rememberCoreUsage } = await import("./core-usage-model");
+      rememberCoreUsage("cmp_amass", {
+        kind: "ready", companyName: "Amass", planLabel: "Usage plan", paid: false, usageUnavailable: false, notice: null,
+        usage: { mode: "allowance", fill: 0.5, tone: "ok", over: false, usedLine: "$5.00 of $10.00 free", resetLine: null, partial: false, rows: [], rowsNote: null, totalCents: 500, segments: [], scaleCents: 1000, includedCents: 1000 },
+      });
+      await render(multiSource(), vi.fn(), { account: ACCOUNTS[2], accounts: ACCOUNTS });
+      const amass = host.querySelector('[data-testid="core-usage-account"][data-key="cmp_amass"]');
+      expect(amass?.textContent).toContain("Owner only");
+      expect(amass?.textContent).not.toContain("$5.00");
+    });
+
     it("defaults to the personal account when that is the default, reading the person routes", async () => {
       const src = multiSource();
       await render(src, vi.fn(), { account: ACCOUNTS[2], accounts: ACCOUNTS });
@@ -615,5 +653,33 @@ describe("CoreUsagePanel", () => {
       });
       expect(q("core-usage-personal-none")).not.toBeNull();
     });
+  });
+});
+
+describe("CoreUsagePanel bar states", () => {
+  it("a paused account draws the bar red whatever the share used", async () => {
+    await render(
+      source({
+        getBillingSummary: vi.fn(async () =>
+          ok({ pricingPlan: "usage-only", usageTrial: { status: "ended", syncPaused: true, pauseReason: "usage_card_required", allowanceCents: 1000, cardOnFile: false } }),
+        ),
+        getUsageStatement: vi.fn(async () => ok({ ...STATEMENT, usageCents: 300 })),
+      }),
+    );
+    expect(q("core-usage-notice")?.dataset.kind).toBe("paused-card-required");
+    expect(q("core-usage-bar")?.dataset.tone).toBe("at");
+  });
+
+  it("the trial bar is one part against the cap", async () => {
+    const endsAt = new Date(Date.now() + 11.5 * DAY).toISOString();
+    await render(
+      source({
+        getBillingSummary: vi.fn(async () =>
+          ok({ pricingPlan: "usage-only", usageTrial: { status: "active", endsAt, capCents: 50000, usedCents: 42000, cardOnFile: false } }),
+        ),
+      }),
+    );
+    const parts = [...q("core-usage-bar")!.querySelectorAll<HTMLElement>("[data-segment]")].map((el) => [el.dataset.segment, el.style.width]);
+    expect(parts).toEqual([["trial", "84%"]]);
   });
 });

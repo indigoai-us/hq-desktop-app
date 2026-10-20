@@ -37,6 +37,7 @@ import {
   type UsageNotice,
 } from "../home/core-usage-model.js";
 import { spendLimitFromBody, type SpendLimitDetail } from "./usage-settings-model.js";
+import type { StackMarker, StackSegment, StackTone } from "../home/usage-stack.js";
 
 /** Where an account stands. `legacy`: an older paid plan; `starter`: the older free plan. */
 export type AccountPlan = "trial" | "usage" | "legacy" | "starter";
@@ -458,4 +459,67 @@ export function orderedAccounts(accounts: readonly UsageAccount[]): UsageAccount
 
 export function accountKey(account: UsageAccount): string {
   return account.kind === "personal" ? PERSONAL_ACCOUNT_KEY : usageAccountKey(account);
+}
+
+// ---------------------------------------------------------------------------
+// The line's stacked bar (owner direction 2026-10-19, "Stacked bar rows")
+// ---------------------------------------------------------------------------
+
+export interface LineBar {
+  segments: StackSegment[];
+  scaleCents: number;
+  includedCents: number | null;
+  marker: StackMarker | null;
+  tone: StackTone;
+  /** "of $10.00 included" / "of $500.00 trial cap", under the total. */
+  helper: string;
+}
+
+const NEAR = 0.8;
+
+function toneFor(used: number, limit: number | null, paused: boolean): StackTone {
+  if (paused) return "at";
+  if (limit === null || limit <= 0) return "ok";
+  const ratio = used / limit;
+  return ratio >= 1 ? "at" : ratio >= NEAR ? "near" : "ok";
+}
+
+export function isPaused(view: AccountRowReady): boolean {
+  return view.notice?.kind === "paused-trial-cap" || view.notice?.kind === "paused-card-required";
+}
+
+/**
+ * The bar for a usage or trial line. Usage: the groups against the $10
+ * included (the scale grows with usage past it), with the spend limit as the
+ * marker. The limit that matters for the colour is the spend limit when a
+ * card is on file, and the included usage when there is none (sync pauses
+ * past it). Trial: trial usage against the cap. Null on the old plans.
+ */
+export function lineBar(view: AccountRowReady, spend: SpendLimitDetail | null | undefined): LineBar | null {
+  const paused = isPaused(view);
+  if (view.trial) {
+    const cap = view.trial.capCents;
+    const used = view.trial.usedCents;
+    if (cap === null || used === null) return null;
+    return {
+      segments: [{ id: "trial", label: "Trial usage", cents: used }],
+      scaleCents: Math.max(cap, used, 1),
+      includedCents: null,
+      marker: { cents: cap, label: `Trial cap ${formatUsd(cap)}` },
+      tone: toneFor(used, cap, paused),
+      helper: `of ${formatUsd(cap)} trial cap`,
+    };
+  }
+  if (!view.usage) return null;
+  const { usageCents, allowanceCents } = view.usage;
+  const limit = spend && !spend.noLimit ? spend.limitCents : null;
+  const toneLimit = view.cardOnFile === true ? limit : allowanceCents;
+  return {
+    segments: view.usage.groups.map((g) => ({ id: g.id, label: g.label, cents: g.cents ?? 0 })),
+    scaleCents: Math.max(allowanceCents, usageCents, 1),
+    includedCents: allowanceCents > 0 ? allowanceCents : null,
+    marker: limit !== null ? { cents: limit, label: `Limit ${formatUsd(limit)}` } : null,
+    tone: toneFor(usageCents, toneLimit, paused),
+    helper: `of ${formatUsd(allowanceCents)} included`,
+  };
 }

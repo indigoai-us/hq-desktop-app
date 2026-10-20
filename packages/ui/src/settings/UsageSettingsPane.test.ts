@@ -158,8 +158,10 @@ describe("UsageSettingsPane: one line per account", () => {
     expect(detail()).toBeNull();
     expect([...host.querySelectorAll('[data-testid="usage-account"]')].every((el) => el.getAttribute("aria-expanded") === "false")).toBe(true);
     expect(src.getBillingSummary).not.toHaveBeenCalledWith("cmp_aspen");
-    // The detail's own reads wait until a line opens.
-    expect(src.getSpendLimit).not.toHaveBeenCalled();
+    // The spend limit is the line's marker, so usage lines read it with the
+    // line; the old plans and the admin company never do. The switch offer
+    // waits until a line opens.
+    expect(src.getSpendLimit.mock.calls.map((c) => c[0]).sort()).toEqual(["cmp_birch", "cmp_elm", "cmp_northwind"]);
     expect(src.getUsageSwitch).not.toHaveBeenCalled();
   });
 
@@ -404,5 +406,80 @@ describe("UsageSettingsPane: Switch to usage pricing (hq-pro #5081)", () => {
     await render(noRoute);
     await open("personal");
     expect(q("usage-switch", detail()!)?.dataset.state).toBe("not-available");
+  });
+});
+
+describe("UsageSettingsPane: stacked bars", () => {
+  const bar = (key: string) => header(key).querySelector('[data-testid="usage-account-bar"]') as HTMLElement | null;
+  const parts = (el: Element | null) => [...(el?.querySelectorAll<HTMLElement>("[data-segment]") ?? [])].map((p) => [p.dataset.segment, p.style.width]);
+
+  it("a usage line draws its groups against the $10 included, with the spend limit named past the end", async () => {
+    await render(source());
+    const b = bar("cmp_northwind")!;
+    expect(b.dataset.tone).toBe("ok");
+    expect(parts(b)).toEqual([["agents", "60%"], ["sync", "20%"]]);
+    expect(clean(b.querySelector('[data-testid="usage-bar-marker-label"]'))).toBe("Limit $250.00 ›");
+    expect(clean(header("cmp_northwind").querySelector(".helper"))).toBe("of $10.00 included");
+    // The old plans and admin lines have no bar.
+    expect(bar("cmp_cedar")).toBeNull();
+    expect(bar("cmp_aspen")).toBeNull();
+    expect(bar("personal")).toBeNull();
+  });
+
+  it("a trial line is trial usage against the cap, amber from 80%", async () => {
+    await render(source());
+    const b = bar("cmp_birch")!;
+    expect(parts(b)).toEqual([["trial", "84%"]]);
+    expect(b.dataset.tone).toBe("near");
+    expect(header("cmp_birch").dataset.tone).toBe("near");
+    expect(clean(b.querySelector('[data-testid="usage-bar-marker-label"]'))).toBe("Trial cap $500.00");
+    expect(clean(header("cmp_birch").querySelector(".helper"))).toBe("of $500.00 trial cap");
+  });
+
+  it("with no card the included usage is the limit: amber near it, red and marked when sync is paused", async () => {
+    const summaries = {
+      ...SUMMARIES,
+      cmp_elm: { pricingPlan: "usage-only", usageTrial: { status: "ended", cardOnFile: false } },
+      cmp_northwind: { pricingPlan: "usage-only", usageTrial: { status: "ended", syncPaused: true, pauseReason: "usage_card_required", allowanceCents: 1000, cardOnFile: false } },
+    };
+    const usage: Record<string, number> = { ...USAGE, cmp_elm: 880, cmp_northwind: 1040 };
+    await render(
+      source({
+        getBillingSummary: vi.fn(async (uid: string) => (summaries[uid as keyof typeof summaries] ? ok(summaries[uid as keyof typeof summaries]) : fail("FORBIDDEN"))),
+        getUsageStatement: vi.fn(async (uid: string) => ok(statement(usage[uid] ?? 0))),
+      }),
+    );
+    expect(bar("cmp_elm")?.dataset.tone).toBe("near");
+    expect(bar("cmp_northwind")?.dataset.tone).toBe("at");
+    expect(clean(q("usage-account-paused", header("cmp_northwind")))).toBe("Sync paused");
+    expect(q("usage-account-paused", header("cmp_elm"))).toBeNull();
+    // Past the included usage the scale grows and an "included" tick marks $10.
+    expect(bar("cmp_northwind")?.querySelector(".tick.included")).not.toBeNull();
+  });
+
+  it("opening a line grows one labelled bar per group and says the projected bill is after the included usage", async () => {
+    await render(source());
+    await open("cmp_northwind");
+    const groups = [...detail()!.querySelectorAll(".group")];
+    expect(groups).toHaveLength(3);
+    expect(groups.map((g) => g.querySelector('[role="img"]')?.getAttribute("aria-label"))).toEqual([
+      "Agents and AI $6.00",
+      "Sync $2.00",
+      "Storage and vaults $0.00",
+    ]);
+    expect(groups[0]!.getAttribute("title")).toContain("Agent run: $4.00 ($0.05 per run)");
+    expect(clean(q("usage-projected-note", detail()!))).toBe("At this pace, after the $10.00 included");
+  });
+
+  it("the switch confirm keeps its two buttons on one row, with the other actions hidden", async () => {
+    await render(source());
+    await open("cmp_dogwood");
+    expect(q("usage-billing", detail()!)).not.toBeNull();
+    q("usage-switch-start", detail()!)!.click();
+    await settle();
+    const rows = [...detail()!.querySelectorAll(".actions")];
+    expect(rows).toHaveLength(1);
+    expect([...rows[0]!.querySelectorAll("button")].map((b) => b.dataset.testid)).toEqual(["usage-switch-now", "usage-switch-cancel"]);
+    expect(q("usage-billing", detail()!)).toBeNull();
   });
 });

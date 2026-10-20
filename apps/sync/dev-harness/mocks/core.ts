@@ -2412,8 +2412,11 @@ function usageOwnerMock(url: string, method: string, body: Record<string, unknow
     cmp_ux_dogwood: { billingConfigured: true, pricingPlan: 'current', subscriptionStatus: null, defaultPaymentMethod: { present: true, brand: 'visa' } },
     cmp_ux_elm: { billingConfigured: true, pricingPlan: 'usage-only', defaultPaymentMethod: { present: false, brand: null }, usageTrial: { status: 'ended', allowanceCents: 1000, cardOnFile: false } },
     cmp_ux_fir: { billingConfigured: false, pricingPlan: 'current', subscriptionStatus: null, defaultPaymentMethod: { present: false, brand: null } },
+    // Past the included usage with no card: cloud sync is paused.
+    cmp_ux_hazel: { billingConfigured: false, pricingPlan: 'usage-only', defaultPaymentMethod: { present: false, brand: null }, usageTrial: { status: 'ended', allowanceCents: 1000, cardOnFile: false, cardRequired: true, syncPaused: true, pauseReason: 'usage_card_required' } },
   };
-  const usageCents: Record<string, number> = { cmp_ux_northwind: 800, cmp_ux_birch: 0, cmp_ux_elm: 120, cmp_ux_dogwood: 0 };
+  // Elm Street is near the $10 included with no card (amber); Hazel & Rowe is past it and paused (red).
+  const usageCents: Record<string, number> = { cmp_ux_northwind: 800, cmp_ux_birch: 0, cmp_ux_elm: 880, cmp_ux_dogwood: 0, cmp_ux_hazel: 1060 };
   if (url.startsWith('/v1/billing/summary?')) {
     const uid = uidOf();
     if (usageOwnerSwitched.has(uid)) {
