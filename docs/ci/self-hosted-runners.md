@@ -165,3 +165,5 @@ If any check fails, delete the variable so the next release returns to hosted
 Self-hosted minutes are not billed at hosted rates, but GitHub may charge a
 platform fee of about $0.002 per self-hosted minute. The instances themselves
 are billed by AWS (Linux) or are owned hardware (macOS, Windows).
+
+<!-- CI canary for #1726, throwaway, will be closed -->
