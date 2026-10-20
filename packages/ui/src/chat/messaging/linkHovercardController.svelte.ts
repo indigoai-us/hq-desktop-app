@@ -7,6 +7,7 @@
 
 import { linkPreview, type LinkPreview } from "../../common/linkPreview.js";
 import { cachedPageTitle, onPageTitle, requestPageTitle } from "../../common/linkTitles.js";
+import { requestGithubSummary } from "../../common/linkGithub.js";
 
 const OPEN_DELAY_MS = 350;
 const CLOSE_DELAY_MS = 180;
@@ -79,6 +80,7 @@ export class LinkHovercardController {
     const preview = linkPreview(href);
     if (!preview) return;
     if (preview.wantsPageTitle) requestPageTitle(href);
+    if (preview.github) requestGithubSummary(href);
     const box = anchor.getBoundingClientRect();
     if (this.card && this.card.anchor !== anchor) {
       this.card.anchor.removeAttribute("aria-describedby");
