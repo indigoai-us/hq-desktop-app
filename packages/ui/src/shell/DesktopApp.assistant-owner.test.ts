@@ -456,7 +456,7 @@ describe("no slug reaches a person-facing string (finding 3)", () => {
       messages: [
         {
           eventId: "evt_hello",
-          body: "Hi, I'm your setup bot.",
+          body: "Hi, I'm your HQ assistant.",
           fromPersonUid: ASSISTANT_UID,
           fromDisplayName: "setup",
           createdAt: new Date(Date.now() - 60_000).toISOString(),

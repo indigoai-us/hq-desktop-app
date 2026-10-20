@@ -101,7 +101,7 @@ describe("setup copy is OS-aware (US-006 regression, extended for OS-specific wo
 
   it("setupBotIntro carries the display name through the OS-aware substitution", () => {
     const rendered = setupBotIntro({ noun: "PC", displayName: "Pickles" });
-    expect(rendered).toContain("Hi, I'm Pickles, your setup bot");
+    expect(rendered).toContain("Hi, I'm Pickles, your HQ assistant");
     expect(rendered).toContain("your PC");
     expect(rendered).not.toMatch(MAC_NAMED);
   });

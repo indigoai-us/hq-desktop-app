@@ -111,7 +111,7 @@ describe("SetupChannelIntro - guided install path (US-005)", () => {
       "needs a coding tool signed in",
     );
     expect(host.querySelector('[data-testid="setup-install-guide"]')).toBeTruthy();
-    // No "Open Setup Agent" to click into a bot that cannot answer.
+    // No "Open your assistant" to click into a bot that cannot answer.
     expect(host.querySelector('[data-testid="setup-run"]')).toBeNull();
     expect(start).not.toHaveBeenCalled();
   });

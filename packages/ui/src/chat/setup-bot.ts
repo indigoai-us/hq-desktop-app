@@ -13,7 +13,8 @@
  * launcher on top of `createBotEntry`, so the progress card, the DM select and
  * the avatar plumbing are the same ones the New bot flow uses.
  *
- * WORDING: "setup bot", never "agent".
+ * WORDING: "your assistant" (or its name) for a person, never "setup bot"
+ * or "agent". Code identifiers keep the old `setup` names.
  */
 
 import type { LocalBotRow } from "@hq/platform";
@@ -47,13 +48,13 @@ export function setupBotIntro(
 ): string {
   const noun = opts.noun?.trim() || "computer";
   const intro =
-    "Hi, I'm your setup bot, and together we'll get HQ ready: your tools, HQ Cloud, your company, " +
+    "Hi, I'm your HQ assistant, and together we'll get HQ ready: your tools, HQ Cloud, your company, " +
     "the work you already have, your business and the apps you use, and your first bot. " +
     `I'm checking your ${noun} now, which can take a minute, and I'll post my first question here as soon as I'm done. ` +
     "If you'd rather, you can run me in Claude Code or Codex with the Launch button above.";
   const name = opts.displayName?.trim();
   if (!name) return intro;
-  return intro.replace("Hi, I'm your setup bot", `Hi, I'm ${name}, your setup bot`);
+  return intro.replace("Hi, I'm your HQ assistant", `Hi, I'm ${name}, your HQ assistant`);
 }
 
 /**
@@ -141,18 +142,18 @@ export const SETUP_BOT_COPY_STATIC = {
    * first open, so by the time anyone reads this button its hello is already
    * waiting: the label says what the click does, which is open it.
    */
-  run: "Open Setup Agent",
+  run: "Open your assistant",
   /** One already exists: this only opens the conversation. */
-  open: "Open Setup Agent",
+  open: "Open your assistant",
   /** Home's setup card, where "Run Setup" would not say what happens. */
-  create: "Create your setup bot",
+  create: "Create your assistant",
   /** While the CLI is provisioning. */
   starting: "Starting…",
   /** The bot is being started automatically on first open. */
-  autoStarting: "Starting your setup bot…",
+  autoStarting: "Starting your assistant…",
   /** Under the hero once the bot exists. */
   bodyExisting:
-    "Your setup bot is in your messages. Open the conversation to keep going - it picks up wherever you left off.",
+    "Your assistant is in your messages. Open the conversation to keep going. It picks up wherever you left off.",
   /** After a failed create. */
   retry: "Retry",
   /** The way through when creating the bot will not work right now. */
@@ -173,12 +174,12 @@ export function setupBotCopy(opts: { noun?: string } = {}): typeof SETUP_BOT_COP
   return {
     ...SETUP_BOT_COPY_STATIC,
     /** Home's setup card, in place of "open your agent and run /setup". */
-    cardBody: `Your HQ folder isn't ready yet. Your setup bot finishes it for you - it runs on this ${noun} under your own coding tool login.`,
+    cardBody: `Your HQ folder isn't ready yet. Your assistant finishes it for you. It runs on this ${noun} under your own coding tool login.`,
     /** Under the hero while the automatic start runs. */
-    bodyStarting: `Your setup bot is starting on this ${noun}. Its conversation opens by itself in a moment.`,
+    bodyStarting: `Your assistant is starting on this ${noun}. Its conversation opens by itself in a moment.`,
     /** Under the hero, before the first click. */
     body:
-      `Setup happens in a conversation with your setup bot. It runs on this ${noun} under your own coding tool login, ` +
+      `Setup happens in a conversation with your assistant. It runs on this ${noun} under your own coding tool login, ` +
       "walks you through getting started, and stays afterwards for anything you need.",
   };
 }
@@ -222,14 +223,14 @@ export function isSetupBotNoRuntimeMessage(msg: string | null | undefined): bool
 }
 
 /** The host has no bots group at all (web build). */
-export const SETUP_BOT_UNAVAILABLE = "The setup bot is only available in the HQ desktop app.";
+export const SETUP_BOT_UNAVAILABLE = "Your assistant is only available in the HQ desktop app.";
 
 /**
  * Last-resort wording. Every start failure is mapped to a written sentence
  * before it reaches a person; nothing from the API or the CLI is ever shown
  * (see `plainBotFailure`).
  */
-export const SETUP_BOT_GENERIC_FAILURE = "Could not start your setup bot. Please try again.";
+export const SETUP_BOT_GENERIC_FAILURE = "Could not start your assistant. Please try again.";
 
 /**
  * The account already owns a setup bot (the create came back "already
@@ -238,7 +239,7 @@ export const SETUP_BOT_GENERIC_FAILURE = "Could not start your setup bot. Please
  * not caught up. Says what is true, and what to do, in the person's words.
  */
 export const SETUP_BOT_ALREADY_ELSEWHERE =
-  "Your account already has a setup bot from another computer. It shows up in your messages once HQ catches up — open it there to carry on.";
+  "Your account already has an assistant from another computer. It shows up in your messages once HQ catches up. Open it there to carry on.";
 
 /**
  * Neutral snapshots of the OS-aware copy. Callers that render the copy for a
@@ -431,7 +432,7 @@ export const SETUP_BOT_FINALE_COPY = {
 
 /** The finish card's Slack button label, and the message it sends the bot. */
 export function setupSlackOfferText(displayName: string | null | undefined): string {
-  return SETUP_BOT_FINALE_COPY.slack.replace("{name}", displayName?.trim() || "my setup bot");
+  return SETUP_BOT_FINALE_COPY.slack.replace("{name}", displayName?.trim() || "my assistant");
 }
 
 /**
