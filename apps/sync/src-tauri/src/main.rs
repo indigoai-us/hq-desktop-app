@@ -1646,6 +1646,10 @@ fn main() {
             // reads Windows ACLs and every Core update exits 23.
             #[cfg(windows)]
             commands::install_deps::setup_cwrsync_fstab_repair();
+            // An HQ-managed MinGit (no Bash) from an earlier install is
+            // upgraded to PortableGit in the background.
+            #[cfg(windows)]
+            commands::install_deps::setup_managed_git_upgrade(app.handle());
             commands::packages::setup_pack_update_checker(app.handle());
             commands::hq_core_state::setup_core_state_checker(app.handle());
 

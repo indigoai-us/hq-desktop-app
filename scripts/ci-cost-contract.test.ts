@@ -830,6 +830,7 @@ describe("every job reads its runner from a repo variable", () => {
     HQ_DESKTOP_RUNNER_MACOS: ["macos-latest", "macos-14"],
     HQ_DESKTOP_RUNNER_MACOS_RELEASE: ["macos-14"],
     HQ_DESKTOP_RUNNER_WINDOWS: ["windows-latest"],
+    HQ_DESKTOP_RUNNER_WINDOWS_ARM64: ["windows-11-arm"],
   };
 
   for (const file of files) {

@@ -128,8 +128,6 @@
     type SetupStageRecoveryAction,
     type StageId,
     type StageState,
-    GIT_PERMISSION_NOTICE,
-    GIT_WAITING_NOTICE,
     createDepsToolTracker,
     isKnownDepsTool,
     readInstallerRunsSnapshot,
@@ -578,11 +576,9 @@
   let stageElapsedMs = $state(0);
   /** Real backend progress text for the running stage, when one was reported. */
   let stageDetail = $state<string | null>(null);
-  // Run 006: Windows asks for permission before Git installs, and a declined
-  // prompt waits here for the user's Try again. A long install is never
-  // stopped; the screen says HQ keeps waiting instead.
-  let gitPermissionRequested = $state(false);
-  let gitPermissionWaiting = $state(false);
+  // A long Windows installer run is never stopped; the screen says HQ keeps
+  // waiting instead. Git needs no Windows installer: HQ unpacks its own
+  // per-user PortableGit, so Windows never asks permission for it.
   const depsTools = createDepsToolTracker();
   let depsWaitingNotice = $state<string | null>(null);
   let depsRecovery = $state<DepsFailureRecovery | null>(null);
@@ -854,16 +850,12 @@
   const depsNotice = $derived(
     depsRecovery
       ? depsRecovery.message
-      : gitPermissionWaiting
-        ? GIT_WAITING_NOTICE
-        : gitPermissionRequested
-          ? GIT_PERMISSION_NOTICE
-          : currentStageId === 'deps'
-            ? (depsWaitingNotice ?? depsExpectation)
-            : null,
+      : currentStageId === 'deps'
+        ? (depsWaitingNotice ?? depsExpectation)
+        : null,
   );
   const depsNoticeIsStatus = $derived(
-    Boolean(depsRecovery || gitPermissionRequested || gitPermissionWaiting || depsWaitingNotice),
+    Boolean(depsRecovery || depsWaitingNotice),
   );
   const thisComputer = $derived(thisComputerNounFor(setupHostOs));
   // The global shortcut is Option-Shift-O on a Mac and Alt+Shift+O elsewhere.
@@ -2297,10 +2289,7 @@
   function showInstallerWaiting(runId: number): void {
     if (!isCurrentRun(runId)) return;
     for (const id of installerRuns.running) {
-      if (id === 'git') {
-        gitPermissionRequested = true;
-        gitPermissionWaiting = true;
-      } else if (isKnownDepsTool(id)) {
+      if (isKnownDepsTool(id)) {
         // An installer with no known tool is never named (gate 2 NEW-3).
         depsTools.apply({ id, state: 'waiting' });
       }
@@ -2404,22 +2393,11 @@
         }
       },
     ));
-    const unlistenGitPermission = safeUnlisten(await listen<{ state?: string }>(
-      'setup:git-permission',
-      (event) => {
-        if (!isCurrentRun(runId)) return;
-        const state = event.payload?.state;
-        // 'waiting' arrives after 'requesting' once the install runs long.
-        gitPermissionWaiting = state === 'waiting';
-        gitPermissionRequested = state === 'requesting' || state === 'waiting';
-      },
-    ));
     if (!isCurrentRun(runId)) {
       unlisten();
       unlistenCliLockWait();
       unlistenDepsTool();
       unlistenInstallerRun();
-      unlistenGitPermission();
       return;
     }
     unlistenInstallProgress = () => {
@@ -2427,7 +2405,6 @@
       unlistenCliLockWait();
       unlistenDepsTool();
       unlistenInstallerRun();
-      unlistenGitPermission();
     };
 
     const unlistenContent = safeUnlisten(await listen<ContentProgressPayload>(
@@ -2810,8 +2787,6 @@
     }
     if (result.kind === 'failed') {
       const message = errorMessage(result.err);
-      gitPermissionRequested = false;
-      gitPermissionWaiting = false;
       depsTools.reset();
       depsWaitingNotice = null;
       const userRecovery = id === 'deps' ? depsFailureRecovery(message) : null;

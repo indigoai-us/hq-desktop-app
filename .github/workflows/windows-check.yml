@@ -33,6 +33,7 @@ name: Windows check (Phase 3)
 # label, so nothing queues on a pool that does not exist yet:
 #   HQ_DESKTOP_RUNNER_LINUX          ["self-hosted","linux","X64","indigo-x64"]           default "ubuntu-latest"
 #   HQ_DESKTOP_RUNNER_WINDOWS        ["self-hosted","Windows","X64","hq-windows"]         default "windows-latest"
+#   HQ_DESKTOP_RUNNER_WINDOWS_ARM64  ["self-hosted","Windows","ARM64","hq-windows-arm"]   default "windows-11-arm"
 # Set a variable to the JSON array (or a JSON string label) to move every job
 # that reads it. Job names, and so required check names, do not change.
 
@@ -298,6 +299,52 @@ jobs:
       - name: Runner target probe tests
         working-directory: apps/sync/src-tauri
         run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml runner_target::tests
+
+      # HQ's managed PortableGit (windows_portable_git): the unit tests, then
+      # the real pinned x64 asset end to end on this runner. The ignored test
+      # checks the SHA-256, extracts the 7z payload in process, runs the
+      # bundle's post-install.bat, proves git and bash from the staged copy,
+      # activates over a MinGit-shaped folder, commits through a Bash-shebang
+      # hook with only the bundle on PATH, then upgrades and rolls back.
+      - name: Managed PortableGit tests (x64, real asset)
+        working-directory: apps/sync/src-tauri
+        shell: pwsh
+        run: |
+          $asset = Join-Path $env:RUNNER_TEMP 'PortableGit-2.54.0-64-bit.7z.exe'
+          Invoke-WebRequest -UseBasicParsing -OutFile $asset -Uri 'https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/PortableGit-2.54.0-64-bit.7z.exe'
+          $env:HQ_PORTABLE_GIT_ASSET = $asset
+          cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml windows_portable_git::tests -- --include-ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  # The same managed PortableGit tests on a native Windows ARM64 runner with
+  # the ARM64 asset (clangarm64 layout, native ARM64 Git and Bash). x64
+  # runners cannot execute ARM64 binaries, so this is the only place the ARM64
+  # bundle actually runs before release. Not part of the required
+  # `cargo check (x86_64-pc-windows-msvc)` aggregate below.
+  windows-portable-git-arm64:
+    needs: changes
+    if: ${{ needs.changes.outputs.windows == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    name: Managed PortableGit (Windows ARM64)
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_WINDOWS_ARM64 || '"windows-11-arm"') }}
+    timeout-minutes: 45
+    env:
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust (stable, aarch64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      - name: Managed PortableGit tests (ARM64, real asset)
+        shell: pwsh
+        run: |
+          $asset = Join-Path $env:RUNNER_TEMP 'PortableGit-2.54.0-arm64.7z.exe'
+          Invoke-WebRequest -UseBasicParsing -OutFile $asset -Uri 'https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/PortableGit-2.54.0-arm64.7z.exe'
+          $env:HQ_PORTABLE_GIT_ASSET = $asset
+          cargo test -p hq-desktop-core --lib windows_portable_git::tests -- --include-ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   # Everything that runs against the app's bins under DEFAULT features, so the
   # binaries built by `cargo test --bins --no-run` below are compiled once and

@@ -141,6 +141,7 @@ pub mod unexpected_surface;
 pub mod vault_index;
 pub mod watcher_fault;
 pub mod win32_path;
+pub mod windows_portable_git;
 pub mod update_gate;
 pub mod usage_upload_plan;
 pub mod workspaces;
