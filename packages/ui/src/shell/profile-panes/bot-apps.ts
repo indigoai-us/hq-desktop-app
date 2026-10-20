@@ -4,7 +4,7 @@ import type { IntegrationCatalogEntry } from '@hq/platform';
 import type { AgentProfileView } from '../../chat/agent-detail-model.js';
 import { normalizeConnectDomain } from '../../chat/messaging/richMessageContent.js';
 import type { CompanyConnection } from '../../chat/messaging/integration-cards-model.js';
-import { botConnectionAccessState, botConnectionIsInteractive, botConnectionIsOn, type ConnectionAccess } from '../../chat/messaging/bot-integration-access-model.js';
+import { botConnectionAccessState, botConnectionGrantState, botConnectionIsInteractive, botConnectionIsOn, type ConnectionAccess } from '../../chat/messaging/bot-integration-access-model.js';
 export interface BotApp {
   id: string; name: string; domain: string; description: string; provider?: string;
   status: 'ready' | 'available' | 'attention' | 'unknown';
@@ -37,12 +37,14 @@ export function botApps(connections: CompanyConnection[], access: Record<string,
     const acl = access[connection.id];
     const input = acl ? { botUid: uid, botRole: fresh ? profile.role ?? '' : '', mode: connection.mode } : null;
     const state = acl && input ? botConnectionAccessState({ ...input, access: acl }) : null;
-    const grant = acl && input ? botConnectionAccessState({ ...input, access: { ...acl, canManage: true } }) : null;
-    const active = ready.find(app => app.provider === connection.provider);
-    const issue = attention.find(app => app.provider === connection.provider);
+    const grant = acl && input ? botConnectionGrantState({ ...input, access: acl }) : null;
     const readOnly = state === 'read-only';
     const granted = grant !== null && botConnectionIsOn(grant);
-    const onBot = granted || !!issue || (readOnly && !!active);
+    const soleProviderConnection = connections.filter(other => other.provider === connection.provider).length === 1;
+    const attributable = granted || (!readOnly && soleProviderConnection);
+    const active = attributable ? ready.find(app => app.provider === connection.provider) : undefined;
+    const issue = attributable ? attention.find(app => app.provider === connection.provider) : undefined;
+    const onBot = granted || !!issue;
     const enabled = granted;
     const status: BotApp['status'] = issue || connection.needsAttention ? 'attention' : onBot ? 'ready' : acl ? 'available' : 'unknown';
     const detail = issue ? issue.reason
