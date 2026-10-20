@@ -33,30 +33,24 @@
 # still runs the full job and writes the exact key for release/windows-check.
 name: Warm Rust caches
 
+# Runner variables (repo-level Actions variables; docs/ci/self-hosted-runners.md).
+# Every job reads its runs-on from one of these. Unset means the current hosted
+# label, so nothing queues on a pool that does not exist yet:
+#   HQ_DESKTOP_RUNNER_MACOS          ["self-hosted","macOS","ARM64","hq-desktop"]         default "macos-14"
+#   HQ_DESKTOP_RUNNER_WINDOWS        ["self-hosted","Windows","X64","hq-windows"]         default "windows-latest"
+# Set a variable to the JSON array (or a JSON string label) to move every job
+# that reads it. Job names, and so required check names, do not change.
+
 on:
-  push:
-    branches: [main]
-    paths:
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - "apps/sync/src-tauri/Cargo.toml"
-      - "apps/sync/src-tauri/Cargo.lock"
-      - "apps/sync/src-tauri/build.rs"
-      - "apps/sync/src-tauri/src/**"
-      - "apps/sync/src-tauri/capabilities/**"
-      - "apps/sync/src-tauri/icons/**"
-      - "apps/sync/src-tauri/tauri.conf.json"
-      - "crates/**"
-      - ".github/workflows/cache-warm.yml"
-      - ".github/workflows/release.yml"
-      - ".github/workflows/windows-check.yml"
-      - "scripts/shell-hash.mjs"
-      - "scripts/prune-shell-cache.mjs"
-      - "apps/sync/src-tauri/tauri.windows.conf.json"
-      - "apps/sync/src-tauri/tauri.windows.release.conf.json"
+  # Daily, off-peak UTC, instead of on every main push. The push trigger ran
+  # 247 times Oct 1-19 at ~41.7 macOS + ~58.4 Windows min each. Each job
+  # no-ops on an exact cache hit, and release.yml builds the shell itself when
+  # its key is missing from shell-cache, so a stale warm only slows that one
+  # release. Daily also keeps the caches inside the 7-day eviction window and
+  # picks up stable rustc bumps within a day. Dispatch remains for an urgent
+  # warm after a key-changing merge.
   schedule:
-    - cron: "17 6 * * 1"   # weekly; caches unused for 7 days are evicted and stable rustc bumps change the key
+    - cron: "17 6 * * *"   # daily 06:17 UTC (off-peak)
   workflow_dispatch:
     inputs:
       rebuild:
@@ -67,11 +61,11 @@ on:
 permissions:
   contents: read
 
-# Never cancel an in-progress warm: a shell build takes 20-30 minutes and
-# main merges more often than that, so cancel-in-progress threw away every
-# warm before it could store anything. GitHub keeps at most one pending run
-# per group (a newer push replaces the pending one), and each shell job
-# no-ops when its key is already on shell-cache, so queued runs stay cheap.
+# Never cancel an in-progress warm: a shell build takes 20-30 minutes, and
+# cancel-in-progress threw away warms before they could store anything.
+# GitHub keeps at most one pending run per group (a newer schedule or
+# dispatch replaces the pending one), and each shell job no-ops when its key
+# is already on shell-cache, so queued runs stay cheap.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
@@ -82,7 +76,7 @@ env:
 jobs:
   release-macos:
     name: Warm release macOS universal
-    runs-on: macos-14
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_MACOS || '"macos-14"') }}
     env:
       # Vite/Rollup bundling of the UI exceeded Node's default ~2 GB heap on macOS (run 37857004569).
       NODE_OPTIONS: --max-old-space-size=6144
@@ -167,7 +161,7 @@ jobs:
 
   release-windows:
     name: Warm release ${{ matrix.target }}
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_WINDOWS || '"windows-latest"') }}
     timeout-minutes: 90
     defaults:
       run:
@@ -269,7 +263,7 @@ jobs:
 
   windows-check-debug:
     name: Warm windows-check debug
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_WINDOWS || '"windows-latest"') }}
     timeout-minutes: 90
     defaults:
       run:
@@ -339,7 +333,7 @@ jobs:
 
   windows-installer-release:
     name: Warm windows-installer release
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_WINDOWS || '"windows-latest"') }}
     timeout-minutes: 90
     defaults:
       run:
@@ -397,11 +391,11 @@ jobs:
   # restore, keyed by the same scripts/shell-hash.mjs content hash (not the
   # coarser Cargo.lock/rustc-only key the release-macos/release-windows jobs
   # above warm). Skipped early, cheaply, when the shell key is unchanged
-  # since the last warm — "on every push whose shell key changed" per the
-  # brief, without re-running a 24-minute build on every main push.
+  # since the last warm, so the daily run does not re-run a 24-minute build
+  # when nothing changed.
   warm-shell-macos:
     name: Warm prebuilt shell (macOS universal)
-    runs-on: macos-14
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_MACOS || '"macos-14"') }}
     timeout-minutes: 90
     permissions:
       contents: write
@@ -576,7 +570,7 @@ jobs:
 
   warm-shell-windows-x64:
     name: Warm prebuilt shell (Windows x64)
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_WINDOWS || '"windows-latest"') }}
     timeout-minutes: 90
     permissions:
       contents: write
@@ -781,7 +775,7 @@ jobs:
 
   warm-shell-windows-arm64:
     name: Warm prebuilt shell (Windows arm64)
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_WINDOWS || '"windows-latest"') }}
     timeout-minutes: 90
     permissions:
       contents: write

@@ -6,6 +6,13 @@
 # default branch; workflow_dispatch runs the file from any branch.
 name: Windows cold install
 
+# Runner variables (repo-level Actions variables; docs/ci/self-hosted-runners.md).
+# Every job reads its runs-on from one of these. Unset means the current hosted
+# label, so nothing queues on a pool that does not exist yet:
+#   HQ_DESKTOP_RUNNER_WINDOWS        ["self-hosted","Windows","X64","hq-windows"]         default "windows-latest"
+# Set a variable to the JSON array (or a JSON string label) to move every job
+# that reads it. Job names, and so required check names, do not change.
+
 on:
   workflow_dispatch:
   schedule:
@@ -28,7 +35,7 @@ concurrency:
 jobs:
   cold-install:
     name: Cold Windows install
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_WINDOWS || '"windows-latest"') }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
