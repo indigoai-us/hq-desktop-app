@@ -184,7 +184,11 @@ pub fn windows_git_search_dirs(
         Vec::new()
     } else {
         let git = program_files.join("Git");
-        vec![git.join("bin"), git.join("usr").join("bin"), git.join("cmd")]
+        vec![
+            git.join("bin"),
+            git.join("usr").join("bin"),
+            git.join("cmd"),
+        ]
     };
     WindowsGitSearchDirs { managed, system }
 }
@@ -373,10 +377,7 @@ pub fn required_portable_git_files(bundle: &Path, asset: &PortableGitAsset) -> V
         bundle.join("bin").join("git.exe"),
         bash_exe_in(bundle),
         bundle.join("usr").join("bin").join("bash.exe"),
-        bundle
-            .join(asset.native_prefix)
-            .join("bin")
-            .join("git.exe"),
+        bundle.join(asset.native_prefix).join("bin").join("git.exe"),
         bundle.join("post-install.bat"),
     ]
 }
@@ -495,7 +496,10 @@ fn activate_staged_bundle(
         // rollback copy goes first so the rename below has a free name.
         if std::fs::symlink_metadata(&previous).is_ok() {
             remove_path(&previous).map_err(|e| {
-                format!("could not remove the old rollback copy {}: {e}", previous.display())
+                format!(
+                    "could not remove the old rollback copy {}: {e}",
+                    previous.display()
+                )
             })?;
         }
         host.rename(&git_dir, &previous).map_err(|e| {
@@ -579,7 +583,10 @@ pub fn rollback_managed_git(
         other => {
             return Err(PortableGitError::new(
                 PortableGitStage::Rollback,
-                format!("no usable rollback copy at {} ({other:?})", previous.display()),
+                format!(
+                    "no usable rollback copy at {} ({other:?})",
+                    previous.display()
+                ),
             ))
         }
     }
@@ -587,7 +594,10 @@ pub fn rollback_managed_git(
     let parked = layout.unique_sibling(ROLLBACK_PREFIX);
     if had_live {
         host.rename(&git_dir, &parked).map_err(|e| {
-            PortableGitError::new(PortableGitStage::Rollback, format!("move live Git aside: {e}"))
+            PortableGitError::new(
+                PortableGitStage::Rollback,
+                format!("move live Git aside: {e}"),
+            )
         })?;
     }
     if let Err(e) = host.rename(&previous, &git_dir) {
@@ -726,7 +736,10 @@ pub fn run_probe(
             Ok(None) if started.elapsed() >= timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("{program} did not finish within {}s", timeout.as_secs()));
+                return Err(format!(
+                    "{program} did not finish within {}s",
+                    timeout.as_secs()
+                ));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(e) => return Err(format!("waiting for {program} failed: {e}")),
@@ -756,7 +769,12 @@ impl SystemPortableGitHost {
         }
     }
 
-    fn probe_command(&self, program: &Path, bundle: &Path, asset: &PortableGitAsset) -> std::process::Command {
+    fn probe_command(
+        &self,
+        program: &Path,
+        bundle: &Path,
+        asset: &PortableGitAsset,
+    ) -> std::process::Command {
         let mut command = std::process::Command::new(program);
         command
             .current_dir(bundle)
@@ -962,7 +980,10 @@ mod tests {
     impl PortableGitHost for FakeHost {
         fn extract(&mut self, payload: &[u8], dest: &Path) -> Result<(), String> {
             self.calls.push("extract".into());
-            assert!(payload.starts_with(&SEVEN_ZIP_SIGNATURE), "extract gets the 7z payload");
+            assert!(
+                payload.starts_with(&SEVEN_ZIP_SIGNATURE),
+                "extract gets the 7z payload"
+            );
             if self.partial_extract {
                 std::fs::create_dir_all(dest.join("cmd")).unwrap();
                 std::fs::write(dest.join("cmd").join("git.exe"), "half").unwrap();
@@ -979,8 +1000,15 @@ mod tests {
             Ok(())
         }
 
-        fn prepare_and_probe(&mut self, staged: &Path, _asset: &PortableGitAsset) -> Result<(), String> {
-            self.calls.push(format!("prepare:{}", staged.file_name().unwrap().to_string_lossy()));
+        fn prepare_and_probe(
+            &mut self,
+            staged: &Path,
+            _asset: &PortableGitAsset,
+        ) -> Result<(), String> {
+            self.calls.push(format!(
+                "prepare:{}",
+                staged.file_name().unwrap().to_string_lossy()
+            ));
             match &self.prepare_error {
                 Some(error) => Err(error.clone()),
                 None => Ok(()),
@@ -1031,8 +1059,13 @@ mod tests {
             ));
             assert!(asset.url.ends_with(asset.file_name));
             assert_eq!(asset.sha256.len(), 64);
-            assert!(asset.sha256.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
-            assert!(asset.file_name.starts_with("PortableGit-") && asset.file_name.ends_with(".7z.exe"));
+            assert!(asset
+                .sha256
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+            assert!(
+                asset.file_name.starts_with("PortableGit-") && asset.file_name.ends_with(".7z.exe")
+            );
         }
         assert_eq!(
             PORTABLE_GIT_X64.sha256,
@@ -1078,17 +1111,29 @@ mod tests {
     #[test]
     fn classifies_mingit_portablegit_and_partial_trees() {
         let tmp = tempfile::TempDir::new().unwrap();
-        assert_eq!(classify_managed_git_bundle(&tmp.path().join("none")), ManagedGitBundle::Absent);
+        assert_eq!(
+            classify_managed_git_bundle(&tmp.path().join("none")),
+            ManagedGitBundle::Absent
+        );
         let mingit = tmp.path().join("mingit");
         write_mingit_tree(&mingit);
-        assert_eq!(classify_managed_git_bundle(&mingit), ManagedGitBundle::MinGit);
+        assert_eq!(
+            classify_managed_git_bundle(&mingit),
+            ManagedGitBundle::MinGit
+        );
         let portable = tmp.path().join("portable");
         write_portable_tree(&portable, &PORTABLE_GIT_X64, "p");
-        assert_eq!(classify_managed_git_bundle(&portable), ManagedGitBundle::PortableGit);
+        assert_eq!(
+            classify_managed_git_bundle(&portable),
+            ManagedGitBundle::PortableGit
+        );
         let partial = tmp.path().join("partial");
         std::fs::create_dir_all(partial.join("bin")).unwrap();
         std::fs::write(bash_exe_in(&partial), "").unwrap();
-        assert_eq!(classify_managed_git_bundle(&partial), ManagedGitBundle::Incomplete);
+        assert_eq!(
+            classify_managed_git_bundle(&partial),
+            ManagedGitBundle::Incomplete
+        );
     }
 
     #[test]
@@ -1099,25 +1144,55 @@ mod tests {
         let pinned = format!("git version {PORTABLE_GIT_VERSION}");
 
         // HQ's MinGit is migrated, whatever its version says.
-        assert!(managed_git_needs_reprovision(&git_exe_in(&managed), Some(&pinned), &managed));
+        assert!(managed_git_needs_reprovision(
+            &git_exe_in(&managed),
+            Some(&pinned),
+            &managed
+        ));
 
         // The person's own Git is never touched, Bash or not.
-        let user_git = tmp.path().join("Program Files").join("Git").join("cmd").join("git.exe");
-        assert!(!managed_git_needs_reprovision(&user_git, Some("git version 2.40.0.windows.1"), &managed));
+        let user_git = tmp
+            .path()
+            .join("Program Files")
+            .join("Git")
+            .join("cmd")
+            .join("git.exe");
+        assert!(!managed_git_needs_reprovision(
+            &user_git,
+            Some("git version 2.40.0.windows.1"),
+            &managed
+        ));
         // A sibling folder that only shares the name prefix is not managed.
-        let sibling = tmp.path().join("toolchain").join("git.previous").join("cmd").join("git.exe");
-        assert!(!managed_git_needs_reprovision(&sibling, Some(&pinned), &managed));
+        let sibling = tmp
+            .path()
+            .join("toolchain")
+            .join("git.previous")
+            .join("cmd")
+            .join("git.exe");
+        assert!(!managed_git_needs_reprovision(
+            &sibling,
+            Some(&pinned),
+            &managed
+        ));
 
         // The pinned PortableGit is left alone; another version is upgraded.
         std::fs::remove_dir_all(&managed).unwrap();
         write_portable_tree(&managed, &PORTABLE_GIT_X64, "p");
-        assert!(!managed_git_needs_reprovision(&git_exe_in(&managed), Some(&pinned), &managed));
+        assert!(!managed_git_needs_reprovision(
+            &git_exe_in(&managed),
+            Some(&pinned),
+            &managed
+        ));
         assert!(managed_git_needs_reprovision(
             &git_exe_in(&managed),
             Some("git version 2.53.0.windows.1"),
             &managed
         ));
-        assert!(managed_git_needs_reprovision(&git_exe_in(&managed), None, &managed));
+        assert!(managed_git_needs_reprovision(
+            &git_exe_in(&managed),
+            None,
+            &managed
+        ));
     }
 
     #[test]
@@ -1155,10 +1230,21 @@ mod tests {
         let installed = install_portable_git(&layout, &asset, &archive, &mut host).unwrap();
         assert_eq!(installed.replaced, ManagedGitBundle::Absent);
         assert_eq!(installed.rollback_copy, None);
-        assert_eq!(classify_managed_git_bundle(&layout.git_dir()), ManagedGitBundle::PortableGit);
+        assert_eq!(
+            classify_managed_git_bundle(&layout.git_dir()),
+            ManagedGitBundle::PortableGit
+        );
         // Probe ran on the staged copy, before the activation rename.
-        let prepare = host.calls.iter().position(|c| c.starts_with("prepare:.git-install-")).unwrap();
-        let activate = host.calls.iter().position(|c| c.starts_with("rename:.git-install-")).unwrap();
+        let prepare = host
+            .calls
+            .iter()
+            .position(|c| c.starts_with("prepare:.git-install-"))
+            .unwrap();
+        let activate = host
+            .calls
+            .iter()
+            .position(|c| c.starts_with("rename:.git-install-"))
+            .unwrap();
         assert!(prepare < activate);
         assert_eq!(host.calls.last().unwrap(), "verify");
         assert_eq!(toolchain_entries(&layout), vec!["git".to_string()]);
@@ -1177,8 +1263,15 @@ mod tests {
         let error = install_portable_git(&layout, &asset, &archive, &mut host).unwrap_err();
         assert_eq!(error.stage, PortableGitStage::Checksum);
         assert!(error.detail.contains("checksum mismatch"));
-        assert!(host.calls.is_empty(), "nothing extracted, probed or renamed: {:?}", host.calls);
-        assert_eq!(classify_managed_git_bundle(&layout.git_dir()), ManagedGitBundle::MinGit);
+        assert!(
+            host.calls.is_empty(),
+            "nothing extracted, probed or renamed: {:?}",
+            host.calls
+        );
+        assert_eq!(
+            classify_managed_git_bundle(&layout.git_dir()),
+            ManagedGitBundle::MinGit
+        );
         assert_eq!(toolchain_entries(&layout), vec!["git".to_string()]);
     }
 
@@ -1194,8 +1287,14 @@ mod tests {
 
         let error = install_portable_git(&layout, &asset, &archive, &mut host).unwrap_err();
         assert_eq!(error.stage, PortableGitStage::Extract);
-        assert!(!host.calls.iter().any(|c| c.starts_with("rename") || c.starts_with("prepare")));
-        assert_eq!(classify_managed_git_bundle(&layout.git_dir()), ManagedGitBundle::MinGit);
+        assert!(!host
+            .calls
+            .iter()
+            .any(|c| c.starts_with("rename") || c.starts_with("prepare")));
+        assert_eq!(
+            classify_managed_git_bundle(&layout.git_dir()),
+            ManagedGitBundle::MinGit
+        );
         // The half-written staging folder is gone.
         assert_eq!(toolchain_entries(&layout), vec!["git".to_string()]);
     }
@@ -1211,7 +1310,10 @@ mod tests {
 
         let error = install_portable_git(&layout, &asset, &archive, &mut host).unwrap_err();
         assert_eq!(error.stage, PortableGitStage::Prepare);
-        assert_eq!(classify_managed_git_bundle(&layout.git_dir()), ManagedGitBundle::Absent);
+        assert_eq!(
+            classify_managed_git_bundle(&layout.git_dir()),
+            ManagedGitBundle::Absent
+        );
         assert!(toolchain_entries(&layout).is_empty());
     }
 
@@ -1227,9 +1329,18 @@ mod tests {
         let installed = install_portable_git(&layout, &asset, &archive, &mut host).unwrap();
         assert_eq!(installed.replaced, ManagedGitBundle::MinGit);
         assert_eq!(installed.rollback_copy, Some(layout.previous_dir()));
-        assert_eq!(classify_managed_git_bundle(&layout.git_dir()), ManagedGitBundle::PortableGit);
-        assert_eq!(classify_managed_git_bundle(&layout.previous_dir()), ManagedGitBundle::MinGit);
-        assert_eq!(toolchain_entries(&layout), vec!["git".to_string(), "git.previous".to_string()]);
+        assert_eq!(
+            classify_managed_git_bundle(&layout.git_dir()),
+            ManagedGitBundle::PortableGit
+        );
+        assert_eq!(
+            classify_managed_git_bundle(&layout.previous_dir()),
+            ManagedGitBundle::MinGit
+        );
+        assert_eq!(
+            toolchain_entries(&layout),
+            vec!["git".to_string(), "git.previous".to_string()]
+        );
     }
 
     #[test]
@@ -1245,14 +1356,21 @@ mod tests {
 
         install_portable_git(&layout, &asset, &archive, &mut host).unwrap();
         assert_eq!(marker_of(&layout.git_dir()), "v2");
-        assert_eq!(marker_of(&layout.previous_dir()), "v1", "the MinGit generation is dropped");
+        assert_eq!(
+            marker_of(&layout.previous_dir()),
+            "v1",
+            "the MinGit generation is dropped"
+        );
 
         rollback_managed_git(&layout, &mut host).unwrap();
         assert_eq!(marker_of(&layout.git_dir()), "v1");
         assert_eq!(marker_of(&layout.previous_dir()), "v2");
         rollback_managed_git(&layout, &mut host).unwrap();
         assert_eq!(marker_of(&layout.git_dir()), "v2");
-        assert_eq!(toolchain_entries(&layout), vec!["git".to_string(), "git.previous".to_string()]);
+        assert_eq!(
+            toolchain_entries(&layout),
+            vec!["git".to_string(), "git.previous".to_string()]
+        );
     }
 
     #[test]
@@ -1296,7 +1414,10 @@ mod tests {
 
         let error = install_portable_git(&layout, &asset, &archive, &mut host).unwrap_err();
         assert_eq!(error.stage, PortableGitStage::Verify);
-        assert_eq!(classify_managed_git_bundle(&layout.git_dir()), ManagedGitBundle::MinGit);
+        assert_eq!(
+            classify_managed_git_bundle(&layout.git_dir()),
+            ManagedGitBundle::MinGit
+        );
         assert_eq!(toolchain_entries(&layout), vec!["git".to_string()]);
     }
 
@@ -1332,13 +1453,37 @@ mod tests {
     #[test]
     fn stale_sweep_only_takes_old_staging_folders() {
         let hour = Duration::from_secs(3600);
-        assert!(is_stale_portable_git_sibling(".git-install-abc", Some(hour), hour));
-        assert!(is_stale_portable_git_sibling(".git-failed-abc", Some(hour * 2), hour));
-        assert!(!is_stale_portable_git_sibling(".git-install-abc", Some(Duration::from_secs(5)), hour));
-        assert!(!is_stale_portable_git_sibling(".git-install-abc", None, hour));
+        assert!(is_stale_portable_git_sibling(
+            ".git-install-abc",
+            Some(hour),
+            hour
+        ));
+        assert!(is_stale_portable_git_sibling(
+            ".git-failed-abc",
+            Some(hour * 2),
+            hour
+        ));
+        assert!(!is_stale_portable_git_sibling(
+            ".git-install-abc",
+            Some(Duration::from_secs(5)),
+            hour
+        ));
+        assert!(!is_stale_portable_git_sibling(
+            ".git-install-abc",
+            None,
+            hour
+        ));
         assert!(!is_stale_portable_git_sibling("git", Some(hour * 10), hour));
-        assert!(!is_stale_portable_git_sibling("git.previous", Some(hour * 10), hour));
-        assert!(!is_stale_portable_git_sibling(".node-install-abc", Some(hour * 10), hour));
+        assert!(!is_stale_portable_git_sibling(
+            "git.previous",
+            Some(hour * 10),
+            hour
+        ));
+        assert!(!is_stale_portable_git_sibling(
+            ".node-install-abc",
+            Some(hour * 10),
+            hour
+        ));
     }
 
     #[test]
@@ -1347,7 +1492,9 @@ mod tests {
         let path = bundle_probe_path(bundle, &PORTABLE_GIT_ARM64, Path::new(r"C:\Windows"));
         let entries: Vec<&str> = path.split(';').collect();
         assert_eq!(entries.len(), 6);
-        assert!(entries[..4].iter().all(|entry| entry.starts_with(r"C:\t\git")));
+        assert!(entries[..4]
+            .iter()
+            .all(|entry| entry.starts_with(r"C:\t\git")));
         assert!(entries[2].contains("clangarm64"));
         assert!(!path.to_ascii_lowercase().contains("program files"));
     }
@@ -1355,7 +1502,10 @@ mod tests {
     #[test]
     fn managed_git_path_dirs_put_git_bash_on_path() {
         let dirs = managed_git_path_dirs(Path::new("/t/git"));
-        assert_eq!(dirs, vec![PathBuf::from("/t/git/cmd"), PathBuf::from("/t/git/bin")]);
+        assert_eq!(
+            dirs,
+            vec![PathBuf::from("/t/git/cmd"), PathBuf::from("/t/git/bin")]
+        );
     }
 
     /// A child PATH laid out the way the desktop composes it on Windows:
@@ -1392,11 +1542,19 @@ mod tests {
         let bash = path.iter().find(|dir| has_bash(dir)).unwrap();
         assert_eq!(bash, &managed.join("bin"));
         assert!(
-            !path.iter().any(|dir| dir.starts_with(program_files.join("Git"))),
+            !path
+                .iter()
+                .any(|dir| dir.starts_with(program_files.join("Git"))),
             "no system Git folder while PortableGit is live: {path:?}"
         );
-        let git_cmd = path.iter().position(|dir| dir == &managed.join("cmd")).unwrap();
-        let system32 = path.iter().position(|dir| dir == &system_root.join("System32")).unwrap();
+        let git_cmd = path
+            .iter()
+            .position(|dir| dir == &managed.join("cmd"))
+            .unwrap();
+        let system32 = path
+            .iter()
+            .position(|dir| dir == &system_root.join("System32"))
+            .unwrap();
         assert!(git_cmd < system32);
 
         // Without HQ's PortableGit, an installed Git's Bash still wins over WSL.
@@ -1412,18 +1570,30 @@ mod tests {
 
     #[test]
     fn arm64_search_dirs_use_the_clangarm64_helper_folder() {
-        let dirs = windows_git_search_dirs(Path::new("/t/git"), "clangarm64", Path::new("/pf"), true);
-        assert_eq!(dirs.managed.last().unwrap(), &PathBuf::from("/t/git/clangarm64/bin"));
+        let dirs =
+            windows_git_search_dirs(Path::new("/t/git"), "clangarm64", Path::new("/pf"), true);
+        assert_eq!(
+            dirs.managed.last().unwrap(),
+            &PathBuf::from("/t/git/clangarm64/bin")
+        );
         assert!(dirs.system.is_empty());
     }
 
     #[test]
     fn version_and_bash_probes_require_the_pin_and_the_marker() {
-        let ok = |stdout: &str| ProbeOutput { success: true, code: Some(0), stdout: stdout.into(), stderr: String::new() };
+        let ok = |stdout: &str| ProbeOutput {
+            success: true,
+            code: Some(0),
+            stdout: stdout.into(),
+            stderr: String::new(),
+        };
         let git = Path::new("git.exe");
         assert!(probe_git_version(&ok("git version 2.54.0.windows.1\n"), git).is_ok());
         assert!(probe_git_version(&ok("git version 2.53.0.windows.1\n"), git).is_err());
-        let failed = ProbeOutput { success: false, ..ok("git version 2.54.0.windows.1") };
+        let failed = ProbeOutput {
+            success: false,
+            ..ok("git version 2.54.0.windows.1")
+        };
         assert!(probe_git_version(&failed, git).is_err());
         assert!(probe_bash(&ok("HQ_BASH_OK"), Path::new("bash.exe")).is_ok());
         assert!(probe_bash(&ok(""), Path::new("bash.exe")).is_err());
@@ -1458,7 +1628,11 @@ mod tests {
     fn real_asset_install_end_to_end() {
         let path = std::env::var("HQ_PORTABLE_GIT_ASSET").expect("HQ_PORTABLE_GIT_ASSET");
         let bytes = std::fs::read(&path).unwrap();
-        let asset = if path.contains("arm64") { &PORTABLE_GIT_ARM64 } else { &PORTABLE_GIT_X64 };
+        let asset = if path.contains("arm64") {
+            &PORTABLE_GIT_ARM64
+        } else {
+            &PORTABLE_GIT_X64
+        };
         verify_portable_git_sha256(&bytes, asset).unwrap();
         let payload = sfx_7z_payload(&bytes).unwrap();
         let tmp = tempfile::TempDir::new().unwrap();
@@ -1477,7 +1651,8 @@ mod tests {
         {
             let _ = payload;
             let layout = ManagedGitLayout::new(tmp.path().join("tool chain with spaces"));
-            let system_root = PathBuf::from(std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into()));
+            let system_root =
+                PathBuf::from(std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into()));
             let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
             let sink = lines.clone();
             let mut host = SystemPortableGitHost::new(
@@ -1489,9 +1664,16 @@ mod tests {
             write_mingit_tree(&layout.git_dir());
             let started = std::time::Instant::now();
             let installed = install_portable_git(&layout, asset, &bytes, &mut host).unwrap();
-            eprintln!("install took {:?}; {} progress lines", started.elapsed(), lines.lock().unwrap().len());
+            eprintln!(
+                "install took {:?}; {} progress lines",
+                started.elapsed(),
+                lines.lock().unwrap().len()
+            );
             assert_eq!(installed.replaced, ManagedGitBundle::MinGit);
-            assert_eq!(classify_managed_git_bundle(&layout.git_dir()), ManagedGitBundle::PortableGit);
+            assert_eq!(
+                classify_managed_git_bundle(&layout.git_dir()),
+                ManagedGitBundle::PortableGit
+            );
             assert!(!layout.git_dir().join("post-install.bat").exists());
 
             // Git and a Bash-shebang hook from the live bundle only.
@@ -1509,7 +1691,11 @@ mod tests {
                     .env("GIT_CONFIG_GLOBAL", "NUL")
                     .env("GIT_TERMINAL_PROMPT", "0");
                 let output = run_probe(command, Duration::from_secs(120)).unwrap();
-                assert!(output.success, "git {args:?}: {} {}", output.stdout, output.stderr);
+                assert!(
+                    output.success,
+                    "git {args:?}: {} {}",
+                    output.stdout, output.stderr
+                );
                 output
             };
             run(&["init", "-q"]);
@@ -1529,7 +1715,10 @@ mod tests {
             // Upgrade (reinstall of the pin), then roll back and forward.
             let again = install_portable_git(&layout, asset, &bytes, &mut host).unwrap();
             assert_eq!(again.replaced, ManagedGitBundle::PortableGit);
-            assert_eq!(classify_managed_git_bundle(&layout.previous_dir()), ManagedGitBundle::PortableGit);
+            assert_eq!(
+                classify_managed_git_bundle(&layout.previous_dir()),
+                ManagedGitBundle::PortableGit
+            );
             rollback_managed_git(&layout, &mut host).unwrap();
             host.verify_live(&layout.git_dir()).unwrap();
             rollback_managed_git(&layout, &mut host).unwrap();
