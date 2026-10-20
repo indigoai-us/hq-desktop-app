@@ -174,13 +174,6 @@
   } from '../../lib/onboarding-wizard';
   import { TELEMETRY_CONSENT_VERSION } from '../../lib/consent-version';
   import { startTraySync } from '../../lib/traySync';
-  import {
-    CLT_CARD_COPY,
-    CLT_GATED_STAGES,
-    commandLineToolsMissing,
-    runCommandLineToolsGate,
-    type CommandLineToolsPhase,
-  } from '../../lib/command-line-tools-gate';
   import ConnectorImportStep from './ConnectorImportStep.svelte';
   import CompanyStep, { type CompanyStepEvent, type CompanyStepResult } from './CompanyStep.svelte';
   import hqAppIcon from '../../assets/onboarding/hq-app-icon.png';
@@ -566,13 +559,6 @@
   /** Real backend progress text for the running stage, when one was reported. */
   let stageDetail = $state<string | null>(null);
   /** Set while the active stage waits for its automatic next attempt. */
-  // Apple's developer tools gate (macOS). null = no card on screen.
-  let cltPhase = $state<CommandLineToolsPhase | null>(null);
-  let cltReady = false;
-  let cltShowPending = $state(false);
-  let cltRetryPending = $state(false);
-  let cltRetryResolve: (() => void) | null = null;
-
   let setupRetry = $state<{ stageId: StageId; attempt: SetupRetryAttempt } | null>(
     null,
   );
@@ -2835,66 +2821,6 @@
     }
   }
 
-  // Wait for Apple's developer tools before a stage that runs git. Holds the
-  // setup run in place, so it resumes at the same stage. False when the run
-  // was replaced or cancelled while waiting.
-  async function ensureCommandLineTools(runId: number): Promise<boolean> {
-    if (cltReady) return true;
-    const gateInvoke = <T,>(command: string, args?: Record<string, unknown>) =>
-      (args === undefined ? invoke<T>(command) : invoke<T>(command, args));
-    if (!(await commandLineToolsMissing({ invoke: gateInvoke }))) {
-      cltReady = true;
-      return isCurrentRun(runId);
-    }
-    for (;;) {
-      if (!isCurrentRun(runId)) return false;
-      const outcome = await runCommandLineToolsGate({
-        invoke: gateInvoke,
-        now: () => Date.now(),
-        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-        isActive: () => isCurrentRun(runId),
-        onPhase: async (phase) => {
-          cltPhase = phase;
-          cltRetryPending = false;
-          // The card is painted before macOS is asked to install anything.
-          await tick();
-        },
-      });
-      if (outcome === 'ready') {
-        cltReady = true;
-        cltPhase = null;
-        return isCurrentRun(runId);
-      }
-      if (outcome === 'inactive') {
-        cltPhase = null;
-        return false;
-      }
-      await new Promise<void>((resolve) => {
-        cltRetryResolve = resolve;
-      });
-      cltRetryResolve = null;
-    }
-  }
-
-  function retryCommandLineTools() {
-    if (cltRetryPending || !cltRetryResolve) return;
-    cltRetryPending = true;
-    cltRetryResolve();
-  }
-
-  async function showAppleInstaller() {
-    if (cltShowPending) return;
-    cltShowPending = true;
-    try {
-      await invoke('command_line_tools_show_installer');
-    } catch (error) {
-      // Nothing to show; the card keeps waiting.
-      console.warn('[clt] show installer failed', error);
-    } finally {
-      cltShowPending = false;
-    }
-  }
-
   async function runSetup(
     runId: number,
     startStage: StageId = STAGE_ORDER[0],
@@ -2948,12 +2874,6 @@
     };
     for (const id of STAGE_ORDER.slice(startIndex)) {
       if (!isCurrentRun(runId)) return;
-      if (
-        (CLT_GATED_STAGES as readonly StageId[]).includes(id) &&
-        !(await ensureCommandLineTools(runId))
-      ) {
-        return;
-      }
       while (isCurrentRun(runId)) {
         const attemptCount = (retryCounts.get(id) ?? 0) + 1;
         const result = await runStage(
@@ -3662,15 +3582,32 @@
     await finishWithRecovery();
   }
 
+  /**
+   * The HQ root the backend resolves when no install path is chosen (the
+   * recorded one, else a discovered root). Empty means no folder is known,
+   * and the caller must not launch.
+   */
+  async function resolveLaunchFolder(): Promise<string> {
+    const resolved = await invokeCommand<string>('resolve_hq_path', { create: false });
+    return (resolved ?? '').trim();
+  }
+
   async function handleLaunchClaudeCode() {
     launchEscape = null;
     launching = 'claude';
     let launched = false;
     try {
       const tools = await ensureAiTools();
-      if (tools.claude_desktop) {
+      const folder =
+        installPath?.trim() ||
+        (tools.claude_desktop || tools.claude_cli ? await resolveLaunchFolder() : '');
+      if ((tools.claude_desktop || tools.claude_cli) && !folder) {
+        // A folderless deep link opens Claude in whatever folder it used
+        // last, so never send one.
+        launchEscape = escapeForLaunch('claude', 'HQ folder could not be resolved');
+      } else if (tools.claude_desktop) {
         const url = buildClaudeCodeUrl({
-          folder: installPath ?? '',
+          folder,
           // NOT '/setup': Claude Desktop scans skills before a link-opened
           // folder is trusted, so HQ's project `/setup` skill is not
           // registered in the session this deep link creates.
@@ -3678,8 +3615,8 @@
         });
         await invoke('open_claude_code_link', { url });
         launched = true;
-      } else if (tools.claude_cli && installPath) {
-        await invoke('launch_claude_code', { path: installPath });
+      } else if (tools.claude_cli) {
+        await invoke('launch_claude_code', { path: folder });
         dispatchPostReadyAction('open_cli');
         launched = true;
       } else {
@@ -5382,44 +5319,6 @@
     </button>
   {/if}
 
-  {#if !replay && !consentOnly && cltPhase}
-    <!-- Apple's developer tools install. macOS shows its own windows; this
-         card explains them and waits. -->
-    <div
-      class="clt-card"
-      role="status"
-      aria-live="polite"
-      data-phase={cltPhase}
-      data-testid="onboarding-clt-card"
-    >
-      {#if cltPhase === 'installing'}
-        <p class="clt-title">{CLT_CARD_COPY.title}</p>
-        <p class="clt-line">{CLT_CARD_COPY.body}</p>
-        <span class="clt-bar" role="progressbar" aria-label={CLT_CARD_COPY.title} data-testid="onboarding-clt-progress"><i></i></span>
-        <p class="clt-line clt-muted">{CLT_CARD_COPY.duration} {CLT_CARD_COPY.resume}</p>
-        <button
-          type="button"
-          class="clt-action"
-          data-testid="onboarding-clt-show"
-          disabled={cltShowPending}
-          aria-busy={cltShowPending}
-          onclick={showAppleInstaller}
-        >{cltShowPending ? CLT_CARD_COPY.showingWindow : CLT_CARD_COPY.showWindow}</button>
-      {:else if cltPhase === 'cancelled' || cltPhase === 'timeout'}
-        <p class="clt-title">{CLT_CARD_COPY.retryTitle}</p>
-        <p class="clt-line">{cltPhase === 'timeout' ? CLT_CARD_COPY.timeoutBody : CLT_CARD_COPY.cancelledBody}</p>
-        <button
-          type="button"
-          class="clt-action"
-          data-testid="onboarding-clt-retry"
-          disabled={cltRetryPending}
-          aria-busy={cltRetryPending}
-          onclick={retryCommandLineTools}
-        >{cltRetryPending ? CLT_CARD_COPY.retrying : CLT_CARD_COPY.retry}</button>
-      {/if}
-    </div>
-  {/if}
-
   {#if !replay && !consentOnly}
     <!-- The install, running in the background behind screens 2-4. The visible
          card is a one-line summary; the full checklist is for screen readers. -->
@@ -5601,46 +5500,6 @@
 {/snippet}
 
 <style>
-  /* Apple developer tools waiting card: square, monochrome, weight <= 500. */
-  .clt-card {
-    position: absolute;
-    left: 50%;
-    top: 56px;
-    transform: translateX(-50%);
-    z-index: 60;
-    width: min(420px, calc(100% - 44px));
-    padding: 16px 18px;
-    border-radius: 0;
-    background: #141414;
-    box-shadow: 0 18px 48px -12px rgba(0, 0, 0, 0.6);
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    color: #fff;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .clt-title { margin: 0; font-family: 'Fraunces', Georgia, serif; font-size: 17px; font-weight: 400; }
-  .clt-line { margin: 0; font-size: 12.5px; font-weight: 400; line-height: 1.45; color: rgba(255, 255, 255, 0.82); }
-  .clt-muted { color: rgba(255, 255, 255, 0.55); }
-  .clt-bar { position: relative; display: block; height: 2px; overflow: hidden; background: rgba(255, 255, 255, 0.14); }
-  .clt-bar i { position: absolute; top: 0; left: -40%; width: 40%; height: 100%; background: #fff; animation: clt-indeterminate 1.6s ease-in-out infinite; }
-  @keyframes clt-indeterminate { from { left: -40%; } to { left: 100%; } }
-  @media (prefers-reduced-motion: reduce) { .clt-bar i { animation: none; left: 0; width: 100%; opacity: 0.4; } }
-  .clt-action {
-    align-self: flex-start;
-    margin-top: 2px;
-    padding: 6px 12px;
-    border-radius: 0;
-    border: 1px solid rgba(255, 255, 255, 0.4);
-    background: transparent;
-    color: #fff;
-    font: inherit;
-    font-size: 12.5px;
-    font-weight: 500;
-    cursor: pointer;
-  }
-  .clt-action:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); }
-  .clt-action:disabled { opacity: 0.55; cursor: default; }
   .link-inline {
     background: none;
     border: 0;

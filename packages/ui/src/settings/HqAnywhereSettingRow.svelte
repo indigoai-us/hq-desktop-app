@@ -4,7 +4,7 @@
     ensureHqAnywhereGlobalRuntime,
     HQ_ANYWHERE_RUNTIME_FLAG,
     getHqAnywherePersonSetting,
-    hqAnywhereRuntimeEnabled,
+    hqAnywhereGlobalRuntimeAllowed,
     putHqAnywherePersonSetting,
     setHqAnywhereGlobalRuntime,
     subscribeHqAnywhereGlobalRuntimeStatus,
@@ -17,7 +17,9 @@
   }
 
   let { adapter = null }: Props = $props();
+  let signedIn = $state(false);
   let available = $state(false);
+  let flagLoaded = $state(false);
   let loaded = $state(false);
   let enabled = $state(false);
   let loading = $state(false);
@@ -36,11 +38,26 @@
     let flagRevision = 0;
     const refreshAvailability = async (): Promise<void> => {
       const revision = ++flagRevision;
-      const enabled = await hqAnywhereRuntimeEnabled(identity);
+      let authenticated = false;
+      try {
+        const person = await identity.whoami();
+        authenticated = person.ok && Boolean(person.value.personUid);
+      } catch {
+        // Without an authenticated person, the setting must remain hidden.
+      }
+      if (!active || revision !== flagRevision) return;
+      signedIn = authenticated;
+      if (!signedIn) {
+        available = false;
+        loaded = false;
+        return;
+      }
+      const enabled = await hqAnywhereGlobalRuntimeAllowed(identity);
       if (!active || revision !== flagRevision) return;
 
       const wasAvailable = available;
       available = enabled;
+      flagLoaded = true;
       if (!enabled) {
         loaded = false;
         setupRunning = false;
@@ -114,7 +131,7 @@
   }
 
   async function saveSetting(value: boolean): Promise<void> {
-    if (!adapter || !loaded || loading || saving || setupRunning) return;
+    if (!adapter || !signedIn || !available || !loaded || loading || saving || setupRunning) return;
     const previous = enabled;
     enabled = value;
     saving = true;
@@ -198,11 +215,13 @@
   }
 </script>
 
-{#if available}
+{#if signedIn}
   <div class="setting-row" data-testid="hq-anywhere-setting-row">
     <div class="copy">
       <div class="label">HQ Anywhere</div>
-      <div class="hint">Use your HQ context in Claude Code, Codex, ChatGPT and Grok</div>
+      <div class="hint">{flagLoaded && !available
+        ? "HQ Anywhere is turned off for your account right now."
+        : "Use your HQ context in Claude Code, Codex, ChatGPT and Grok"}</div>
     </div>
     <button
       type="button"
@@ -213,10 +232,12 @@
       aria-label="HQ Anywhere"
       aria-busy={loading || saving || setupRunning}
       data-testid="hq-anywhere-setting-toggle"
-      disabled={!loaded || loading || saving || setupRunning}
+      disabled={!available || !loaded || loading || saving || setupRunning}
       onclick={() => void saveSetting(!enabled)}
     ></button>
-    {#if loading}
+    {#if flagLoaded && !available}
+      <!-- The unavailable explanation is in the row copy above. -->
+    {:else if loading}
       <span class="status" role="status" aria-live="polite">Loading…</span>
     {:else if saving}
       <span class="status" role="status" aria-live="polite">Saving…</span>

@@ -87,3 +87,67 @@ export function thanksPrompt(t: BriefTeammate): string {
     `send it with hq dm only after I say yes. Do not send anything before that.`
   );
 }
+
+/** What a teammate's row is about, by what it asks of you: they need you, you wait on them, or they are on it. */
+export type TeamGroupKey = "need" | "wait" | "on";
+
+export const TEAM_GROUP_LABEL: Record<TeamGroupKey, string> = { need: "Needs you", wait: "You're waiting", on: "On it" };
+
+export function teamGroup(tone: BriefTeammate["tone"]): TeamGroupKey {
+  return tone === "decision" ? "need" : tone === "warn" ? "wait" : "on";
+}
+
+/**
+ * The card's order: who needs you, then who you wait on, then everyone else
+ * with a thank-you due first. Stable, so the writer's order holds within a group.
+ */
+export function teamOrder<T extends BriefTeammate>(team: readonly T[]): T[] {
+  const rank = (t: BriefTeammate) => {
+    const g = teamGroup(t.tone);
+    return g === "need" ? 0 : g === "wait" ? 1 : t.thanks ? 2 : 3;
+  };
+  return team.map((t, i) => ({ t, i })).sort((a, b) => rank(a.t) - rank(b.t) || a.i - b.i).map((x) => x.t);
+}
+
+/** Consecutive rows of one group under one label (rows come in teamOrder). */
+export function teamGroups<T extends BriefTeammate>(rows: readonly T[]): { key: TeamGroupKey; label: string; rows: T[] }[] {
+  const out: { key: TeamGroupKey; label: string; rows: T[] }[] = [];
+  for (const t of rows) {
+    const key = teamGroup(t.tone);
+    const last = out[out.length - 1];
+    if (last?.key === key) last.rows.push(t);
+    else out.push({ key, label: TEAM_GROUP_LABEL[key], rows: [t] });
+  }
+  return out;
+}
+
+/**
+ * The card's lead: one count and a two-line caption. Who needs you when
+ * anyone does; else who you are waiting on; else how many are active. The
+ * second line puts the count against the team (the rows and circles name them).
+ */
+export function teamHero(team: readonly BriefTeammate[]): { n: number; key: TeamGroupKey | "all"; line: string; sub: string } {
+  const of = `of ${team.length} on the team`;
+  const need = team.filter((t) => teamGroup(t.tone) === "need").length;
+  if (need) return { n: need, key: "need", line: need === 1 ? "needs you" : "need you", sub: of };
+  const wait = team.filter((t) => teamGroup(t.tone) === "wait").length;
+  if (wait) return { n: wait, key: "wait", line: "you're waiting on", sub: of };
+  return { n: team.length, key: "all", line: "on the team", sub: "Nobody waiting on you" };
+}
+
+/**
+ * The row's second line, with the adapter's filler replaced by something
+ * real: the writer's status, else the latest DM, else what they owe you or
+ * the win worth a thank-you; empty when there is nothing to say (the row
+ * then shows the name alone, never "Agent" or "Messaged you").
+ */
+export function teamLine(t: BriefTeammate, latestDm: string | null, max = 56): { text: string; fromDm: boolean } {
+  const s = teamStatus(t, latestDm, max);
+  if (s.fromDm || (s.text && !isGenericStatus(s.text))) return s;
+  const owes = t.owes?.find((o) => o.trim());
+  if (owes) return { text: `Owes you: ${owes.trim()}`, fromDm: false };
+  const thanks = t.thanks?.trim().replace(/[.!]+$/, "");
+  if (thanks) return { text: plainStatus(thanks), fromDm: false };
+  return { text: "", fromDm: false };
+}
+

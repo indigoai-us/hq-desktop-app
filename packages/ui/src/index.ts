@@ -188,6 +188,7 @@ export {
 export { linkPreview, relabelRawUrlLinks } from "./common/linkPreview.js";
 export type { LinkPreview, LinkProvider, PageTitleLookup } from "./common/linkPreview.js";
 export { setPageTitleFetcher } from "./common/linkTitles.js";
+export { setGithubSummaryFetcher } from "./common/linkGithub.js";
 export * from "./common/external-links.js";
 
 export { default as DesktopApp } from "./shell/DesktopApp.svelte";

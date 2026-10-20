@@ -11,6 +11,7 @@
   import MeetingsWindow from '../src/components/MeetingsWindow.svelte';
   import MeetingsShot from './MeetingsShot.svelte';
   import AccessShot from './AccessShot.svelte';
+  import BriefDesignStage from './BriefDesignStage.svelte';
   import ActivityShot from './ActivityShot.svelte';
   import RepairCardsShot from './RepairCardsShot.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
@@ -24,7 +25,9 @@
   import GlobalErrorPreview from './GlobalErrorPreview.svelte';
   import ForwardPickerPreview from './ForwardPickerPreview.svelte';
   import ShareStackPreview from './ShareStackPreview.svelte';
+  import LinkCardPreview from './LinkCardPreview.svelte';
   import ClaudeCodePreview from './ClaudeCodePreview.svelte';
+  import BotManagementPreview from './BotManagementPreview.svelte';
   import BotIntegrationsPreview from './BotIntegrationsPreview.svelte';
   import Conversation, {
     type ConversationMessage,
@@ -257,7 +260,10 @@
   }
 </script>
 
-{#if view === 'brief'}
+{#if view === 'brief-design'}
+  <!-- The rendered brief on fixture days, for design iteration. ?day=oct8|oct11|quiet|catchup|everything -->
+  <BriefDesignStage />
+{:else if view === 'brief'}
   <!-- Daily Brief page alone. Add ?briefDemo=1|fail or ?briefDemoAt=0..1|fail
        (packages/ui/src/brief/brief-demo.ts) to review the Create brief sunrise. -->
   <!-- ?briefRun=<run_id>&briefCompany=<slug>&briefCompanyUid=<uid> renders a real
@@ -271,6 +277,8 @@
       {/if}
     </div>
   {/await}
+{:else if view === 'bot-management'}
+  <BotManagementPreview />
 {:else if view === 'bot-integrations'}
   <!-- Per-bot integration control section (BotIntegrationsSection) rendered in
        both Agent profile and Local bot card contexts. Flag
@@ -375,6 +383,9 @@
   <SignInPrompt reauth={true} />
 {:else if view === 'share-stack'}
   <ShareStackPreview />
+{:else if view === 'link-card'}
+  <!-- Chat link hovercards for GitHub PRs and issues. Hover a link. -->
+  <LinkCardPreview />
 {:else if view === 'conversation'}
   <!-- The shared messaging Conversation (desktop Messages styling via
        data-window='messages'). Hover a bubble to reveal the copy-message

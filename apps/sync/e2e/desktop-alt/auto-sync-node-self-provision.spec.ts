@@ -39,7 +39,11 @@ import { readRepoFile } from './harness';
 
 describe('Auto-sync self-provisions HQ-managed Node instead of blaming the user (HQ-SYNC-BA)', () => {
   const syncRs = readRepoFile('src-tauri/src/commands/sync.rs');
-  const daemonRs = readRepoFile('src-tauri/src/commands/daemon.rs');
+  // daemon.rs keeps its unit tests in daemon_tests.rs; several assertions name them.
+  const daemonRs =
+    readRepoFile('src-tauri/src/commands/daemon.rs') +
+    '\n' +
+    readRepoFile('src-tauri/src/commands/daemon_tests.rs');
   const installDepsRs = readRepoFile('src-tauri/src/commands/install_deps.rs');
 
   it('classifies "no Node anywhere, none ever provisioned" as repairable, not usable', () => {
