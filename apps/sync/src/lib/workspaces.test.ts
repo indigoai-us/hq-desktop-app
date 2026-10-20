@@ -93,6 +93,15 @@ describe('joinableMemberships', () => {
       ...overrides,
     });
 
+  it('excludes a membership whose sync is switched off on this computer (US-016)', () => {
+    expect(
+      joinableMemberships([
+        joinable({ syncEnabled: false }),
+        joinable({ slug: 'acme', syncEnabled: true }),
+      ]).map((w) => w.slug),
+    ).toEqual(['acme']);
+  });
+
   it('returns an active cloud-only membership (accepted, not yet pulled)', () => {
     expect(joinableMemberships([joinable()]).map((w) => w.slug)).toEqual([
       'sender-agency',
