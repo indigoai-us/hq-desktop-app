@@ -49,6 +49,8 @@ export interface WelcomeAiApps {
   session?: WelcomeConnectSession | null;
   /** The count line the report's sunrise reveal ends on, carried into the welcome edition. */
   runStats?: string | null;
+  /** Opens the AI-apps settings (Claude Code, Codex): where the first view's harness Connect goes. */
+  onopenaiapps?: (() => void) | null;
 }
 
 /**

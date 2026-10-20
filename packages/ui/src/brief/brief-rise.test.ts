@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   RISE_CRUMB,
+  RISE_DESIGN_HEIGHT,
   RISE_EYEBROW,
   RISE_HALO_ALPHA_DARK,
   RISE_HALO_ALPHA_LIGHT,
   RISE_HEADLINE,
   RISE_ICON,
+  RISE_MIN_HEIGHT,
   RISE_PITCH,
   RISE_READING,
   RISE_SPEED,
@@ -15,9 +17,12 @@ import {
   riseDawnProgress,
   riseElapsedText,
   riseFrame,
+  riseGeometry,
   riseHaloCells,
+  riseMinHeight,
   riseRevealAt,
   riseRippleCells,
+  riseSeaBottom,
   riseStepLine,
   welcomeRiseSources,
   type RiseSource,
@@ -251,5 +256,78 @@ describe("welcome rise page copy", () => {
       expect(line).not.toMatch(/[!—]/);
     }
     expect(RISE_HEADLINE).toBe("Your day is coming into focus.");
+  });
+});
+
+describe("riseGeometry", () => {
+  it("keeps the round 11b offsets at the design height and a wide window", () => {
+    expect(riseGeometry(1400, RISE_DESIGN_HEIGHT)).toEqual({
+      pad: 52,
+      scale: 1,
+      headerTop: 29,
+      heroTop: 92,
+      headline: 56,
+      inviteTop: 300,
+      horizon: 320,
+      bottom: 32,
+    });
+  });
+
+  it("scales the offsets down with a shorter stage and never under the floor", () => {
+    const short = riseGeometry(1000, 600);
+    expect(short.scale).toBeCloseTo(600 / RISE_DESIGN_HEIGHT);
+    expect(short.inviteTop).toBe(Math.round(300 * (600 / 780)));
+    expect(short.headline).toBeLessThan(56);
+    expect(riseGeometry(1000, 200)).toEqual(riseGeometry(1000, RISE_MIN_HEIGHT));
+  });
+
+  it("gives a taller stage more sky but caps the text scale at 1", () => {
+    const tall = riseGeometry(1400, 1200);
+    expect(tall.scale).toBe(1);
+    expect(tall.inviteTop).toBe(300);
+    expect(tall.horizon).toBeGreaterThan(320);
+    expect(tall.horizon % RISE_PITCH).toBe(0);
+    expect(riseGeometry(1400, 5000).horizon).toBe(Math.round((320 * 1.4) / RISE_PITCH) * RISE_PITCH);
+  });
+
+  it("narrows the side inset with the width, between 24 and 52 px", () => {
+    expect(riseGeometry(320, 780).pad).toBe(24);
+    expect(riseGeometry(800, 780).pad).toBe(40);
+    expect(riseGeometry(2000, 780).pad).toBe(52);
+    expect(riseGeometry(0, 780).pad).toBe(52);
+  });
+});
+
+describe("riseSeaBottom", () => {
+  it("runs the design's length when nothing has been measured", () => {
+    expect(riseSeaBottom(320, 0)).toBe(544);
+    expect(riseSeaBottom(320, Number.NaN)).toBe(544);
+  });
+
+  it("ends above the progress block, keeping at least a short sea", () => {
+    expect(riseSeaBottom(320, 500)).toBe(486);
+    expect(riseSeaBottom(320, 340)).toBe(368);
+    expect(riseSeaBottom(320, 900)).toBe(544);
+  });
+});
+
+describe("riseMinHeight", () => {
+  it("is the 560 px floor when the content is short", () => {
+    expect(riseMinHeight(0)).toBe(RISE_MIN_HEIGHT);
+    expect(riseMinHeight(-5)).toBe(RISE_MIN_HEIGHT);
+    expect(riseMinHeight(Number.NaN)).toBe(RISE_MIN_HEIGHT);
+  });
+
+  it("fits the invite content, the progress block and the bar without overlap at the height it returns", () => {
+    for (const clear of [300, 420, 600, 900]) {
+      const h = riseMinHeight(clear);
+      const geo = riseGeometry(1000, h);
+      // The invite slot's content plus the gap end above the bottom-anchored block.
+      expect(geo.inviteTop + clear + 24 + geo.bottom).toBeLessThanOrEqual(h);
+    }
+  });
+
+  it("grows past the design height one px per px of content", () => {
+    expect(riseMinHeight(700) - riseMinHeight(600)).toBe(100);
   });
 });

@@ -14,7 +14,7 @@
   import { onDestroy, type Snippet } from "svelte";
   import { BRAND_ICONS, type BrandMark } from "../common/button/rail-icons.js";
   import BriefDawn from "./BriefDawn.svelte";
-  import { welcomeSunX, WELCOME_HORIZON_Y } from "./brief-dawn.js";
+  import { welcomeSunX } from "./brief-dawn.js";
   import {
     RISE_CRUMB,
     RISE_EYEBROW,
@@ -28,7 +28,11 @@
     riseFrame,
     riseHaloCells,
     riseRippleCells,
+    riseGeometry,
+    RISE_MIN_HEIGHT,
+    riseSeaBottom,
     type RiseCompany,
+    type RiseLayout,
     type RiseIconFrame,
     type RiseSource,
   } from "./brief-rise.js";
@@ -49,6 +53,10 @@
     count?: string | null;
     /** The date in the page header. Absent: today. */
     now?: Date | null;
+    /** Px kept clear under the progress block (the welcome report's open bar sits there). */
+    foot?: number;
+    /** Out: where the rise put its parts at the current size, so the report can place its connect strip in the invite slot. */
+    geometry?: RiseLayout | null;
     children?: Snippet;
   }
   let {
@@ -62,11 +70,23 @@
     briefOpacity = $bindable(0),
     count = $bindable(null),
     now = null,
+    foot = 0,
+    geometry = $bindable(null),
     children,
   }: Props = $props();
 
   let width = $state(0);
+  let height = $state(0);
+  let readoutHeight = $state(0);
   const sunX = $derived(welcomeSunX(width));
+  // The stage follows its container: offsets scale with the height, the inset with the width.
+  const geo = $derived(riseGeometry(width, height));
+  const seaBottom = $derived(
+    riseSeaBottom(geo.horizon, readoutHeight ? Math.max(height, RISE_MIN_HEIGHT) - geo.bottom - foot - readoutHeight : 0),
+  );
+  $effect(() => {
+    geometry = { ...geo, readout: readoutHeight };
+  });
   const dateLine = $derived(riseDateLine(now ?? new Date()));
 
   let live = $state(0);
@@ -78,7 +98,6 @@
     if (theme === "light" || theme === "dark") return theme;
     const forced = globalThis.document?.documentElement?.dataset?.forceTheme;
     if (forced === "light" || forced === "dark") return forced;
-    if (typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: light)").matches) return "light";
     return "dark";
   }
 
@@ -114,7 +133,8 @@
     }),
   );
   const dawn = $derived(riseDawnProgress(t, readyAt));
-  const halo = $derived(riseHaloCells(resolvedTheme));
+  // Theme A: the sunrise stays dark in both app themes, so the sky, halo and ripples always draw dark.
+  const halo = $derived(riseHaloCells("dark"));
   const stepLine = $derived(riseStepLine(t, sources));
   $effect(() => {
     briefOpacity = frame.briefOpacity;
@@ -170,10 +190,18 @@
   data-elapsed={frame.elapsed.toFixed(3)}
   data-brief-opacity={frame.briefOpacity.toFixed(2)}
   bind:clientWidth={width}
+  bind:clientHeight={height}
   style:--sun-x="{sunX}px"
-  style:--hz="{WELCOME_HORIZON_Y}px"
+  style:--hz="{geo.horizon}px"
+  style:--pad="{geo.pad}px"
+  style:--s={geo.scale}
+  style:--top="{geo.headerTop}px"
+  style:--hero-top="{geo.heroTop}px"
+  style:--headline="{geo.headline}px"
+  style:--invite-top="{geo.inviteTop}px"
+  style:--bottom="{geo.bottom + foot}px"
 >
-  <BriefDawn progress={dawn} phase={frame.briefOpacity >= 1 ? "ready" : "running"} size="page" theme={resolvedTheme} reflection={false} layout="welcome" />
+  <BriefDawn progress={dawn} phase={frame.briefOpacity >= 1 ? "ready" : "running"} size="page" theme="dark" reflection={false} layout="welcome" horizon={geo.horizon} {seaBottom} />
   <div class="overlay" aria-hidden={meter ? undefined : "true"}>
     <header class="top">
       <span class="crumb" data-testid="brief-rise-crumb">{RISE_CRUMB}</span>
@@ -204,14 +232,14 @@
       {#each frame.icons as icon (icon.id)}
         {#if icon.ripple}
           <div class="ripple" style:--lane="{icon.lane}px" data-testid={`brief-rise-ripple-${icon.id}`}>
-            {#each riseRippleCells(icon.rippleAge, resolvedTheme) as cell (`${icon.id}:${cell.x},${cell.y}`)}
+            {#each riseRippleCells(icon.rippleAge, "dark") as cell (`${icon.id}:${cell.x},${cell.y}`)}
               <i style="left:{cell.x}px;top:{cell.y}px;background:{cell.color};opacity:{cell.alpha}"></i>
             {/each}
           </div>
         {/if}
       {/each}
     </div>
-    <div class="readout" data-testid="brief-rise-progress">
+    <div class="readout" data-testid="brief-rise-progress" bind:clientHeight={readoutHeight}>
       <div class="status">
         {#if frame.countText}
           <p class="count" data-testid="brief-rise-count">{frame.countText}</p>
@@ -267,23 +295,17 @@
 </div>
 
 <style>
-  /* Pixel offsets follow the round 11b page (window minus its 46 px title bar and 76 px rail). */
+  /* Offsets follow the round 11b page at 780 px and scale with the stage (riseGeometry): no fixed stage or offsets. */
   .stage {
-    --pad: 52px;
     --serif: "Fraunces", "Iowan Old Style", Georgia, serif;
     --ink: rgba(255, 244, 236, 0.96);
     --ink-2: rgba(255, 236, 226, 0.78);
     position: relative;
     height: 100%;
-    min-height: 780px;
+    min-height: 560px;
     overflow: hidden;
     background: rgb(20, 18, 25);
     color: var(--ink);
-  }
-  .stage[data-theme="light"] {
-    --ink: #1a1210;
-    --ink-2: rgba(42, 28, 22, 0.78);
-    background: rgb(255, 247, 231);
   }
   .stage :global(.dawn.page) {
     --sky-h: 100%;
@@ -307,8 +329,8 @@
   .top {
     position: absolute;
     left: var(--pad);
-    right: 46px;
-    top: 29px;
+    right: var(--pad);
+    top: var(--top);
     display: flex;
     justify-content: space-between;
     font-size: 12px;
@@ -318,7 +340,8 @@
   .hero {
     position: absolute;
     left: var(--pad);
-    top: 92px;
+    right: var(--pad);
+    top: var(--hero-top);
     max-width: 520px;
     z-index: 3;
   }
@@ -329,17 +352,17 @@
     color: var(--ink-2);
   }
   h2 {
-    margin: 16px 0 0;
+    margin: calc(16px * var(--s, 1)) 0 0;
     max-width: 440px;
     font-family: var(--serif);
-    font-size: 56px;
+    font-size: var(--headline, 56px);
     font-weight: 500;
     line-height: 1.07;
     letter-spacing: -0.035em;
     color: var(--ink);
   }
   .sub {
-    margin: 22px 0 0;
+    margin: calc(22px * var(--s, 1)) 0 0;
     font-size: 15px;
     color: var(--ink-2);
   }
@@ -421,8 +444,8 @@
   .readout {
     position: absolute;
     left: var(--pad);
-    right: 54px;
-    top: 558px;
+    right: var(--pad);
+    bottom: var(--bottom);
     z-index: 3;
   }
   .status {
@@ -483,11 +506,6 @@
     background: rgba(48, 34, 56, 0.72);
     border: 1px solid rgba(255, 255, 255, 0.16);
   }
-  .stage[data-theme="light"] .card,
-  .stage[data-theme="light"] .failed {
-    background: #fffaf0;
-    border-color: rgba(176, 100, 98, 0.22);
-  }
   .head {
     display: flex;
     justify-content: space-between;
@@ -545,7 +563,7 @@
   .invite {
     position: absolute;
     left: var(--pad);
-    top: 300px;
+    top: var(--invite-top);
     width: 485px;
     max-width: calc(100% - var(--pad) * 2);
     z-index: 4;

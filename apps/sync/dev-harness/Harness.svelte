@@ -22,6 +22,7 @@
   import YourAppsPreview from './YourAppsPreview.svelte';
   import WelcomeReportPreview from './WelcomeReportPreview.svelte';
   import WelcomeEditionPreview from './WelcomeEditionPreview.svelte';
+  import FirstViewPreview from './FirstViewPreview.svelte';
   import RisePreview from './RisePreview.svelte';
   import TeamCardPreview from './TeamCardPreview.svelte';
   import MarketplaceDetailPreview from './MarketplaceDetailPreview.svelte';
@@ -376,6 +377,11 @@
        seeded one: ?fixture=personal|company|seeded&theme=dark|light, and
        &rise=<seconds> for the sunrise frozen mid-rise. Size the viewport to ~1280x900. -->
   <WelcomeEditionPreview />
+{:else if view === 'first-view'}
+  <!-- The first view: the Daily Brief inside the welcome report, from Core's welcome
+       output and the desktop's import report: ?fixture=personal|company|cursor|seeded,
+       &import=0, &theme=dark|light, &rise=<seconds> for the loading rise. -->
+  <FirstViewPreview />
 {:else if view === 'team-card'}
   <!-- The first-run team card on its own (no switch makes the setup bot send
        its team block): ?state=invite|existing|none|error|settled. -->
