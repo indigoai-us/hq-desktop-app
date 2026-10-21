@@ -247,6 +247,8 @@ export function normalizeNotificationsFeed(value: unknown): NotificationsFeed {
 }
 
 export interface SyncStatus {
+  /** Persisted legacy launcher hold; absent on older or hosted-daemon backends. */
+  recoveryHoldReason?: string | null;
   running?: boolean;
   lastSyncAt?: string | null;
   pendingFiles?: number;

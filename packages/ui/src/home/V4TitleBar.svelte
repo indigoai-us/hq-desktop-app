@@ -50,6 +50,8 @@
     fanoutDone?: number;
     fanoutTotal?: number;
     errorSummary?: string | null;
+    /** Safe persisted launcher hold; shown directly with its explicit retry. */
+    syncRecoveryReason?: string | null;
     hydrationIssue?: V4HydrationIssue | null;
     hydrationRefreshing?: boolean;
     errorMessage?: string;
@@ -147,6 +149,7 @@
     fanoutDone = 0,
     fanoutTotal = 0,
     errorSummary = null,
+    syncRecoveryReason = null,
     errorMessage = "",
     errorCompany = null,
     hydrationIssue = null,
@@ -279,7 +282,7 @@
     }
     if (syncState === "error" || syncState === "auth-error") {
       return {
-        sentence: model.sentence,
+        sentence: syncRecoveryReason || model.sentence,
         label: recoveryBusy ? "Working…" : model.action.label,
         busy: recoveryBusy,
         copyIssue: null,
@@ -936,7 +939,7 @@
             syncState={coreSyncPhase}
             {lastSyncLabel}
             syncCaption={syncCaptionText}
-            errorMessage={syncErrorMessage}
+            errorMessage={syncRecoveryReason ? null : syncErrorMessage}
             errorCompany={errorCompany ?? null}
             {manifestError}
             {cloudReachable}

@@ -169,6 +169,33 @@ pub fn hold_reason(root: &Path, version: &str) -> Result<Option<&'static str>, S
     })
 }
 
+/// Read a persisted hold for a newly opened renderer, without creating a lock,
+/// resetting the episode, or relying on this app process having seen the failure.
+pub fn persisted_hold_reason(root: &Path, version: &str) -> Result<Option<&'static str>, String> {
+    let source = match fs::File::open(root.join(FILE)) {
+        Ok(source) => source,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("Sync recovery state could not be read. Try Sync Now, or contact support if sync cannot restart.".into()),
+    };
+    let mut bytes = Vec::new();
+    source.take(4097).read_to_end(&mut bytes)
+        .map_err(|_| "Sync recovery state could not be read. Try Sync Now, or contact support if sync cannot restart.".to_string())?;
+    if bytes.len() > 4096 {
+        return Err("Sync recovery state exceeds the safe size limit. Preserve .hq-sync-retry.json and contact support to reset it.".into());
+    }
+    let episode: Episode = serde_json::from_slice(&bytes)
+        .map_err(|_| "Sync recovery state is invalid. Try Sync Now to preserve it and start a new recovery episode.".to_string())?;
+    if episode.version != version {
+        return Ok(None);
+    }
+    Ok(if episode.terminal_resolution {
+        Some(TERMINAL_RESOLUTION)
+    } else if episode.held() {
+        Some(RETRY_REQUIRED)
+    } else {
+        None
+    })
+}
 /// Record each failed materialization/unexpected child exit, once per attempt.
 pub fn record_failure(root: &Path, version: &str, message: &str) -> Result<bool, String> {
     update(root, version, false, |episode| {
