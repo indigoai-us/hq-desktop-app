@@ -16,7 +16,10 @@ test('connect a provider then switch the bot onto it with a chosen model', async
   await expect(page.getByTestId('brain-codex')).toContainText('Connected');
   await expect(page.getByTestId('brain-claude')).toContainText('Current');
   await page.getByTestId('brain-codex').getByRole('button', { name: 'Use this brain' }).click();
+  await expect(dialog.getByRole('button', { name: /^Model:/ })).toHaveAttribute('data-value', 'gpt-6-sol');
   await dialog.getByRole('button', { name: /^Model:/ }).click();
+  await expect.poll(() => dialog.locator('[role=option]').evaluateAll(options => options.map(option => option.getAttribute('data-value')))).toEqual(['gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-astra']);
+  await expect(dialog.locator('[role=option][data-value="gpt-5.5"]')).toHaveCount(0);
   await dialog.locator('[role=option][data-value="gpt-6-astra"]').click();
   await dialog.getByRole('button', { name: /^Thinking level:/ }).click();
   await dialog.locator('[role=option][data-value="high"]').click();
