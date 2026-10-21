@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Deployments and message links: HQ deploys now also live at `{name}.hq.work`. The Deployments list shows apps whose address is on hq.work, and hovering an hq.work deploy link in Messages shows its deploy card. Existing `{name}.indigo-hq.com` links keep working and keep showing as before. The app now talks to the deploy service at api.hq.work (the same service as api.indigo-hq.com).
 - Library notes: wide markdown tables now scroll sideways instead of squeezing into the reading column, and table cells no longer split words in the middle (for example "Shopi/fy").
 - Meetings: the "Assign it to a company" banner for a meeting that isn't filed to a company now shows once per meeting. Before, the app forgot which meetings it had already shown after every restart or update, so the same banner (often for a later meeting on your calendar) came back each time the app started. A notetaker that rejoins the same calendar meeting no longer raises a second banner either.
 - Indigo beta: open Office directly from Company navigation to see your company's office hours and start native calls. Office stays hidden outside the enabled company and in browser hosts.
