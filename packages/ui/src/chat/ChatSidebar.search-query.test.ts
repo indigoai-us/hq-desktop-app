@@ -59,6 +59,22 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
+/**
+ * Message search lives in the one search box (⌘F and the rail's search
+ * button). It used to sit behind "Show all history", which now expands the
+ * rail in place instead.
+ */
+async function openSearch(): Promise<HTMLInputElement> {
+  const find = <T extends Element>(sel: string) =>
+    (host.querySelector<T>(sel) ?? document.querySelector<T>(sel)) as T | null;
+  await vi.waitFor(() => expect(find('[data-testid="chat-search"]')).toBeTruthy());
+  find<HTMLButtonElement>('[data-testid="chat-search"]')!.click();
+  await tick();
+  return find<HTMLInputElement>(".chat-switcher-input")!;
+}
+
+const results = () => document.querySelector("#conversation-search-results");
+
 describe("ChatSidebar message search query length", () => {
   it("skips queries outside 2..=100 while sending a two-character query", async () => {
     const searchMessages = vi.fn<ChatSidebarApi["searchMessages"]>(async () => ({
@@ -69,14 +85,7 @@ describe("ChatSidebar message search query length", () => {
       props: { api: stubApi({ searchMessages }), seedDirectory: [seedRow] },
     });
 
-    await vi.waitFor(() =>
-      expect(host.querySelector('[data-testid="chat-show-history"]')).toBeTruthy(),
-    );
-    host.querySelector<HTMLButtonElement>('[data-testid="chat-show-history"]')!.click();
-    await tick();
-    const input = host.querySelector<HTMLInputElement>(
-      '[data-testid="chat-history-search"]',
-    )!;
+    const input = await openSearch();
 
     const enterQuery = async (query: string) => {
       input.value = query;
@@ -86,14 +95,11 @@ describe("ChatSidebar message search query length", () => {
       await tick();
     };
 
+    // One character still filters conversations by name; it just does not
+    // reach the server, whose search takes 2..=100.
     await enterQuery("a");
     expect(searchMessages).not.toHaveBeenCalled();
-    expect(
-      host.querySelector('[data-testid="chat-history-results"] [role="status"]')
-        ?.textContent,
-    ).toContain("Type at least 2 characters");
-    expect(host.querySelector('[data-testid="chat-history-results"] [role="alert"]'))
-      .toBeNull();
+    expect(results()?.querySelector('[role="alert"]')).toBeNull();
 
     await enterQuery("ab");
     expect(searchMessages).toHaveBeenCalledTimes(1);
@@ -101,12 +107,10 @@ describe("ChatSidebar message search query length", () => {
 
     await enterQuery("x".repeat(101));
     expect(searchMessages).toHaveBeenCalledTimes(1);
-    expect(
-      host.querySelector('[data-testid="chat-history-results"] [role="status"]')
-        ?.textContent,
-    ).toContain("Search is limited to 100 characters");
-    expect(host.querySelector('[data-testid="chat-history-results"] [role="alert"]'))
-      .toBeNull();
+    expect(results()?.querySelector('[role="status"]')?.textContent).toContain(
+      "Message search is limited to 100 characters",
+    );
+    expect(results()?.querySelector('[role="alert"]')).toBeNull();
   });
 });
 
@@ -132,20 +136,15 @@ describe("ChatSidebar message search and the app's requests to a bot (review B-3
       },
     });
 
-    await vi.waitFor(() =>
-      expect(host.querySelector('[data-testid="chat-show-history"]')).toBeTruthy(),
-    );
-    host.querySelector<HTMLButtonElement>('[data-testid="chat-show-history"]')!.click();
-    await tick();
-    const input = host.querySelector<HTMLInputElement>('[data-testid="chat-history-search"]')!;
+    const input = await openSearch();
     input.value = "setup";
     input.dispatchEvent(new Event("input", { bubbles: true }));
     await vi.waitFor(() => expect(searchMessages).toHaveBeenCalledTimes(1));
     await vi.waitFor(() =>
-      expect(host.querySelectorAll('[data-testid="chat-search-hit"]').length).toBeGreaterThan(0),
+      expect(document.querySelectorAll('[data-testid="chat-search-hit"]').length).toBeGreaterThan(0),
     );
 
-    const shown = [...host.querySelectorAll('[data-testid="chat-search-hit"]')].map(
+    const shown = [...document.querySelectorAll('[data-testid="chat-search-hit"]')].map(
       (node) => node.textContent?.replace(/\s+/g, " ").trim() ?? "",
     );
     expect(shown).toHaveLength(3);
@@ -168,19 +167,14 @@ describe("ChatSidebar message search and the app's requests to a bot (review B-3
       props: { api: stubApi({ searchMessages }), seedDirectory: [seedRow], self: { uid: "prs_ada" } },
     });
 
-    await vi.waitFor(() =>
-      expect(host.querySelector('[data-testid="chat-show-history"]')).toBeTruthy(),
-    );
-    host.querySelector<HTMLButtonElement>('[data-testid="chat-show-history"]')!.click();
-    await tick();
-    const input = host.querySelector<HTMLInputElement>('[data-testid="chat-history-search"]')!;
+    const input = await openSearch();
     input.value = "Automatic message";
     input.dispatchEvent(new Event("input", { bubbles: true }));
     await vi.waitFor(() => expect(searchMessages).toHaveBeenCalledTimes(1));
     await vi.waitFor(() =>
-      expect(host.querySelector('[data-testid="chat-history-results"]')?.textContent).toContain("No matching messages"),
+      expect(results()?.textContent).toContain("No matching results"),
     );
 
-    expect(host.querySelector('[data-testid="chat-search-hit"]')).toBeNull();
+    expect(document.querySelector('[data-testid="chat-search-hit"]')).toBeNull();
   });
 });
