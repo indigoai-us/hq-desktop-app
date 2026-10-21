@@ -941,6 +941,10 @@ pub async fn sign_out(app: AppHandle) -> Result<(), String> {
         crate::commands::dm_mqtt::reset_dm_push_for_auth_session_change();
     }
     clear_sentry_user();
+    // Close again now that the tokens are gone: an auth-state read that raced
+    // the first close could have published Active and reopened admission.
+    hq_desktop_core::work_admission::personal_work()
+        .close(hq_desktop_core::work_admission::Closed::SignedOut);
     // The next account must not inherit this one's plan-limit upload pause.
     crate::commands::uploads_paused::clear(&app);
     // Nor this one's active company: a later connector import or scoped read

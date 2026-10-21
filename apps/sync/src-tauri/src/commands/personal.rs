@@ -1739,21 +1739,6 @@ pub(crate) async fn ensure_impl_with<R: tauri::Runtime + 'static>(
     // touching the network.
     crate::commands::telemetry::reassert_consent_for_person(vault, &person_uid).await;
 
-    // ── H8 paired-root gate (off in shipped builds) ────────────────────────
-    // The direct S3 walk below is a second, unfenced writer. For a paired root
-    // it never runs: not in the install stage, not in the background safety
-    // net, not from Sync Now. The hq-cloud runner owns the first push under
-    // its own authority and lease. Nothing here clears Cloud off or starts a
-    // runner.
-    if crate::commands::personal_root::paired_root_gate_enabled() {
-        log(
-            "personal",
-            "personal first-push deferred — paired personal root, the hq-cloud runner owns the upload",
-        );
-        emit_first_push_complete_without_uploading(app, &person_uid);
-        return Ok(PersonalFirstPushOutcome::DeferredToOwnedRunner);
-    }
-
     // ── Steady-state gate ──────────────────────────────────────────────────
     // The warm-up first-push exists ONLY to seed a brand-new personal vault
     // before the hq-cloud runner has ever synced it. Once the runner's journal
@@ -1786,6 +1771,21 @@ pub(crate) async fn ensure_impl_with<R: tauri::Runtime + 'static>(
     hq_desktop_core::vault_sync::ensure_vault_sync_allowed(
         &hq_desktop_core::vault_sync::SyncVault::Personal,
     )?;
+
+    // ── H8 paired-root gate (off in shipped builds) ────────────────────────
+    // The direct S3 walk below is a second, unfenced writer. For a paired root
+    // it never runs: not in the install stage, not in the background safety
+    // net, not from Sync Now. The hq-cloud runner owns the first push under
+    // its own authority and lease. Nothing here clears Cloud off or starts a
+    // runner.
+    if crate::commands::personal_root::paired_root_gate_enabled() {
+        log(
+            "personal",
+            "personal first-push deferred — paired personal root, the hq-cloud runner owns the upload",
+        );
+        emit_first_push_complete_without_uploading(app, &person_uid);
+        return Ok(PersonalFirstPushOutcome::DeferredToOwnedRunner);
+    }
 
     // ── Install-stage handoff gate ─────────────────────────────────────────
     // On a fresh install the runner's journal does not exist yet, so the gate
