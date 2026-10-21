@@ -106,17 +106,19 @@ describe("ShellSettings profile photo", () => {
   });
 
   it("does not report a photo when the save fails", async () => {
+    vi.useFakeTimers();
     const onavatarsaved = vi.fn();
     mountWith(async () => ({ ok: false as const, message: "nope" }), onavatarsaved);
 
     await pickPhoto();
+    await vi.advanceTimersByTimeAsync(8000);
     await vi.waitFor(() => {
       flushSync();
-      expect(host.querySelector('[data-testid="settings-photo-status"]')?.textContent).toContain(
-        "Couldn't save your photo",
-      );
+      expect(host.querySelector('[data-testid="settings-photo-retry"]')).not.toBeNull();
     });
+    expect(host.querySelector('[data-testid="settings-photo-status"]')?.textContent).not.toContain("nope");
     expect(onavatarsaved).not.toHaveBeenCalled();
+    vi.useRealTimers();
   });
 
   it("offers the photo to a claimed public profile with no photo", async () => {

@@ -23,6 +23,11 @@ export const MAX_ZOOM = 3;
  * shorter side. `x`/`y` move its center away from the image center, measured
  * in multiples of the shorter side so the numbers don't depend on resolution.
  */
+/** An error whose message is app-written copy, safe to show to the user. */
+export class PhotoError extends Error {
+  override name = "PhotoError";
+}
+
 export interface PhotoCrop {
   x: number;
   y: number;
@@ -146,7 +151,7 @@ function loadImageElement(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error("That file isn't a readable image."));
+    img.onerror = () => reject(new PhotoError("That file isn't a readable image."));
     img.src = url;
   });
 }
@@ -155,25 +160,20 @@ function readBlobAsDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error("Couldn't read that file."));
+    reader.onerror = () => reject(new PhotoError("Couldn't read that file."));
     reader.readAsDataURL(blob);
   });
 }
 
 /**
- * Load a picked file or a saved photo URL into a drawable source. Remote
- * photos are fetched as bytes first so drawing them never taints the canvas.
+ * Load a picked file or a locally held photo (data: or blob: URL) into a
+ * drawable source. Server photos can't be read: the photo bucket sends no
+ * CORS headers, and drawing one would taint the canvas.
  */
-export async function loadPhotoSource(
-  input: Blob | string,
-  fetchFn: typeof fetch = fetch,
-): Promise<PhotoSource> {
+export async function loadPhotoSource(input: Blob | string): Promise<PhotoSource> {
   let url: string;
-  if (typeof input === "string" && /^https:/i.test(input)) {
-    const res = await fetchFn(input);
-    if (!res.ok) throw new Error(`Couldn't download the photo (${res.status}).`);
-    url = await readBlobAsDataUrl(await res.blob());
-  } else if (typeof input === "string") {
+  if (typeof input === "string") {
+    if (!/^(data|blob):/i.test(input)) throw new PhotoError("Pick the photo again to edit it.");
     url = input;
   } else {
     url = await readBlobAsDataUrl(input);
@@ -185,7 +185,7 @@ export async function loadPhotoSource(
 /** Crop a source to a 512×512 JPEG under the upload byte ceiling. */
 export async function renderPhoto(source: PhotoSource, crop: PhotoCrop): Promise<PreparedAvatar> {
   if (typeof document === "undefined") {
-    throw new Error("Image editing is only available in the app window.");
+    throw new PhotoError("Image editing is only available in the app window.");
   }
   const img = await loadImageElement(source.url);
   const rect = cropRect(source.width, source.height, crop);
@@ -193,7 +193,7 @@ export async function renderPhoto(source: PhotoSource, crop: PhotoCrop): Promise
   canvas.width = PHOTO_EDGE;
   canvas.height = PHOTO_EDGE;
   const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Couldn't prepare the image.");
+  if (!ctx) throw new PhotoError("Couldn't prepare the image.");
   ctx.imageSmoothingQuality = "high";
   ctx.drawImage(img, rect.sx, rect.sy, rect.side, rect.side, 0, 0, PHOTO_EDGE, PHOTO_EDGE);
   let previewDataUrl = "";
@@ -204,7 +204,7 @@ export async function renderPhoto(source: PhotoSource, crop: PhotoCrop): Promise
     if (base64ByteLength(base64) <= AVATAR_MAX_BYTES) break;
   }
   if (base64ByteLength(base64) > AVATAR_MAX_BYTES) {
-    throw new Error("That image is too large even after compression.");
+    throw new PhotoError("That image is too large even after compression.");
   }
   return { base64, previewDataUrl };
 }
@@ -218,7 +218,7 @@ export async function photoFingerprint(source: PhotoSource): Promise<number[]> {
   canvas.width = n;
   canvas.height = n;
   const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Couldn't read the image.");
+  if (!ctx) throw new PhotoError("Couldn't read the image.");
   ctx.drawImage(img, rect.sx, rect.sy, rect.side, rect.side, 0, 0, n, n);
   const data = ctx.getImageData(0, 0, n, n).data;
   const out: number[] = [];

@@ -31,7 +31,7 @@ vi.mock("./profile-photo.js", async (importOriginal) => {
 });
 
 import ProfilePhotoField from "./ProfilePhotoField.svelte";
-import type { OtherProfile } from "./profile-photo.js";
+import { PhotoError, type OtherProfile } from "./profile-photo.js";
 
 const MEMBER_URL =
   "https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/members/prs_1/a.jpg?sig=1";
@@ -62,6 +62,7 @@ afterEach(async () => {
   component = null;
   host?.remove();
   vi.clearAllMocks();
+  vi.useRealTimers();
 });
 
 function render(props: Record<string, unknown>): void {
@@ -125,21 +126,81 @@ describe("ProfilePhotoField", () => {
   });
 
   it("no glow when the save fails", async () => {
+    vi.useFakeTimers();
     render({ save: vi.fn(async () => ({ ok: false as const })) });
     await pick();
+    await vi.advanceTimersByTimeAsync(8000);
     await settle(() => expect(q("p-status")?.textContent).toContain("Couldn't save"));
     expect(q("p-glow")).toBeNull();
   });
 
-  it("shows an error and keeps the old photo when the save fails", async () => {
+  it("keeps the old photo when the save fails", async () => {
+    vi.useFakeTimers();
     const onsaved = vi.fn();
     render({ photoUrl: MEMBER_URL, save: vi.fn(async () => ({ ok: false as const })), onsaved });
 
     await pick();
-    await settle(() => expect(q("p-status")?.textContent).toContain("Couldn't save your photo"));
+    await vi.advanceTimersByTimeAsync(8000);
+    await settle(() => expect(q("p-retry")).not.toBeNull());
 
     expect(onsaved).not.toHaveBeenCalled();
     expect(q("p-img")?.getAttribute("src")).toBe(MEMBER_URL);
+  });
+
+  it("retries a failed save quietly and succeeds without showing an error", async () => {
+    vi.useFakeTimers();
+    const save = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false })
+      .mockResolvedValue({ ok: true, url: null });
+    render({ save });
+    await pick();
+    await settle(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(q("p-status")?.textContent).toContain("Saving");
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle(() => expect(q("p-status")?.textContent).toContain("Photo updated"));
+    expect(save).toHaveBeenCalledTimes(2);
+  });
+
+  it("after the retries run out, Retry re-sends the same photo without picking again", async () => {
+    vi.useFakeTimers();
+    const save = vi.fn().mockResolvedValue({ ok: false });
+    render({ save });
+    await pick();
+    await vi.advanceTimersByTimeAsync(8000);
+    await settle(() => expect(q("p-retry")).not.toBeNull());
+    expect(save).toHaveBeenCalledTimes(4);
+    expect(q("p-status")?.textContent).toContain("Couldn't save");
+    expect(q("p-status")!.classList.contains("err")).toBe(false);
+
+    save.mockResolvedValue({ ok: true, url: null });
+    q("p-retry")!.click();
+    await settle(() => expect(q("p-status")?.textContent).toContain("Photo updated"));
+    expect(save).toHaveBeenCalledTimes(5);
+    expect(save.mock.calls[4]![0]).toEqual(save.mock.calls[0]![0]);
+    expect(dom.renders).toBe(1);
+  });
+
+  it("never shows raw browser error text for a picked file", async () => {
+    const { loadPhotoSource } = await import("./profile-photo.js");
+    vi.mocked(loadPhotoSource).mockRejectedValueOnce(new DOMException("The operation is insecure."));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    render({});
+    await pick();
+    await settle(() =>
+      expect(q("p-status")?.textContent).toContain("Couldn't read that image. Try another photo."),
+    );
+    expect(q("p-status")?.textContent).not.toContain("insecure");
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("shows the app's own wording for a known photo problem", async () => {
+    const { loadPhotoSource } = await import("./profile-photo.js");
+    vi.mocked(loadPhotoSource).mockRejectedValueOnce(new PhotoError("That file isn't a readable image."));
+    render({});
+    await pick();
+    await settle(() => expect(q("p-status")?.textContent).toContain("That file isn't a readable image."));
   });
 
   it("Undo puts the previous photo back", async () => {
@@ -260,6 +321,25 @@ describe("ProfilePhotoField", () => {
     await settle(() => expect(current).toHaveBeenCalled());
     flushSync();
     expect(q("p-offer")).toBeNull();
+  });
+
+  it("retries copying to the other profile, then leaves the button to try again", async () => {
+    vi.useFakeTimers();
+    const apply = vi.fn().mockResolvedValue(false);
+    render({ other: { current: vi.fn(async () => null), apply, copy } });
+    await pick();
+    await settle(() => expect(q("p-offer-action")).not.toBeNull());
+    q("p-offer-action")!.click();
+    await vi.advanceTimersByTimeAsync(8000);
+    await settle(() => expect(q("p-offer-text")?.textContent).toBe("Couldn't update it."));
+    expect(apply).toHaveBeenCalledTimes(4);
+    const action = q("p-offer-action") as HTMLButtonElement;
+    expect(action.disabled).toBe(false);
+
+    apply.mockResolvedValue(true);
+    action.click();
+    await settle(() => expect(q("p-offer-text")?.textContent).toBe(copy.emptyDone));
+    expect(apply).toHaveBeenCalledTimes(5);
   });
 
   it("Not now hides the offer", async () => {

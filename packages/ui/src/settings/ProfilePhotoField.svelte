@@ -17,6 +17,7 @@
   import {
     CENTER_CROP,
     loadPhotoSource,
+    PhotoError,
     photoFingerprint,
     cropView,
     renderPhoto,
@@ -91,7 +92,16 @@
   /** The crop being adjusted, shown live in the avatar while the editor is open. */
   let liveCrop = $state<PhotoCrop | null>(null);
   let previous = $state<Previous>(null);
-  let status = $state<"idle" | "saving" | "saved" | "crop-saved" | "error">("idle");
+  let status = $state<"idle" | "saving" | "saved" | "crop-saved" | "error" | "retry">("idle");
+  /** A save that failed after its automatic retries; Retry re-sends the same photo. */
+  let pendingRetry = $state<{
+    photo: PreparedAvatar;
+    next: { source: PhotoSource; crop: PhotoCrop };
+    opts: { kind: "saved" | "crop-saved"; previous: Previous };
+  } | null>(null);
+  // Quiet automatic retries after a failed upload, before showing Retry.
+  const RETRY_DELAYS = [1000, 2000, 4000];
+  const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
   let errorText = $state("");
   let editing = $state(false);
   let editBusy = $state(false);
@@ -149,15 +159,23 @@
     const seq = ++saveSeq;
     setStatus("saving");
     offer = null;
-    let res: PhotoSaveResult;
-    try {
-      res = await save(photo);
-    } catch {
-      res = { ok: false };
+    pendingRetry = null;
+    let res: PhotoSaveResult = { ok: false };
+    for (let attempt = 0; ; attempt++) {
+      try {
+        res = await save(photo);
+      } catch (err) {
+        console.warn("[profile-photo] save failed", err);
+        res = { ok: false };
+      }
+      if (seq !== saveSeq) return false;
+      if (res.ok || attempt >= RETRY_DELAYS.length) break;
+      await wait(RETRY_DELAYS[attempt]!);
+      if (seq !== saveSeq) return false;
     }
-    if (seq !== saveSeq) return false;
     if (!res.ok) {
-      setStatus("error", "Couldn't save your photo. Try again.");
+      pendingRetry = { photo, next, opts };
+      setStatus("retry");
       return false;
     }
     const src = paintableAvatarSrc(res.url ?? null) ?? photo.previewDataUrl;
@@ -185,9 +203,16 @@
       const photo = await renderPhoto(source, CENTER_CROP);
       await commit(photo, { source, crop: CENTER_CROP }, { kind: "saved", previous: before });
     } catch (err) {
-      // raw-error-ok: profile-photo errors are app-written copy
-      setStatus("error", err instanceof Error ? err.message : "Couldn't read that image.");
+      // Only app-written PhotoError copy reaches the screen; anything else is logged.
+      if (!(err instanceof PhotoError)) console.warn("[profile-photo] couldn't read the picked image", err);
+      setStatus("error", err instanceof PhotoError ? err.message : "Couldn't read that image. Try another photo.");
     }
+  }
+
+  function retrySave(): void {
+    const pending = pendingRetry;
+    if (!pending || busy) return;
+    void commit(pending.photo, pending.next, pending.opts);
   }
 
   async function undo(): Promise<void> {
@@ -288,12 +313,18 @@
     if (!current || !other || current.state === "busy") return;
     offer = { ...current, state: "busy" };
     let ok = false;
-    try {
-      ok = await other.apply(current.photo);
-    } catch {
-      ok = false;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        ok = await other.apply(current.photo);
+      } catch (err) {
+        console.warn("[profile-photo] copy to the other profile failed", err);
+        ok = false;
+      }
+      if (offer?.photo !== current.photo) return;
+      if (ok || attempt >= RETRY_DELAYS.length) break;
+      await wait(RETRY_DELAYS[attempt]!);
+      if (offer?.photo !== current.photo) return;
     }
-    if (offer?.photo !== current.photo) return;
     offer = { ...current, state: ok ? "done" : "error" };
     if (ok) offerTimer = setTimeout(() => (offer = null), 3000);
   }
@@ -302,7 +333,7 @@
     if (!offer || !other) return "";
     const c = other.copy;
     if (offer.state === "done") return offer.kind === "empty" ? c.emptyDone : c.diffDone;
-    if (offer.state === "error") return "Couldn't update it. Try again.";
+    if (offer.state === "error") return "Couldn't update it.";
     return offer.kind === "empty" ? c.emptyText : c.diffText;
   });
   const offerAction = $derived(
@@ -379,6 +410,12 @@
           >{/if}
       {:else if status === "crop-saved"}Saved
       {:else if status === "error"}{errorText}
+      {:else if status === "retry"}Couldn't save&nbsp;·&nbsp;<button
+          type="button"
+          class="link"
+          data-testid={`${testid}-retry`}
+          onclick={retrySave}>Retry</button
+        >
       {/if}
     </span>
   {/snippet}
@@ -639,7 +676,7 @@
   }
 
   .status.err {
-    color: var(--warn-ink, var(--v4-error, #d9584a));
+    color: var(--t3, var(--v4-text-3, rgb(250 250 250 / 0.4)));
   }
 
   .spin {

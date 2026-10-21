@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   CENTER_CROP,
@@ -76,5 +76,15 @@ describe("photo fingerprints", () => {
 describe("base64ToBytes", () => {
   it("decodes raw base64", () => {
     expect(Array.from(base64ToBytes("/9j/"))).toEqual([0xff, 0xd8, 0xff]);
+  });
+});
+
+describe("loadPhotoSource", () => {
+  it("refuses a server photo with app-written copy and never fetches it", async () => {
+    const { loadPhotoSource, PhotoError } = await import("./profile-photo.js");
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    await expect(loadPhotoSource("https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/members/p/a.jpg")).rejects.toBeInstanceOf(PhotoError);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
   });
 });
