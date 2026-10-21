@@ -78,16 +78,21 @@ describe("badge collection", () => {
     expect(progressText(BADGE_BY_ID.poweruser, { id: "poweruser", current: 1500, target: 10000, unit: "runs" })).toBe("1,500 of 10,000 runs");
   });
 
-  it("groups every badge by tier, highest first, earned before locked", () => {
+  // Owner, 2026-10-20: a given honor is one of one, so people who were not
+  // given it see no locked placeholder for it. Legendary only appears once an
+  // honor is held.
+  it("groups every badge by tier, highest first, earned before locked, without the honors this person was not given", () => {
     const groups = badgeCollection(EARNED, PROGRESS);
     expect(groups.map((g) => [g.label, g.earned, g.tiles.length])).toEqual([
-      ["Legendary", 0, 4],
       ["Gold", 2, 3],
       ["Silver", 1, 1],
       ["Bronze", 1, 12],
     ]);
-    expect(groups.flatMap((g) => g.tiles).length).toBe(20);
-    const bronze = groups[3].tiles;
+    expect(groups.flatMap((g) => g.tiles).length).toBe(16);
+    const withHonor = badgeCollection([...EARNED, { id: "architect", tier: "L", earnedAt: "2026-10-20" }], PROGRESS);
+    expect(withHonor.map((g) => [g.label, g.earned, g.tiles.length])[0]).toEqual(["Legendary", 1, 1]);
+    expect(withHonor[0].tiles[0].def.id).toBe("architect");
+    const bronze = groups[2].tiles;
     expect(bronze[0]).toMatchObject({ def: { id: "connector" }, earned: { tier: 1 } });
     expect(bronze.slice(1).every((t) => t.earned === null)).toBe(true);
     expect(bronze.find((t) => t.def.id === "toolbox")?.progress).toBe("3 of 5 skills");
@@ -102,9 +107,8 @@ describe("BadgesPane", () => {
   it("shows earned marks and locked outlines with criteria and progress, grouped by tier", async () => {
     mounted.push(mount(BadgesPane, { target: host, props: { badges: EARNED, progress: PROGRESS, owner: "Maya Chen" } }));
     await settle();
-    expect(host.querySelector('[data-testid="badges-pane-summary"]')?.textContent).toBe("4 of 20 earned");
+    expect(host.querySelector('[data-testid="badges-pane-summary"]')?.textContent).toBe("4 of 16 earned");
     expect([...host.querySelectorAll('[data-testid="badges-group"] .k')].map((k) => k.textContent?.replace(/\s+/g, " ").trim())).toEqual([
-      "Legendary 0/4",
       "Gold 2/3",
       "Silver 1/1",
       "Bronze 1/12",
@@ -127,13 +131,11 @@ describe("BadgesPane", () => {
   });
 
   // Owner review 2026-10-12: OG, Captain and Patient Zero are given, not earned.
-  it("says a locked given honor is not awarded yet, and Core Builder not earned yet", async () => {
+  it("shows no placeholder for a given honor this person was not given, and says Core Builder is not earned yet", async () => {
     mounted.push(mount(BadgesPane, { target: host, props: { badges: EARNED, progress: PROGRESS } }));
     await settle();
     const label = (id: string) => host.querySelector(`[data-testid="badges-tile"][data-badge-id="${id}"] [role="img"]`)?.getAttribute("aria-label");
-    expect(label("og")).toBe("OG, not awarded yet");
-    expect(label("captain")).toBe("Captain, not awarded yet");
-    expect(label("patientzero")).toBe("Patient Zero, not awarded yet");
+    for (const id of ["og", "captain", "patientzero", "ecomrat", "architect", "angel", "optimist", "visionary"]) expect(label(id), id).toBeUndefined();
     expect(label("corebuilder")).toBe("Core Builder, not earned yet");
   });
 
@@ -214,7 +216,7 @@ describe("See all on a profile", () => {
     await settle();
     click('[data-testid="profile-badges-all"]');
     await settle();
-    expect(host.querySelector('[data-testid="badges-pane-summary"]')?.textContent).toBe("1 of 20 earned");
+    expect(host.querySelector('[data-testid="badges-pane-summary"]')?.textContent).toBe("1 of 16 earned");
   });
 
   it("shows nothing in production, where there is no source", async () => {
