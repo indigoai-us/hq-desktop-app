@@ -227,6 +227,9 @@
 
   function openFile(p: string, opts: { newTab: boolean; report?: boolean }): void {
     if (!pathInVault(vault, p)) return;
+    // Opening a file ends the folder-share view: where the host has no folder
+    // view, a later tree folder click only focuses the folder again.
+    folderFromLocation = false;
     const existing = tabs.indexOf(p);
     if (existing >= 0) {
       activeTab = existing;

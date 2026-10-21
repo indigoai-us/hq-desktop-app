@@ -233,6 +233,21 @@ describe("VaultExplorer", () => {
     expect(host.querySelector('[data-testid="vault-home"]')).toBeNull();
   });
 
+  it("after a folder share, opening a file returns the tree to focus-only folder clicks (review on #1747)", async () => {
+    const { host } = await render({ path: "companies/acme/knowledge/" });
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="vault-folder"]')?.textContent).toContain("pricing"));
+    [...host.querySelectorAll<HTMLButtonElement>('[data-testid="vault-folder-row"]')].find((b) => b.textContent?.includes("pricing"))!.click();
+    await settle();
+    expect(host.querySelector('.vx-tab.is-active .vx-tab-btn')?.getAttribute("title")).toBe("companies/acme/knowledge/pricing.md");
+
+    // The Files page has no folder view: a tree folder click only focuses the
+    // folder and keeps the open file, as it did before any share was opened.
+    [...host.querySelectorAll<HTMLElement>('[data-testid="vault-tree-row"]')].find((r) => r.textContent?.trim() === "knowledge")!.click();
+    await settle();
+    expect(host.querySelector('[data-testid="vault-folder"]')).toBeNull();
+    expect(host.querySelector('.vx-tab.is-active .vx-tab-btn')?.getAttribute("title")).toBe("companies/acme/knowledge/pricing.md");
+  });
+
   it("keeps Finder labels on macOS", async () => {
     Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)" });
     const { host } = await render({ path: "companies/acme/knowledge/pricing.md" });

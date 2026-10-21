@@ -36,6 +36,8 @@ function adapter(
     },
     files: {
       presignVaultGet,
+      // The Files explorer lists the shared folder after the card opens it.
+      listDir: async () => ok([]),
     },
     meetings: {
       listUpcoming: async () => ok([]),
