@@ -26,7 +26,8 @@ describe('bot apps', () => {
     expect(botApps([connection], { c1: { ...readOnly, entries: [] } }, profile, 'agt_a', true)[0]).toMatchObject({ onBot: false, status: 'available' });
     expect(botApps([{ ...connection, mode: 'everyone' }], { c1: { ...readOnly, entries: [] } }, profile, 'agt_a', true)[0]).toMatchObject({ onBot: true, status: 'ready' });
     const live = { ...profile!, apps: { ...profile!.apps, ready: [{ provider: 'factory:linear', name: 'Linear', tools: 3, featured: false }], attention: [] } };
-    expect(botApps([connection], { c1: { ...readOnly, entries: [] } }, live, 'agt_a', true)[0]).toMatchObject({ onBot: false, tools: null, status: 'available', canToggle: false });
+    expect(botApps([connection], { c1: { ...readOnly, entries: [] } }, live, 'agt_a', true)[0]).toMatchObject({ onBot: true, enabled: false, tools: 3, status: 'ready', canToggle: false });
+    expect(botApps([connection], { c1: { ...readOnly, entries: [{ granteeType: 'person', granteeId: 'person_viewer', permission: 'read' }] } }, live, 'agt_a', true)[0]).toMatchObject({ onBot: false, tools: null, status: 'available' });
     expect(botApps([connection], { c1: readOnly }, live, 'agt_a', true)[0]).toMatchObject({ onBot: true, tools: 3, canToggle: false });
     expect(botApps([connection], { c1: { ...acl, entries: [] } }, live, 'agt_a', true)[0]).toMatchObject({ onBot: false });
   });
@@ -43,14 +44,55 @@ describe('bot apps', () => {
     const ready = { ...profile!, apps: { ...profile!.apps, ready: [{ provider: 'factory:linear', name: 'Linear', tools: 3, featured: false }], attention: [] } };
     const [granted, other] = botApps([connection, second], { c1: readOnly, c2: { ...readOnly, entries: [] } }, ready, 'agt_a', true);
     expect(granted).toMatchObject({ id: 'c1', onBot: true, status: 'ready', tools: 3 });
-    expect(other).toMatchObject({ id: 'c2', onBot: false, enabled: false, status: 'available', tools: null, detail: 'Ask the connection owner or a company admin to add this bot.' });
+    expect(other).toMatchObject({ id: 'c2', onBot: false, enabled: false, status: 'available', tools: null });
+    expect(botApps([connection, second], { c1: readOnly, c2: { ...readOnly, entries: [] } }, ready, 'agt_a', true)).toHaveLength(2);
     const attention = { ...profile!, apps: { ...profile!.apps, ready: [], attention: [{ provider: 'linear', name: 'Linear', reason: 'Expired.', fix: null }] } };
     const rows = botApps([connection, second], { c1: { ...acl, entries: [] }, c2: { ...readOnly, entries: [] } }, attention, 'agt_a', true);
-    expect(rows.map(row => [row.id, row.onBot, row.status])).toEqual([['c1', false, 'available'], ['c2', false, 'available']]);
-    expect(botApps([second], { c2: { ...readOnly, entries: [] } }, attention, 'agt_a', true)[0]).toMatchObject({ onBot: false, status: 'available' });
+    expect(rows.map(row => [row.id, row.onBot, row.status])).toEqual([['c1', false, 'available'], ['c2', false, 'available'], ['attention:linear', true, 'attention']]);
+  });
+  it('credits the bot’s runtime report to a member viewer’s only connection when the server hides the grant', () => {
+    const redacted = { mode: 'shared', canManage: false, entries: [] };
+    const live = { ...profile!, apps: { ...profile!.apps, ready: [{ provider: 'factory:linear', name: 'Linear', tools: 3, featured: false }], attention: [{ provider: 'figma', name: 'Figma', reason: 'Expired.', fix: null }] } };
+    const figma = { ...connection, id: 'c9', name: 'Figma', provider: 'figma', domain: 'figma.com' };
+    const rows = botApps([connection, figma], { c1: redacted, c9: redacted }, live, 'agt_a', true);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ id: 'c1', onBot: true, enabled: false, status: 'ready', tools: 3, canToggle: false });
+    expect(rows[1]).toMatchObject({ id: 'c9', onBot: true, enabled: false, status: 'attention', detail: 'Expired.', canToggle: false });
+    expect(botApps([{ ...connection, mode: 'private' }], { c1: redacted }, live, 'agt_a', true)[0]).toMatchObject({ onBot: true, status: 'ready' });
+    expect(botApps([connection], { c1: redacted }, profile, 'agt_a', true)[0]).toMatchObject({ onBot: false, status: 'available', detail: 'You cannot see who this connection is shared with. Ask the connection owner or a company admin whether this bot has it.' });
+  });
+  it('shows one provider-level row for a member viewer with two hidden-grant connections for the provider', () => {
+    const redacted = { mode: 'shared', canManage: false, entries: [] };
+    const second = { ...connection, id: 'c2', name: 'Linear (Ops)' };
+    const live = { ...profile!, apps: { ...profile!.apps, ready: [{ provider: 'factory:linear', name: 'Linear', tools: 3, featured: false }], attention: [] } };
+    const rows = botApps([connection, second], { c1: redacted, c2: redacted }, live, 'agt_a', true);
+    expect(rows.map(row => [row.id, row.onBot, row.status])).toEqual([['c1', false, 'available'], ['c2', false, 'available'], ['runtime:linear', true, 'ready']]);
+    expect(rows[2]).toMatchObject({ name: 'Linear', tools: 3, enabled: false, canToggle: false, description: 'On this bot, via one of the company’s 2 connections for this app' });
+    expect(rows.filter(row => row.onBot && row.id.startsWith('c'))).toHaveLength(0);
+  });
+  it('shows a provider-level attention notice when two connections hide which one the bot uses', () => {
+    const redacted = { mode: 'shared', canManage: false, entries: [] };
+    const second = { ...connection, id: 'c2', name: 'Linear (Ops)' };
+    const live = { ...profile!, apps: { ...profile!.apps, ready: [{ provider: 'linear', name: 'Linear', tools: 3, featured: false }], attention: [{ provider: 'factory:linear', name: 'Linear', reason: 'Expired.', fix: null }] } };
+    const rows = botApps([connection, second], { c1: redacted, c2: redacted }, live, 'agt_a', true);
+    expect(rows.map(row => [row.id, row.onBot, row.status])).toEqual([['c1', false, 'available'], ['c2', false, 'available'], ['attention:linear', true, 'attention']]);
+    expect(rows[2]).toMatchObject({ enabled: false, canToggle: false, tools: null, detail: 'Expired. The bot reported this through one of the company’s 2 connections for this app. HQ cannot tell which connection it uses.' });
+    const managed = botApps([connection, second], { c1: { ...acl, entries: [] }, c2: { ...acl, entries: [] } }, live, 'agt_a', true);
+    expect(managed.map(row => [row.id, row.onBot, row.status])).toEqual([['c1', false, 'available'], ['c2', false, 'available'], ['attention:linear', true, 'attention']]);
+    const granted = botApps([connection, second], { c1: acl, c2: { ...acl, entries: [] } }, live, 'agt_a', true);
+    expect(granted.map(row => [row.id, row.onBot, row.status])).toEqual([['c1', true, 'attention'], ['c2', false, 'available']]);
   });
   it('does not count an app as on the bot when its access check failed', () => {
     expect(botApps([connection], { c1: null }, profile, 'agt_a', true)[0]).toMatchObject({ onBot: false, status: 'unknown' });
+  });
+  it('uses the bot’s runtime report for the only connection when its access check failed', () => {
+    const live = { ...profile!, apps: { ...profile!.apps, ready: [{ provider: 'linear', name: 'Linear', tools: 3, featured: false }], attention: [] } };
+    expect(botApps([connection], { c1: null }, live, 'agt_a', true)[0]).toMatchObject({ onBot: true, enabled: false, status: 'ready', tools: 3, canToggle: false, detail: 'This bot reports this app as ready, and this is the company’s only connection for it. HQ could not check its access settings. Refresh to try again.' });
+    const attention = { ...profile!, apps: { ...profile!.apps, ready: [], attention: [{ provider: 'linear', name: 'Linear', reason: 'Expired.', fix: null }] } };
+    expect(botApps([connection], { c1: null }, attention, 'agt_a', true)[0]).toMatchObject({ onBot: true, status: 'attention', canToggle: false });
+    const second = { ...connection, id: 'c2', name: 'Linear (Ops)' };
+    const rows = botApps([connection, second], { c1: null, c2: null }, live, 'agt_a', true);
+    expect(rows.map(row => [row.id, row.onBot, row.status])).toEqual([['c1', false, 'unknown'], ['c2', false, 'unknown'], ['runtime:linear', true, 'ready']]);
   });
   it('matches catalog entries to connections the company already has', () => {
     const [row] = botApps([connection], { c1: acl }, profile, 'agt_a', true);
