@@ -651,3 +651,33 @@ describe("a read in flight across sign-out is not cached (review, 2026-10-19)", 
     expect(cachedCoreUsage("cmp_northwind")).not.toBeNull();
   });
 });
+
+describe("the shown account is always listed (review, 2026-10-20)", () => {
+  const company = (uid: string, name: string) => ({ kind: "company" as const, uid, name, role: "owner" });
+  const ready = (cents: number) =>
+    ({ kind: "ready", companyName: "", usage: { totalCents: cents } }) as unknown as import("./core-usage-model").CoreUsageView;
+
+  it("pins the meter's account into the last place when it ranks past the cutoff", async () => {
+    const { topUsageAccounts } = await import("./core-usage-model");
+    const accounts = ["a", "b", "c", "d"].map((k) => company(`cmp_${k}`, k.toUpperCase()));
+    const views = { cmp_a: ready(400), cmp_b: ready(300), cmp_c: ready(200), cmp_d: ready(100) };
+    const top = topUsageAccounts(accounts, views, 2, "cmp_d");
+    expect(top.rows.map((a) => a.uid)).toEqual(["cmp_a", "cmp_d"]);
+    expect(top.hidden).toBe(2);
+    // An account already inside the cutoff leaves the ranking alone.
+    expect(topUsageAccounts(accounts, views, 2, "cmp_a").rows.map((a) => a.uid)).toEqual(["cmp_a", "cmp_b"]);
+    // A pin that names no company (the personal key) changes nothing.
+    expect(topUsageAccounts(accounts, views, 2, "personal").rows.map((a) => a.uid)).toEqual(["cmp_a", "cmp_b"]);
+  });
+
+  it("pins a member's company while the list is still loading", async () => {
+    const { topUsageAccounts } = await import("./core-usage-model");
+    const accounts = [
+      ...["a", "b", "c"].map((k) => company(`cmp_${k}`, k.toUpperCase())),
+      { kind: "company" as const, uid: "cmp_m", name: "Member Co", role: "member" },
+    ];
+    const top = topUsageAccounts(accounts, {}, 3, "cmp_m");
+    expect(top.rows.map((a) => a.uid)).toEqual(["cmp_a", "cmp_b", "cmp_m"]);
+    expect(top.ranked).toBe(false);
+  });
+});

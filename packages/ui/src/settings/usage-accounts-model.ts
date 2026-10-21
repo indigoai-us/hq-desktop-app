@@ -24,6 +24,7 @@ import {
   OTHER_USAGE_LABEL,
   PERSONAL_ACCOUNT_KEY,
   USAGE_GROUPS,
+  USAGE_RETRY_DELAYS_MS,
   canReadBilling,
   formatUsd,
   isForbidden,
@@ -127,14 +128,47 @@ function str(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-async function settle<T>(work: (() => Promise<AdapterResult<T>>) | null, label: string): Promise<AdapterResult<T> | null> {
-  if (!work) return null;
+/**
+ * Quiet retries for the Settings > Usage reads (the lines, the spend limit
+ * and the switch offer), the same schedule as the Core meter: about three
+ * tries before a failure reaches the screen. Tests pass `delays: []`.
+ */
+export interface RetryOpts {
+  delays?: readonly number[];
+  sleep?: (ms: number) => Promise<void>;
+}
+
+const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+async function settleOnce<T>(work: () => Promise<AdapterResult<T>>, label: string): Promise<AdapterResult<T> | null> {
   try {
     return await work();
   } catch (err) {
     console.warn(`[usage-accounts] ${label} read threw`, err instanceof Error ? err.name : "unknown");
     return null;
   }
+}
+
+/**
+ * One read with quiet retries. A thrown read or a failed result is tried
+ * again after each delay; a 403 is an answer ("Owner only"), not a failure,
+ * so it is returned at once.
+ */
+async function settle<T>(
+  work: (() => Promise<AdapterResult<T>>) | null,
+  label: string,
+  opts: RetryOpts = {},
+): Promise<AdapterResult<T> | null> {
+  if (!work) return null;
+  const delays = opts.delays ?? USAGE_RETRY_DELAYS_MS;
+  const sleep = opts.sleep ?? defaultSleep;
+  let res = await settleOnce(work, label);
+  for (const delay of delays) {
+    if (res?.ok || (res && isForbidden(res))) break;
+    await sleep(delay);
+    res = await settleOnce(work, label);
+  }
+  return res;
 }
 
 const LIVE_SUBSCRIPTION = new Set(["active", "trialing", "past_due", "unpaid"]);
@@ -246,13 +280,14 @@ export async function readAccountRow(
   account: UsageAccount,
   pricing: UsagePricing | null = null,
   now: () => Date = () => new Date(),
+  retry: RetryOpts = {},
 ): Promise<AccountRowView> {
   if (account.kind === "company") {
     if (!account.uid) return { kind: "unavailable" };
     if (!canReadBilling(account.role)) return { kind: "owner-only" };
     const uid = account.uid;
     if (!source?.getBillingSummary) return { kind: "unavailable" };
-    const summary = await settle(() => source.getBillingSummary!(uid), "billing summary");
+    const summary = await settle(() => source.getBillingSummary!(uid), "billing summary", retry);
     if (!summary) return { kind: "unavailable" };
     if (!summary.ok) return isForbidden(summary) ? { kind: "owner-only" } : { kind: "unavailable" };
     if (!isRecord(summary.value)) return { kind: "unavailable" };
@@ -263,7 +298,7 @@ export async function readAccountRow(
       return { kind: "ready", plan, planLabel: PLAN_LABELS[plan], cardOnFile, trial: null, usage: null, usageUnavailable: false, notice: null };
     }
     const trial = runningTrialFromSummary(body, now());
-    const statement = await settle(source.getUsageStatement ? () => source.getUsageStatement!(uid) : null, "usage statement");
+    const statement = await settle(source.getUsageStatement ? () => source.getUsageStatement!(uid) : null, "usage statement", retry);
     const usage = statement?.ok ? usageFromStatement(statement.value, pricing) : null;
     return {
       kind: "ready",
@@ -277,7 +312,7 @@ export async function readAccountRow(
     };
   }
   if (!source?.getPersonalBillingSummary) return { kind: "unavailable" };
-  const summary = await settle(() => source.getPersonalBillingSummary!(), "personal summary");
+  const summary = await settle(() => source.getPersonalBillingSummary!(), "personal summary", retry);
   if (!summary?.ok || !isRecord(summary.value)) return { kind: "unavailable" };
   const body = summary.value;
   const cardOnFile = cardOnFileFromSummary(body);
@@ -285,7 +320,7 @@ export async function readAccountRow(
     const plan = oldPlanFromSummary(body);
     return { kind: "ready", plan, planLabel: PLAN_LABELS[plan], cardOnFile, trial: null, usage: null, usageUnavailable: false, notice: null };
   }
-  const statement = await settle(source.getPersonalUsageStatement ? () => source.getPersonalUsageStatement!() : null, "personal statement");
+  const statement = await settle(source.getPersonalUsageStatement ? () => source.getPersonalUsageStatement!() : null, "personal statement", retry);
   const usage = statement?.ok ? usageFromStatement(statement.value, pricing) : null;
   return {
     kind: "ready",
@@ -321,19 +356,20 @@ export function usageIsPartial(usage: AccountUsage): boolean {
 }
 
 export async function readPricing(source: UsageAccountsSource | null | undefined): Promise<UsagePricing | null> {
-  const res = await settle(source?.getPricing ? () => source.getPricing!() : null, "pricing");
+  const res = await settle(source?.getPricing ? () => source.getPricing!() : null, "pricing", { delays: [] });
   return res?.ok ? usagePricingFromFeed(res.value) : null;
 }
 
 export async function readSpendLimit(
   source: UsageAccountsSource | null | undefined,
   account: UsageAccount,
+  retry: RetryOpts = {},
 ): Promise<SpendLimitDetail | null> {
   const res =
     account.kind === "personal"
-      ? await settle(source?.getPersonalSpendLimit ? () => source.getPersonalSpendLimit!() : null, "personal spend limit")
+      ? await settle(source?.getPersonalSpendLimit ? () => source.getPersonalSpendLimit!() : null, "personal spend limit", retry)
       : account.uid
-        ? await settle(source?.getSpendLimit ? () => source.getSpendLimit!(account.uid!) : null, "spend limit")
+        ? await settle(source?.getSpendLimit ? () => source.getSpendLimit!(account.uid!) : null, "spend limit", retry)
         : null;
   return res?.ok ? spendLimitFromBody(res.value) : null;
 }
@@ -387,12 +423,13 @@ export function switchStateFromBody(body: unknown): SwitchState {
 export async function readSwitchState(
   source: UsageAccountsSource | null | undefined,
   account: UsageAccount,
+  retry: RetryOpts = {},
 ): Promise<SwitchState> {
   const res =
     account.kind === "personal"
-      ? await settle(source?.getPersonalUsageSwitch ? () => source.getPersonalUsageSwitch!() : null, "personal usage switch")
+      ? await settle(source?.getPersonalUsageSwitch ? () => source.getPersonalUsageSwitch!() : null, "personal usage switch", retry)
       : account.uid
-        ? await settle(source?.getUsageSwitch ? () => source.getUsageSwitch!(account.uid!) : null, "usage switch")
+        ? await settle(source?.getUsageSwitch ? () => source.getUsageSwitch!(account.uid!) : null, "usage switch", retry)
         : null;
   if (!res?.ok) return { kind: "not-available" };
   return switchStateFromBody(res.value);
@@ -420,7 +457,7 @@ export async function switchAccountToUsage(
         ? () => source.switchToUsagePricing!(account.uid!)
         : null;
   if (!work) return { kind: "not-available" };
-  const res = await settle(work, "usage switch");
+  const res = await settle(work, "usage switch", { delays: [] }); // a mutation is never retried on its own
   if (!res) return { kind: "failed" };
   if (res.ok) return isRecord(res.value) && res.value.outcome === "switched" ? { kind: "switched" } : { kind: "failed" };
   if (res.code === "USAGE_SWITCH_NOT_OFFERED") return { kind: "refused", state: await readSwitchState(source, account) };

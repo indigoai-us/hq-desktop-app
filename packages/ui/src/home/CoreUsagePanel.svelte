@@ -133,7 +133,7 @@
   const listed = $derived(accounts.length > 1);
   /** Account row views, keyed by account; read when the menu opens. */
   let rowViews = $state<Record<string, CoreUsageView>>({});
-  const top = $derived(topUsageAccounts(accounts, rowViews, TOP_USAGE_COMPANIES));
+  const top = $derived(topUsageAccounts(accounts, rowViews, TOP_USAGE_COMPANIES, currentKey));
 
   // The list shows as soon as the menu opens, so the row totals are read on
   // mount and whenever the accounts or their roles change (cached totals
@@ -180,6 +180,9 @@
       cancelled: () => cancelled,
     }).then((next) => {
       if (cancelled) return;
+      // A read that was in flight across a sign-out belongs to the previous
+      // person: never paint it, never cache it.
+      if (generation !== coreUsageGeneration()) return;
       retrying = false;
       // Keep the last good numbers on screen when a refresh fails, and say
       // when they were read.
@@ -296,7 +299,9 @@
       const cached = cachedCoreUsage(key);
       rowViews = { ...rowViews, [key]: cached ?? { kind: "loading", companyName: acct.name } };
       const generation = coreUsageGeneration();
-      void readAccountUsage(source as never, acct, { delays: [] }).then((next) => {
+      // Quiet retries, like the meter's own read, so one dropped request
+      // does not leave a row at "Unavailable" for the whole open.
+      void readAccountUsage(source as never, acct, retryDelays ? { delays: retryDelays } : {}).then((next) => {
         rememberCoreUsage(key, next, Date.now(), generation);
         if (generation !== coreUsageGeneration()) return;
         // A failed re-read keeps the last good total on screen.

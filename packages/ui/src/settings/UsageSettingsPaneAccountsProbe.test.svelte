@@ -15,4 +15,4 @@
 
 <button type="button" data-testid="probe-same" onclick={() => { list = accounts.map((a) => ({ ...a })); started = true; }}>same</button>
 <button type="button" data-testid="probe-add" onclick={() => { list = [...accounts.map((a) => ({ ...a })), extra]; started = true; }}>add</button>
-<UsageSettingsPane company={source} accounts={shown} />
+<UsageSettingsPane company={source} accounts={shown} retryDelays={[]} />

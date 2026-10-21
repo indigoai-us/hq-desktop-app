@@ -479,6 +479,29 @@ describe("CoreUsagePanel", () => {
       };
     }
 
+    it("a read in flight across sign-out is never painted (review, 2026-10-20)", async () => {
+      // Person A's personal read is still in flight when they sign out.
+      let release: (() => void) | null = null;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const slow = multiSource({
+        getPersonalBillingSummary: vi.fn(async () => {
+          await gate;
+          return ok({ cardOnFile: false, personalUsage: { allowanceCents: 1000, usedCents: 340, cardOnFile: false } });
+        }),
+      });
+      await render(slow, vi.fn(), { account: ACCOUNTS[2], accounts: ACCOUNTS });
+      expect(q("core-usage")?.dataset.state).toBe("loading");
+      clearAccountCaches();
+      release!();
+      for (let i = 0; i < 5; i += 1) await tick();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      expect(host.textContent).not.toContain("$3.40");
+      expect(q("core-usage")?.dataset.state).not.toBe("ready");
+      const { cachedCoreUsage } = await import("./core-usage-model");
+      expect(cachedCoreUsage("personal")).toBeNull();
+    });
+
     it("after sign-out the next person never sees the previous person's personal or company numbers", async () => {
       // Person A, an owner, reads their personal account and a company.
       await render(multiSource(), vi.fn(), { account: ACCOUNTS[2], accounts: ACCOUNTS });

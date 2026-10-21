@@ -28,6 +28,7 @@
     PERSONAL_ACCOUNT_LABEL,
     formatUsd,
     preferredUsageAccount,
+    setPreferredUsageAccount,
     type UsageAccount,
   } from "../home/core-usage-model.js";
   import type { UsagePricing } from "../company/usage-pricing.js";
@@ -73,6 +74,7 @@
     selectedCompanyUid = null,
     onopenurl = undefined,
     onopensync = undefined,
+    retryDelays = undefined,
   }: {
     company?: PaneSource | null;
     /** The caller's companies with their real role (null when unknown). */
@@ -85,7 +87,11 @@
     onopenurl?: (url: string) => void;
     /** Open Settings > Sync, where cloud sync is turned off per vault. */
     onopensync?: () => void;
+    /** Test seam: waits between the quiet retries of each read. */
+    retryDelays?: readonly number[];
   } = $props();
+
+  const retryOpts = $derived(retryDelays ? { delays: retryDelays } : {});
 
   // A company with no cloud account (local only) has no usage to show here.
   const rows = $derived<UsageAccount[]>(
@@ -103,7 +109,10 @@
   let spend = $state<Record<string, SpendLimitDetail | null | "loading">>({});
   let switchStates = $state<Record<string, SwitchState>>({});
   // Usage details in the Core menu opens this screen on the account it showed.
+  // The ask is used once: a later visit from the Settings nav opens on the
+  // selected company again, not on the line the menu showed days ago.
   let openKey = $state<string | null>(preferredUsageAccount() ?? null);
+  setPreferredUsageAccount(null);
   let confirmKey = $state<string | null>(null);
   let switchingKey = $state<string | null>(null);
   let switchNote = $state<Record<string, { text: string; ok: boolean }>>({});
@@ -143,7 +152,7 @@
 
   function loadRow(acct: UsageAccount, cancelled: () => boolean = () => false): void {
     const key = accountKey(acct);
-    void readAccountRow(company, acct, untrack(() => pricing)).then((view) => {
+    void readAccountRow(company, acct, untrack(() => pricing), undefined, untrack(() => retryOpts)).then((view) => {
       if (cancelled()) return;
       views = { ...views, [key]: withPricing(view, untrack(() => pricing)) };
       // The spend limit is the line's marker and sets its colour, so it is
@@ -158,7 +167,7 @@
     const current = untrack(() => spend[key]);
     if (current === "loading") return;
     spend = { ...spend, [key]: "loading" };
-    void readSpendLimit(company, acct).then((limit) => {
+    void readSpendLimit(company, acct, untrack(() => retryOpts)).then((limit) => {
       spend = { ...spend, [key]: limit };
     });
   }
@@ -176,7 +185,7 @@
       if (spend[key] === undefined || spend[key] === null) loadSpend(acct);
     } else if (view.plan === "starter") {
       switchStates = { ...switchStates, [key]: { kind: "loading" } };
-      void readSwitchState(company, acct).then((state) => {
+      void readSwitchState(company, acct, untrack(() => retryOpts)).then((state) => {
         switchStates = { ...switchStates, [key]: state };
       });
     }
@@ -417,7 +426,8 @@
                   {/if}
                   {#if view.plan === "usage" || view.plan === "trial"}
                     {@const limit = spend[key]}
-                    <div><dt>Spend limit</dt><dd data-testid="usage-spend-limit">{limit === "loading" || limit === undefined ? "…" : limit === null ? "Can't be shown" : spendLimitLine(limit)}</dd><dd class="sub">{limit && limit !== "loading" && limit.noLimit ? "Metered work doesn't pause for spending" : "Metered work pauses at the limit"}</dd></div>
+                    <div><dt>Spend limit</dt><dd data-testid="usage-spend-limit">{limit === "loading" || limit === undefined ? "…" : limit === null ? "Can't be shown" : spendLimitLine(limit)}{#if limit === null}
+                      <button type="button" class="act link" data-testid="usage-spend-limit-retry" onclick={() => loadSpend(acct)}>Try again</button>{/if}</dd><dd class="sub">{limit && limit !== "loading" && limit.noLimit ? "Metered work doesn't pause for spending" : "Metered work pauses at the limit"}</dd></div>
                     {#if view.usage && !view.trial}
                       <div><dt>Projected bill</dt><dd data-testid="usage-projected">{view.usage.projectedBillCents === null ? "Not available yet" : formatUsd(view.usage.projectedBillCents)}</dd><dd class="sub" data-testid="usage-projected-note">At this pace, after the {formatUsd(view.usage.allowanceCents)} included</dd></div>
                     {/if}
