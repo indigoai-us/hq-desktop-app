@@ -16,7 +16,14 @@ use crate::ignore::MAX_FILE_BYTES;
 use crate::paths;
 use crate::workspaces::{Workspace, WorkspaceKind, WorkspaceState};
 
-const HQ_DEPLOY_APP_DOMAIN: &str = "indigo-hq.com";
+/// Root used to build a deployment host when the API row carries no `url`.
+/// Rows that do carry a `url` are displayed from that URL, so they follow the
+/// API's own base domain.
+const HQ_DEPLOY_APP_DOMAIN: &str = "hq.work";
+
+/// Every root an HQ deploy app is served on. Each app answers on both, with no
+/// redirects, and old `indigo-hq.com` links stay live.
+const HQ_DEPLOY_APP_DOMAINS: &[&str] = &["hq.work", "indigo-hq.com"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -1346,14 +1353,21 @@ pub fn normalize_deployment_host(url: &str) -> Option<String> {
 
 pub fn subdomain_from_url(url: &str) -> Option<String> {
     let host = normalize_deployment_host(url)?;
-    host.strip_suffix(&format!(".{HQ_DEPLOY_APP_DOMAIN}"))
-        .map(str::to_string)
-        .filter(|sub| !sub.is_empty())
+    deployment_label_for_host(&host).map(str::to_string)
 }
 
 pub fn is_safe_deployment_host(host: &str) -> bool {
-    host.strip_suffix(&format!(".{HQ_DEPLOY_APP_DOMAIN}"))
-        .is_some_and(|sub| is_safe_deployment_label(sub))
+    deployment_label_for_host(host).is_some_and(is_safe_deployment_label)
+}
+
+/// The app label of `host` when it sits directly under one of the HQ deploy
+/// roots (`{label}.hq.work` or `{label}.indigo-hq.com`).
+fn deployment_label_for_host(host: &str) -> Option<&str> {
+    HQ_DEPLOY_APP_DOMAINS.iter().find_map(|root| {
+        host.strip_suffix(root)
+            .and_then(|rest| rest.strip_suffix('.'))
+            .filter(|sub| !sub.is_empty())
+    })
 }
 
 pub fn is_safe_deployment_label(label: &str) -> bool {
@@ -3514,7 +3528,7 @@ mod tests {
         assert!(deployments[0].pwd);
         assert_eq!(deployments[1].url, "preview.indigo-hq.com");
         assert_eq!(deployments[1].state, "deploying");
-        assert_eq!(deployments[2].url, "paused-app.indigo-hq.com");
+        assert_eq!(deployments[2].url, "paused-app.hq.work");
         assert_eq!(deployments[2].state, "paused");
     }
 
@@ -3848,6 +3862,59 @@ mod tests {
             Some("2d ago")
         );
         assert_eq!(super::format_bytes(25 * 1024 * 1024), "25 MB");
+    }
+
+    #[test]
+    fn deployment_helpers_accept_hq_work_and_indigo_hq_hosts() {
+        // Every app serves on both roots; rows from either must parse.
+        assert_eq!(super::HQ_DEPLOY_APP_DOMAIN, "hq.work");
+        assert_eq!(super::HQ_DEPLOY_APP_DOMAINS, &["hq.work", "indigo-hq.com"]);
+        for (url, host, sub) in [
+            ("https://console.hq.work/path", "console.hq.work", "console"),
+            (
+                "https://console.indigo-hq.com/path",
+                "console.indigo-hq.com",
+                "console",
+            ),
+            ("https://Board-V2.HQ.WORK./", "board-v2.hq.work", "board-v2"),
+        ] {
+            assert_eq!(
+                super::normalize_deployment_host(url),
+                Some(host.to_string())
+            );
+            assert_eq!(super::subdomain_from_url(url), Some(sub.to_string()));
+        }
+        for url in [
+            "https://hq.work",
+            "https://evilhq.work",
+            "https://console.hq.work.evil.test",
+            "https://a.b.hq.work",
+            "https://bad_sub.hq.work",
+        ] {
+            assert_eq!(super::normalize_deployment_host(url), None, "{url}");
+        }
+
+        let deployments = super::parse_deployments_response(
+            reqwest::StatusCode::OK,
+            r#"[
+                {"subdomain":"new-app","url":"https://new-app.hq.work"},
+                {"subdomain":"old-app","url":"https://old-app.indigo-hq.com/"},
+                {"subdomain":"bare-app"}
+            ]"#,
+            "test-org",
+        )
+        .expect("mixed-domain rows should parse");
+        let urls: Vec<&str> = deployments.iter().map(|d| d.url.as_str()).collect();
+        // The API-returned host is kept as-is; only a row without a url falls
+        // back to the hq.work root.
+        assert_eq!(
+            urls,
+            vec![
+                "new-app.hq.work",
+                "old-app.indigo-hq.com",
+                "bare-app.hq.work"
+            ]
+        );
     }
 
     #[test]

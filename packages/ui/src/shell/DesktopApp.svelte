@@ -48,6 +48,7 @@
   import AppRail from "./AppRail.svelte";
   import LazyDoor from "./LazyDoor.svelte";
   import { callerRole, loadCallerRole } from "../company/company-roles.svelte.js";
+  import { domainPricesFromFeed, type DomainPrices } from "../company/files-connect/custom-domain.js";
   import {
     brainPageDoor,
     teamPageDoor,
@@ -12848,6 +12849,19 @@
   // OWNER-R24: the caller's role in the open company, from the membership
   // roster. Grants and Billing show only to owners and admins.
   const companyPaneRole = $derived(callerRole(companyPaneCompany?.uid));
+  // US-007: the global Deployments page offers the company Custom domain sheet too.
+  async function deployDomainPrices(): Promise<DomainPrices | null> {
+    const read = adapter.company?.getPricing;
+    if (!read) return null;
+    const res = await read();
+    return res.ok ? domainPricesFromFeed(res.value) : null;
+  }
+  async function deployDomainCardEntryUrl(companyUid: string): Promise<string | null> {
+    const mint = adapter.company?.createBillingCheckoutSession;
+    if (!mint) return null;
+    const res = await mint(companyUid);
+    return res.ok && typeof res.value?.url === "string" ? res.value.url : null;
+  }
   // Grants pane: the caller's other companies, grantable where they are an
   // owner or admin (hq-pro enforces the same rule).
   const grantsOpen = $derived(railPlaceholder?.id === "grants");
@@ -14484,6 +14498,9 @@
             deployAppPreview={adapter.company?.deployAppPreview}
             deployAppSnapshot={adapter.company?.deployAppSnapshot}
             companies={memberCompanies(companies)}
+            deployDomainRequest={adapter.company?.deployDomainRequest ?? null}
+            loadDomainPrices={deployDomainPrices}
+            domainCardEntryUrl={deployDomainCardEntryUrl}
             openExternal={onopenurl}
             actions={railGate(RAIL_DEPLOYMENTS_ACTIONS_FLAG)}
           />
