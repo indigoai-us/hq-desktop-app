@@ -61,6 +61,7 @@ import {
   type RequestPolicyOptions,
 } from "../request-policy.js";
 import { hqProFailure, parseHqProErrorBody } from "../plan-limit.js";
+import { creatorAvatarBody } from "../creator-avatar-body.js";
 
 /** One HTTP attempt: the caller-facing result plus what the policy reads. */
 interface WebAttempt<T> {
@@ -1081,7 +1082,13 @@ export class WebPlatformAdapter implements PlatformAdapter {
     claimHandle: (handle) => this.post(WEB_PATHS.claimHandle, { handle }),
     updateCreatorProfile: (p) =>
       this.request("PUT", WEB_PATHS.myCreatorProfile, p),
-    uploadCreatorAvatar: (data) => this.post(WEB_PATHS.creatorAvatar, { data }),
+    uploadCreatorAvatar: async (data) => {
+      if (typeof data === "string") return this.post(WEB_PATHS.creatorAvatar, { data });
+      // Cropped photos arrive as bytes; send the body the server expects.
+      const avatar = creatorAvatarBody(data);
+      if (!avatar.ok) return failure("invalid-argument", avatar.message);
+      return this.post(WEB_PATHS.creatorAvatar, avatar.body);
+    },
     requestCreatorAccess: (payload) => this.post(WEB_PATHS.creatorAccess, payload),
     listCreatorApplications: () => this.get(WEB_PATHS.creatorApplications),
     decideCreatorApplication: (id, decision) =>

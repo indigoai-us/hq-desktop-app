@@ -585,6 +585,40 @@ pub fn deploy_access_url(base: &str, method: &str, path: &str) -> Result<String,
     Ok(format!("{}{}", base.trim_end_matches('/'), path))
 }
 
+/// Validate one hq-deploy custom-domain request from the Custom domain sheet
+/// and return its full URL. Only the per-app domain routes are reachable:
+/// `GET`/`POST /api/apps/:id/domains`, `DELETE /api/apps/:id/domains/:domain`
+/// and `POST /api/apps/:id/domains/:domain/refresh`. The domain segment must
+/// be a lowercase hostname. Anything else is refused before the network.
+pub fn deploy_domain_url(base: &str, method: &str, path: &str) -> Result<String, String> {
+    let rest = path
+        .strip_prefix("/api/apps/")
+        .ok_or_else(|| "deploy domain: path must start with /api/apps/".to_string())?;
+    let parts: Vec<&str> = rest.split('/').collect();
+    let app_id = parts.first().copied().unwrap_or("");
+    if app_id.is_empty() || !is_url_safe_id(app_id) {
+        return Err("deploy domain: invalid app id".to_string());
+    }
+    let hostname = |h: &str| {
+        !h.is_empty()
+            && h.len() <= 253
+            && h.contains('.')
+            && !h.starts_with('.')
+            && !h.contains("..")
+            && h.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'.'))
+    };
+    let allowed = match (method, &parts[1..]) {
+        ("GET" | "POST", ["domains"]) => true,
+        ("DELETE", ["domains", domain]) => hostname(domain),
+        ("POST", ["domains", domain, "refresh"]) => hostname(domain),
+        _ => false,
+    };
+    if !allowed {
+        return Err(format!("deploy domain: {method} {path} is not a domain route"));
+    }
+    Ok(format!("{}{}", base.trim_end_matches('/'), path))
+}
+
 pub fn secrets_url(base: &str, company_uid: &str) -> Result<String, String> {
     if !is_url_safe_id(company_uid) {
         return Err(format!(
@@ -2903,6 +2937,28 @@ mod tests {
         assert!(deploy_access_url(base, "DELETE", "/api/apps/app_1/allowed-emails/../x").is_err());
         assert!(deploy_access_url(base, "GET", "/api/apps/a b/access-policy").is_err());
         assert!(deploy_access_url(base, "GET", "/api/orgs/x").is_err());
+    }
+
+    #[test]
+    fn deploy_domain_url_allows_only_domain_routes() {
+        use super::deploy_domain_url;
+        let base = "https://api.example.test/";
+        assert_eq!(
+            deploy_domain_url(base, "GET", "/api/apps/app_1/domains").unwrap(),
+            "https://api.example.test/api/apps/app_1/domains"
+        );
+        assert!(deploy_domain_url(base, "POST", "/api/apps/app_1/domains").is_ok());
+        assert!(deploy_domain_url(base, "DELETE", "/api/apps/app_1/domains/app.example.com").is_ok());
+        assert!(deploy_domain_url(base, "POST", "/api/apps/app_1/domains/example.com/refresh").is_ok());
+        assert!(deploy_domain_url(base, "DELETE", "/api/apps/app_1/domains").is_err());
+        assert!(deploy_domain_url(base, "DELETE", "/api/apps/app_1").is_err());
+        assert!(deploy_domain_url(base, "PUT", "/api/apps/app_1/domains").is_err());
+        assert!(deploy_domain_url(base, "DELETE", "/api/apps/app_1/domains/../x").is_err());
+        assert!(deploy_domain_url(base, "DELETE", "/api/apps/app_1/domains/Example.com").is_err());
+        assert!(deploy_domain_url(base, "DELETE", "/api/apps/app_1/domains/localhost").is_err());
+        assert!(deploy_domain_url(base, "POST", "/api/apps/app_1/domains/a.com/delete").is_err());
+        assert!(deploy_domain_url(base, "GET", "/api/apps/a b/domains").is_err());
+        assert!(deploy_domain_url(base, "GET", "/api/apps/app_1/access-policy").is_err());
     }
 
     use chrono::TimeZone;

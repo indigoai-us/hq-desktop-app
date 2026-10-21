@@ -1243,6 +1243,20 @@ export interface CompanyApi {
     path: string,
     body?: Json,
   ): AdapterPromise<Json>;
+  /**
+   * One hq-deploy custom-domain call for a scope: `GET`/`POST
+   * /api/apps/:id/domains`, `DELETE /api/apps/:id/domains/:domain`, `POST
+   * /api/apps/:id/domains/:domain/refresh`. Answers `{ status, body }` for
+   * every HTTP reply so a refusal keeps its server code
+   * (`PAYMENT_METHOD_REQUIRED`, `DOMAIN_RESERVED`, ...). Desktop only; the
+   * host refuses any other route.
+   */
+  deployDomainRequest?(
+    scope: string,
+    method: "GET" | "POST" | "DELETE",
+    path: string,
+    body?: Json,
+  ): AdapterPromise<Json>;
   getSecrets(slug: string): AdapterPromise<Json[]>;
   listMembers(slug: string): AdapterPromise<Json[]>;
   /**
