@@ -324,7 +324,7 @@
     overflow: hidden; color: var(--t1, var(--v4-text-1)); font: 500 13px/1.35 var(--font-ui);
     text-overflow: ellipsis; white-space: nowrap;
   }
-  .existing-meta { color: var(--t3, var(--v4-text-3)); font: 400 11px/1.3 var(--font-ui); }
+  .existing-meta { color: var(--t3, var(--v4-text-3)); font: 400 13px/1.35 var(--font-ui); }
   .existing-caret { flex: none; display: grid; place-items: center; color: var(--t3, var(--v4-text-3)); }
   .ta::placeholder { color: var(--t3, var(--v4-text-3)); }
   .ta:focus-visible { outline: none; border-color: var(--t3, var(--v4-text-3)); }
