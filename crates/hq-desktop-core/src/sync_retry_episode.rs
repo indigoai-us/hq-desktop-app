@@ -323,11 +323,29 @@ mod tests {
     #[test]
     fn one_permanent_failure_cannot_spawn_487_npm_attempts() {
         let dir = tempfile::tempdir().unwrap();
-        let mut spawns = 0;
-        for _ in 0..487 {
-            if allow_start(dir.path(), "v1", false).unwrap() {
-                spawns += 1;
-                record_failure(dir.path(), "v1", TERMINAL_RESOLUTION).unwrap();
+        assert!(allow_start(dir.path(), "v1", false).unwrap());
+        // Concurrent child-process tests can briefly inherit this process's
+        // advisory lock during fork. Wait only in test setup; runtime admission
+        // must keep its immediate, fail-closed refusal.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match record_failure(dir.path(), "v1", TERMINAL_RESOLUTION) {
+                Ok(true) => break,
+                Err(error)
+                    if error.starts_with("Sync recovery state is busy:")
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                other => panic!("persist terminal test failure: {other:?}"),
+            }
+        }
+        let mut spawns = 1;
+        for _ in 1..487 {
+            match allow_start(dir.path(), "v1", false) {
+                Ok(true) => spawns += 1,
+                Ok(false) => {}
+                Err(error) => assert!(error.starts_with("Sync recovery state is busy:"), "{error}"),
             }
         }
         assert_eq!(spawns, 1);

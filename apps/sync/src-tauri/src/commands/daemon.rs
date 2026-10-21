@@ -6010,15 +6010,23 @@ pub(crate) fn record_sync_retry_failure<R: tauri::Runtime>(app: &AppHandle<R>, r
         Ok(false) => {}
         result => {
             if let Err(error) = result { log("daemon", &format!("sync recovery state failed: {error}")); }
-            let _ = app.emit("sync:error", hq_desktop_core::events::SyncErrorEvent {
-                company: None,
-                path: "(runner)".to_string(),
-                message: if hq_desktop_core::sync_retry_episode::terminal_resolution_failure(message) {
-                    hq_desktop_core::sync_retry_episode::TERMINAL_RESOLUTION.to_string()
-                } else {
-                    hq_desktop_core::sync_retry_episode::RETRY_REQUIRED.to_string()
-                },
-            });
+            // These are the actual sync-status/onboarding subscribers. Avoid
+            // waking unrelated webviews for a runner recovery hold.
+            for label in ["main", crate::commands::desktop_alt::WINDOW_LABEL] {
+                let _ = app.emit_to(
+                    label,
+                    "sync:error",
+                    hq_desktop_core::events::SyncErrorEvent {
+                        company: None,
+                        path: "(runner)".to_string(),
+                        message: if hq_desktop_core::sync_retry_episode::terminal_resolution_failure(message) {
+                            hq_desktop_core::sync_retry_episode::TERMINAL_RESOLUTION.to_string()
+                        } else {
+                            hq_desktop_core::sync_retry_episode::RETRY_REQUIRED.to_string()
+                        },
+                    },
+                );
+            }
         }
     }
 }
