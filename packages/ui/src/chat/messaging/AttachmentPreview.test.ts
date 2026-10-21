@@ -116,6 +116,48 @@ describe("AttachmentPreview image detail pane", () => {
     });
   });
 
+  it("loads the file again from Try again after an error", async () => {
+    // Owner, 2026-10-21: the error screen was a dead end. It offers Try
+    // again, and a second attempt that succeeds replaces the error.
+    let reachable = false;
+    const resolveUrl = vi.fn(async () => (reachable ? "blob:notes" : null));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("hello again")),
+    );
+    mountPreview({
+      item: item({ name: "notes.txt", contentType: "text/plain", kind: "file" }),
+      resolveUrl,
+    });
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("Could not load the file");
+    });
+    const retry = host.querySelector<HTMLButtonElement>('[data-testid="attachment-retry"]');
+    expect(retry?.textContent?.trim()).toBe("Try again");
+    const before = resolveUrl.mock.calls.length;
+    reachable = true;
+    retry!.click();
+    flushSync();
+    await vi.waitFor(() => {
+      expect(resolveUrl.mock.calls.length).toBeGreaterThan(before);
+      expect(host.textContent).toContain("hello again");
+    });
+    expect(host.textContent).not.toContain("Could not load the file");
+    vi.unstubAllGlobals();
+  });
+
+  it("names the file the way the chat card does", async () => {
+    mountPreview({
+      item: item({ name: "spec.pdf", contentType: "application/pdf", kind: "file" }),
+      resolveUrl: async () => null,
+    });
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("Could not load the file");
+    });
+    expect(host.querySelector(".att-preview-icon")?.classList.contains("is-document")).toBe(true);
+    expect(host.querySelector(".att-preview-file-meta")?.textContent).toMatch(/^PDF/);
+  });
+
   it("shows plain copy, never the raw error, when resolving the file throws", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const raw = new Error('[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}');

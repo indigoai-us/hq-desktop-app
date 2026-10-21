@@ -162,8 +162,10 @@
     inset: 0;
     z-index: 10000;
     display: flex;
-    /* Solid, no blur: nothing behind a pop-up reads through it (OWNER-006). */
-    background: rgba(0, 0, 0, 0.82);
+    /* Solid, no blur: nothing behind a pop-up reads through it (OWNER-006).
+       At 0.82 the chat's text still read through and crowded the viewer's
+       own title and status lines. */
+    background: rgba(0, 0, 0, 0.96);
     pointer-events: auto;
   }
 

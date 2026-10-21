@@ -6,7 +6,7 @@
   import { onDestroy, type Snippet } from "svelte";
   import RailIcon from "../../common/button/RailIcon.svelte";
   import type { FileAttachmentModel } from "./channelMessageModels";
-  import { fileTypeLabel } from "./chat-attachments";
+  import { fileKind, fileMetaLine } from "./chat-attachments";
   import { renderMessageBodyMarkdown } from "../../common/messageMarkdown.js";
   import {
     attachmentPreviewKind,
@@ -215,6 +215,20 @@
     };
   });
 
+  const KIND_ICON = { folder: "folder", image: "image", document: "file-text" } as const;
+  const kindTile = $derived(fileKind(item));
+
+  /** Load the same file again from scratch, after an error. */
+  function retry(): void {
+    releaseResolvedUrl();
+    previewFailed = false;
+    thumbnailFailed = false;
+    resolveFailed = false;
+    error = null;
+    // A changed key is what makes the load effect start over.
+    loadedKey = "";
+  }
+
   async function download(): Promise<void> {
     if (!src || downloading) return;
     downloading = true;
@@ -321,16 +335,42 @@
       </div>
     {:else}
       <!-- Anything we do not render inline states what it is and offers the
-           one thing that is useful for it, Download in the toolbar. -->
+           one thing that is useful for it. Same tile, name and "PDF · 12 KB"
+           line as the file card in the chat, so the viewer reads as that card
+           opened up. -->
       <div class="att-preview-file">
-        <span class="att-preview-icon"
-          >{fileTypeLabel(item.name, item.contentType)}</span
-        >
-        <p class="att-preview-file-name">{item.name}</p>
+        <span class={`att-preview-icon is-${kindTile}`} aria-hidden="true">
+          <RailIcon name={KIND_ICON[kindTile]} size={24} />
+        </span>
+        <div class="att-preview-file-copy">
+          <p class="att-preview-file-name">{item.name}</p>
+          <p class="att-preview-file-meta">{fileMetaLine(item)}</p>
+        </div>
         {#if loading}
           <p class="att-preview-status">Loading…</p>
         {:else if error}
-          <p class="att-preview-status error">{error}</p>
+          <p class="att-preview-status error" role="alert">{error}</p>
+          <div class="att-preview-file-actions">
+            <button
+              type="button"
+              class="att-preview-open"
+              data-testid="attachment-retry"
+              onclick={retry}
+            >
+              Try again
+            </button>
+            {#if src}
+              <button
+                type="button"
+                class="att-preview-open is-quiet"
+                data-testid="attachment-file-download"
+                disabled={downloading}
+                onclick={() => void download()}
+              >
+                {downloading ? "Saving…" : "Download"}
+              </button>
+            {/if}
+          </div>
         {:else}
           <!-- Say why there is no picture, rather than leaving a blank stage
                that reads as still loading (iOS #44). -->
@@ -451,8 +491,11 @@
     font: 400 12px/1.4 var(--font-ui);
   }
 
+  /* Said plainly in the scrim's own ink, with Try again under it. Saturated
+     red on near-black read as an alarm for what is usually a dropped
+     connection. */
   .att-preview-status.error {
-    color: #f87171;
+    color: var(--lb-ink-mid);
   }
 
   /* Concept `.lb-img`: the artwork is the point, so it takes the stage. */
@@ -538,8 +581,29 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 8px;
+    gap: 12px;
+    max-width: 36ch;
     color: var(--lb-ink-dim);
+    text-align: center;
+  }
+
+  .att-preview-file-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .att-preview-file-meta {
+    margin: 0;
+    color: var(--lb-ink-dim);
+    font: 400 12px/1.4 var(--font-ui);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .att-preview-file-actions {
+    display: flex;
+    gap: 8px;
   }
 
   .att-preview-file-name {
@@ -551,19 +615,27 @@
 
   .att-preview-open {
     appearance: none;
-    height: 28px;
-    margin-top: 2px;
-    padding: 0 12px;
-    border: 1px solid var(--lb-line);
-    border-radius: 8px;
-    background: var(--lb-surface);
-    color: var(--lb-ink);
-    font: 500 12px/1 var(--font-ui);
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline, 10px);
+    border: 0;
+    border-radius: var(--hq-btn-radius, 8px);
+    background: #fff;
+    color: #111;
+    font: 500 13px/1 var(--font-ui);
     cursor: pointer;
     transition: background 0.12s;
   }
 
+  .att-preview-open.is-quiet {
+    background: var(--lb-surface);
+    color: var(--lb-ink);
+  }
+
   .att-preview-open:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.86);
+  }
+
+  .att-preview-open.is-quiet:hover:not(:disabled) {
     background: var(--lb-hover);
   }
 
@@ -572,16 +644,22 @@
     cursor: default;
   }
 
+  /* The chat card's kind tile, larger. The scrim is dark in both themes, so
+     the tints are the dark-theme hues whatever the app theme is. */
   .att-preview-icon {
+    --tile-ink: var(--lb-ink-mid);
     display: grid;
     place-items: center;
-    width: 48px;
-    height: 48px;
-    border-radius: 10px;
-    background: var(--lb-surface);
-    color: var(--lb-ink-mid);
-    font: 700 11px/1 var(--font-mono, ui-monospace, Menlo, monospace);
+    width: 56px;
+    height: 56px;
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--tile-ink) 18%, transparent);
+    color: var(--tile-ink);
   }
+
+  .att-preview-icon.is-folder { --tile-ink: #5c9bff; }
+  .att-preview-icon.is-document { --tile-ink: #3cc3cc; }
+  .att-preview-icon.is-image { --tile-ink: #ee75b4; }
 
   /* The PDF takes the stage, like an image does. */
   .att-preview-pdf {
