@@ -640,6 +640,7 @@
     EMPTY_LIVE_SYNC,
     lastSyncLabelFromLive,
     readLiveSyncStatus,
+    retrySyncFromLive,
     syncStateFromLive,
     type LiveSyncStatus,
   } from "../settings/live-sync-status.js";
@@ -1510,6 +1511,18 @@
    * filters to one company and this one deliberately watches every run.
    */
   let syncStatus = $state<SyncStatusState>(emptySyncStatus());
+
+  async function retrySyncRecovery(): Promise<void> {
+    const before = syncStatus;
+    const retried = await retrySyncFromLive(adapter, liveSync);
+    liveSync = retried.status;
+    if (retried.error) {
+      syncStatus = reduceSyncEvent(syncStatus, "sync:error", { message: retried.error });
+    } else if (!retried.status.recoveryHoldReason && syncStatus === before) {
+      // Do not overwrite a newer native auth/error/progress event while awaiting retry.
+      syncStatus = reduceSyncEvent(emptySyncStatus(), "sync:plan", {});
+    }
+  }
 
   // OWNER-003: one "sync" toast that updates in place while files move and
   // turns into a quiet "Files up to date" when the run ends. Runs that move
@@ -13721,6 +13734,10 @@
       return { label: action.label, onselect: () => openExtraPage(id, action.param()) };
     })()}
     syncState={liveSyncState}
+    errorSummary={liveSync.recoveryHoldReason}
+    syncRecoveryReason={liveSync.recoveryHoldReason}
+    errorMessage={liveSync.recoveryHoldReason}
+    onretry={liveSync.recoveryHoldReason ? retrySyncRecovery : undefined}
     {lastSyncLabel}
     uploadsPaused={liveSync.uploadsPaused ?? []}
     cloudPaused={!cloudEnabled}
@@ -13733,7 +13750,9 @@
     hqFolderPath={hqFolderPath ?? liveSync.hqFolderPath}
     watchedCount={watched}
     {unreadCount}
-    {syncStatus}
+    syncStatus={liveSync.recoveryHoldReason
+      ? { ...syncStatus, phase: "error", message: liveSync.recoveryHoldReason }
+      : syncStatus}
     brand={brandState}
     {brandCompanyName}
     onopenSync={() => openSettings("sync")}
