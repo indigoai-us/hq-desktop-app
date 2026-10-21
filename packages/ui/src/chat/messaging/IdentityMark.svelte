@@ -86,6 +86,7 @@
   class="identity"
   class:small={size === "small"}
   class:large={size === "large"}
+  class:has-presence={online}
   data-kind={kind}
   aria-hidden="true"
 >
@@ -160,8 +161,14 @@
     color: var(--t2, var(--muted-2, var(--pop-muted)));
     font-family: var(--font-ui, var(--font-sans));
     font-size: 12px;
-    font-weight: 600;
+    /* 500: the app's weight cap, shared with the iOS app. */
+    font-weight: 500;
     line-height: 1;
+    /* Where the online dot sits; the cut-out below is drawn around it. */
+    --dot-r: 3px;
+    --dot-gap: 1.5px;
+    --dot-x: calc(100% - 3.5px);
+    --dot-y: 4.5px;
   }
   .identity[data-kind="agent"] {
     background: var(--ice-tile, #2c3d52);
@@ -188,8 +195,8 @@
     width: 100%;
     height: 100%;
     border-radius: 50%;
+    /* A translucent ink disc with no ring, as on iOS. */
     background: color-mix(in srgb, currentColor 14%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 8%, transparent);
     letter-spacing: 0.015em;
   }
   .avatar-img {
@@ -260,20 +267,40 @@
     height: 13px;
   }
   /* Top right: the bottom right holds the tier mark (badges/TierMark).
-     Small pictures carry no mark, so theirs stays at the bottom right. */
+     Small pictures carry no mark, so theirs stays at the bottom right.
+
+     The dot sits in a gap CUT OUT of the avatar, as on iOS, so it reads on
+     any background: a hovered row, a wallpaper, a selected row. It used to
+     carry a 1.5px border painted in the window's ground colour, which only
+     matched one surface and showed as a grey ring on every other. The mask
+     keeps everything outside the ring plus the dot itself. */
+  .identity.has-presence {
+    -webkit-mask:
+      radial-gradient(circle var(--dot-r) at var(--dot-x) var(--dot-y), #000 98%, transparent 100%),
+      radial-gradient(
+        circle calc(var(--dot-r) + var(--dot-gap)) at var(--dot-x) var(--dot-y),
+        transparent 98%,
+        #000 100%
+      );
+    mask:
+      radial-gradient(circle var(--dot-r) at var(--dot-x) var(--dot-y), #000 98%, transparent 100%),
+      radial-gradient(
+        circle calc(var(--dot-r) + var(--dot-gap)) at var(--dot-x) var(--dot-y),
+        transparent 98%,
+        #000 100%
+      );
+  }
   .presence {
     position: absolute;
-    right: -1px;
-    top: 0;
-    width: 6px;
-    height: 6px;
-    border: 1.5px solid var(--v4-ground, var(--pop-bg));
+    left: calc(var(--dot-x) - var(--dot-r));
+    top: calc(var(--dot-y) - var(--dot-r));
+    width: calc(var(--dot-r) * 2);
+    height: calc(var(--dot-r) * 2);
     border-radius: 50%;
     background: var(--v4-ok, #42d77d);
   }
 
-  .small .presence {
-    top: auto;
-    bottom: 0;
+  .small {
+    --dot-y: calc(100% - 4.5px);
   }
 </style>
