@@ -136,6 +136,7 @@ pub mod sync_outcome;
 pub mod sync_progress;
 pub mod toolchain;
 pub mod ui_hot;
+pub mod work_admission;
 pub mod uploads_paused;
 pub mod unexpected_surface;
 pub mod vault_index;

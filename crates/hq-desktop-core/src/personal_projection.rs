@@ -519,6 +519,11 @@ impl<R: ProjectionRunner> PersonalProjectionClient<R> {
         }
     }
 
+    /// The runner, for wiring its cancel flag into app lifecycle.
+    pub fn runner(&self) -> &R {
+        &self.runner
+    }
+
     fn probe_state(&self) -> ProbeState {
         *self.probe.lock().unwrap_or_else(|e| e.into_inner())
     }

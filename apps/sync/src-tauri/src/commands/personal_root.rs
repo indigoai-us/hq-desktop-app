@@ -755,8 +755,17 @@ fn state_dir() -> Result<PathBuf, String> {
 async fn with_client<T: Send + 'static>(
     body: impl FnOnce(&PersonalProjectionClient<pp::NpxProjectionRunner>) -> T + Send + 'static,
 ) -> Result<Option<T>, String> {
+    // Sign-out and quit close this latch, signal the wrapper child, and wait
+    // for it to exit before tokens or paths change.
+    let ticket = hq_desktop_core::work_admission::personal_work()
+        .admit()
+        .map_err(|closed| closed.message().to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        pp::production_client().map(|client| body(&client))
+        let client = pp::production_client()?;
+        let _registration = ticket.register_cancel(client.runner().cancel_flag());
+        let result = body(&client);
+        drop(ticket);
+        Some(result)
     })
     .await
     .map_err(|e| format!("personal root task failed: {e}"))

@@ -1831,6 +1831,14 @@ fn main() {
                 // Funnel mirror: queue setup_abandoned when quitting before
                 // sign-in/install and give the sender a bounded window.
                 commands::cdp_mirror::on_exit_requested(_app_handle);
+                // H8: refuse new personal work, signal a running wrapper child,
+                // and give in-flight personal work a bounded moment to stop.
+                // Only the owned personal operation; company work and shared
+                // runners follow the existing teardown below.
+                hq_desktop_core::work_admission::personal_work()
+                    .close(hq_desktop_core::work_admission::Closed::Quitting);
+                hq_desktop_core::work_admission::personal_work()
+                    .wait_drained(std::time::Duration::from_secs(2));
                 commands::process::terminate_all_for_exit(
                     commands::process::SYNC_RUNNER_STOP_GRACE,
                 );

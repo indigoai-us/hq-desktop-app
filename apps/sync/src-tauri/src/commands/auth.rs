@@ -263,6 +263,10 @@ pub(crate) fn publish_auth_session(
         (current, changed)
     };
     set_auth_session_diagnostic(current.0.status.clone(), None, "none");
+    if current.0.status == AuthSessionStatus::Active {
+        // A signed-in session reopens personal work closed by a sign-out.
+        hq_desktop_core::work_admission::personal_work().reopen_after_sign_in();
+    }
     if current.1 {
         // The desktop label is intentional: auth events for the compact main
         // window must not be mistaken for an embedded Work tenant transition.
@@ -874,6 +878,24 @@ pub async fn get_stored_token_presence() -> String {
 /// and reset the Sentry user scope. After this, `get_auth_state` / a relaunch
 /// both report unauthenticated — without it, a frontend-only sign-out leaves the
 /// token file on disk and the app re-authenticates silently on next launch.
+/// Upper bound on how long sign-out waits for personal work to stop.
+pub(crate) const SIGN_OUT_PERSONAL_DRAIN: std::time::Duration = std::time::Duration::from_secs(10);
+
+pub(crate) async fn stop_personal_work_for_sign_out() {
+    let gate = hq_desktop_core::work_admission::personal_work();
+    gate.close(hq_desktop_core::work_admission::Closed::SignedOut);
+    let drained =
+        tauri::async_runtime::spawn_blocking(move || gate.wait_drained(SIGN_OUT_PERSONAL_DRAIN))
+            .await
+            .unwrap_or(false);
+    if !drained {
+        crate::util::logfile::log(
+            "auth",
+            "sign-out: personal work did not finish within the drain bound",
+        );
+    }
+}
+
 #[tauri::command]
 pub async fn sign_out(app: AppHandle) -> Result<(), String> {
     // Before anything else: a browser-continuation attempt that is mid-flight
@@ -884,6 +906,11 @@ pub async fn sign_out(app: AppHandle) -> Result<(), String> {
     crate::commands::desktop_auth::note_auth_transition(
         hq_desktop_core::session_continuation::AttemptEnd::SignedOut,
     );
+    // H8: stop the owned personal operation before the tokens go away. New
+    // personal work is refused, a running wrapper child is signalled, and
+    // in-flight personal uploads stop at their next file. Wait (bounded) for
+    // them to end. Company sync and shared runners are left alone.
+    stop_personal_work_for_sign_out().await;
     let cache_account_id = active_auth_session_snapshot().and_then(|session| session.account_id);
     // Choose from the token store as it is now, not from the source the last
     // probe cached: the hq CLI may have written a person session since then.
@@ -1521,5 +1548,25 @@ mod tests {
             AuthSessionStatus::RefreshTemporarilyUnavailable
         );
         assert_eq!(invalid.status, AuthSessionStatus::CredentialsInvalid);
+    }
+}
+
+#[cfg(test)]
+mod personal_work_lifecycle_tests {
+    /// H8: sign-out stops and drains the owned personal operation before it
+    /// reads or clears any token, and an active session reopens admission.
+    #[test]
+    fn sign_out_drains_personal_work_before_touching_tokens() {
+        let source = include_str!("auth.rs");
+        let body_start = source.find("pub async fn sign_out(app: AppHandle)").unwrap();
+        let body = &source[body_start..];
+        let stop = body.find("stop_personal_work_for_sign_out().await").unwrap();
+        let tokens = body.find("cognito::stored_token_presence()").unwrap();
+        assert!(stop < tokens, "personal work must stop before tokens are touched");
+
+        let publish = source.find("fn publish_auth_session(").unwrap();
+        let reopen = source[publish..].find("reopen_after_sign_in()").unwrap();
+        let end = source[publish..].find("\n}\n").unwrap();
+        assert!(reopen < end, "publish_auth_session reopens admission");
     }
 }

@@ -218,6 +218,16 @@ const boundaryContracts: BoundaryContract[] = [
     beforeMarkers: ["hq_telemetry::init_with_identity("],
   },
   {
+    // H8. Quit closes personal admission and drains the owned personal
+    // operation before children are torn down.
+    label: "app-quit personal admission close",
+    file: "main",
+    hook: ".close(hq_desktop_core::work_admission::Closed::Quitting);",
+    startMarker: "if let tauri::RunEvent::ExitRequested { .. } = event {",
+    endMarker: "if matches!(&event, tauri::RunEvent::Exit) {",
+    beforeMarkers: ["commands::process::terminate_all_for_exit("],
+  },
+  {
     label: "exiting phase",
     file: "main",
     hook:

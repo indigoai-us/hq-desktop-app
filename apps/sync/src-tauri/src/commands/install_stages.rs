@@ -1212,6 +1212,11 @@ pub async fn start_initial_cloud_sync(app: tauri::AppHandle) -> Result<(), Strin
         );
         return Ok(());
     }
+    // Refuse to start after a sign-out or during quit; a sign-out waits for
+    // this stage while the ticket is held.
+    let _admission = hq_desktop_core::work_admission::personal_work()
+        .admit()
+        .map_err(|closed| closed.message().to_string())?;
     let jwt = resolve_jwt()
         .await
         .map_err(|_| initial_cloud_sync_failure_message(None))?;

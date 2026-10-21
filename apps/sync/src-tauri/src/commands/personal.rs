@@ -1631,6 +1631,11 @@ fn spawn_handoff_safety_net<R: tauri::Runtime + 'static>(
     {
         return;
     }
+    // Uncounted: the watch can last minutes and must not hold up a sign-out
+    // drain, but it must notice one.
+    let Some(admission) = hq_desktop_core::work_admission::personal_work().token() else {
+        return;
+    };
     tauri::async_runtime::spawn(async move {
         let verdict = watch_daemon_handoff(
             &probe,
@@ -1643,7 +1648,7 @@ fn spawn_handoff_safety_net<R: tauri::Runtime + 'static>(
             "personal",
             &format!("personal handoff safety net: verdict={verdict:?}"),
         );
-        if verdict != HandoffWatchVerdict::DaemonSynced {
+        if verdict != HandoffWatchVerdict::DaemonSynced && admission.check().is_ok() {
             let result = async {
                 let jwt = crate::commands::sync::resolve_jwt().await?;
                 let vault_url = crate::commands::sync::resolve_vault_api_url()?;
@@ -1667,6 +1672,20 @@ fn spawn_handoff_safety_net<R: tauri::Runtime + 'static>(
     });
 }
 
+/// Wrap an uploader so it refuses once personal admission closed.
+pub(crate) fn admission_fenced_uploader(
+    inner: UploaderFn,
+    token: hq_desktop_core::work_admission::Token,
+) -> UploaderFn {
+    Arc::new(move |key: String, data: Bytes, sha256_hex: String| -> BoxFuture<UploadOutcome> {
+        if let Err(closed) = token.check() {
+            let message = closed.message().to_string();
+            return Box::pin(async move { UploadOutcome::Permanent(message) });
+        }
+        inner(key, data, sha256_hex)
+    })
+}
+
 /// Shared provisioning + gating + upload body for every mode.
 pub(crate) async fn ensure_impl_with<R: tauri::Runtime + 'static>(
     app: &tauri::AppHandle<R>,
@@ -1675,6 +1694,11 @@ pub(crate) async fn ensure_impl_with<R: tauri::Runtime + 'static>(
     uploader_override: Option<UploaderFn>,
     mode: &FirstPushMode,
 ) -> Result<PersonalFirstPushOutcome, String> {
+    // Sign-out and quit stop new personal work and stale running work. The
+    // ticket is held for the whole call so a sign-out waits for it to end.
+    let ticket = hq_desktop_core::work_admission::personal_work()
+        .admit()
+        .map_err(|closed| closed.message().to_string())?;
     let (person_uid, bucket_name) = match resolve_or_provision(app, vault).await? {
         Some(p) => p,
         None => {
@@ -1799,6 +1823,8 @@ pub(crate) async fn ensure_impl_with<R: tauri::Runtime + 'static>(
         }
     };
 
+    ticket.check().map_err(|closed| closed.message().to_string())?;
+
     // Obtain STS credentials via /sts/vend-self (never vend-child)
     let vend_result = match vault
         .vend_self(&VendSelfInput {
@@ -1874,6 +1900,10 @@ pub(crate) async fn ensure_impl_with<R: tauri::Runtime + 'static>(
             )
         }
     };
+
+    // Each upload re-checks admission, so a sign-out or quit during the walk
+    // sends no further bytes. An upload already in flight finishes or fails.
+    let uploader = admission_fenced_uploader(uploader, ticket.token());
 
     let app_scan = app.clone();
     let person_uid_scan = person_uid.clone();
@@ -3817,6 +3847,24 @@ mod tests {
             Duration::from_secs(5),
         );
         assert!(!probe.daemon_owns_personal_upload().await);
+    }
+
+    // H8 lifecycle: once personal admission closes (sign-out or quit), the
+    // native uploader sends nothing more, file by file.
+    #[tokio::test]
+    async fn uploads_stop_at_the_next_file_after_personal_admission_closes() {
+        let gate: &'static hq_desktop_core::work_admission::WorkAdmission =
+            Box::leak(Box::new(hq_desktop_core::work_admission::WorkAdmission::new()));
+        let ticket = gate.admit().unwrap();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let fenced = admission_fenced_uploader(make_counter_uploader(counter.clone()), ticket.token());
+
+        let first = fenced("a".to_string(), Bytes::from_static(b"a"), "00".to_string()).await;
+        assert!(matches!(first, UploadOutcome::Ok(_)));
+        gate.close(hq_desktop_core::work_admission::Closed::SignedOut);
+        let second = fenced("b".to_string(), Bytes::from_static(b"b"), "00".to_string()).await;
+        assert!(matches!(second, UploadOutcome::Permanent(_)));
+        assert_eq!(counter.load(Ordering::SeqCst), 1, "nothing uploads after the close");
     }
 
     // H8 (gated): for a paired root the native uploader is a second, unfenced
