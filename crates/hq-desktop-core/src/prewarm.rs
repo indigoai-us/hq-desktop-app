@@ -359,6 +359,9 @@ fn materialization_lock_path() -> Result<std::path::PathBuf, String> {
 
 fn npx_materialization_error(code: Option<i32>, stderr: &str) -> String {
     // Keep a fixed, content-safe classification after raw npm stderr is redacted.
+    if crate::sync_retry_episode::terminal_npm_code(stderr) == Some("EACCES") {
+        return crate::sync_retry_episode::TERMINAL_PERMISSION.to_string();
+    }
     if crate::sync_retry_episode::terminal_resolution_failure(stderr) {
         return crate::sync_retry_episode::TERMINAL_RESOLUTION.to_string();
     }
@@ -1314,6 +1317,12 @@ mod tests {
     fn materialization_error_keeps_permission_and_exit_diagnoses_distinct() {
         let permission = npx_materialization_error(Some(126), "npm error code EACCES");
         assert!(permission.contains("cannot write"));
+        assert!(crate::sync_retry_episode::terminal_resolution_failure(&permission));
+        // Permission-like prose still gets a safe diagnosis, but cannot stand
+        // in for npm's authoritative code when deciding automatic retry policy.
+        let unverified = npx_materialization_error(Some(1), "permission denied in a path");
+        assert!(unverified.contains("cannot write"));
+        assert!(!crate::sync_retry_episode::terminal_resolution_failure(&unverified));
 
         let not_executable = npx_materialization_error(Some(126), "");
         assert!(not_executable.contains("not executable"));

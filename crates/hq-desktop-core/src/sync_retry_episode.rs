@@ -15,6 +15,7 @@ pub const MAX_FAILURES: u32 = 6;
 pub const RETRY_REQUIRED: &str =
     "Automatic sync recovery stopped after a setup failure. Fix the problem, then try Sync Now again.";
 pub const TERMINAL_RESOLUTION: &str = "HQ Sync could not start its sync engine because npm reported a setup or access problem. Correct the npm registry, credentials or permissions, then try Sync Now again.";
+pub const TERMINAL_PERMISSION: &str = "HQ Sync cannot update its npm cache because this account cannot write to it. Fix the npm cache permissions, then try Sync Now again.";
 const FILE: &str = ".hq-sync-retry.json";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -38,14 +39,22 @@ impl Episode {
 /// arbitrary message. A registry/cache correction still needs an explicit retry.
 pub fn terminal_resolution_failure(message: &str) -> bool {
     message == TERMINAL_RESOLUTION
-        || message.lines().any(|line| {
-            let line = line.trim();
-            ["npm error code ", "npm ERR! code "].iter().any(|prefix| {
+        || message == TERMINAL_PERMISSION
+        || terminal_npm_code(message).is_some()
+}
+
+/// Return only an authoritative permanent code on npm's diagnostic line.
+pub fn terminal_npm_code(message: &str) -> Option<&str> {
+    message.lines().find_map(|line| {
+        let line = line.trim();
+        ["npm error code ", "npm ERR! code "]
+            .iter()
+            .find_map(|prefix| {
                 line.strip_prefix(prefix)
                     .and_then(|rest| rest.split_whitespace().next())
-                    .is_some_and(|code| {
+                    .filter(|code| {
                         matches!(
-                            code,
+                            *code,
                             "ETARGET"
                                 | "E404"
                                 | "EINVALIDPACKAGENAME"
@@ -58,7 +67,7 @@ pub fn terminal_resolution_failure(message: &str) -> bool {
                         )
                     })
             })
-        })
+    })
 }
 
 fn update<T>(
