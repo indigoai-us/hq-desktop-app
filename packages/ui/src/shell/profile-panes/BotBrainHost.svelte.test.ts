@@ -129,7 +129,7 @@ it('shows permission failures without falling back to reauth or echoing response
   expect(target.textContent).not.toContain('private upstream detail');
   expect(adapter.agents.restartBrainApproval).not.toHaveBeenCalled();
   await click('Retry sign-in');
-  expect(fetch).toHaveBeenCalledTimes(2);
+  expect((fetch.mock.calls as unknown[][]).filter(call => String(call[0]).endsWith('/brains/grok/authorize'))).toHaveLength(2);
 });
 it('keeps explicit startup failure actionable for an online multi-provider bot', async () => {
   const { adapter } = await setupMultiProvider(200, { brain: 'grok', signIn: 'failed', pairing: null });

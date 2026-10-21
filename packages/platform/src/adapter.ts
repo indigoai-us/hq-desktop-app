@@ -265,6 +265,47 @@ export interface DaemonStatus {
   source?: string;
 }
 
+/**
+ * Result of the Settings Cloud switch (usage-only-pricing US-016). The host
+ * persists the switch as `cloudPaused` in the desktop settings file, outside
+ * the app bundle, so it survives restarts and app updates.
+ */
+export interface CloudSwitchOutcome {
+  /** Persisted state after the change. */
+  cloudEnabled: boolean;
+  /**
+   * Plain-language note when the switch saved but stopping or starting
+   * background sync did not finish. Null when everything completed.
+   */
+  notice: string | null;
+}
+
+/**
+ * Every Settings › Sync switch (usage-only-pricing US-016): the "Turn off all
+ * cloud sync" switch, the personal vault, and each company vault that has a
+ * saved value (a missing company means on). This computer only.
+ */
+export interface VaultSyncSwitches {
+  allOff: boolean;
+  personalEnabled: boolean;
+  companies: Record<string, boolean>;
+  /**
+   * `false` when the HQ command line tool this computer runs predates the
+   * switches, so its `hq sync` and background sync can still move an off
+   * vault. `null`/absent when unknown or when nothing is off.
+   */
+  cliHonoursSwitches?: boolean | null;
+}
+
+/** Result of turning one vault's sync on or off. */
+export interface VaultSwitchOutcome {
+  /** `"personal"` or the company slug. */
+  vault: string;
+  enabled: boolean;
+  /** Plain-language note when background sync did not restart. */
+  notice: string | null;
+}
+
 export interface DaemonSyncStatus {
   running: boolean;
   paused: boolean;
@@ -434,6 +475,8 @@ export interface IdentityApi {
    * no company flag source (web) resolve `false`.
    */
   hasCompanyFeature?(flag: string, companyUid: string): Promise<boolean>;
+  /** null means a transient read failure; false is an explicit denial or invalid answer. */
+  readCompanyFeature?(flag: string, companyUid: string): Promise<boolean | null>;
   /** Status-aware flag read for telemetry that distinguishes explicit-off from missing/unreadable. */
   resolveFeatureFlagStatus?(flag: string): AdapterPromise<{
     enabled: boolean;
@@ -2136,6 +2179,24 @@ export interface SyncApi {
   daemonSyncStatus(): AdapterPromise<DaemonSyncStatus | null>;
   startSync(slug?: string): AdapterPromise<void>;
   cancelSync(): AdapterPromise<void>;
+  /** Cloud switch (US-016). `true` = Cloud on. Optional: older hosts lack it. */
+  getCloudEnabled?(): AdapterPromise<boolean>;
+  /**
+   * Turn Cloud on or off for this computer: persists the switch and stops (or
+   * restarts) background sync. Optional: older hosts lack it.
+   */
+  setCloudEnabled?(enabled: boolean): AdapterPromise<CloudSwitchOutcome>;
+  /** Per-vault switches (US-016). Optional: older hosts lack them. */
+  getVaultSyncSwitches?(): AdapterPromise<VaultSyncSwitches>;
+  /**
+   * Turn sync on or off for one vault on this computer. `vault` is
+   * `"personal"` or a company slug. Saves the switch, then restarts
+   * background sync so other vaults keep syncing without this one.
+   */
+  setVaultSyncEnabled?(
+    vault: string,
+    enabled: boolean,
+  ): AdapterPromise<VaultSwitchOutcome>;
   getSyncStatus(): AdapterPromise<SyncStatus>;
   getActivityLog(): AdapterPromise<Json[]>;
   resolveConflict(path: string, strategy: string): AdapterPromise<void>;

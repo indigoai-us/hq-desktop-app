@@ -73,6 +73,26 @@ async function render(
 
 const q = (id: string) => host.querySelector(`[data-testid="${id}"]`) as HTMLElement | null;
 
+describe("CoreUsagePanel Sync link (US-016)", () => {
+  it("opens Sync settings in one click when the host has a Sync section", async () => {
+    const onopensync = vi.fn();
+    host = document.createElement("div");
+    document.body.append(host);
+    component = mount(CoreUsagePanel, {
+      target: host,
+      props: { source: source() as never, companyUid: null, companyName: "Northwind", onopensync },
+    });
+    flushSync();
+    q("core-usage-sync-settings")!.click();
+    expect(onopensync).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides the link without a Sync section", async () => {
+    await render(source());
+    expect(q("core-usage-sync-settings")).toBeNull();
+  });
+});
+
 describe("CoreUsagePanel", () => {
   it("renders the company, Usage plan, bar, totals and the three groups", async () => {
     await render(source());
@@ -168,15 +188,15 @@ describe("CoreUsagePanel", () => {
     expect(open).toHaveBeenCalledWith("https://billing.stripe.com/p/session/test");
   });
 
-  it("Usage details opens Settings > Usage and Turn off sync opens the Sync section", async () => {
+  it("Usage details opens Settings > Usage and the sync link opens the Sync section", async () => {
     const onopenusage = vi.fn();
     const onopensync = vi.fn();
     await render(source(), vi.fn(), { onopenusage, onopensync });
     q("core-usage-details")!.click();
     expect(onopenusage).toHaveBeenCalledTimes(1);
-    q("core-usage-sync-off")!.click();
+    q("core-usage-sync-settings")!.click();
     expect(onopensync).toHaveBeenCalledTimes(1);
-    expect(q("core-usage-sync-off")?.textContent).toBe("Turn off sync");
+    expect(q("core-usage-sync-settings")?.textContent).toBe("Turn sync off or on for each vault");
   });
 
   it("an owner-only answer with an unknown role shows a note and no numbers or buttons", async () => {
@@ -218,7 +238,9 @@ describe("CoreUsagePanel", () => {
     expect(src.getBillingSummary).not.toHaveBeenCalled();
     expect(q("core-usage-used")).toBeNull();
     expect(q("core-usage-billing")).toBeNull();
-    expect(q("core-usage-sync-off")).toBeNull();
+    // The Sync link stays: sync for this computer can be turned off even for
+    // a company with no usage (US-016).
+    expect(q("core-usage-sync-settings")).not.toBeNull();
   });
 
   it("marks a partial total on the headline and explains it", async () => {

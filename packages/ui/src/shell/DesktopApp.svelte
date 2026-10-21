@@ -51,6 +51,7 @@
   import {
     brainPageDoor,
     teamPageDoor,
+    officeDoor,
     vaultExplorerDoor,
     filesConnectDoor,
     meetingCanvasDoor,
@@ -128,6 +129,7 @@
   import Sidepane from "./Sidepane.svelte";
   import { SidepaneScrollMemory, sidepaneModelKey } from "./sidepane-models.js";
   import CompanySidepane from "./CompanySidepane.svelte";
+  import { readOfficeFeature } from "./office-feature.js";
   import { configureCompanyApi } from "../company/company-store.svelte.js";
   import {
     companyPagePlaceholderForPage,
@@ -640,6 +642,11 @@
     syncStateFromLive,
     type LiveSyncStatus,
   } from "../settings/live-sync-status.js";
+  import {
+    loadCloudEnabled,
+    onCloudSwitchChanged,
+    readCachedCloudEnabled,
+  } from "../settings/cloud-switch.js";
   import type { SyncState } from "../common/sync-model.js";
   import {
     type ChannelStatusModel,
@@ -4777,6 +4784,17 @@
   let lastReplyRowId = $state<string | null>(null);
   let unreadCount = $state(initialUnreadCount);
   let liveSync = $state<LiveSyncStatus>({ ...EMPTY_LIVE_SYNC });
+  /**
+   * Settings Cloud switch (US-016). Painted from the last-known value, then
+   * read from the host with the sync poll and on every switch change, so the
+   * title bar's Core pill shows "Cloud off" instead of "All synced".
+   */
+  let cloudEnabled = $state<boolean>(readCachedCloudEnabled() ?? true);
+  function refreshCloudSwitch(): Promise<void> {
+    return loadCloudEnabled(adapter).then((value) => {
+      if (value !== null) cloudEnabled = value;
+    });
+  }
   /**
    * PL-02 — sync trouble the Core popover reports, read from the SAME
    * `list_syncable_workspaces` envelope the menubar used. The command never
@@ -10780,6 +10798,19 @@
       };
     }
     if (destination.kind === "extra") {
+      if (companyRowForPage(destination.page) === "office") {
+        const uid = destination.companyUid;
+        const denied = accessOutcome(destination, uid);
+        if (denied) return denied;
+        const company = railCompanyRoster.find((entry) => entry.uid === uid);
+        return readOfficeFeature(adapter, company, Boolean(self?.uid)).then((allowed) => {
+          if (context.isStale()) return { status: "cancelled" };
+          const granted = allowed === true || (allowed === null && officeGrant === `${self?.uid ?? ""}:${uid}`);
+          return granted && callsHost
+            ? { status: "ready", destination }
+            : { status: "unavailable", destination, reason: "Office is not available for this company on this device." };
+        });
+      }
       if (
         railPlaceholderForPage(destination.page) ||
         accountPlaceholderForPage(destination.page) ||
@@ -12701,6 +12732,33 @@
   });
   const railGate = (key: IndigoOnlyGateKey): boolean =>
     isIndigoOnlySurface(key, gateCompany, railGateValues);
+  // Bind each answer to the company and signed-in identity that requested it.
+  let officeGrant = $state<string | null>(null);
+  const officeScope = $derived(`${self?.uid ?? ""}:${gateCompany?.uid ?? ""}`);
+  const officeVisible = $derived(Boolean(callsHost && self?.uid && officeGrant === officeScope));
+  const officeCompanyUid = $derived(gateCompany?.uid ?? null);
+  const officeCompanySlug = $derived(gateCompany?.slug ?? null);
+  const officeAccessible = $derived(Boolean(officeCompanyUid && companyIsAccessible(officeCompanyUid)));
+  $effect(() => {
+    const company = { uid: officeCompanyUid ?? "", slug: officeCompanySlug };
+    const scope = officeScope;
+    const signedIn = Boolean(self?.uid);
+    const host = callsHost;
+    const platform = adapter;
+    officeGrant = null;
+    if (!host || !company.uid || !officeAccessible) return;
+    let live = true;
+    let sequence = 0;
+    const refresh = async () => {
+      const request = ++sequence;
+      const allowed = await readOfficeFeature(platform, company, signedIn);
+      if (live && request === sequence && allowed !== null) officeGrant = allowed ? scope : null;
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), 60_000);
+    window.addEventListener("focus", refresh);
+    return () => { live = false; clearInterval(timer); window.removeEventListener("focus", refresh); };
+  });
   // OWNER-D 3: Telemetry is hidden (rail, palette, deep links) for members
   // without the feature, instead of a "Coming soon" page.
   // The entry belongs to the person: Indigo members keep it on Home and in
@@ -13420,16 +13478,24 @@
 
     let stopSyncPoll: (() => void) | undefined;
     let stopHealthPoll: (() => void) | undefined;
+    let stopCloudSwitch: (() => void) | undefined;
     if (adapter.isAvailable("canSync")) {
       void readLiveSyncStatus(adapter).then((next) => {
         liveSync = next;
       });
+      void refreshCloudSwitch();
+      stopCloudSwitch = onCloudSwitchChanged((enabled) => {
+        cloudEnabled = enabled;
+      });
       stopSyncPoll = startJitteredPoll({
         intervalMs: 30_000,
         tick: () =>
-          readLiveSyncStatus(adapter).then((next) => {
-            liveSync = next;
-          }),
+          Promise.all([
+            readLiveSyncStatus(adapter).then((next) => {
+              liveSync = next;
+            }),
+            refreshCloudSwitch(),
+          ]).then(() => undefined),
       });
       // Workspace health hits the cloud, so it runs on a slower beat than the
       // local journal read above.
@@ -13561,6 +13627,7 @@
       if (focusCardTimer !== undefined) clearTimeout(focusCardTimer);
       overlayQuery.removeEventListener("change", syncOverlay);
       stopSyncPoll?.();
+      stopCloudSwitch?.();
       stopHealthPoll?.();
       window.removeEventListener("keydown", onKey);
       unregisterShortcuts();
@@ -13640,6 +13707,7 @@
     syncState={liveSyncState}
     {lastSyncLabel}
     uploadsPaused={liveSync.uploadsPaused ?? []}
+    cloudPaused={!cloudEnabled}
     {manifestError}
     {cloudReachable}
     {cloudError}
@@ -13725,6 +13793,12 @@
         anchorBottom={accountMenuAnchor.bottom}
         onclose={() => (accountMenuOpen = false)}
         onpage={openAccountPage}
+        onsync={adapter.isAvailable("canSync")
+          ? () => {
+              accountMenuOpen = false;
+              openSettings("sync");
+            }
+          : undefined}
         onsignout={() => {
           accountMenuOpen = false;
           void signOutWithImageCleanup();
@@ -14023,6 +14097,7 @@
             company={companyPaneCompany}
             canManage={companyPaneRole === "Owner" || companyPaneRole === "Admin"}
             selectedId={companyPaneSelectedId}
+            {officeVisible}
             onselect={selectCompanyPaneRow}
             memory={sidepaneScrollMemory}
             companyApi={adapter.company ?? null}
@@ -14156,6 +14231,18 @@
       {/if}
 
       <main class="desktop-main" aria-label="Channel">
+        {#if officeVisible}
+          {#key officeScope}
+            <LazyDoor door={officeDoor} props={{
+              adapter,
+              callsHost,
+              companyUid: officeCompanyUid,
+              companyLabel: companyPaneCompany?.label ?? "This company",
+              visible: railPlaceholder?.id === "office",
+              displayName: (uid: string) => atlasRosterNames.get(uid) ?? uid,
+            }} />
+          {/key}
+        {/if}
         <div
           class="notifications-layer"
           class:is-active={view === "notifications"}
@@ -14229,6 +14316,10 @@
               messagePersonByUid(personUid, { companyUid: companyPaneCompany?.uid });
             }}
           />
+        {:else if railPlaceholder?.id === "office" && companyPaneCompany}
+          {#if !officeVisible}
+            <section class="rail-placeholder" role="status"><h1>Office</h1><p>Office is not available for this company on this device.</p></section>
+          {/if}
         {:else if railPlaceholder?.id === "team" && companyPaneCompany}
           <LazyDoor
             door={teamPageDoor}

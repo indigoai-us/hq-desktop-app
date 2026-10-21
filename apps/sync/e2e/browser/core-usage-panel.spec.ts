@@ -87,7 +87,7 @@ test('shows month-to-date usage under the sync row', async ({ page }) => {
 
   await expect(page.getByTestId('core-usage-billing')).toContainText('Set up billing');
   await expect(page.getByTestId('core-usage-details')).toContainText('Usage details');
-  await expect(page.getByTestId('core-usage-sync-off')).toHaveText('Turn off sync');
+  await expect(page.getByTestId('core-usage-sync-settings')).toHaveText('Turn sync off or on for each vault');
 });
 
 test('during the trial the meter shows days left and trial usage against the cap', async ({ page }) => {
@@ -153,10 +153,10 @@ test('Settings > Usage lists one line per account and opens one at a time, and a
   await expect(line('cmp_ux_dogwood')).toContainText('Usage plan');
 });
 
-test('Turn off sync opens the Sync section of Settings', async ({ page }) => {
+test('the sync link opens the Sync section of Settings', async ({ page }) => {
   await openCoreMenu(page);
   await expect(page.getByTestId('core-usage')).toHaveAttribute('data-state', 'ready', { timeout: 10_000 });
-  await page.getByTestId('core-usage-sync-off').click();
+  await page.getByTestId('core-usage-sync-settings').click();
   await expect(page.getByTestId('settings-nav-sync')).toHaveAttribute('aria-current', 'page', { timeout: 10_000 });
 });
 

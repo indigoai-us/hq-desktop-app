@@ -5,7 +5,7 @@
    * Company name and plan ("Usage plan" or "Trial, N days left"), this
    * month's usage against the included allowance (or trial usage against the
    * trial cap), one row per meter group, and the actions: Set up billing,
-   * Usage details (Settings > Usage) and Turn off sync (Settings > Sync). All
+   * Usage details (Settings > Usage) and the Sync link (Settings > Sync). All
    * numbers come from hq-pro (core-usage-model.ts); this file renders and
    * routes clicks. A failed read retries quietly, then offers Try again; it
    * never shows $0 or server text.
@@ -75,7 +75,10 @@
     onopenurl?: (url: string) => void;
     /** Open Settings > Usage (on the account shown here). */
     onopenusage?: () => void;
-    /** Open the Sync section of Settings (repointed to US-016's per-vault section when it lands). */
+    /**
+     * Open Settings › Sync, where each vault's sync can be turned off
+     * (usage-only-pricing US-016). Hidden when the host has no Sync section.
+     */
     onopensync?: () => void;
     /** Test seam: waits between automatic retries. */
     retryDelays?: readonly number[];
@@ -514,18 +517,32 @@
       <p class="core-usage-note" role="status" data-testid="core-usage-billing-hint">{hint}</p>
     {/if}
   {/if}
-
-  {#if view.kind !== "no-usage" && onopensync}
+  {#if onopensync}
     <button
       type="button"
-      class="core-usage-link"
-      data-testid="core-usage-sync-off"
+      class="core-usage-sync-link"
+      data-testid="core-usage-sync-settings"
       onclick={() => onopensync?.()}
-    >Turn off sync</button>
+    >Turn sync off or on for each vault</button>
   {/if}
 </section>
 
 <style>
+  .core-usage-sync-link {
+    align-self: flex-start;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--t2);
+    font: inherit;
+    font-size: 12px;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .core-usage-sync-link:hover {
+    color: var(--t1);
+  }
+
   .core-usage {
     display: flex;
     flex-direction: column;
