@@ -242,6 +242,8 @@ const TIMELINES: Record<string, ConversationMessageWire[]> = {
       body: "Nice. Bump the review one to me and re-run the sweep after the deploy.",
       createdAt: new Date(now - 30 * 60_000).toISOString(),
       direction: "out",
+      // A thread under a message, so the reply card has something to show.
+      replyCount: 3,
     },
     {
       eventId: "ao-3",

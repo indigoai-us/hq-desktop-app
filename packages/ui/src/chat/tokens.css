@@ -139,6 +139,9 @@
   --kind-bot: #5b5bd6;
   --kind-tile-tint: 14%;
   --kind-tag-tint: 12%;
+  /* The thread card under a message (iOS replyCardFill): a translucent
+     white lift, never a solid grey. */
+  --reply-card-fill: rgb(255 255 255 / 0.62);
 
   --v4-control-bg: var(--c-btn2-bg, #0000000d);
   --v4-control-border: var(--c-field-border, #00000014);
@@ -183,6 +186,7 @@
     --kind-bot: #9b9bf7;
     --kind-tile-tint: 18%;
     --kind-tag-tint: 24%;
+    --reply-card-fill: rgb(255 255 255 / 0.07);
     --v4-control-bg: rgba(255, 255, 255, 0.1);
     --v4-control-border: rgba(255, 255, 255, 0.16);
     --v4-control-faint: rgba(255, 255, 255, 0.08);
@@ -229,6 +233,7 @@
   --kind-bot: #9b9bf7;
   --kind-tile-tint: 18%;
   --kind-tag-tint: 24%;
+  --reply-card-fill: rgb(255 255 255 / 0.07);
   --v4-control-bg: rgba(255, 255, 255, 0.1);
   --v4-control-border: rgba(255, 255, 255, 0.16);
   --v4-control-faint: rgba(255, 255, 255, 0.08);

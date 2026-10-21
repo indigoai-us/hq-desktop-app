@@ -2532,12 +2532,15 @@
                         {/each}
                       </span>
                     {/if}
-                    {replyLabel(msg.replyCount ?? 0)}
+                    <span class="dm-replies-label">{replyLabel(msg.replyCount ?? 0)}</span>
                     {#if preview.at}
                       <span class="dm-replies-preview">
                         Last reply {formatRelative(preview.at)}
                       </span>
                     {/if}
+                    <span class="dm-replies-caret" aria-hidden="true"
+                      ><RailIcon name="caret-right" size={10} /></span
+                    >
                   </button>
                 {/if}
                 <!-- Quick reactions (tap-visible affordance). -->
@@ -3617,34 +3620,55 @@
     background: color-mix(in srgb, var(--t1) 5%, transparent);
   }
 
+  /* The thread card, as on iOS (hq-native-mobile #44): a soft translucent
+     lift with no outline, sized to its content. The count reads as the link
+     (ink, medium), the time stays quiet, a caret says it opens, and the line
+     never wraps — on a narrow column the time drops before "3 replies"
+     breaks across lines. */
   .dm-replies-count {
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    margin: 8px 0 0 -7px;
-    padding: 5px 9px 5px 6px;
+    max-width: 100%;
+    margin: 8px 0 0;
+    padding: 4px 8px 4px 5px;
     border: 1px solid transparent;
-    border-radius: 999px;
-    background: transparent;
-    color: var(--ice-ink);
-    font: 500 11px/1.3 var(--font-ui);
+    border-radius: 8px;
+    background: var(--reply-card-fill, var(--raised));
+    color: var(--t1);
+    font: 500 12px/1.3 var(--font-ui);
+    white-space: nowrap;
     cursor: pointer;
     transition:
       background 0.12s,
       border-color 0.12s;
   }
+  .dm-replies-label {
+    flex: none;
+  }
+  .dm-replies-caret {
+    display: inline-flex;
+    flex: none;
+    color: var(--t3);
+  }
 
-  .dm-replies-count:hover,
+  /* Hover lifts the fill, as the document cards do; an edge only for the
+     keyboard. */
+  .dm-replies-count:hover {
+    background: var(--hover, var(--btn-bg));
+  }
   .dm-replies-count:focus-visible {
     border-color: var(--line2);
-    background: var(--btn-bg);
     outline: none;
   }
 
   .dm-replies-preview {
+    min-width: 0;
+    overflow: hidden;
     color: var(--t3);
     font-size: 11px;
     font-weight: 400;
+    text-overflow: ellipsis;
   }
 
   /* Slack-style overlapping participant avatars, left of "N replies". */
