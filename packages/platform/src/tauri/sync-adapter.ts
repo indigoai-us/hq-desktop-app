@@ -1460,6 +1460,19 @@ export function createSyncPlatformAdapter(
       getUsageStatement: (companyUid) =>
         hqProJson('GET', WEB_PATHS.companyUsageStatement(companyUid)),
       getPricing: () => hqProJson('GET', WEB_PATHS.pricing),
+      getSpendLimit: (companyUid) =>
+        hqProJson('GET', WEB_PATHS.companySpendLimit(companyUid)),
+      getPersonalBillingSummary: () => hqProJson('GET', WEB_PATHS.personalBillingSummary),
+      getPersonalUsageStatement: () => hqProJson('GET', WEB_PATHS.personalUsageStatement),
+      getPersonalSpendLimit: () => hqProJson('GET', WEB_PATHS.personalSpendLimit),
+      createPersonalBillingCheckoutSession: () =>
+        hqProJson<{ url: string }>('POST', WEB_PATHS.personalBillingCheckout, {}),
+      createPersonalBillingPortalSession: () =>
+        hqProJson<{ url: string }>('POST', WEB_PATHS.personalBillingPortal, {}),
+      getUsageSwitch: (companyUid) => hqProJson('GET', WEB_PATHS.companyUsageSwitch(companyUid)),
+      switchToUsagePricing: (companyUid) => hqProJson('POST', WEB_PATHS.usageSwitch, { companyUid }),
+      getPersonalUsageSwitch: () => hqProJson('GET', WEB_PATHS.personalUsageSwitch),
+      switchPersonalToUsagePricing: () => hqProJson('POST', WEB_PATHS.usageSwitch, { scope: 'person' }),
       ensureHomeChannel: async (companyUid) => {
         const res = await call<string>('ensure_company_home_channel', {
           companyUid,

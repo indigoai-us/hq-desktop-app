@@ -248,6 +248,20 @@ export const WEB_PATHS = {
   /** GET, owner-gated: this calendar month's usage statement. */
   companyUsageStatement: (companyUid: string) =>
     `/v1/billing/usage?companyUid=${encodeURIComponent(companyUid)}&window=month`,
+  /** GET, owner-gated: the monthly spend limit and this month's measured spend. */
+  companySpendLimit: (companyUid: string) =>
+    `/v1/billing/spend-limit?companyUid=${encodeURIComponent(companyUid)}`,
+  /** Personal account (the caller, from the JWT). */
+  personalBillingSummary: "/v1/billing/person/summary",
+  personalUsageStatement: "/v1/billing/usage?scope=person&window=month",
+  personalSpendLimit: "/v1/billing/person/spend-limit",
+  personalBillingCheckout: "/v1/billing/checkout/person",
+  personalBillingPortal: "/v1/billing/person/portal",
+  /** GET (owner) / POST (owner, body `{ companyUid }`): switch to usage pricing. */
+  companyUsageSwitch: (companyUid: string) =>
+    `/v1/billing/usage-switch?companyUid=${encodeURIComponent(companyUid)}`,
+  usageSwitch: "/v1/billing/usage-switch",
+  personalUsageSwitch: "/v1/billing/usage-switch?scope=person",
   /** GET, public price list. */
   pricing: "/v1/pricing",
   firstWeekReturnNudge: (companyUid: string) =>
@@ -1203,6 +1217,17 @@ export class WebPlatformAdapter implements PlatformAdapter {
     getUsageStatement: (companyUid) =>
       this.get(WEB_PATHS.companyUsageStatement(companyUid)),
     getPricing: () => this.get(WEB_PATHS.pricing),
+    getSpendLimit: (companyUid) =>
+      this.get(WEB_PATHS.companySpendLimit(companyUid)),
+    getPersonalBillingSummary: () => this.get(WEB_PATHS.personalBillingSummary),
+    getPersonalUsageStatement: () => this.get(WEB_PATHS.personalUsageStatement),
+    getPersonalSpendLimit: () => this.get(WEB_PATHS.personalSpendLimit),
+    createPersonalBillingCheckoutSession: () => this.post(WEB_PATHS.personalBillingCheckout, {}),
+    createPersonalBillingPortalSession: () => this.post(WEB_PATHS.personalBillingPortal, {}),
+    getUsageSwitch: (companyUid) => this.get(WEB_PATHS.companyUsageSwitch(companyUid)),
+    switchToUsagePricing: (companyUid) => this.post(WEB_PATHS.usageSwitch, { companyUid }),
+    getPersonalUsageSwitch: () => this.get(WEB_PATHS.personalUsageSwitch),
+    switchPersonalToUsagePricing: () => this.post(WEB_PATHS.usageSwitch, { scope: "person" }),
     getFirstWeekReturnNudge: (companyUid) =>
       this.get(WEB_PATHS.firstWeekReturnNudge(companyUid)),
   };
