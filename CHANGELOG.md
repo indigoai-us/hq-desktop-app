@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Bots: Company apps on a bot's Apps tab now lists only the company apps this bot can use, including ones the bot reports as needing attention. People who can change a connection's access see exactly which connections the bot has. People who cannot are not shown the connection's sharing list, so the tab uses the bot's own report of its ready and failing apps instead: when the company has one connection for that app, it is listed on the bot, and when it has several, one row says the bot has the app through one of them without naming which. The same report is used for a connection whose access check failed. A problem the bot reports with an app that has several company connections is shown as one notice for that app. Browse apps, on the section's title row, shows the company's other connections, each with Add to bot, and the apps the company has not connected yet. One search filters both lists. After you connect a new app, Browse apps stays open with the new app at the top, ready to add to the bot. Apps the company already has no longer appear a second time under Connect a new app. If HQ cannot check the bot's access, the tab says so instead of saying the bot has no company apps. The status filter is gone because the list now only holds the bot's own apps.
+- Indigo beta: open Office directly from Company navigation to see your company's office hours and start native calls. Office stays hidden outside the enabled company and in browser hosts.
 
 ## [0.11.15] — 2026-10-20
 

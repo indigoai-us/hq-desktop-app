@@ -58,6 +58,7 @@ import {
   createScopedFeatureFlagGates,
   type ScopedFeatureFlagGates,
   resolveCompanyFeature,
+  readCompanyFeature,
   type FeatureFlagGate,
 } from "../flags.js";
 
@@ -292,6 +293,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
               ? Promise.resolve(ok(false))
               : this.call("has_feature", { flag }),
           ),
+    readCompanyFeature: (flag, companyUid) =>
+      readCompanyFeature(createHqProFlagFetch(this.invokeFn), flag, companyUid),
     hasCompanyFeature: (flag, companyUid) =>
       resolveCompanyFeature(
         createHqProFlagFetch(this.invokeFn),
