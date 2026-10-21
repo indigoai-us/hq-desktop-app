@@ -42,12 +42,13 @@
     type CloudFileEventPayload,
 } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
-  import { resolveUsageCompany } from "../home/core-usage-model.js";
+  import { resolveUsageCompany, usageAccounts } from "../home/core-usage-model.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
   import LazyDoor from "./LazyDoor.svelte";
   import { callerRole, loadCallerRole } from "../company/company-roles.svelte.js";
+  import { domainPricesFromFeed, type DomainPrices } from "../company/files-connect/custom-domain.js";
   import {
     brainPageDoor,
     teamPageDoor,
@@ -5268,13 +5269,22 @@
     );
   });
   /**
-   * Company for the Core menu's usage panel: the company on screen, else the
-   * branded company. A local-only company shows "No usage", never another
-   * company's spend (resolveUsageCompany).
+   * Account for the Core menu's usage panel (owner decision 2026-10-19): the
+   * company on screen, else the company the rail has active, else the
+   * branded company, else the personal account. Never the first company in
+   * the list. A local-only company shows "No usage", never another
+   * account's spend (resolveUsageCompany).
    */
-  const usageCompany = $derived(
-    resolveUsageCompany(companies, selectedCompanySlug, brandState?.companySlug),
+  const tenantCompanySlug = $derived(
+    tenantCompanyId
+      ? ((companies ?? []).find((c) => (c.cloudUid ?? "").trim() === tenantCompanyId)?.slug ?? "")
+      : "",
   );
+  const usageCompany = $derived(
+    resolveUsageCompany(companies, selectedCompanySlug || tenantCompanySlug, brandState?.companySlug),
+  );
+  /** Every account the usage switcher offers: owner/admin companies, then personal. */
+  const usageAccountList = $derived(usageAccounts(companies, usageCompany));
   const activeCompanyPane = $derived.by(() => {
     if (view !== "conversation" || selectedRow?.kind !== "channel") return null;
     const scope = (selectedRow.channelScope ?? "").trim();
@@ -8588,6 +8598,8 @@
     channelActionError = null;
   });
   let selfAvatarUrl = $state<string | null>(null);
+  /** Counts photo saves so the rail's account button can point at the new photo. */
+  let selfAvatarPulse = $state(0);
   let selfDescription = $state<string | null>(null);
 
   /** personUid → presigned avatar URL, sourced from every loaded channel
@@ -12861,6 +12873,19 @@
   // OWNER-R24: the caller's role in the open company, from the membership
   // roster. Grants and Billing show only to owners and admins.
   const companyPaneRole = $derived(callerRole(companyPaneCompany?.uid));
+  // US-007: the global Deployments page offers the company Custom domain sheet too.
+  async function deployDomainPrices(): Promise<DomainPrices | null> {
+    const read = adapter.company?.getPricing;
+    if (!read) return null;
+    const res = await read();
+    return res.ok ? domainPricesFromFeed(res.value) : null;
+  }
+  async function deployDomainCardEntryUrl(companyUid: string): Promise<string | null> {
+    const mint = adapter.company?.createBillingCheckoutSession;
+    if (!mint) return null;
+    const res = await mint(companyUid);
+    return res.ok && typeof res.value?.url === "string" ? res.value.url : null;
+  }
   // Grants pane: the caller's other companies, grantable where they are an
   // owner or admin (hq-pro enforces the same rule).
   const grantsOpen = $derived(railPlaceholder?.id === "grants");
@@ -13729,6 +13754,7 @@
     {cloudError}
     workspaces={syncWorkspaces}
     {usageCompany}
+    usageAccounts={usageAccountList}
     hqFolderPath={hqFolderPath ?? liveSync.hqFolderPath}
     watchedCount={watched}
     {unreadCount}
@@ -13736,6 +13762,7 @@
     brand={brandState}
     {brandCompanyName}
     onopenSync={() => openSettings("sync")}
+    onopenUsage={() => openSettings("usage")}
     {sidebarCollapsed}
     sidebarToggleHidden={pageHasNoSidepane}
     coreUseFixtures={coreFixtures}
@@ -13784,6 +13811,8 @@
       activeId={activeRailId}
       {unreadCount}
       youInitials={resolvedAccountInitials ?? ""}
+      youPhoto={selfAvatarUrl}
+      youPhotoPulse={selfAvatarPulse}
       onselect={selectRailItem}
       onreorderpins={reorderPinnedCompanies}
       onmore={toggleMoreCompanies}
@@ -14025,6 +14054,7 @@
       {#await loadShellSettings() then { default: ShellSettings }}
         <ShellSettings
           onnewbot={openNewBotFromSettings}
+          usageAccounts={usageAccountList}
           profile={resolvedSettingsProfile}
           {companies}
           {adapter}
@@ -14042,6 +14072,10 @@
             void navigate(companyRowDestination("general", uid));
           }}
           onback={closeSettings}
+          onavatarsaved={(src) => {
+            selfAvatarUrl = src;
+            selfAvatarPulse += 1;
+          }}
           onsignout={onsignout ? signOutWithImageCleanup : undefined}
           onopenconsole={onOpenConsole
             ? (url) => onOpenConsole(url ?? HQ_CONSOLE_BASE)
@@ -14473,6 +14507,9 @@
             deployAppPreview={adapter.company?.deployAppPreview}
             deployAppSnapshot={adapter.company?.deployAppSnapshot}
             companies={memberCompanies(companies)}
+            deployDomainRequest={adapter.company?.deployDomainRequest ?? null}
+            loadDomainPrices={deployDomainPrices}
+            domainCardEntryUrl={deployDomainCardEntryUrl}
             openExternal={onopenurl}
             actions={railGate(RAIL_DEPLOYMENTS_ACTIONS_FLAG)}
           />
@@ -14489,6 +14526,7 @@
               listDeployApps: adapter.company?.listDeployApps,
               adapter,
               companyUid: companyPaneCompany.uid ?? null,
+              companyRole: companyPaneRole ?? null,
               deployActions: railGate(RAIL_DEPLOYMENTS_ACTIONS_FLAG),
               companyLabel: companyPaneCompany.label,
               vaultCloudRead: (key: string) => vaultCloudRead(companyPaneCompany?.uid ?? null, key),

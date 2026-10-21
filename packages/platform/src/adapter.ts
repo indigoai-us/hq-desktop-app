@@ -1243,6 +1243,20 @@ export interface CompanyApi {
     path: string,
     body?: Json,
   ): AdapterPromise<Json>;
+  /**
+   * One hq-deploy custom-domain call for a scope: `GET`/`POST
+   * /api/apps/:id/domains`, `DELETE /api/apps/:id/domains/:domain`, `POST
+   * /api/apps/:id/domains/:domain/refresh`. Answers `{ status, body }` for
+   * every HTTP reply so a refusal keeps its server code
+   * (`PAYMENT_METHOD_REQUIRED`, `DOMAIN_RESERVED`, ...). Desktop only; the
+   * host refuses any other route.
+   */
+  deployDomainRequest?(
+    scope: string,
+    method: "GET" | "POST" | "DELETE",
+    path: string,
+    body?: Json,
+  ): AdapterPromise<Json>;
   getSecrets(slug: string): AdapterPromise<Json[]>;
   listMembers(slug: string): AdapterPromise<Json[]>;
   /**
@@ -1308,6 +1322,39 @@ export interface CompanyApi {
   getUsageStatement?(companyUid: string): AdapterPromise<Json>;
   /** Public price list (`GET /v1/pricing`), including the `usage` block. */
   getPricing?(): AdapterPromise<Json>;
+  /**
+   * Owner-gated monthly spend limit (`GET /v1/billing/spend-limit?companyUid=`,
+   * usage-only-pricing US-009): the limit in force, whether it is the default,
+   * this month's measured spend and whether metered work is paused.
+   */
+  getSpendLimit?(companyUid: string): AdapterPromise<Json>;
+  /**
+   * The caller's own personal account (usage-only personal pricing, US-018
+   * owner requirement 2026-10-19). hq-pro reads the person from the JWT.
+   * `GET /v1/billing/person/summary` (`personalUsage`: allowance, card, pause).
+   */
+  getPersonalBillingSummary?(): AdapterPromise<Json>;
+  /** `GET /v1/billing/usage?scope=person&window=month`: the personal month statement. */
+  getPersonalUsageStatement?(): AdapterPromise<Json>;
+  /** `GET /v1/billing/person/spend-limit`: the personal spend limit. */
+  getPersonalSpendLimit?(): AdapterPromise<Json>;
+  /** `POST /v1/billing/checkout/person`: hosted card capture for the personal account. */
+  createPersonalBillingCheckoutSession?(): AdapterPromise<{ url: string }>;
+  /** `POST /v1/billing/person/portal`: the personal Stripe customer portal. */
+  createPersonalBillingPortalSession?(): AdapterPromise<{ url: string }>;
+  /**
+   * Switch to usage pricing (hq-pro US-014; free companies and people from
+   * hq-pro #5081). `GET /v1/billing/usage-switch?companyUid=` (owner): the
+   * phase, `cardOnFile` and the `offer` (`{ eligible: true, freeOptIn? }` or
+   * `{ eligible: false, reason }`).
+   */
+  getUsageSwitch?(companyUid: string): AdapterPromise<Json>;
+  /** `POST /v1/billing/usage-switch { companyUid }` (owner): switch now. 409 `USAGE_SWITCH_NOT_OFFERED` / `USAGE_SWITCH_CONFLICT`. */
+  switchToUsagePricing?(companyUid: string): AdapterPromise<Json>;
+  /** `GET /v1/billing/usage-switch?scope=person`: the caller's own switch status. */
+  getPersonalUsageSwitch?(): AdapterPromise<Json>;
+  /** `POST /v1/billing/usage-switch { scope: "person" }`: switch the caller's own account. */
+  switchPersonalToUsagePricing?(): AdapterPromise<Json>;
   /** Membership-scoped, aggregate eligibility for the first-week return nudge. */
   getFirstWeekReturnNudge(companyUid: string): AdapterPromise<Json>;
 }
