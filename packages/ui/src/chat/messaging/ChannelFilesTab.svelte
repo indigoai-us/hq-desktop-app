@@ -13,7 +13,6 @@
   import { onDestroy } from "svelte";
   import { platformStrings } from "../../common/platform-strings.js";
   import type {
-    ChannelFileIconKind,
     ChannelFileItemModel,
     ChannelFilePreview,
   } from "./channelTabModels";
@@ -289,19 +288,6 @@
     );
   }
 
-  function iconPaths(kind: ChannelFileIconKind): string {
-    // Compact 16×16 glyphs — same document silhouette family as the desktop.
-    switch (kind) {
-      case "image":
-        return "M3 3.5h10A1.5 1.5 0 0 1 14.5 5v6A1.5 1.5 0 0 1 13 12.5H3A1.5 1.5 0 0 1 1.5 11V5A1.5 1.5 0 0 1 3 3.5Zm1.2 7.2 2.4-2.8 1.6 1.5 2.3-2.7 2.3 4H4.2Z";
-      case "pdf":
-        return "M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5ZM5.5 9.5h5M5.5 7h3M5.5 12h4";
-      case "markdown":
-        return "M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5ZM5 10.5V6.5l1.5 2L8 6.5v4M9.5 10.5 11 8.5l1.5 2";
-      default:
-        return "M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z";
-    }
-  }
 </script>
 
 <div
@@ -340,9 +326,16 @@
               else void selectFile(item);
             }}
           >
-            <span class="file-icon" aria-hidden="true">
+            <!-- A tile tinted by kind, as on iOS: images pink, every other
+                 file teal. A file the viewer cannot open stays neutral. -->
+            <span
+              class="file-icon"
+              class:is-image={!item.accessDenied && item.iconKind === "image"}
+              class:is-document={!item.accessDenied && item.iconKind !== "image"}
+              aria-hidden="true"
+            >
               {#if item.accessDenied}
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
                   <rect
                     x="3.5"
                     y="7"
@@ -360,29 +353,7 @@
                   />
                 </svg>
               {:else}
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 16 16"
-                  fill="none"
-                  xmlns="http://www.w3.org/2000/svg"
-                >
-                  <path
-                    d={iconPaths(item.iconKind)}
-                    stroke="currentColor"
-                    stroke-width="1.3"
-                    stroke-linejoin="round"
-                    stroke-linecap="round"
-                  />
-                  {#if item.iconKind === "file" || item.iconKind === "text" || item.iconKind === "pdf" || item.iconKind === "markdown"}
-                    <path
-                      d="M9 1.5V5.5H13"
-                      stroke="currentColor"
-                      stroke-width="1.3"
-                      stroke-linejoin="round"
-                    />
-                  {/if}
-                </svg>
+                <RailIcon name={item.iconKind === "image" ? "image" : "file-text"} size={12} />
               {/if}
             </span>
             <span class="file-name" title={item.vaultPath || item.name}
@@ -610,7 +581,7 @@
 
   .file-row {
     display: grid;
-    grid-template-columns: 14px minmax(0, 1fr) auto;
+    grid-template-columns: 20px minmax(0, 1fr) auto;
     align-items: center;
     gap: 10px;
     box-sizing: border-box;
@@ -647,12 +618,27 @@
     outline-offset: -2px;
   }
 
+  /* 20px so the tile fits the fixed 29.4px row (it may sit into the row's
+     6px padding); the glyph is the hue on a light tint of it. */
   .file-icon {
-    display: inline-flex;
+    display: grid;
+    place-items: center;
+    flex: 0 0 20px;
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    background: var(--btn-bg, var(--v4-control-faint));
     color: var(--t2);
-    flex: 0 0 14px;
-    width: 14px;
-    height: 14px;
+  }
+
+  .file-icon.is-document {
+    background: color-mix(in srgb, var(--kind-document) var(--kind-tile-tint), transparent);
+    color: var(--kind-document);
+  }
+
+  .file-icon.is-image {
+    background: color-mix(in srgb, var(--kind-image) var(--kind-tile-tint), transparent);
+    color: var(--kind-image);
   }
 
   .file-name {
