@@ -622,6 +622,30 @@ pub(crate) fn rescue_command() -> (
     tokio::process::Command,
     crate::commands::hq_core_state::CoreUpdateNpxResolution,
 ) {
+    rescue_command_with_hq_cli(rescue_hq_cli_bin(&paths::resolve_bin("hq")))
+}
+
+/// The `hq` CLI path to hand the rescue engine as `HQ_CLI_BIN`, from the
+/// resolver's answer. `resolve_bin` returns the bare name when it finds no
+/// install; that, or any relative or missing path, yields `None`.
+pub(crate) fn rescue_hq_cli_bin(resolved: &str) -> Option<std::path::PathBuf> {
+    let path = std::path::PathBuf::from(resolved);
+    (path.is_absolute() && path.is_file()).then_some(path)
+}
+
+/// [`rescue_command`] with the `hq` CLI already resolved.
+///
+/// The rescue engine reads the `core.setup-path-settings-local` flag through
+/// HQ core's `setup-path-flag.cjs`, which loads the installed hq CLI from
+/// `HQ_CLI_BIN`. Without it the lookup fails, the flag reads as off, and
+/// rescue writes the machine PATH into the released `.claude/settings.json`
+/// (feedback 4ff48409). Passing the resolved CLI lets the flag decide.
+pub(crate) fn rescue_command_with_hq_cli(
+    hq_cli_bin: Option<std::path::PathBuf>,
+) -> (
+    tokio::process::Command,
+    crate::commands::hq_core_state::CoreUpdateNpxResolution,
+) {
     let npx = paths::resolve_bin_with_kind("npx");
     let npx_resolution = npx_telemetry_resolution(&npx);
     let mut cmd = paths::tokio_spawn_command(&npx.path, &[]);
@@ -636,6 +660,9 @@ pub(crate) fn rescue_command() -> (
         // node/npx install dirs so npx can resolve `node`. Mirrors the
         // runner spawn in `commands::sync`.
         .env("PATH", paths::child_path());
+    if let Some(hq_cli_bin) = hq_cli_bin {
+        cmd.env("HQ_CLI_BIN", hq_cli_bin);
+    }
     #[cfg(not(windows))]
     cmd.envs(crate::commands::install_deps::managed_git_env());
     (cmd, npx_resolution)
@@ -1281,6 +1308,90 @@ mod tests {
                     .to_string_lossy()
                     .as_ref()
             )
+        );
+    }
+
+    fn explicit_env(command: &tokio::process::Command) -> std::collections::HashMap<String, String> {
+        command
+            .as_std()
+            .get_envs()
+            .filter_map(|(name, value)| {
+                value.map(|value| {
+                    (
+                        name.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// Feedback 4ff48409: the rescue engine finds the hq CLI (and through it
+    /// the settings.local PATH flag) only via `HQ_CLI_BIN`. The spawn must pass
+    /// the resolved CLI, or the flag reads as off and rescue writes PATH into
+    /// the released settings.json.
+    #[test]
+    fn rescue_command_passes_the_resolved_hq_cli_as_hq_cli_bin() {
+        let dir = tempfile::tempdir().unwrap();
+        let hq = dir.path().join("hq");
+        std::fs::write(&hq, "#!/bin/sh\n").unwrap();
+
+        let (command, _) = rescue_command_with_hq_cli(Some(hq.clone()));
+        assert_eq!(
+            explicit_env(&command).get("HQ_CLI_BIN").map(String::as_str),
+            Some(hq.to_string_lossy().as_ref())
+        );
+
+        let (command, _) = rescue_command_with_hq_cli(None);
+        assert!(!explicit_env(&command).contains_key("HQ_CLI_BIN"));
+    }
+
+    #[test]
+    fn rescue_hq_cli_bin_accepts_only_an_existing_absolute_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let hq = dir.path().join("hq");
+        std::fs::write(&hq, "").unwrap();
+        assert_eq!(rescue_hq_cli_bin(&hq.to_string_lossy()), Some(hq));
+        // The resolver's "not found" answer is the bare name.
+        assert_eq!(rescue_hq_cli_bin("hq"), None);
+        assert_eq!(rescue_hq_cli_bin("bin/hq"), None);
+        assert_eq!(
+            rescue_hq_cli_bin(&dir.path().join("missing").to_string_lossy()),
+            None
+        );
+        assert_eq!(rescue_hq_cli_bin(&dir.path().to_string_lossy()), None);
+    }
+
+    /// End to end through the real resolver: with a managed hq CLI installed in
+    /// a temp home, the production `rescue_command()` hands that CLI to the
+    /// engine as `HQ_CLI_BIN`.
+    #[cfg(not(windows))]
+    #[test]
+    fn rescue_command_sets_hq_cli_bin_to_the_managed_cli() {
+        use std::os::unix::fs::PermissionsExt;
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let npm_global =
+            hq_desktop_core::paths::managed_toolchain_dir_in(home.path()).join("npm-global");
+        let package = npm_global.join("lib/node_modules/@indigoai-us/hq-cli");
+        std::fs::create_dir_all(package.join("dist")).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            r#"{"name":"@indigoai-us/hq-cli","version":"5.310.0"}"#,
+        )
+        .unwrap();
+        let entry = package.join("dist/index.js");
+        std::fs::write(&entry, "#!/usr/bin/env node\n").unwrap();
+        std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::create_dir_all(npm_global.join("bin")).unwrap();
+        let shim = npm_global.join("bin/hq");
+        std::os::unix::fs::symlink(&entry, &shim).unwrap();
+        let _home = scoped_home(home.path());
+
+        let (command, _) = rescue_command();
+        assert_eq!(
+            explicit_env(&command).get("HQ_CLI_BIN").map(String::as_str),
+            Some(shim.to_string_lossy().as_ref())
         );
     }
 
