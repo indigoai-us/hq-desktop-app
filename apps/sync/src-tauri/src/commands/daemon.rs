@@ -1286,6 +1286,23 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
         }
     }
 
+    // A process/window restart must not bypass a terminal setup failure or
+    // exhausted transient episode. Only a deliberate renderer start resets it.
+    match hq_desktop_core::sync_retry_episode::allow_start(
+        Path::new(&hq_folder_path), HQ_CLOUD_VERSION,
+        matches!(launch_origin, WatcherLaunchOrigin::Renderer),
+    ) {
+        Ok(true) => {}
+        result => {
+            release_daemon_guard(daemon_generation, guard_generation);
+            set_lifecycle_state(WatchDaemonState::Stopped, DaemonFailureCategory::Preflight);
+            return Err(result.err().unwrap_or_else(||
+                hq_desktop_core::sync_retry_episode::hold_reason(Path::new(&hq_folder_path), HQ_CLOUD_VERSION)
+                    .ok().flatten().unwrap_or(hq_desktop_core::sync_retry_episode::RETRY_REQUIRED).to_string()
+            ));
+        }
+    }
+
     // Node-runtime preflight (HQ-DESKTOP-B3). The daemon previously checked
     // only runner *resolvability*, so a machine whose managed Node had vanished
     // — leaving `env node` to find an ancient one on PATH — started a watcher
@@ -1340,6 +1357,7 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
             "daemon",
             &format!("npx cache materialization preflight failed: {msg}"),
         );
+        record_sync_retry_failure(&app, Path::new(&hq_folder_path), &msg);
         note_environment_preflight_failure();
         release_daemon_guard(daemon_generation, guard_generation);
         set_lifecycle_state(WatchDaemonState::Backoff, DaemonFailureCategory::Preflight);
@@ -1424,7 +1442,7 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
     // Stamp the spawn so the exit handler resets crash-loop state, then share the
     // same phase snapshot with the independent memory supervisor. This lets a
     // pre-emption identify scan/pull/push without retaining raw runner output.
-    note_watcher_spawned();
+    note_watcher_spawned(Path::new(&hq_folder_path));
     set_watcher_phase_context(watcher_phase.clone());
     let hq_folder = hq_folder_path.clone();
     let last_heartbeat = Arc::new(Mutex::new(
@@ -1681,6 +1699,7 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             .iter()
                             .cloned()
                             .collect::<Vec<_>>();
+
                         // Reporting-only: probe the runner target the watcher
                         // actually execs, for the exec-layer fast-fails whose
                         // provenance is in question (126/127 and the launcher
@@ -1848,6 +1867,11 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             })
                             .or_else(|| stderr_tail.last())
                             .map(String::as_str);
+                        if retry_failure_should_count(success, cancelled,
+                            exit_context.attributed_to_app_teardown(code, signal), code, signal)
+                        {
+                            record_sync_retry_failure(&app, Path::new(&hq_folder), &stderr_tail.join("\n"));
+                        }
                         let report_dir_disposition = if let Some(plan) = watch_owner_exit.as_ref() {
                             sentry::with_scope(
                                 |scope| {
@@ -5963,6 +5987,8 @@ struct WatcherCrashState {
     /// — so it measures a true uninterrupted run of externally-supplied
     /// terminations, never spanning an ordinary crash.
     session_terminate_unconfirmed_run: u32,
+    retry_episode_recovered: bool,
+    retry_episode_root: Option<PathBuf>,
 }
 
 static CRASH_STATE: OnceLock<Mutex<WatcherCrashState>> = OnceLock::new();
@@ -5971,11 +5997,47 @@ fn crash_state() -> &'static Mutex<WatcherCrashState> {
     CRASH_STATE.get_or_init(|| Mutex::new(WatcherCrashState::default()))
 }
 
+fn retry_failure_should_count(success: bool, cancelled: bool, teardown: bool, code: Option<i32>, signal: Option<i32>) -> bool {
+    is_unexpected_watcher_exit(success, signal, cancelled) && !teardown
+        && !is_windows_console_control_exit(code, signal)
+        && !is_operation_lock_timeout_exit(code, signal)
+        && !matches!(code, Some(20 | 21))
+}
+
+/// Persist only content-safe episode state; raw npm output remains in memory.
+pub(crate) fn record_sync_retry_failure<R: tauri::Runtime>(app: &AppHandle<R>, root: &Path, message: &str) {
+    match hq_desktop_core::sync_retry_episode::record_failure(root, HQ_CLOUD_VERSION, message) {
+        Ok(false) => {}
+        result => {
+            if let Err(error) = result { log("daemon", &format!("sync recovery state failed: {error}")); }
+            // These are the actual sync-status/onboarding subscribers. Avoid
+            // waking unrelated webviews for a runner recovery hold.
+            for label in ["main", crate::commands::desktop_alt::WINDOW_LABEL] {
+                let _ = app.emit_to(
+                    label,
+                    "sync:error",
+                    hq_desktop_core::events::SyncErrorEvent {
+                        company: None,
+                        path: "(runner)".to_string(),
+                        message: if hq_desktop_core::sync_retry_episode::terminal_resolution_failure(message) {
+                            hq_desktop_core::sync_retry_episode::TERMINAL_RESOLUTION.to_string()
+                        } else {
+                            hq_desktop_core::sync_retry_episode::RETRY_REQUIRED.to_string()
+                        },
+                    },
+                );
+            }
+        }
+    }
+}
+
 /// Record that a watcher was just spawned (called from `start_daemon`).
-fn note_watcher_spawned() {
+fn note_watcher_spawned(root: &Path) {
     let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
     st.watcher_phase_context = None;
     st.spawn_at = Some(Instant::now());
+    st.retry_episode_recovered = false;
+    st.retry_episode_root = Some(root.to_path_buf());
     // A spawn proves the runtime resolved, so the preflight failure streak is
     // over and a future episode gets a fresh first alert.
     st.preflight_fails = 0;
@@ -6900,6 +6962,16 @@ fn reset_crash_state_if_recovered() {
     // untouched, keeping respawn cadence exactly as before.
     if should_reset_after_recovery(spawn_elapsed, HEALTHY_RUN_WINDOW) {
         st.slow_death_consecutive = 0;
+        if !st.retry_episode_recovered {
+            st.retry_episode_recovered = true;
+            let root = st.retry_episode_root.clone();
+            drop(st);
+            if let Some(root) = root {
+                if let Err(error) = hq_desktop_core::sync_retry_episode::healthy(&root, HQ_CLOUD_VERSION) {
+                    log("daemon", &format!("sync recovery reset failed: {error}"));
+                }
+            }
+        }
     }
 }
 
@@ -8047,3 +8119,39 @@ pub async fn daemon_sync_status(
 #[cfg(test)]
 #[path = "daemon_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod retry_episode_wiring_tests {
+    use super::*;
+
+    #[test]
+    fn healthy_reset_uses_spawned_root_not_a_later_root_selection() {
+        let _serial = super::tests::GUARD_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let spawned = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        for root in [spawned.path(), other.path()] {
+            hq_desktop_core::sync_retry_episode::record_failure(root, HQ_CLOUD_VERSION, "npm error code ETARGET").unwrap();
+        }
+        note_watcher_spawned(spawned.path());
+        {
+            let mut state = crash_state().lock().unwrap_or_else(|e| e.into_inner());
+            state.spawn_at = Some(Instant::now() - HEALTHY_RUN_WINDOW - Duration::from_secs(1));
+        }
+        reset_crash_state_if_recovered();
+        assert!(hq_desktop_core::sync_retry_episode::allow_start(spawned.path(), HQ_CLOUD_VERSION, false).unwrap());
+        assert!(!hq_desktop_core::sync_retry_episode::allow_start(other.path(), HQ_CLOUD_VERSION, false).unwrap());
+        *crash_state().lock().unwrap_or_else(|e| e.into_inner()) = WatcherCrashState::default();
+    }
+
+    #[test]
+    fn failed_launcher_counts_but_deliberate_stops_and_lease_contention_do_not() {
+        assert!(retry_failure_should_count(false, false, false, Some(1), None));
+        assert!(!retry_failure_should_count(true, false, false, Some(0), None));
+        assert!(!retry_failure_should_count(false, true, false, Some(1), None));
+        assert!(!retry_failure_should_count(false, false, true, Some(1), None));
+        assert!(!retry_failure_should_count(false, false, false, Some(20), None));
+        assert!(!retry_failure_should_count(false, false, false, Some(21), None));
+        assert!(!retry_failure_should_count(false, false, false, None, Some(15)));
+        assert!(retry_failure_should_count(false, false, false, None, Some(9)));
+    }
+}
