@@ -132,6 +132,7 @@ pub mod staging;
 pub mod status;
 pub mod stdio;
 pub mod sync_outcome;
+pub mod sync_retry_episode;
 pub mod sync_progress;
 pub mod toolchain;
 pub mod ui_hot;

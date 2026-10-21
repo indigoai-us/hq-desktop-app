@@ -1085,7 +1085,9 @@ async fn resolve_mode(cache_path: Option<&Path>) -> (Option<SyncHostMode>, HostF
 
 /// Today's launch behaviour: warm the npx cache and start the watch runner.
 fn start_legacy_services(handle: AppHandle, launch_reconcile_enabled: bool) {
-    crate::commands::prewarm::spawn_prewarm();
+    if let Ok(root) = crate::commands::sync::resolve_hq_folder_path() {
+        crate::commands::prewarm::spawn_prewarm_for_root(std::path::PathBuf::from(root));
+    }
     start_legacy_sync(handle, launch_reconcile_enabled);
 }
 
