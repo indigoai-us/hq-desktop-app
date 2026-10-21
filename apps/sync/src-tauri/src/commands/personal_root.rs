@@ -868,6 +868,11 @@ fn start_owned_runner_after_resume(app: &tauri::AppHandle) {
 fn emit_changed(app: &tauri::AppHandle) {
     use tauri::Emitter;
     let _ = app.emit_to("main", PERSONAL_ROOT_CHANGED_EVENT, ());
+    let _ = app.emit_to(
+        crate::commands::desktop_alt::WINDOW_LABEL,
+        PERSONAL_ROOT_CHANGED_EVENT,
+        (),
+    );
 }
 
 /// Launch check for an installed root. With the gate on, personal sync is held

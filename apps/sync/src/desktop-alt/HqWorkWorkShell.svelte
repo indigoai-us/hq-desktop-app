@@ -54,6 +54,8 @@
   import { dismissBootLoader } from './boot-loader';
   import SignInPrompt from '../components/SignInPrompt.svelte';
   import PackInstallSheet from '../lib/PackInstallSheet.svelte';
+  import PersonalRootGate from '../components/PersonalRootGate.svelte';
+  import type { PersonalRootInvoke } from '../lib/personal-root';
   import {
     appendInstallLine,
     beginInstall,
@@ -1457,6 +1459,8 @@
   <!-- OWNER-003: the app's one toast layer (update, copied). Paused uploads
        go to the notifications panel instead (#1255). -->
   <ToastStack />
+  <!-- H8 (gated, off in shipped builds): adoption review for an installed folder. -->
+  <PersonalRootGate invokeFn={invokeFn as PersonalRootInvoke} />
   {#if packInstall}
     <PackInstallSheet
       state={packInstall}

@@ -217,6 +217,14 @@
     type InviteErrorKind,
     type InviteFailure,
   } from '../../lib/onboarding-invite';
+  import PersonalRootReview from '../PersonalRootReview.svelte';
+  import {
+    approveNextPhase,
+    personalRootAllowsSetup,
+    preparePersonalRoot,
+    requestAdoptionPlan,
+    type PersonalRootView,
+  } from '../../lib/personal-root';
 
   interface Props {
     initialStep: number;
@@ -456,6 +464,11 @@
   let resolvedPath = $state<string | null>(null);
   let homeDir = $state<string | null>(null);
   let directoryNotice = $state<Notice | null>(null);
+  // H8 (gated, off in shipped builds): the paired personal-root result for the
+  // folder on screen. Null when the gate is off or nothing has run yet.
+  let personalRoot = $state<PersonalRootView | null>(null);
+  let personalRootBusy = $state(false);
+  let personalRootError = $state<string | null>(null);
   let directoryBusy = $state(false);
   let directoryCancelled = false;
 
@@ -1972,6 +1985,8 @@
   async function chooseFolder() {
     directoryBusy = true;
     directoryNotice = null;
+    personalRoot = null;
+    personalRootError = null;
 
     try {
       const picked = await invokeCommand<string | null>('pick_folder');
@@ -2120,6 +2135,18 @@
         return;
       }
 
+      // H8 (gated): authority, inspect, then initialize a new root before any
+      // setup stage runs. An existing or empty folder stops here for review.
+      const pairedRoot = await invokeCommand<boolean>('personal_root_gate_enabled').catch(
+        () => false,
+      );
+      if (pairedRoot === true) {
+        personalRootError = null;
+        const view = await preparePersonalRoot(invokeCommand, selectedPath);
+        personalRoot = view;
+        if (!personalRootAllowsSetup(view)) return;
+      }
+
       validatedInstallPath = selectedPath;
       advanceTo(SETUP_STEP_INDEX, 'completed');
     } catch (err) {
@@ -2134,6 +2161,19 @@
       });
     } finally {
       directoryBusy = false;
+    }
+  }
+
+  async function runPersonalRootStep(step: () => Promise<PersonalRootView>): Promise<void> {
+    if (personalRootBusy) return;
+    personalRootBusy = true;
+    personalRootError = null;
+    try {
+      personalRoot = await step();
+    } catch (err) {
+      personalRootError = err instanceof Error ? err.message : String(err);
+    } finally {
+      personalRootBusy = false;
     }
   }
 
@@ -4511,6 +4551,19 @@
               class:warning={directoryNotice.tone === 'warning'}
               role="status"
             >{directoryNotice.text}</p>
+          {/if}
+          {#if personalRoot && !personalRootAllowsSetup(personalRoot)}
+            <PersonalRootReview
+              view={personalRoot}
+              busy={personalRootBusy || directoryBusy}
+              error={personalRootError}
+              onreview={() => void runPersonalRootStep(() => requestAdoptionPlan(invokeCommand))}
+              onapprove={() => {
+                const current = personalRoot;
+                if (current) void runPersonalRootStep(() => approveNextPhase(invokeCommand, current));
+              }}
+              onretry={() => void handleInstall()}
+            />
           {/if}
         </div>
       {/if}

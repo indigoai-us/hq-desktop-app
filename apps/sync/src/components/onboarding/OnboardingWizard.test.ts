@@ -619,6 +619,120 @@ describe('onboarding directory selection', () => {
       .toBe(true);
   });
 
+  // H8 (gated): with the paired personal-root flow on, an existing folder
+  // stops at the Directory step for review and setup never starts.
+  it('stops for review instead of setting up an existing folder when the paired root gate is on', async () => {
+    const installPath = '/Users/test/hq';
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return installPath;
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'check_writable':
+          return true;
+        case 'detect_hq':
+          return { exists: true, isHq: false, nonEmpty: false };
+        case 'personal_root_gate_enabled':
+          return true;
+        case 'prepare_personal_root':
+          return {
+            phase: 'adoption_review',
+            rootPath: installPath,
+            reason: null,
+            retryable: false,
+            nextPhase: null,
+            plan: null,
+          };
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 1 } });
+    await flushUntil(() => {
+      const directory = host.querySelector('[data-testid="onboarding-directory"]');
+      const install = host.querySelector<HTMLButtonElement>(
+        '[data-testid="onboarding-directory"] .btn-primary',
+      );
+      return directory?.classList.contains('on') === true && install !== null && !install.disabled;
+    });
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="onboarding-directory"] .btn-primary')
+      ?.click();
+    await flushUntil(() => host.querySelector('[data-testid="personal-root-review"]') !== null);
+
+    expect(tauri.invoke).toHaveBeenCalledWith('prepare_personal_root', { path: installPath });
+    expect(host.querySelector('[data-testid="personal-root-review-plan"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-directory"]')?.classList.contains('on'))
+      .toBe(true);
+    expect(
+      tauri.invoke.mock.calls.some(([command]) => command === 'fetch_and_extract_template'),
+    ).toBe(false);
+  });
+
+  it('continues to setup after a paired root is initialized, and skips the paired step with the gate off', async () => {
+    const installPath = '/Users/test/hq';
+    let gate = true;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return installPath;
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'check_writable':
+          return true;
+        case 'detect_hq':
+          return { exists: false, isHq: false, nonEmpty: false };
+        case 'personal_root_gate_enabled':
+          return gate;
+        case 'prepare_personal_root':
+          return {
+            phase: 'initialized',
+            rootPath: installPath,
+            reason: null,
+            retryable: false,
+            nextPhase: null,
+            plan: null,
+          };
+        default:
+          return undefined;
+      }
+    });
+
+    for (const enabled of [true, false]) {
+      gate = enabled;
+      tauri.invoke.mockClear();
+      component = mount(OnboardingWizard, { target: host, props: { initialStep: 1 } });
+      await flushUntil(() => {
+        const directory = host.querySelector('[data-testid="onboarding-directory"]');
+        const install = host.querySelector<HTMLButtonElement>(
+          '[data-testid="onboarding-directory"] .btn-primary',
+        );
+        return (
+          directory?.classList.contains('on') === true && install !== null && !install.disabled
+        );
+      });
+      host
+        .querySelector<HTMLButtonElement>('[data-testid="onboarding-directory"] .btn-primary')
+        ?.click();
+      await flushUntil(
+        () =>
+          host.querySelector('[data-testid="onboarding-directory"]')?.classList.contains('on') ===
+          false,
+      );
+
+      const prepared = tauri.invoke.mock.calls.some(
+        ([command]) => command === 'prepare_personal_root',
+      );
+      expect(prepared).toBe(enabled);
+      expect(host.querySelector('[data-testid="personal-root-review"]')).toBeNull();
+      await unmount(component);
+      component = null;
+      host.innerHTML = '';
+    }
+  });
+
   it('puts HQ in a new child folder when the selected Windows location already has files', async () => {
     const selectedPath = 'C:\\Users\\test\\OneDrive - Personal';
     const installPath = `${selectedPath}\\hq`;
