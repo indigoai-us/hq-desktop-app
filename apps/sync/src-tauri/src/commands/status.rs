@@ -148,7 +148,12 @@ pub async fn get_sync_status() -> Result<SyncStatus, String> {
     // The live registry is authoritative for the plan-limit upload pause: it
     // sees notices mid-pass, before the journal is next written (US-019).
     status.uploads_paused = crate::commands::uploads_paused::snapshot(Some(&hq_folder_path));
-    Ok(status)
+    Ok(hq_desktop_core::status::with_recovery_hold(
+        status,
+        std::path::Path::new(&hq_folder_path),
+        crate::commands::sync::HQ_CLOUD_VERSION,
+        !crate::commands::hq_daemon_host::daemon_mode_active(),
+    ))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -1122,17 +1122,22 @@ export async function updateCreatorProfile(
 }
 
 /**
- * Upload the caller's OWN avatar from a local file path (image-only, ≤2 MiB —
- * enforced server-side and pre-checked in Rust). Resolves with the presigned
- * avatar URL.
+ * Upload the caller's OWN avatar, from image bytes or a local file path
+ * (image-only, ≤2 MiB — enforced server-side). Resolves with the presigned
+ * avatar URL, whether the adapter returns it bare or as `{ avatarUrl }`.
  */
 export async function uploadCreatorAvatar(
   api: MarketplaceApi,
-  filePath: string,
+  data: Uint8Array | string,
 ): Promise<AdapterResult<string>> {
-  const res = await api.uploadCreatorAvatar(filePath);
+  const res = await api.uploadCreatorAvatar(data);
   if (!res.ok) return res;
-  return { ok: true, value: String(res.value ?? "") };
+  const value = res.value as unknown;
+  if (value && typeof value === "object" && "avatarUrl" in value) {
+    const url = (value as { avatarUrl?: unknown }).avatarUrl;
+    return { ok: true, value: typeof url === "string" ? url : "" };
+  }
+  return { ok: true, value: typeof value === "string" ? value : "" };
 }
 
 /** Open the native image picker for an avatar. Resolves to the path or `null`. */

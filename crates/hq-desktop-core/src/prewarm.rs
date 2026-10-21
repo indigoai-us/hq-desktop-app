@@ -358,6 +358,13 @@ fn materialization_lock_path() -> Result<std::path::PathBuf, String> {
 }
 
 fn npx_materialization_error(code: Option<i32>, stderr: &str) -> String {
+    // Keep a fixed, content-safe classification after raw npm stderr is redacted.
+    if crate::sync_retry_episode::terminal_npm_code(stderr) == Some("EACCES") {
+        return crate::sync_retry_episode::TERMINAL_PERMISSION.to_string();
+    }
+    if crate::sync_retry_episode::terminal_resolution_failure(stderr) {
+        return crate::sync_retry_episode::TERMINAL_RESOLUTION.to_string();
+    }
     let lower = stderr.to_ascii_lowercase();
     if lower.contains("eacces") || lower.contains("permission denied") {
         return "HQ Sync cannot update its npm cache because this account cannot write to it. \
@@ -823,6 +830,25 @@ fn spawn_prewarm_with(
     })
 }
 
+/// Desktop startup uses the same durable admission as watcher/one-shot launches.
+pub fn spawn_prewarm_for_root(root: std::path::PathBuf) {
+    if !claim_startup_runner_refresh(&STARTUP_RUNNER_REFRESH_STARTED) {
+        return;
+    }
+    let coordinator = process_prewarm_coordinator().clone();
+    drop(spawn_prewarm_with(coordinator, move || {
+        if !crate::sync_retry_episode::allow_start(&root, HQ_CLOUD_VERSION, false)? {
+            return Err(crate::sync_retry_episode::hold_reason(&root, HQ_CLOUD_VERSION)?
+                .unwrap_or(crate::sync_retry_episode::RETRY_REQUIRED).to_string());
+        }
+        let result = refresh_hq_cloud_cache_at_startup();
+        if let Err(message) = &result {
+            crate::sync_retry_episode::record_failure(&root, HQ_CLOUD_VERSION, message)?;
+        }
+        result
+    }));
+}
+
 pub fn spawn_prewarm() {
     if !claim_startup_runner_refresh(&STARTUP_RUNNER_REFRESH_STARTED) {
         return;
@@ -1276,9 +1302,27 @@ mod tests {
     }
 
     #[test]
+    fn materialization_preserves_terminal_resolution_without_raw_stderr() {
+        for code in ["ETARGET", "E404", "EINVALIDPACKAGENAME", "EUNSUPPORTEDPROTOCOL", "EBADENGINE", "EACCES", "E401", "E403", "ENEEDAUTH"] {
+            let error = npx_materialization_error(Some(1), &format!("npm error code {code}\nprivate path"));
+            assert!(crate::sync_retry_episode::terminal_resolution_failure(&error));
+            assert!(!error.contains("private path"));
+        }
+        assert!(!crate::sync_retry_episode::terminal_resolution_failure(
+            &npx_materialization_error(Some(1), "npm error code ECONNRESET")
+        ));
+    }
+
+    #[test]
     fn materialization_error_keeps_permission_and_exit_diagnoses_distinct() {
         let permission = npx_materialization_error(Some(126), "npm error code EACCES");
         assert!(permission.contains("cannot write"));
+        assert!(crate::sync_retry_episode::terminal_resolution_failure(&permission));
+        // Permission-like prose still gets a safe diagnosis, but cannot stand
+        // in for npm's authoritative code when deciding automatic retry policy.
+        let unverified = npx_materialization_error(Some(1), "permission denied in a path");
+        assert!(unverified.contains("cannot write"));
+        assert!(!crate::sync_retry_episode::terminal_resolution_failure(&unverified));
 
         let not_executable = npx_materialization_error(Some(126), "");
         assert!(not_executable.contains("not executable"));

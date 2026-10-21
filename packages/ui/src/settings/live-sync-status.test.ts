@@ -4,6 +4,7 @@ import {
   lastSyncLabelFromLive,
   parseLiveSyncStatus,
   readLiveSyncStatus,
+  retrySyncFromLive,
   syncStateFromLive,
 } from "./live-sync-status.js";
 import { ok, type PlatformAdapter } from "@hq/platform";
@@ -260,5 +261,76 @@ describe("lastSyncLabelFromLive", () => {
         now,
       ),
       ).toBe("50m ago");
+  });
+});
+
+describe("persisted sync recovery at renderer startup", () => {
+  it("reports the held reason on a fresh journal read without needing a runner event", async () => {
+    const reason = "Automatic sync recovery stopped after a setup failure. Fix the problem, then try Sync Now again.";
+    const adapter = {
+      isAvailable: () => true,
+      sync: { getSyncStatus: async () => ok({ daemonRunning: false, recoveryHoldReason: reason }) },
+    } as unknown as PlatformAdapter;
+    const restarted = await readLiveSyncStatus(adapter);
+    expect(restarted).toMatchObject({ recoveryHoldReason: reason, daemonHealth: "held", daemonErrors: [reason] });
+    expect(syncStateFromLive(restarted)).toBe("error");
+  });
+});
+
+
+describe("explicit recovery retry", () => {
+  it("only starts on an explicit retry and clears the persisted display from fresh status", async () => {
+    const reason = "Fix the setup problem, then try Sync Now again.";
+    let held = true;
+    let starts = 0;
+    const adapter = {
+      isAvailable: () => true,
+      sync: {
+        getSyncStatus: async () => ok(held ? { recoveryHoldReason: reason } : { daemonRunning: true }),
+        startSync: async () => { starts++; held = false; return ok(undefined); },
+      },
+    } as unknown as PlatformAdapter;
+    const previous = await readLiveSyncStatus(adapter);
+    expect(starts).toBe(0);
+    const result = await retrySyncFromLive(adapter, previous);
+    expect(starts).toBe(1);
+    expect(result.error).toBeNull();
+    expect(result.status.recoveryHoldReason).toBeUndefined();
+    expect(result.status.daemonRunning).toBe(true);
+    expect(result.status.daemonErrors).toEqual([]);
+    expect(syncStateFromLive(result.status)).toBe("idle");
+  });
+
+  it("retains the fresh hold after a failed retry and the previous reason if status cannot be read", async () => {
+    const reason = "Fix the setup problem, then try Sync Now again.";
+    let unreadable = false;
+    const adapter = {
+      isAvailable: () => true,
+      sync: {
+        getSyncStatus: async () => { if (unreadable) throw new Error("offline"); return ok({ recoveryHoldReason: reason }); },
+        startSync: async () => ({ ok: false, message: "Sync engine is still unavailable." }),
+      },
+    } as unknown as PlatformAdapter;
+    const previous = await readLiveSyncStatus(adapter);
+    const failed = await retrySyncFromLive(adapter, previous);
+    expect(failed.status.recoveryHoldReason).toBe(reason);
+    expect(failed.error).toBe("Sync engine is still unavailable.");
+    unreadable = true;
+    expect((await retrySyncFromLive(adapter, previous)).status).toBe(previous);
+  });
+
+  it("does not project a legacy hold into the CLI daemon host", async () => {
+    const adapter = {
+      isAvailable: () => true,
+      sync: {
+        getSyncStatus: async () => ok({ recoveryHoldReason: "old legacy hold" }),
+        daemonSyncStatus: async () => ok({ running: true, paused: false, unitStatus: "running", logPath: "/tmp/sync.log" }),
+      },
+    } as unknown as PlatformAdapter;
+    const hosted = await readLiveSyncStatus(adapter);
+    expect(hosted.recoveryHoldReason).toBeUndefined();
+    expect(hosted.daemonErrors).toEqual([]);
+    expect(hosted.daemonHealth).toBe("running");
+    expect(syncStateFromLive(hosted)).toBe("idle");
   });
 });
