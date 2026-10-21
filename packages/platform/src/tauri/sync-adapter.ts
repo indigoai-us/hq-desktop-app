@@ -6,6 +6,7 @@
  * must not grow a second fetch stack.
  */
 
+import { creatorAvatarBody } from '../creator-avatar-body.js';
 import { createPersonalAppsBridge, personalAppsBridgeUrl } from "../personal-apps-bridge.js";
 import { createPersonalAppsApi, type PersonalAppLocalCallback } from "../personal-apps.js";
 import {
@@ -212,6 +213,9 @@ function asChannelSummary(row: Json): ChannelSummary {
     ...(typeof unread === 'number' ? { unreadCount: unread } : {}),
   };
 }
+
+/** Server cap on a creator avatar upload (POST /v1/creators/me/avatar). */
+export { imageContentType } from '../creator-avatar-body.js';
 
 function invokeError(err: unknown): ReturnType<typeof failure> {
   return failure(
@@ -1231,15 +1235,13 @@ export function createSyncPlatformAdapter(
           tipUrl: typeof profile.tipUrl === 'string' ? profile.tipUrl : null,
         });
       },
-      uploadCreatorAvatar: (filePath) =>
-        typeof filePath === 'string'
-          ? call('upload_creator_avatar', { filePath })
-          : Promise.resolve(
-              failure(
-                'invalid-argument',
-                'Sync avatar uploads require a file path.',
-              ),
-            ),
+      uploadCreatorAvatar: (data) => {
+        if (typeof data === 'string') return call('upload_creator_avatar', { filePath: data });
+        // Cropped photos arrive as bytes; same route and body the native command posts.
+        const avatar = creatorAvatarBody(data);
+        if (!avatar.ok) return Promise.resolve(failure('invalid-argument', avatar.message));
+        return hqProJson('POST', WEB_PATHS.creatorAvatar, avatar.body);
+      },
       requestCreatorAccess: (payload) => {
         const request = asRecord(payload) ?? {};
         return call('request_creator_access', {
