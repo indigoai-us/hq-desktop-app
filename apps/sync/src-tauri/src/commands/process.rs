@@ -2013,9 +2013,10 @@ fn build_spawn_command(path: &str, args: &[String]) -> Command {
     // caller-controlled HQ paths and package ranges into shell syntax.
     let mut cmd = Command::new(path);
     cmd.args(args);
-    // Pass the canonical state directory explicitly, so the runner, the CLI,
-    // and the personal-projection wrapper key state the same way the app does.
-    // A caller's own `SpawnArgs.env` entry is applied later and still wins.
+    // Pass the app's state directory override explicitly in canonical form, so
+    // the runner, the CLI, and the wrapper key state the same way the app does.
+    // Without an override children derive the same default themselves. A
+    // caller's own `SpawnArgs.env` entry is applied later and still wins.
     hq_desktop_core::journal::apply_state_dir_env(&mut cmd);
     // Shared CREATE_NO_WINDOW helper — daemons, probes, and other background
     // children stay invisible. Explicit user-requested terminals do not use
@@ -2075,8 +2076,8 @@ mod hq_cloud_cache_use_tests {
 mod state_dir_env_tests {
     use super::*;
 
-    /// H8: runner and CLI children get the canonical state directory
-    /// explicitly instead of inheriting whatever the app was launched with.
+    /// H8: runner and CLI children get the app's state directory override in
+    /// canonical form, and nothing when there is no override.
     #[test]
     fn spawned_children_receive_the_canonical_state_dir() {
         let cmd = build_spawn_command("npx", &["-y".to_string()]);
@@ -2087,7 +2088,7 @@ mod state_dir_env_tests {
             .map(std::path::PathBuf::from);
         assert_eq!(
             passed,
-            Some(hq_desktop_core::journal::state_dir_for_children())
+            hq_desktop_core::journal::state_dir_override_for_children()
         );
     }
 }

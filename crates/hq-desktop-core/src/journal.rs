@@ -138,16 +138,36 @@ pub fn state_dir_for_children() -> PathBuf {
     state_dir_canonical().unwrap_or_else(|_| state_dir())
 }
 
-/// Set `HQ_STATE_DIR` on a child command explicitly.
-pub fn apply_state_dir_env(command: &mut std::process::Command) {
-    command.env("HQ_STATE_DIR", state_dir_for_children());
+/// The `HQ_STATE_DIR` value children must receive, or `None` when they
+/// should derive the default themselves.
+///
+/// With no override, every child (hq-cloud, the hq CLI, the wrapper) already
+/// derives `realpath(~/.hq)` itself, so the key matches without passing
+/// anything. Passing `HQ_STATE_DIR` in that case is NOT neutral: hq-cloud's
+/// `keychainTokenReadEnabled` treats any `HQ_STATE_DIR` as an isolated state
+/// directory and stops reading the person session from the macOS Keychain.
+/// With an override set for the app, children get its canonical absolute
+/// form, so a relative or symlinked value resolves to one key everywhere.
+pub fn state_dir_override_for_children() -> Option<PathBuf> {
+    std::env::var_os("HQ_STATE_DIR").map(|_| state_dir_for_children())
 }
 
-/// Pin the canonical state directory into this process's environment, so
-/// children spawned without one of the shared command builders inherit the
-/// same value. Call once at startup, before any thread is spawned.
+/// Pass the app's state directory override to a child explicitly, in its
+/// canonical form. A no-op when the app has no override (see above).
+pub fn apply_state_dir_env(command: &mut std::process::Command) {
+    if let Some(dir) = state_dir_override_for_children() {
+        command.env("HQ_STATE_DIR", dir);
+    }
+}
+
+/// Canonicalize the app's own state directory override once at startup, so
+/// children spawned without the shared command builders inherit the same
+/// absolute value. Call before any thread is spawned. A no-op without an
+/// override.
 pub fn pin_state_dir_for_children() {
-    std::env::set_var("HQ_STATE_DIR", state_dir_for_children());
+    if let Some(dir) = state_dir_override_for_children() {
+        std::env::set_var("HQ_STATE_DIR", dir);
+    }
 }
 
 /// True when the state directory lies inside (or is) the given root. Both
@@ -392,6 +412,25 @@ mod tests {
                 .join(".hq")
         );
         assert!(!real_parent.join("missing").exists());
+    }
+
+    /// Without an override nothing is passed: children derive the same
+    /// default, and hq-cloud keeps reading the Keychain session.
+    #[test]
+    fn no_override_means_children_derive_the_default_themselves() {
+        let _guard = crate::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var_os("HQ_STATE_DIR");
+        std::env::remove_var("HQ_STATE_DIR");
+        let mut command = std::process::Command::new("true");
+        apply_state_dir_env(&mut command);
+        let override_value = state_dir_override_for_children();
+        if let Some(value) = previous {
+            std::env::set_var("HQ_STATE_DIR", value);
+        }
+        assert_eq!(override_value, None);
+        assert!(command.get_envs().all(|(key, _)| key != "HQ_STATE_DIR"));
     }
 
     #[test]

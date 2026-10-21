@@ -2598,7 +2598,9 @@ pub fn tokio_spawn_command(path: &str, args: &[&str]) -> tokio::process::Command
     let mut cmd = tokio::process::Command::new(path);
     cmd.args(args);
     no_window_tokio(&mut cmd);
-    cmd.env("HQ_STATE_DIR", crate::journal::state_dir_for_children());
+    if let Some(dir) = crate::journal::state_dir_override_for_children() {
+        cmd.env("HQ_STATE_DIR", dir);
+    }
     cmd
 }
 
