@@ -129,7 +129,7 @@
   import Sidepane from "./Sidepane.svelte";
   import { SidepaneScrollMemory, sidepaneModelKey } from "./sidepane-models.js";
   import CompanySidepane from "./CompanySidepane.svelte";
-  import { resolveOfficeFeature } from "./office-feature.js";
+  import { readOfficeFeature } from "./office-feature.js";
   import { configureCompanyApi } from "../company/company-store.svelte.js";
   import {
     companyPagePlaceholderForPage,
@@ -10794,9 +10794,10 @@
         const denied = accessOutcome(destination, uid);
         if (denied) return denied;
         const company = railCompanyRoster.find((entry) => entry.uid === uid);
-        return resolveOfficeFeature(adapter, company, Boolean(self?.uid)).then((allowed) => {
+        return readOfficeFeature(adapter, company, Boolean(self?.uid)).then((allowed) => {
           if (context.isStale()) return { status: "cancelled" };
-          return allowed && callsHost
+          const granted = allowed === true || (allowed === null && officeGrant === `${self?.uid ?? ""}:${uid}`);
+          return granted && callsHost
             ? { status: "ready", destination }
             : { status: "unavailable", destination, reason: "Office is not available for this company on this device." };
         });
@@ -12726,20 +12727,23 @@
   let officeGrant = $state<string | null>(null);
   const officeScope = $derived(`${self?.uid ?? ""}:${gateCompany?.uid ?? ""}`);
   const officeVisible = $derived(Boolean(callsHost && self?.uid && officeGrant === officeScope));
+  const officeCompanyUid = $derived(gateCompany?.uid ?? null);
+  const officeCompanySlug = $derived(gateCompany?.slug ?? null);
+  const officeAccessible = $derived(Boolean(officeCompanyUid && companyIsAccessible(officeCompanyUid)));
   $effect(() => {
-    const company = gateCompany;
+    const company = { uid: officeCompanyUid ?? "", slug: officeCompanySlug };
     const scope = officeScope;
     const signedIn = Boolean(self?.uid);
     const host = callsHost;
     const platform = adapter;
     officeGrant = null;
-    if (!host || !company?.uid || !companyIsAccessible(company.uid)) return;
+    if (!host || !company.uid || !officeAccessible) return;
     let live = true;
     let sequence = 0;
     const refresh = async () => {
       const request = ++sequence;
-      const allowed = await resolveOfficeFeature(platform, company, signedIn);
-      if (live && request === sequence) officeGrant = allowed ? scope : null;
+      const allowed = await readOfficeFeature(platform, company, signedIn);
+      if (live && request === sequence && allowed !== null) officeGrant = allowed ? scope : null;
     };
     void refresh();
     const timer = setInterval(() => void refresh(), 60_000);
@@ -14215,6 +14219,18 @@
       {/if}
 
       <main class="desktop-main" aria-label="Channel">
+        {#if officeVisible}
+          {#key officeScope}
+            <LazyDoor door={officeDoor} props={{
+              adapter,
+              callsHost,
+              companyUid: officeCompanyUid,
+              companyLabel: companyPaneCompany?.label ?? "This company",
+              visible: railPlaceholder?.id === "office",
+              displayName: (uid: string) => atlasRosterNames.get(uid) ?? uid,
+            }} />
+          {/key}
+        {/if}
         <div
           class="notifications-layer"
           class:is-active={view === "notifications"}
@@ -14289,17 +14305,7 @@
             }}
           />
         {:else if railPlaceholder?.id === "office" && companyPaneCompany}
-          {#if officeVisible}
-            {#key officeScope}
-              <LazyDoor door={officeDoor} props={{
-                adapter,
-                callsHost,
-                companyUid: companyPaneCompany.uid,
-                companyLabel: companyPaneCompany.label,
-                displayName: (uid: string) => atlasRosterNames.get(uid) ?? uid,
-              }} />
-            {/key}
-          {:else}
+          {#if !officeVisible}
             <section class="rail-placeholder" role="status"><h1>Office</h1><p>Office is not available for this company on this device.</p></section>
           {/if}
         {:else if railPlaceholder?.id === "team" && companyPaneCompany}

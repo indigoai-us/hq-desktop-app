@@ -6,6 +6,7 @@
 
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
+import { fromStore, writable } from "svelte/store";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
 import { dispatchEmbeddedNavigation } from "./embedded-navigation.js";
@@ -54,6 +55,7 @@ function webAdapter(): PlatformAdapter {
 const memoryStorage = installMemoryLocalStorage();
 
 let host: HTMLDivElement;
+const companyInput = fromStore(writable<Workspace[]>([]));
 let component: ReturnType<typeof mount> | null = null;
 
 // ActivityRailHost loads ActivityView with a lazy import. Under full-suite
@@ -75,6 +77,7 @@ afterEach(async () => {
 
 
 async function mountShell(companies: Workspace[], adapter = webAdapter()): Promise<void> {
+  companyInput.current = companies;
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(DesktopApp, {
@@ -90,7 +93,7 @@ async function mountShell(companies: Workspace[], adapter = webAdapter()): Promi
         email: "stefan@example.com",
       },
       coreFixtures: false,
-      ...(companies ? { companies } : {}),
+      get companies() { return companyInput.current; },
     },
   });
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -113,7 +116,7 @@ function nativeAdapter(read = async () => true) {
   const discoverOffice = vi.fn(async () => ok({ companyUid: "cmp_indigo", observedAt: Date.now(), people: [] }));
   return { adapter: { ...adapter, kind: "desktop", capabilities: { nativeCalls: true },
     identity: { ...adapter.identity, hasCompanyFeature: read },
-    calls: { preflight: async () => ok({ passed: true }), discoverOffice,
+    calls: { preflight: vi.fn(async () => ok({ passed: true })), discoverOffice,
       listKnocks: async () => ok({ knocks: [] }),
       setOfficeConnectivity: async () => ok({}), setOfficePreference: async () => ok({}),
     },
@@ -166,4 +169,77 @@ describe("Company Office navigation", () => {
     expect(discoverOffice).not.toHaveBeenCalled();
     expect(host.textContent).toContain("Office is not available");
   });
+});
+
+describe("Office lifetime and separate gates", () => {
+  it("keeps the panel and knock listener alive across company metadata refreshes and navigation", async () => {
+    const read = vi.fn(async () => true);
+    const { adapter } = nativeAdapter(read);
+    const listKnocks = vi.fn(async () => ok({ knocks: [{ knockId: "knk_test", companyUid: "cmp_indigo", roomId: "room_peer", callId: "call_peer", epoch: 1, from: "prs_peer", target: "prs_fixture", state: "pending", note: "two minutes", createdAt: Date.now(), updatedAt: Date.now(), expiresAt: Date.now() + 120000 }] }));
+    Object.assign(adapter.calls, { listKnocks });
+    await mountShell(companies, adapter);
+    await openCompany("cmp_indigo");
+    await vi.waitFor(() => expect(host.querySelector('[aria-label="At your office door"]')).not.toBeNull());
+    office()!.click(); await settle();
+    const reads = read.mock.calls.length;
+    const preflights = vi.mocked(adapter.calls.preflight).mock.calls.length;
+    const panelHeading = host.querySelector(".office-panel") ?? [...host.querySelectorAll("h1")].find(e => e.textContent?.includes("A place to find"));
+    companyInput.current = companies.map(c => ({ ...c, displayName: c.displayName + " refreshed" }));
+    await settle();
+    expect(read).toHaveBeenCalledTimes(reads);
+    expect(adapter.calls.preflight).toHaveBeenCalledTimes(preflights);
+    expect(panelHeading?.isConnected).toBe(true);
+    expect(host.textContent).not.toContain("Office is not available");
+    host.querySelector<HTMLButtonElement>('[aria-label="Back"]')!.click(); await settle();
+    expect(host.querySelector('[aria-label="At your office door"]')).not.toBeNull();
+    expect(adapter.calls.preflight).toHaveBeenCalledTimes(preflights);
+  });
+  it("retains a proven grant on transient errors but unmounts on explicit revocation", async () => {
+    let value: boolean | null = true;
+    const { adapter } = nativeAdapter();
+    adapter.identity.readCompanyFeature = async () => value;
+    await mountShell(companies, adapter); await openCompany("cmp_indigo");
+    office()!.click(); await settle();
+    value = null; window.dispatchEvent(new Event("focus")); await settle();
+    expect(office()).not.toBeNull();
+    expect(host.textContent).toContain("A place to find each other.");
+    value = false; window.dispatchEvent(new Event("focus")); await settle();
+    expect(office()).toBeNull();
+    expect(host.textContent).not.toContain("A place to find each other.");
+    expect(host.textContent).toContain("Office is not available");
+  });
+  it("route guard denies a deep link even while the render grant is still true", async () => {
+    let allowed = true;
+    const { adapter } = nativeAdapter(async () => allowed);
+    await mountShell(companies, adapter); await openCompany("cmp_indigo");
+    expect(office()).not.toBeNull();
+    allowed = false;
+    dispatchEmbeddedNavigation({ kind: "extra", page: "company-page-office", companyUid: "cmp_indigo" });
+    await settle();
+    expect(host.textContent).toContain("Office is not available");
+    expect(office()?.getAttribute("aria-current")).not.toBe("page");
+  });
+  it("ignores an older refresh after a newer explicit denial", async () => {
+    const { adapter } = nativeAdapter();
+    let slow!: (v: boolean) => void;
+    let n = 0;
+    adapter.identity.readCompanyFeature = async () => ++n === 2 ? new Promise<boolean>(resolve => { slow = resolve; }) : n === 1;
+    await mountShell(companies, adapter); await openCompany("cmp_indigo");
+    window.dispatchEvent(new Event("focus")); await settle();
+    window.dispatchEvent(new Event("focus")); await settle();
+    expect(office()).toBeNull();
+    slow(true); await settle();
+    expect(office()).toBeNull();
+  });
+});
+
+it("does not grant Office on an initial transient flag failure", async () => {
+  const { adapter, discoverOffice } = nativeAdapter();
+  adapter.identity.readCompanyFeature = async () => null;
+  await mountShell(companies, adapter); await openCompany("cmp_indigo");
+  expect(office()).toBeNull();
+  dispatchEmbeddedNavigation({ kind: "extra", page: "company-page-office", companyUid: "cmp_indigo" });
+  await settle();
+  expect(discoverOffice).not.toHaveBeenCalled();
+  expect(host.textContent).toContain("Office is not available");
 });
