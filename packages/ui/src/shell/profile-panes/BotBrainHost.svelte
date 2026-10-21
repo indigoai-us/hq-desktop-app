@@ -8,7 +8,7 @@
   import { dismissable } from '../../common/dismissable.js';
   import { portal, focusOnMount } from '../../chat/portal.js';
   import BotBrainPanel, { type BrainSwitchProgress } from './BotBrainPanel.svelte';
-  import { BRAIN_PROVIDERS, brainRow, providerId, loginState, type BrainProvider, type BrainRow } from './bot-brain.js';
+  import { BRAIN_PROVIDERS, brainRow, cloudBrainChoices, effortsFor, modelCatalog, providerId, loginState, type BrainProvider, type BrainRow, type ModelCatalog } from './bot-brain.js';
   let { uid, name, runtimeKind, adapter = null, onopenurl }: { uid: string | null; name: string; runtimeKind?: 'local' | 'cloud' | null; adapter?: PlatformAdapter | null; onopenurl?: (url: string) => void } = $props();
   let rows = $state<BrainRow[]>(BRAIN_PROVIDERS.map(p => brainRow(p.id)));
   let local = $state<LocalBotRow | null>(null);
@@ -50,18 +50,24 @@
           return { ...brainRow(p.id, active ? local?.model : ''), active, effort: active && !local?.effortIsDefault ? local?.effort ?? '' : '', state: result?.ok ? loginState(record(result.value)?.state) : 'unknown', canConnect: !!api.sessions.loginStart && !!api.sessions.loginStatus, canSave: active && !!api.bots?.configure, detail: active ? 'Configure the model this local bot uses. Sign-in is shared by local bots using this provider.' : 'You can connect this provider on this computer. Switching this bot’s runtime is not supported here yet.' };
         });
       } else {
-        const result = await api.agents.getProfile?.(bot);
+        const [result, catalog] = await Promise.all([api.agents.getProfile?.(bot), readCatalog(api)]);
         if (version !== generation || request !== readNumber) return;
         const view = result?.ok ? profileFromPayload(result.value, { uid: bot, displayName: name }) : null;
         if (!view?.hasBox || view.freshness.source !== 'live') throw new Error('Cloud status unavailable');
         multiProvider = result?.ok === true && record(record(result.value)?.agent)?.provider === 'agents-v2';
         const activeId = providerId(view.brain.provider);
         canSwitch = multiProvider && !!api.agents.fetch;
-        rows = BRAIN_PROVIDERS.map(p => ({ ...brainRow(p.id, p.id === activeId ? view.brain.model ?? '' : ''), models: brainRow(p.id, p.id === activeId ? view.brain.model ?? '' : '').models.filter(choice => choice.value !== ''), active: p.id === activeId, effort: p.id === activeId ? view.brain.reasoningEffort ?? '' : '', state: loginState(view.brain.logins.find(login => providerId(login.provider) === p.id)?.status), canConnect: !!(multiProvider ? api.agents.fetch : api.agents.restartBrainApproval) && !!onopenurl, canSave: p.id === activeId && !!api.agents.fetch, detail: p.id === activeId ? 'Choose the model and thinking level this bot uses for future messages.' : multiProvider ? 'Connected and ready. Use this brain to move the bot onto it; the current brain stays signed in.' : 'Connect this account for setup. Switching this cloud bot to another provider requires a separate runtime migration.' }));
+        rows = BRAIN_PROVIDERS.map(p => ({ ...brainRow(p.id, p.id === activeId ? view.brain.model ?? '' : ''), ...cloudBrainChoices(p.id, catalog, p.id === activeId ? view.brain.model ?? '' : ''), active: p.id === activeId, effort: p.id === activeId ? view.brain.reasoningEffort ?? '' : '', state: loginState(view.brain.logins.find(login => providerId(login.provider) === p.id)?.status), canConnect: !!(multiProvider ? api.agents.fetch : api.agents.restartBrainApproval) && !!onopenurl, canSave: p.id === activeId && !!api.agents.fetch, detail: p.id === activeId ? 'Choose the model and thinking level this bot uses for future messages.' : multiProvider ? 'Connected and ready. Use this brain to move the bot onto it; the current brain stays signed in.' : 'Connect this account for setup. Switching this cloud bot to another provider requires a separate runtime migration.' }));
         if (canSwitch) await readSwitch(bot, version, request, restoreSwitch);
       }
     } catch { if (version === generation && request === readNumber) { local = null; rows = BRAIN_PROVIDERS.map(p => brainRow(p.id)); error = 'Could not verify this bot’s brain configuration. Refresh to try again.'; } }
     finally { if (version === generation && request === readNumber) loading = false; }
+  }
+  async function readCatalog(api: PlatformAdapter): Promise<ModelCatalog | null> {
+    try {
+      const response = await api.agents.fetch?.('/v1/agents/models', { method: 'GET' });
+      return response && response.status >= 200 && response.status < 300 ? modelCatalog(JSON.parse(await response.text())) : null;
+    } catch { return null; }
   }
   function closeSignIn() { if (!submitting && !starting) { signAttempt++; signFailed = false; signing = null; approval = null; code = ''; signError = ''; } }
   async function checkSignIn() {
@@ -181,7 +187,7 @@
     const api = adapter, bot = uid, version = generation;
     const row = rows.find(row => row.id === provider);
     if (!api?.agents.fetch || !bot || !canSwitch || !row || row.active || row.state !== 'connected' || switching) throw new Error('This brain cannot be switched to right now.');
-    if (!row.models.some(choice => choice.value === model) || (effort && !row.efforts.includes(effort))) throw new Error('Choose a model and thinking level for this brain.');
+    if (!row.models.some(choice => choice.value === model) || (effort && !effortsFor(row, model).includes(effort))) throw new Error('Choose a model and thinking level for this brain.');
     const body = JSON.stringify({ brain: provider, model, ...(effort ? { reasoningEffort: effort } : {}) });
     let response: { status: number; text: () => Promise<string> };
     try { response = await api.agents.fetch(`/v1/agents/${encodeURIComponent(bot)}/brain-switch`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }); }
@@ -226,7 +232,7 @@
     const api = adapter, bot = local, version = generation;
     const row = rows.find(row => row.id === provider);
     if (!isLocal) {
-      if (!api?.agents.fetch || !uid || !row?.active || !row.canSave || row.state !== 'connected' || !model || !row.models.some(choice => choice.value === model) || effort && !row.efforts.includes(effort)) throw new Error('Unavailable');
+      if (!api?.agents.fetch || !uid || !row?.active || !row.canSave || row.state !== 'connected' || !model || !row.models.some(choice => choice.value === model) || effort && !effortsFor(row, model).includes(effort)) throw new Error('Unavailable');
       const botUid = uid;
       const latest = await api.agents.getProfile?.(botUid);
       if (version !== generation) return;
