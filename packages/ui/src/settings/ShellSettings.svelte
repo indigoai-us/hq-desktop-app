@@ -615,7 +615,7 @@
                 disabled={!adapter}
                 save={savePhoto}
                 onsaved={photoSaved}
-                onofferchange={(open) => (publicPhotoOfferOpen = open)}
+                onphotobusy={(open) => (publicPhotoOfferOpen = open)}
                 other={publicProfileTarget}
                 testid="settings-photo"
                 imgTestid="settings-avatar-img"

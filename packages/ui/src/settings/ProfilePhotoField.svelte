@@ -35,8 +35,8 @@
     changeLabel?: string;
     save: (photo: PreparedAvatar) => Promise<PhotoSaveResult>;
     onsaved?: (src: string) => void;
-    /** True while the "use this photo on the other profile" line is waiting on an answer. */
-    onofferchange?: (open: boolean) => void;
+    /** True while the photo is being adjusted or the "use on the other profile" line waits on an answer. */
+    onphotobusy?: (open: boolean) => void;
     other?: OtherProfile | null;
     meta?: Snippet;
     /** "row": meta in the middle, buttons on the right (Settings › Profile).
@@ -60,7 +60,7 @@
     changeLabel = "Change photo",
     save,
     onsaved,
-    onofferchange,
+    onphotobusy,
     other = null,
     meta,
     layout = "row",
@@ -98,7 +98,7 @@
   let saveSeq = 0;
 
   $effect(() => {
-    onofferchange?.(offer !== null && offer.state !== "done");
+    onphotobusy?.(editing || (offer !== null && offer.state !== "done"));
   });
   /** Bumped on each successful save to replay the HQ glow around the photo. */
   let glowKey = $state(0);

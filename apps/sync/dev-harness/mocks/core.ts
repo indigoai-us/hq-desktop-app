@@ -2245,7 +2245,13 @@ function creatorAnswer(cmd: string, args?: Record<string, unknown>): unknown {
     return { ...harnessCreator };
   }
   if (cmd === 'hq_pro_fetch' && args?.url === '/v1/creators/me/avatar') {
-    return { status: 200, body: JSON.stringify({ handle: 'drake' }) };
+    try {
+      const sent = JSON.parse(String(args?.body ?? '{}')) as { contentType?: string; data?: string };
+      if (sent.data) harnessCreator.avatarUrl = `data:${sent.contentType ?? 'image/jpeg'};base64,${sent.data}`;
+    } catch {
+      // keep the old photo
+    }
+    return { status: 200, body: JSON.stringify({ handle: 'drake', avatarUrl: harnessCreator.avatarUrl }) };
   }
   return NOT_HANDLED;
 }

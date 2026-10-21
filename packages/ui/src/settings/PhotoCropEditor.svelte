@@ -24,7 +24,6 @@
 
   let { source, crop = CENTER_CROP, busy = false, ondone, oncancel }: Props = $props();
 
-  const STAGE = 168;
   const WINDOW = 144;
   const PREVIEWS = [48, 26];
 
@@ -106,14 +105,13 @@
     tabindex="0"
     aria-label="Photo crop. Drag or use arrow keys to move, scroll to zoom, Enter to save, Escape to cancel."
     data-testid="photo-crop-stage"
-    style={`--stage:${STAGE}px;--window:${WINDOW}px`}
+    style={`--window:${WINDOW}px`}
     onpointerdown={startDrag}
     onwheel={onWheel}
     onkeydown={onKeydown}
     ondblclick={() => (draft = clampCrop(source.width, source.height, { ...draft, x: 0, y: 0 }))}
   >
     <img src={source.url} alt="" draggable="false" style={imgStyle(WINDOW)} />
-    <span class="mask" aria-hidden="true"></span>
     <span class="ring" aria-hidden="true"></span>
   </div>
 
@@ -178,9 +176,9 @@
   .stage {
     position: relative;
     flex: none;
-    width: var(--stage);
-    height: var(--stage);
-    border-radius: 12px;
+    width: var(--window);
+    height: var(--window);
+    border-radius: 50%;
     overflow: hidden;
     background: var(--v4-raised, #161618);
     cursor: grab;
@@ -195,6 +193,7 @@
   .stage:focus-visible {
     outline: 1.5px solid var(--v4-focus-ring, #6366f1);
     outline-offset: 3px;
+    border-radius: 50%;
   }
 
   .stage img,
@@ -206,17 +205,6 @@
     pointer-events: none;
   }
 
-  .mask {
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    background: radial-gradient(
-      circle at center,
-      transparent 0 calc(var(--window) / 2 - 0.5px),
-      rgb(10 10 10 / 0.62) calc(var(--window) / 2)
-    );
-  }
-
   .ring {
     position: absolute;
     left: 50%;
@@ -225,7 +213,7 @@
     height: var(--window);
     margin: calc(var(--window) / -2) 0 0 calc(var(--window) / -2);
     border-radius: 50%;
-    box-shadow: 0 0 0 1px rgb(255 255 255 / 0.55);
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.12);
     pointer-events: none;
   }
 

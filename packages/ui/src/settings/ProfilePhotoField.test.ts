@@ -233,27 +233,39 @@ describe("ProfilePhotoField", () => {
   });
 
   it("reports while the offer is waiting on an answer", async () => {
-    const onofferchange = vi.fn();
-    render({ other: { current: vi.fn(async () => null), apply: vi.fn(async () => true), copy }, onofferchange });
-    expect(onofferchange).toHaveBeenLastCalledWith(false);
+    const onphotobusy = vi.fn();
+    render({ other: { current: vi.fn(async () => null), apply: vi.fn(async () => true), copy }, onphotobusy });
+    expect(onphotobusy).toHaveBeenLastCalledWith(false);
 
     await pick();
     await settle(() => expect(q("p-offer")).not.toBeNull());
-    expect(onofferchange).toHaveBeenLastCalledWith(true);
+    expect(onphotobusy).toHaveBeenLastCalledWith(true);
 
     q("p-offer-action")!.click();
     await settle(() => expect(q("p-offer-text")?.textContent).toBe(copy.emptyDone));
-    expect(onofferchange).toHaveBeenLastCalledWith(false);
+    expect(onphotobusy).toHaveBeenLastCalledWith(false);
+  });
+
+  it("reports busy while the crop is open", async () => {
+    const onphotobusy = vi.fn();
+    render({ photoUrl: MEMBER_URL, onphotobusy });
+    expect(onphotobusy).toHaveBeenLastCalledWith(false);
+    q("p-adjust")!.click();
+    await settle(() => expect(q("photo-crop-editor")).not.toBeNull());
+    expect(onphotobusy).toHaveBeenLastCalledWith(true);
+    q("photo-crop-cancel")!.click();
+    flushSync();
+    expect(onphotobusy).toHaveBeenLastCalledWith(false);
   });
 
   it("reports the offer closed after Not now", async () => {
-    const onofferchange = vi.fn();
-    render({ other: { current: vi.fn(async () => null), apply: vi.fn(async () => true), copy }, onofferchange });
+    const onphotobusy = vi.fn();
+    render({ other: { current: vi.fn(async () => null), apply: vi.fn(async () => true), copy }, onphotobusy });
     await pick();
-    await settle(() => expect(onofferchange).toHaveBeenLastCalledWith(true));
+    await settle(() => expect(onphotobusy).toHaveBeenLastCalledWith(true));
     q("p-offer-dismiss")!.click();
     flushSync();
-    expect(onofferchange).toHaveBeenLastCalledWith(false);
+    expect(onphotobusy).toHaveBeenLastCalledWith(false);
   });
 
   it("display-only mode shows the photo without controls", () => {
