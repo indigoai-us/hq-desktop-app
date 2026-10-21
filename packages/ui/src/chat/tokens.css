@@ -128,6 +128,18 @@
   --v4-error: var(--popover-danger, #dc2626);
   --v4-unread: var(--v4-text-1);
 
+  /* Kind hues, shared with the iOS app (hq-native-mobile Theme.swift,
+     FileKindTint). The palette stays achromatic; these are the only hues and
+     each means one thing: a folder, a document, an image, a bot. They are
+     drawn as the glyph or label in the hue on a light tint of it, never as
+     a solid fill. Dark mode takes a stronger tint or it reads as grey. */
+  --kind-folder: #2f7bf5;
+  --kind-document: #0e8f99;
+  --kind-image: #c93d8a;
+  --kind-bot: #5b5bd6;
+  --kind-tile-tint: 14%;
+  --kind-tag-tint: 12%;
+
   --v4-control-bg: var(--c-btn2-bg, #0000000d);
   --v4-control-border: var(--c-field-border, #00000014);
   --v4-control-faint: var(--c-field-bg, #0000000d);
@@ -165,6 +177,12 @@
     --v4-warn: #f59e0b;
     --v4-error: var(--popover-danger, #ef4444);
     --v4-unread: var(--v4-text-1);
+    --kind-folder: #5c9bff;
+    --kind-document: #3cc3cc;
+    --kind-image: #ee75b4;
+    --kind-bot: #9b9bf7;
+    --kind-tile-tint: 18%;
+    --kind-tag-tint: 24%;
     --v4-control-bg: rgba(255, 255, 255, 0.1);
     --v4-control-border: rgba(255, 255, 255, 0.16);
     --v4-control-faint: rgba(255, 255, 255, 0.08);
@@ -205,6 +223,12 @@
   --v4-warn: #f59e0b;
   --v4-error: var(--popover-danger, #ef4444);
   --v4-unread: var(--v4-text-1);
+  --kind-folder: #5c9bff;
+  --kind-document: #3cc3cc;
+  --kind-image: #ee75b4;
+  --kind-bot: #9b9bf7;
+  --kind-tile-tint: 18%;
+  --kind-tag-tint: 24%;
   --v4-control-bg: rgba(255, 255, 255, 0.1);
   --v4-control-border: rgba(255, 255, 255, 0.16);
   --v4-control-faint: rgba(255, 255, 255, 0.08);
