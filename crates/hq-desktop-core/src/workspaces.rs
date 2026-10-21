@@ -248,14 +248,18 @@ pub fn discover_local_companies(hq_root: &Path) -> (Vec<LocalCompanyEntry>, Opti
             // unconnected entries so they're still visible (and connectable)
             // in the UI — otherwise a folder-only company shows as Cloud Only
             // (via memberships pass) when it actually exists locally.
+            //
+            // A folder the manifest already covers is skipped: by slug, by
+            // `path`, or by a `companies/<cloud uid>/` name matching an
+            // entry's `cloud_uid`. The sync runner can leave that last kind
+            // behind, and listing it would show the company twice, once under
+            // a "Cmp_..." name (feedback 7e456ff8).
+            let extras: Vec<LocalCompanyEntry> = folder_enumeration_fallback(hq_root)
+                .into_iter()
+                .filter(|extra| folder_is_new_to_manifest(&extra.slug, &extra.path, &entries))
+                .collect();
             let mut union = entries;
-            let known: std::collections::HashSet<String> =
-                union.iter().map(|e| e.slug.clone()).collect();
-            for extra in folder_enumeration_fallback(hq_root) {
-                if !known.contains(&extra.slug) {
-                    union.push(extra);
-                }
-            }
+            union.extend(extras);
             (union, None)
         }
         ManifestLoad::Absent => (folder_enumeration_fallback(hq_root), None),
@@ -359,6 +363,17 @@ pub fn folder_needs_manifest_entry(
     if folder.starts_with('_') || looks_like_company_uid(folder) {
         return false;
     }
+    folder_is_new_to_manifest(folder, folder_path, entries)
+}
+
+/// True when no manifest entry covers the folder `companies/<folder>`: no
+/// entry has that slug, that `path`, or a `cloud_uid` equal to the folder
+/// name.
+fn folder_is_new_to_manifest(
+    folder: &str,
+    folder_path: &Path,
+    entries: &[LocalCompanyEntry],
+) -> bool {
     !entries.iter().any(|e| {
         e.slug == folder
             || e.path == folder_path
@@ -819,6 +834,54 @@ companies:
         let (entries, _) = discover_local_companies(tmp.path());
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].slug, "_archive");
+    }
+
+    /// Feedback 7e456ff8: the sync runner can leave `companies/<cloud uid>/`
+    /// next to the real company folder. The folder union must not list it as
+    /// a second company (it showed as "Cmp_01KT...").
+    #[test]
+    fn discover_skips_folder_named_after_a_manifest_cloud_uid() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            r#"
+companies:
+  solace:
+    name: "Solace"
+    path: "companies/solace"
+    cloud_uid: "cmp_01KT9FG6G8NXKJEJ372TZ42M00"
+"#,
+        );
+        std::fs::create_dir_all(tmp.path().join("companies/solace")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("companies/cmp_01KT9FG6G8NXKJEJ372TZ42M00"))
+            .unwrap();
+        std::fs::create_dir_all(tmp.path().join("companies/other-co")).unwrap();
+
+        let (entries, err) = discover_local_companies(tmp.path());
+        assert!(err.is_none());
+        let slugs: Vec<&str> = entries.iter().map(|e| e.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["solace", "other-co"]);
+    }
+
+    /// A folder the manifest lists under a different key (by `path`) is the
+    /// same company, not a second one.
+    #[test]
+    fn discover_skips_folder_the_manifest_covers_by_path() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            r#"
+companies:
+  weylyn:
+    name: "Weylyn"
+    path: "companies/weylyn-co/"
+"#,
+        );
+        std::fs::create_dir_all(tmp.path().join("companies/weylyn-co")).unwrap();
+
+        let (entries, _) = discover_local_companies(tmp.path());
+        let slugs: Vec<&str> = entries.iter().map(|e| e.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["weylyn"]);
     }
 
     #[test]
