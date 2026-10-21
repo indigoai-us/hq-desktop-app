@@ -1696,6 +1696,9 @@ fn main() {
                     util::logfile::log("recall-sdk", &format!("startup: failed to clear stale recording activity marker: {e}"));
                 }
                 let handle = app.handle().clone();
+                // Restarts the SDK if this launch skipped it or the bridge
+                // exits later; runs regardless of the launch decision below.
+                commands::recall_sdk::setup_recall_sdk_supervisor(handle.clone());
                 tauri::async_runtime::spawn(async move {
                     if !commands::recall_sdk::meeting_detect_eligible().await {
                         util::logfile::log(

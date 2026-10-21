@@ -665,10 +665,213 @@ pub struct BotStatusResponse {
     pub source_landed: bool,
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SDK supervision
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Store a meeting-detect eligibility result in a process-lifetime cache.
+///
+/// Only a positive result is cached. A negative result usually means the
+/// tokens were missing or unreadable at the moment of the check (launch before
+/// sign-in, a token file mid-rewrite, a keychain read that failed once). If
+/// that `false` were cached, meeting detection would stay off until the app
+/// was restarted, even after the user signed in.
+pub fn store_meeting_detect_eligibility(cell: &OnceLock<bool>, eligible: bool) {
+    if eligible {
+        let _ = cell.set(true);
+    }
+}
+
+/// How often the app checks that the Recall SDK sidecar is still running.
+pub const SDK_SUPERVISOR_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// A sidecar run shorter than this counts as a failed start for backoff.
+pub const SDK_HEALTHY_RUN: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Longest wait between restart attempts after repeated short runs.
+pub const SDK_RESTART_BACKOFF_CAP: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Wait before the next start after `consecutive_short_runs` failed runs.
+/// 0 → no wait, then 1, 2, 4, 8, 16 minutes, capped at 30 minutes.
+pub fn sdk_restart_backoff(consecutive_short_runs: u32) -> std::time::Duration {
+    if consecutive_short_runs == 0 {
+        return std::time::Duration::ZERO;
+    }
+    let exp = (consecutive_short_runs - 1).min(16);
+    SDK_SUPERVISOR_INTERVAL
+        .saturating_mul(1u32 << exp)
+        .min(SDK_RESTART_BACKOFF_CAP)
+}
+
+/// Decides when the app should (re)start the Recall SDK sidecar.
+///
+/// Before this existed the sidecar was started once at launch (or once from
+/// the permissions wizard). If it was skipped at launch, or the bridge process
+/// exited later, meeting detection stayed off for the rest of the process
+/// lifetime: no `meeting:detected`, no Record banner, no ledger entry.
+///
+/// Call [`SdkSupervisor::tick`] on every supervisor interval with whether the
+/// sidecar is currently registered and whether the start gates (signed in,
+/// permissions granted) are open. A `true` return means "call
+/// `start_recall_sdk` now"; the caller must then call
+/// [`SdkSupervisor::record_start`].
+#[derive(Debug, Default, Clone)]
+pub struct SdkSupervisor {
+    started_at: Option<std::time::Instant>,
+    consecutive_short_runs: u32,
+    next_attempt_at: Option<std::time::Instant>,
+}
+
+impl SdkSupervisor {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of consecutive sidecar runs that ended before [`SDK_HEALTHY_RUN`].
+    pub fn consecutive_short_runs(&self) -> u32 {
+        self.consecutive_short_runs
+    }
+
+    pub fn tick(&mut self, now: std::time::Instant, running: bool, gates_open: bool) -> bool {
+        if running {
+            if self.started_at.is_none() {
+                // Started by another caller (the permissions wizard).
+                self.started_at = Some(now);
+            }
+            return false;
+        }
+
+        // Not running. If we saw it start, account for the run that ended.
+        if let Some(started) = self.started_at.take() {
+            if now.saturating_duration_since(started) < SDK_HEALTHY_RUN {
+                self.consecutive_short_runs = self.consecutive_short_runs.saturating_add(1);
+            } else {
+                self.consecutive_short_runs = 0;
+            }
+            self.next_attempt_at = Some(now + sdk_restart_backoff(self.consecutive_short_runs));
+        }
+
+        if !gates_open {
+            return false;
+        }
+        match self.next_attempt_at {
+            Some(at) if now < at => false,
+            _ => true,
+        }
+    }
+
+    /// Record that `start_recall_sdk` was called at `now`.
+    pub fn record_start(&mut self, now: std::time::Instant) {
+        self.started_at = Some(now);
+        self.next_attempt_at = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::events::{DetectionSource, MeetingPlatform, RecallPermission};
+
+    #[test]
+    fn eligibility_cache_does_not_latch_false() {
+        // Regression (feedback_73935996-a193-4553-b182-bb528e030dcb): a
+        // launch-time check before tokens were readable cached `false` for
+        // the whole process, so meeting detection never started.
+        let cell = OnceLock::new();
+        store_meeting_detect_eligibility(&cell, false);
+        assert_eq!(cell.get(), None, "false must not be cached");
+        store_meeting_detect_eligibility(&cell, true);
+        assert_eq!(cell.get(), Some(&true));
+    }
+
+    #[test]
+    fn supervisor_starts_when_gates_open_and_not_running() {
+        let mut sup = SdkSupervisor::new();
+        let t0 = std::time::Instant::now();
+        assert!(sup.tick(t0, false, true));
+    }
+
+    #[test]
+    fn supervisor_waits_while_gates_closed_then_starts_after_sign_in() {
+        // Regression (feedback_73935996-a193-4553-b182-bb528e030dcb): the SDK
+        // was skipped at launch (signed out / permissions not yet readable)
+        // and nothing started it later.
+        let mut sup = SdkSupervisor::new();
+        let t0 = std::time::Instant::now();
+        assert!(!sup.tick(t0, false, false));
+        assert!(!sup.tick(t0 + SDK_SUPERVISOR_INTERVAL, false, false));
+        assert!(sup.tick(t0 + SDK_SUPERVISOR_INTERVAL * 2, false, true));
+    }
+
+    #[test]
+    fn supervisor_does_not_start_while_running() {
+        let mut sup = SdkSupervisor::new();
+        let t0 = std::time::Instant::now();
+        assert!(sup.tick(t0, false, true));
+        sup.record_start(t0);
+        assert!(!sup.tick(t0 + SDK_SUPERVISOR_INTERVAL, true, true));
+        assert!(!sup.tick(t0 + SDK_HEALTHY_RUN * 3, true, true));
+    }
+
+    #[test]
+    fn supervisor_restarts_sidecar_that_exited_after_a_healthy_run() {
+        // Regression (feedback_73935996-a193-4553-b182-bb528e030dcb): the
+        // bridge worked for the 08:00 call, then detection was dead for the
+        // 08:30 and 10:00 calls in the same app session. A sidecar exit had
+        // no restart path.
+        let mut sup = SdkSupervisor::new();
+        let t0 = std::time::Instant::now();
+        assert!(sup.tick(t0, false, true));
+        sup.record_start(t0);
+        let later = t0 + SDK_HEALTHY_RUN + SDK_SUPERVISOR_INTERVAL;
+        assert!(sup.tick(later, false, true), "restart immediately after a healthy run");
+        assert_eq!(sup.consecutive_short_runs(), 0);
+    }
+
+    #[test]
+    fn supervisor_backs_off_on_repeated_short_runs() {
+        let mut sup = SdkSupervisor::new();
+        let mut now = std::time::Instant::now();
+        assert!(sup.tick(now, false, true));
+        sup.record_start(now);
+
+        // First crash: wait one interval.
+        now += SDK_SUPERVISOR_INTERVAL;
+        assert!(!sup.tick(now, false, true));
+        assert_eq!(sup.consecutive_short_runs(), 1);
+        now += SDK_SUPERVISOR_INTERVAL;
+        assert!(sup.tick(now, false, true));
+        sup.record_start(now);
+
+        // Second crash: wait two intervals.
+        now += SDK_SUPERVISOR_INTERVAL;
+        assert!(!sup.tick(now, false, true));
+        assert_eq!(sup.consecutive_short_runs(), 2);
+        now += SDK_SUPERVISOR_INTERVAL;
+        assert!(!sup.tick(now, false, true));
+        now += SDK_SUPERVISOR_INTERVAL;
+        assert!(sup.tick(now, false, true));
+    }
+
+    #[test]
+    fn supervisor_adopts_a_sidecar_started_elsewhere() {
+        // The permissions wizard can start the SDK directly; a later exit
+        // must still be restarted.
+        let mut sup = SdkSupervisor::new();
+        let t0 = std::time::Instant::now();
+        assert!(!sup.tick(t0, true, true));
+        assert!(sup.tick(t0 + SDK_HEALTHY_RUN * 2, false, true));
+    }
+
+    #[test]
+    fn sdk_restart_backoff_is_capped() {
+        assert_eq!(sdk_restart_backoff(0), std::time::Duration::ZERO);
+        assert_eq!(sdk_restart_backoff(1), SDK_SUPERVISOR_INTERVAL);
+        assert_eq!(sdk_restart_backoff(2), SDK_SUPERVISOR_INTERVAL * 2);
+        assert_eq!(sdk_restart_backoff(3), SDK_SUPERVISOR_INTERVAL * 4);
+        assert_eq!(sdk_restart_backoff(10), SDK_RESTART_BACKOFF_CAP);
+        assert_eq!(sdk_restart_backoff(u32::MAX), SDK_RESTART_BACKOFF_CAP);
+    }
 
     fn meeting(line: &str) -> MeetingDetectedEvent {
         match parse_sdk_line(line).expect("should parse") {
