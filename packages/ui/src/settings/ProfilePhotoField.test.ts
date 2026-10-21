@@ -35,6 +35,7 @@ import type { OtherProfile } from "./profile-photo.js";
 
 const MEMBER_URL =
   "https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/members/prs_1/a.jpg?sig=1";
+const LOCAL_PHOTO = "data:image/jpeg;base64,TE9DQUw=";
 const OTHER_URL =
   "https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/creators/drake/b.jpg?sig=2";
 
@@ -142,7 +143,7 @@ describe("ProfilePhotoField", () => {
 
   it("Undo puts the previous photo back", async () => {
     const save = vi.fn(async () => ({ ok: true as const, url: null }));
-    render({ photoUrl: MEMBER_URL, save });
+    render({ photoUrl: LOCAL_PHOTO, save });
 
     await pick();
     await settle(() => expect(q("p-undo")).not.toBeNull());
@@ -150,12 +151,37 @@ describe("ProfilePhotoField", () => {
     await settle(() => expect(save).toHaveBeenCalledTimes(2));
 
     const { loadPhotoSource } = await import("./profile-photo.js");
-    expect(loadPhotoSource).toHaveBeenCalledWith(MEMBER_URL);
+    expect(loadPhotoSource).toHaveBeenCalledWith(LOCAL_PHOTO);
+  });
+
+  it("offers no Undo back to a server photo it cannot read", async () => {
+    render({ photoUrl: MEMBER_URL, save: vi.fn(async () => ({ ok: true as const, url: null })) });
+    await pick();
+    await settle(() => expect(q("p-status")?.textContent).toContain("Photo updated"));
+    expect(q("p-undo")).toBeNull();
+  });
+
+  it("hides Adjust for a server photo it cannot read; clicking the photo opens the picker", async () => {
+    render({ photoUrl: MEMBER_URL });
+    expect(q("p-adjust")).toBeNull();
+    const input = q("p-input") as HTMLInputElement;
+    const click = vi.spyOn(input, "click");
+    q("p-avatar")!.click();
+    expect(click).toHaveBeenCalled();
+    expect(q("photo-crop-editor")).toBeNull();
+    const { loadPhotoSource } = await import("./profile-photo.js");
+    expect(loadPhotoSource).not.toHaveBeenCalled();
+  });
+
+  it("shows Adjust once a photo is picked, even over a server photo", async () => {
+    render({ photoUrl: MEMBER_URL });
+    await pick();
+    await settle(() => expect(q("p-adjust")).not.toBeNull());
   });
 
   it("Adjust opens the crop in the row; Done saves the new crop, Cancel saves nothing", async () => {
     const save = vi.fn(async () => ({ ok: true as const, url: null }));
-    render({ photoUrl: MEMBER_URL, save });
+    render({ photoUrl: LOCAL_PHOTO, save });
 
     q("p-adjust")!.click();
     await settle(() => expect(q("photo-crop-editor")).not.toBeNull());
@@ -247,7 +273,7 @@ describe("ProfilePhotoField", () => {
   });
 
   it("the avatar shows the crop live while adjusting, and goes back on Cancel", async () => {
-    render({ photoUrl: MEMBER_URL, size: 64 });
+    render({ photoUrl: LOCAL_PHOTO, size: 64 });
     q("p-adjust")!.click();
     await settle(() => expect(q("p-live")).not.toBeNull());
     expect(q("p-img")).toBeNull();
@@ -267,7 +293,7 @@ describe("ProfilePhotoField", () => {
 
   it("reports busy while the crop is open", async () => {
     const onphotobusy = vi.fn();
-    render({ photoUrl: MEMBER_URL, onphotobusy });
+    render({ photoUrl: LOCAL_PHOTO, onphotobusy });
     expect(onphotobusy).toHaveBeenLastCalledWith(false);
     q("p-adjust")!.click();
     await settle(() => expect(q("photo-crop-editor")).not.toBeNull());

@@ -117,6 +117,14 @@
     };
   });
   const hasPhoto = $derived(Boolean(savedSrc ?? photoUrl));
+  // The photo server sends no CORS headers, so the app can only read the pixels
+  // of photos it holds locally (picked this session, or a data:/blob: URL).
+  // Adjust and Undo need those pixels; without them they stay hidden.
+  const canAdjust = $derived(Boolean(session) || readableUrl(savedSrc ?? photoUrl));
+
+  function readableUrl(url: string | null | undefined): boolean {
+    return typeof url === "string" && (url.startsWith("data:") || url.startsWith("blob:"));
+  }
   const busy = $derived(status === "saving" || editBusy);
 
   function setStatus(next: typeof status, message = ""): void {
@@ -130,7 +138,7 @@
   function currentAsPrevious(): Previous {
     if (session) return { source: session.source, crop: session.crop };
     const url = savedSrc ?? photoUrl;
-    return url ? { url } : null;
+    return readableUrl(url) ? { url: url! } : null;
   }
 
   async function commit(
@@ -206,7 +214,7 @@
       return;
     }
     const url = savedSrc ?? photoUrl;
-    if (!url) {
+    if (!url || !readableUrl(url)) {
       fileInput?.click();
       return;
     }
@@ -320,10 +328,10 @@
       class:drop={dropping}
       class:saving={busy}
       style={`--ppf-size:${size}px`}
-      aria-label={hasPhoto ? "Adjust your photo" : "Choose a photo"}
+      aria-label={canAdjust ? "Adjust your photo" : hasPhoto ? "Change your photo" : "Choose a photo"}
       disabled={disabled}
       data-testid={`${testid}-avatar`}
-      onclick={() => (hasPhoto ? void openEditor() : fileInput?.click())}
+      onclick={() => (canAdjust ? void openEditor() : fileInput?.click())}
       ondragenter={(e) => onDrag(e, true)}
       ondragover={(e) => onDrag(e, true)}
       ondragleave={(e) => onDrag(e, false)}
@@ -339,7 +347,7 @@
       {:else}
         <span class="initial" data-testid={fallbackTestid}>{initial}</span>
       {/if}
-      <span class="hover" aria-hidden="true">{dropping ? "Drop" : hasPhoto ? "Adjust" : "Choose"}</span>
+      <span class="hover" aria-hidden="true">{dropping ? "Drop" : canAdjust ? "Adjust" : hasPhoto ? "Change" : "Choose"}</span>
     </button>
     </span>
   {:else}
@@ -374,7 +382,7 @@
   {/snippet}
 
   {#snippet adjustButton()}
-    {#if hasPhoto && !editing}
+    {#if canAdjust && !editing}
       <button
         type="button"
         class="chip"

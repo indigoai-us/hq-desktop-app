@@ -1070,9 +1070,6 @@
     border-color: var(--v4-text-1, #fafafa);
     background: var(--v4-text-1, #fafafa);
     color: var(--v4-ground, #0a0a0a);
-    transition:
-      background-color 0.2s ease-out,
-      color 0.2s ease-out;
   }
 
   .ss-save-error {

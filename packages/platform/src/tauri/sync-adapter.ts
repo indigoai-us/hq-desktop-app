@@ -6,6 +6,7 @@
  * must not grow a second fetch stack.
  */
 
+import { creatorAvatarBody } from '../creator-avatar-body.js';
 import { createPersonalAppsBridge, personalAppsBridgeUrl } from "../personal-apps-bridge.js";
 import { createPersonalAppsApi, type PersonalAppLocalCallback } from "../personal-apps.js";
 import {
@@ -214,31 +215,7 @@ function asChannelSummary(row: Json): ChannelSummary {
 }
 
 /** Server cap on a creator avatar upload (POST /v1/creators/me/avatar). */
-const MAX_CREATOR_AVATAR_BYTES = 2 * 1024 * 1024;
-
-/** Image type from magic bytes, limited to what the avatar route accepts. */
-export function imageContentType(bytes: Uint8Array): string | null {
-  const b = bytes;
-  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
-  if (b.length >= 4 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png';
-  if (b.length >= 3 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return 'image/gif';
-  if (
-    b.length >= 12 &&
-    b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
-    b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50
-  ) {
-    return 'image/webp';
-  }
-  return null;
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let bin = '';
-  for (let i = 0; i < bytes.length; i += 0x8000) {
-    bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  }
-  return btoa(bin);
-}
+export { imageContentType } from '../creator-avatar-body.js';
 
 function invokeError(err: unknown): ReturnType<typeof failure> {
   return failure(
@@ -1261,19 +1238,9 @@ export function createSyncPlatformAdapter(
       uploadCreatorAvatar: (data) => {
         if (typeof data === 'string') return call('upload_creator_avatar', { filePath: data });
         // Cropped photos arrive as bytes; same route and body the native command posts.
-        const contentType = imageContentType(data);
-        if (!contentType) {
-          return Promise.resolve(
-            failure('invalid-argument', 'Avatar must be a PNG, JPEG, WebP, or GIF image.'),
-          );
-        }
-        if (data.byteLength > MAX_CREATOR_AVATAR_BYTES) {
-          return Promise.resolve(failure('invalid-argument', 'Avatar must be 2 MiB or smaller.'));
-        }
-        return hqProJson('POST', WEB_PATHS.creatorAvatar, {
-          contentType,
-          data: bytesToBase64(data),
-        });
+        const avatar = creatorAvatarBody(data);
+        if (!avatar.ok) return Promise.resolve(failure('invalid-argument', avatar.message));
+        return hqProJson('POST', WEB_PATHS.creatorAvatar, avatar.body);
       },
       requestCreatorAccess: (payload) => {
         const request = asRecord(payload) ?? {};

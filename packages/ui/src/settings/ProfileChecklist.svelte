@@ -40,25 +40,36 @@
     }
   }
 
+  function markSeen(): void {
+    try {
+      storage?.setItem(SEEN_KEY, "1");
+    } catch {
+      // best-effort
+    }
+  }
+
   // svelte-ignore state_referenced_locally
   let wasComplete = complete;
+  // A profile that was already complete when this opened has nothing to celebrate later.
+  if (wasComplete) markSeen();
   let celebrating = $state(false);
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   $effect(() => {
-    if (complete && !wasComplete && !readSeen()) {
+    if (!complete) {
+      // A field was cleared: drop the celebration so it can't stick on screen.
+      celebrating = false;
+    } else if (!wasComplete && !readSeen()) {
       celebrating = true;
-      try {
-        storage?.setItem(SEEN_KEY, "1");
-      } catch {
-        // best-effort
-      }
+      markSeen();
       clearTimeout(timer);
       timer = setTimeout(() => (celebrating = false), 3200);
     }
     wasComplete = complete;
-    return () => clearTimeout(timer);
   });
+
+  // Clear the timer only when the line goes away, not on every change.
+  $effect(() => () => clearTimeout(timer));
 </script>
 
 <span class="progress" data-testid="profile-checklist">

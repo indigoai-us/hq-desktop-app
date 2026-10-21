@@ -163,6 +163,35 @@ describe("ProfileChecklist line", () => {
     expect(q("profile-public-hint")?.textContent).toContain("Next: add a photo and bio to your public profile");
   });
 
+  it("never leaves 'Profile complete' stuck when a field is cleared mid-celebration", () => {
+    vi.useFakeTimers();
+    const state = renderWith({ photo: false, about: "Builds HQ" });
+    state.photo = true;
+    flushSync();
+    expect(q("profile-checklist-complete")).not.toBeNull();
+
+    state.about = "";
+    flushSync();
+    expect(q("profile-checklist-complete")).toBeNull();
+    state.about = "Builds HQ";
+    flushSync();
+    vi.advanceTimersByTime(3300);
+    flushSync();
+    expect(q("profile-checklist-complete")).toBeNull();
+    expect(q("profile-public-hint")).not.toBeNull();
+  });
+
+  it("doesn't celebrate later for a profile that was already complete when opened", () => {
+    const storage = memoryStorage();
+    const state = renderWith({ photo: true, about: "Builds HQ", storage });
+    expect(storage.map.get("hq.settings.profile-complete-celebrated")).toBe("1");
+    state.about = "";
+    flushSync();
+    state.about = "Builds HQ";
+    flushSync();
+    expect(q("profile-checklist-complete")).toBeNull();
+  });
+
   it("doesn't replay the celebration once it has been seen", () => {
     const storage = memoryStorage({ "hq.settings.profile-complete-celebrated": "1" });
     const state = renderWith({ photo: false, about: "Builds HQ", storage });
