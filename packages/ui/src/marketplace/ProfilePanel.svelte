@@ -39,6 +39,7 @@
   } from "./marketplace.js";
   import type { PlatformAdapter } from "@hq/platform";
   import { safeLocalImageSrc } from "../common/local-image-src.js";
+  import { marketplaceAvatarSrc } from "../avatars/csp-image-src.js";
 
   interface Props {
     /** Platform seam: `marketplace.*` creator routes + `shell.pickFile`
@@ -126,10 +127,12 @@
           pendingAvatarPath)
       : null,
   );
-  const displayAvatarSrc = $derived(safeLocalImageSrc(avatarUrl));
-  const previewAvatarSrc = $derived(
-    safeLocalImageSrc(preview?.creator.avatarUrl),
-  );
+  // Saved avatars come back as presigned URLs on the allowlisted marketplace
+  // assets host; any other remote URL still falls back to the initial.
+  const avatarSrc = (raw: string | null | undefined): string | null =>
+    safeLocalImageSrc(raw) ?? marketplaceAvatarSrc(raw);
+  const displayAvatarSrc = $derived(avatarSrc(avatarUrl));
+  const previewAvatarSrc = $derived(avatarSrc(preview?.creator.avatarUrl));
 
   // ── Claim flow ──────────────────────────────────────────────────────────────
   async function claim(): Promise<void> {

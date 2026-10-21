@@ -13717,6 +13717,7 @@
       activeId={activeRailId}
       {unreadCount}
       youInitials={resolvedAccountInitials ?? ""}
+      youPhoto={selfAvatarUrl}
       onselect={selectRailItem}
       onreorderpins={reorderPinnedCompanies}
       onmore={toggleMoreCompanies}
@@ -13975,6 +13976,7 @@
             void navigate(companyRowDestination("general", uid));
           }}
           onback={closeSettings}
+          onavatarsaved={(src) => (selfAvatarUrl = src)}
           onsignout={onsignout ? signOutWithImageCleanup : undefined}
           onopenconsole={onOpenConsole
             ? (url) => onOpenConsole(url ?? HQ_CONSOLE_BASE)

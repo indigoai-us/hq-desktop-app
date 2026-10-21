@@ -119,4 +119,56 @@ describe("ProfilePanel CSP-safe avatar fallback", () => {
     ).toContain("Avatar preview unavailable");
     expect(host.querySelector('img[src^="http"]')).toBeNull();
   });
+
+  it("shows a saved avatar served from the marketplace assets host", async () => {
+    const saved =
+      "https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/creators/drake/avatar?X-Amz-Signature=abc";
+    const creator = {
+      handle: "drake",
+      displayName: "drake",
+      bio: "",
+      socialLinks: [],
+      tipUrl: null,
+      avatarUrl: saved,
+    };
+    const adapter = fakeAdapter({
+      marketplace: {
+        getMyCreator: vi.fn(async () => ok<unknown>(creator)),
+        getCreatorProfile: vi.fn(async () =>
+          ok<unknown>({ creator, listings: [] }),
+        ),
+      },
+    });
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ProfilePanel, { target: host, props: { adapter } });
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(
+        host
+          .querySelector('[data-testid="profile-avatar-img"]')
+          ?.getAttribute("src"),
+      ).toBe(saved);
+    });
+    expect(host.querySelector('[data-testid="profile-avatar-fallback"]')).toBeNull();
+
+    host
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="profile-preview-refresh"]',
+      )
+      ?.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(
+        host
+          .querySelector('[data-testid="profile-preview-avatar-img"]')
+          ?.getAttribute("src"),
+      ).toBe(saved);
+    });
+    expect(
+      host.querySelector('[data-testid="profile-preview-avatar-unavailable"]'),
+    ).toBeNull();
+  });
 });

@@ -108,6 +108,8 @@
     onopenconsole?: (url?: string) => Promise<void> | void;
     /** Change-photo affordance (host seam; display-only default). */
     onchangephoto?: () => void;
+    /** A newly saved profile photo, so the rest of the app shows it at once. */
+    onavatarsaved?: (avatarSrc: string) => void;
     consoleBase?: string;
     /** Native update event edge; wakes the authoritative Updates pane. */
     updateWakeSeq?: number;
@@ -136,6 +138,7 @@
     onsignout,
     onopenconsole,
     onchangephoto,
+    onavatarsaved,
     consoleBase = HQ_CONSOLE_BASE,
     updateWakeSeq = 0,
     refreshAppVersion,
@@ -413,6 +416,7 @@
     if (nameDirty && name) update.displayName = name;
     if (descriptionDirty) update.description = description;
     if (pendingAvatarBase64) update.avatarBase64 = pendingAvatarBase64;
+    const pickedPreview = pendingAvatarBase64 ? avatarPreview : null;
     if (Object.keys(update).length === 0) {
       savingProfile = false;
       return;
@@ -427,6 +431,8 @@
         if (res.value?.profile?.avatarUrl) {
           avatarPreview = res.value.profile.avatarUrl;
         }
+        const savedAvatar = res.value?.profile?.avatarUrl || pickedPreview;
+        if (update.avatarBase64 && savedAvatar) onavatarsaved?.(savedAvatar);
         profileSavedAt = Date.now();
       } else {
         console.warn("[settings] profile save failed", res.message);
