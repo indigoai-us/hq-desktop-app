@@ -11,6 +11,7 @@ import {
   LEGACY_TO_REGISTRY,
   createHqProFlagFetch,
   resolveCompanyFeature,
+  readCompanyFeature,
 } from "./flags.js";
 import { TauriPlatformAdapter } from "./tauri/index.js";
 import { createSyncPlatformAdapter } from "./tauri/sync-adapter.js";
@@ -285,4 +286,36 @@ describe("identity.hasCompanyFeature", () => {
     ).resolves.toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+});
+
+describe("transient company feature reads", () => {
+  it("distinguishes transient errors from explicit denial without weakening boolean callers", async () => {
+    for (const status of [429, 500, 503]) {
+      const fetchFn = createHqProFlagFetch(invokeAnswering([], { status, body: "{}" }));
+      expect(await readCompanyFeature(fetchFn, FLAG, COMPANY)).toBeNull();
+      expect(await resolveCompanyFeature(fetchFn, FLAG, COMPANY)).toBe(false);
+    }
+    for (const answer of [snapshot({ [FLAG]: false }), snapshot({}), { status: 403, body: "{}" }, { status: 200, body: "{}" }]) {
+      expect(await readCompanyFeature(createHqProFlagFetch(invokeAnswering([], answer)), FLAG, COMPANY)).toBe(false);
+    }
+  });
+  it("preserves timeout and transport errors as unknown", async () => {
+    expect(await readCompanyFeature(async () => { throw new Error("offline"); }, FLAG, COMPANY)).toBeNull();
+    expect(await readCompanyFeature(() => new Promise(() => {}), FLAG, COMPANY, { timeoutMs: 1 })).toBeNull();
+  });
+});
+
+it.each(["sync", "tauri"])("%s adapter preserves explicit false versus transient failure", async (kind) => {
+  let answer: unknown = snapshot({ [FLAG]: true });
+  const calls: Invocation[] = [];
+  const options = { invoke: invokeAnswering(calls, () => answer) };
+  const adapter = kind === "sync" ? createSyncPlatformAdapter(options) : new TauriPlatformAdapter(options);
+  expect(await adapter.identity.readCompanyFeature?.(FLAG, COMPANY)).toBe(true);
+  answer = { status: 503, body: "down" };
+  expect(await adapter.identity.readCompanyFeature?.(FLAG, COMPANY)).toBeNull();
+  answer = { status: 200, body: "not json" };
+  expect(await adapter.identity.readCompanyFeature?.(FLAG, COMPANY)).toBe(false);
+  answer = snapshot({ [FLAG]: false });
+  expect(await adapter.identity.readCompanyFeature?.(FLAG, COMPANY)).toBe(false);
+  expect(calls.every(call => call.args?.url === `/v1/flags/resolve?companyUid=${COMPANY}`)).toBe(true);
 });

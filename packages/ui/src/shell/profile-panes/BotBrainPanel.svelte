@@ -5,7 +5,7 @@
   import { portal, focusOnMount } from '../../chat/portal.js';
   import { dismissable } from '../../common/dismissable.js';
   import { effortLabel } from '../../chat/local-bot-settings.js';
-  import type { BrainRow, BrainProvider } from './bot-brain.js';
+  import { effortsFor, type BrainRow, type BrainProvider } from './bot-brain.js';
   export interface BrainSwitchProgress { provider: BrainProvider; status: 'running' | 'waiting'; }
   let { rows, loading = false, error = '', notice = '', canSwitch = false, switching = null, onrefresh, onconnect, onsave, onswitch }: {
     rows: BrainRow[]; loading?: boolean; error?: string; notice?: string; canSwitch?: boolean; switching?: BrainSwitchProgress | null;
@@ -20,8 +20,10 @@
   const active = $derived(rows.find(row => row.active));
   const dirty = $derived(current && (model !== current.model || effort !== current.effort));
   const switchable = $derived(!!current && canSwitch && !current.active && current.state === 'connected' && !!onswitch);
+  const efforts = $derived(current ? effortsFor(current, model) : []);
   const switchingName = $derived(switching ? rows.find(row => row.id === switching.provider)?.name ?? switching.provider : '');
-  function open(row: BrainRow) { selected = row.id; confirming = false; model = row.active ? row.model : row.models[0]?.value ?? ''; effort = row.active ? row.effort : ''; actionError = ''; }
+  function open(row: BrainRow) { selected = row.id; confirming = false; model = row.active && row.models.some(choice => choice.value === row.model) ? row.model : row.defaultModel || row.models[0]?.value || ''; effort = row.active ? row.effort : ''; actionError = ''; }
+  function keepEffort() { if (effort && !efforts.includes(effort) && !(current?.active && effort === current.effort)) effort = ''; }
   function close() { if (!busy) { selected = null; confirming = false; actionError = ''; } }
   async function act(connect = false) {
     if (!current || busy) return;
@@ -60,8 +62,8 @@
   {#if current.active}
   <form onsubmit={event => { event.preventDefault(); void act(); }}>
     <fieldset disabled={busy || !current.canSave || current.state !== 'connected'}>
-      <div class="field"><span>Model</span><Dropdown constrainToDialog label="Model" options={current.models} bind:value={model} block disabled={busy || !current.canSave || current.state !== 'connected'} /></div>
-      <div class="field"><span>Thinking level</span><Dropdown constrainToDialog label="Thinking level" options={[{ value: '', label: 'Keep current default' }, ...current.efforts.map(value => ({ value, label: effortLabel(value, false) })), ...(effort && !current.efforts.includes(effort) ? [{ value: effort, label: effort + ' (current)' }] : [])]} bind:value={effort} block disabled={busy || !current.canSave || current.state !== 'connected'} /></div>
+      <div class="field"><span>Model</span><Dropdown constrainToDialog label="Model" options={current.models} bind:value={model} onchange={keepEffort} block disabled={busy || !current.canSave || current.state !== 'connected'} /></div>
+      <div class="field"><span>Thinking level</span><Dropdown constrainToDialog label="Thinking level" options={[{ value: '', label: 'Keep current default' }, ...efforts.map(value => ({ value, label: effortLabel(value, false) })), ...(effort && !efforts.includes(effort) ? [{ value: effort, label: effort + ' (current)' }] : [])]} bind:value={effort} block disabled={busy || !current.canSave || current.state !== 'connected'} /></div>
     </fieldset>
     <p class="muted">Changes apply to future messages. Model availability depends on your account and runtime.</p>
     {#if actionError}<p class="notice" role="alert">{actionError}</p>{/if}
@@ -70,8 +72,8 @@
   {:else if switchable}
   <form data-testid="brain-switch-form" onsubmit={event => { event.preventDefault(); if (confirming) void confirmSwitch(); else confirming = true; }}>
     <fieldset disabled={busy || confirming || !!switching}>
-      <div class="field"><span>Model</span><Dropdown constrainToDialog label="Model" options={current.models} bind:value={model} block disabled={busy || confirming || !!switching} /></div>
-      <div class="field"><span>Thinking level</span><Dropdown constrainToDialog label="Thinking level" options={[{ value: '', label: `${current.name} default` }, ...current.efforts.map(value => ({ value, label: effortLabel(value, false) }))]} bind:value={effort} block disabled={busy || confirming || !!switching} /></div>
+      <div class="field"><span>Model</span><Dropdown constrainToDialog label="Model" options={current.models} bind:value={model} onchange={keepEffort} block disabled={busy || confirming || !!switching} /></div>
+      <div class="field"><span>Thinking level</span><Dropdown constrainToDialog label="Thinking level" options={[{ value: '', label: `${current.name} default` }, ...efforts.map(value => ({ value, label: effortLabel(value, false) }))]} bind:value={effort} block disabled={busy || confirming || !!switching} /></div>
     </fieldset>
     {#if actionError}<p class="notice" role="alert">{actionError}</p>{/if}
     {#if switching}<p class="muted" role="status">A switch is already running. Wait for it to finish.</p>{/if}

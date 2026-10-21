@@ -80,6 +80,8 @@ export const dropdownDoor = createDoor("Dropdown", () => import("../common/Dropd
 // OWNER-R9: the Team member pane's access section loads when a pane opens.
 // OWNER-R9: the company Team page loads when Team opens.
 export const teamPageDoor = createDoor("TeamPage", () => import("../company/TeamPage.svelte"));
+/** Native Office loads only after the company gate passes. */
+export const officeDoor = createDoor("OfficePanel", () => import("../meet/OfficePanel.svelte"));
 export const memberAccessDoor = createDoor("MemberAccessSection", () => import("../company/MemberAccessSection.svelte"));
 /** The Files explorer; fetched right after startup so Files opens in one frame. */
 export const vaultExplorerDoor = createDoor("VaultExplorer", () => import("../files/explorer/VaultExplorer.svelte"));

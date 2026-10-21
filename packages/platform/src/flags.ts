@@ -529,30 +529,33 @@ export interface CompanyFeatureOptions {
  * person: a single `GET /v1/flags/resolve?companyUid=<uid>`. The route checks
  * the caller's membership and applies the company override.
  *
- * Fail closed and total: true only when the answer is a valid snapshot (the
+ * true only when the answer is a valid snapshot (the
  * same `isFlagSnapshot` shape the registry client accepts) whose flags map
- * holds the key as exactly `true`. Any other status, a missing key, a
- * malformed body, a timeout or a throw is `false`, and no rejection escapes.
+ * holds the key as exactly `true`. Denied status, a missing key or a
+ * malformed body is false. Transport errors, server overload and timeout return
+ * null so a caller can retain an already-proven grant within the same scope.
+ * Boolean resolveCompanyFeature callers still fail closed for every failure.
  *
  * Nothing is cached here. The caller owns how often it asks.
  */
-export async function resolveCompanyFeature(
+export async function readCompanyFeature(
   fetchFn: typeof fetch,
   flag: string,
   companyUid: string,
   options: CompanyFeatureOptions = {},
-): Promise<boolean> {
+): Promise<boolean | null> {
   const key = flag.trim();
   const uid = companyUid.trim();
   if (!key || !uid) return false;
-  const read = async (): Promise<boolean> => {
+  const read = async (): Promise<boolean | null> => {
     try {
       const res = await fetchFn(
         `/v1/flags/resolve?companyUid=${encodeURIComponent(uid)}`,
         { method: "GET" },
       );
+      if (res.status >= 500 || res.status === 429) return null;
       if (res.status !== 200) return false;
-      const body: unknown = await res.json();
+      const body: unknown = await res.json().catch(() => null);
       if (!isFlagSnapshot(body)) return false;
       // Own keys only. `Object.hasOwn` is newer than the oldest webview the
       // desktop app still builds for.
@@ -561,13 +564,13 @@ export async function resolveCompanyFeature(
         body.flags[key] === true
       );
     } catch {
-      return false;
+      return null;
     }
   };
   let timer: ReturnType<typeof setTimeout> | null = null;
-  const deadline = new Promise<boolean>((resolve) => {
+  const deadline = new Promise<boolean | null>((resolve) => {
     timer = setTimeout(
-      () => resolve(false),
+      () => resolve(null),
       options.timeoutMs ?? COMPANY_FEATURE_TIMEOUT_MS,
     );
   });
@@ -576,4 +579,9 @@ export async function resolveCompanyFeature(
   } finally {
     if (timer !== null) clearTimeout(timer);
   }
+}
+
+/** Boolean callers always fail closed; Office can distinguish transient read failures. */
+export async function resolveCompanyFeature(fetchFn: typeof fetch, flag: string, companyUid: string, options: CompanyFeatureOptions = {}): Promise<boolean> {
+  return await readCompanyFeature(fetchFn, flag, companyUid, options) === true;
 }
