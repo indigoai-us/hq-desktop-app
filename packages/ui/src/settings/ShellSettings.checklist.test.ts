@@ -104,6 +104,53 @@ describe("Settings › Profile checklist", () => {
     expect(document.activeElement).toBe(q("settings-description-input"));
   });
 
+  it("clearing a saved field takes it off the count right away", async () => {
+    mountWith({ member: { displayName: "Jonathan Drake", description: "Builds HQ" }, creator: null });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(q("profile-checklist-count")?.textContent).toBe("2 of 3");
+    });
+    const name = q("settings-display-name-input") as HTMLInputElement;
+    name.value = "";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    expect(q("profile-checklist-count")?.textContent).toBe("1 of 3");
+    expect(q("profile-checklist-next")?.textContent).toContain("Add a display name");
+  });
+
+  it("highlights Save while there are unsaved changes", async () => {
+    mountWith({ member: { displayName: "Jonathan Drake" }, creator: null });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(q("profile-checklist-count")).not.toBeNull();
+    });
+    expect(q("settings-profile-save")!.classList.contains("attention")).toBe(false);
+    const about = q("settings-description-input") as HTMLInputElement;
+    about.value = "Builds HQ";
+    about.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    expect(q("settings-profile-save")!.classList.contains("attention")).toBe(true);
+  });
+
+  it("explains instead of silently skipping a save with an empty name", async () => {
+    mountWith({ member: { displayName: "Jonathan Drake" }, creator: null });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(q("profile-checklist-count")).not.toBeNull();
+    });
+    const name = q("settings-display-name-input") as HTMLInputElement;
+    name.value = "";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    q("settings-profile-save")!.click();
+    flushSync();
+    expect(q("settings-profile-error")?.textContent).toContain("Add a display name to save.");
+    name.value = "Jon";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    expect(q("settings-profile-error")).toBeNull();
+  });
+
   it("the photo row links to the public profile", async () => {
     const onsectionchange = vi.fn();
     mountWith({ member: null, creator: null, onsectionchange });

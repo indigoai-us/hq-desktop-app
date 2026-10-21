@@ -441,11 +441,16 @@
     if (active === "profile") void refreshPublicProfile();
   });
 
+  const EMPTY_NAME_ERROR = "Add a display name to save.";
+  $effect(() => {
+    if (profileError === EMPTY_NAME_ERROR && editName.trim()) profileError = null;
+  });
+
   const checklistSteps = $derived(
     profileChecklistSteps({
-      displayName: initialName,
+      displayName: editName.trim() ? initialName : "",
       hasPhoto: Boolean(avatarPreview),
-      about: initialDescription,
+      about: editDescription.trim() ? initialDescription : "",
     }),
   );
 
@@ -485,6 +490,10 @@
     const description = editDescription.trim();
     if (descriptionLoaded && description.length > DESCRIPTION_MAX) {
       profileError = `About must be ${DESCRIPTION_MAX} characters or fewer.`;
+      return;
+    }
+    if (nameDirty && !name) {
+      profileError = EMPTY_NAME_ERROR;
       return;
     }
     savingProfile = true;
@@ -731,6 +740,7 @@
               <button
                 type="button"
                 class="chip primary"
+                class:attention={profileDirty && !savingProfile}
                 data-testid="settings-profile-save"
                 disabled={!adapter || savingProfile || !profileDirty}
                 onclick={() => void saveProfile()}
@@ -1053,6 +1063,16 @@
   .chip:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  /* Unsaved edits: the save button switches to the filled primary style. */
+  .chip.primary.attention {
+    border-color: var(--v4-text-1, #fafafa);
+    background: var(--v4-text-1, #fafafa);
+    color: var(--v4-ground, #0a0a0a);
+    transition:
+      background-color 0.2s ease-out,
+      color 0.2s ease-out;
   }
 
   .ss-save-error {

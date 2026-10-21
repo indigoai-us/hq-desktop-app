@@ -117,7 +117,7 @@
     align-items: center;
     flex-wrap: wrap;
     gap: 2px 8px;
-    margin-top: 2px;
+    margin-top: 8px;
     --hq-a: #f08ac0;
     --hq-b: #9a6bff;
   }
