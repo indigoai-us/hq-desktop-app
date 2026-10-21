@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Messages: clicking a "Shared a folder with you" card now opens that folder in Files, listing what is inside it, instead of failing with "Could not load the file". If the company is not on this computer, it opens your Shared files list. File shares open as before.
 - Core Drift no longer lists `.claude/settings.json` as modified when it matches the installed hq-core release, including after you restore it or when the only difference is the setup-managed `env.PATH`. Restore for that file now fetches and verifies the correct upstream copy. Other edits to the file still show as drift.
 - Sync: the desktop npm-based runner now stops automatic recovery when npm reports a permanent setup or access problem, or after repeated failures, instead of trying indefinitely. The reason stays visible after restarting HQ. After fixing the underlying problem, use Sync Now to try again; ordinary temporary failures still retry automatically.
 - Deployments and message links: HQ deploys now also live at `{name}.hq.work`. The Deployments list shows apps whose address is on hq.work, and hovering an hq.work deploy link in Messages shows its deploy card. Existing `{name}.indigo-hq.com` links keep working and keep showing as before. The app now talks to the deploy service at api.hq.work (the same service as api.indigo-hq.com).

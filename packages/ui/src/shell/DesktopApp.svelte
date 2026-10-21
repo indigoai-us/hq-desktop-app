@@ -562,7 +562,7 @@
     type TourEnterAction,
     type TourState,
   } from "../tour/guided-tour.js";
-  import { vaultsFor } from "../files/explorer/vault-model.js";
+  import { folderShareLocation, vaultsFor } from "../files/explorer/vault-model.js";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
   import LocalBotDetailPanel from "../chat/LocalBotDetailPanel.svelte";
@@ -12414,14 +12414,39 @@
     items: FileAttachmentModel[] = [],
   ): void {
     const companyUid = attachmentCompanyUid(selectedRow);
-    const stamped = (items.length > 0 ? items : [item]).map((entry) => ({
-      ...entry,
-      companyUid: entry.companyUid || companyUid || "",
-    }));
+    if (item.kind === "folder") {
+      openFolderShare(item, companyUid);
+      return;
+    }
+    // A folder key is a folder marker, not an object the tray can fetch.
+    const stamped = (items.length > 0 ? items : [item])
+      .filter((entry) => entry.kind !== "folder")
+      .map((entry) => ({
+        ...entry,
+        companyUid: entry.companyUid || companyUid || "",
+      }));
     attachTray = {
       selectedId: item.id || item.vaultPath,
       items: stamped,
     };
+  }
+
+  /**
+   * A DM folder share ("Shared a folder with you") opens that folder in Files.
+   * Its trailing-slash key is not an object, so the attachment preview would
+   * fail with "Could not load the file" (feedback 3e124bcd). Without a local
+   * copy of the company, the shared-with-me list is the closest place.
+   */
+  function openFolderShare(item: FileAttachmentModel, companyUid: string | null): void {
+    const location = folderShareLocation(
+      { vaultPath: item.vaultPath, companyUid: item.companyUid || companyUid || "" },
+      effectiveCompanies,
+    );
+    if (location) {
+      void navigate({ kind: "explorer", vault: location.vault, path: location.path });
+      return;
+    }
+    void navigate({ kind: "shared-files" });
   }
 
   async function resolveTrayUrl(
