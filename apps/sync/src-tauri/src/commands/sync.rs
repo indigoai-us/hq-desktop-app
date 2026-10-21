@@ -1117,7 +1117,7 @@ fn apply_runner_exit_disposition<E: RunnerExitEffects>(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Resolve the HQ folder path by reading config.json and menubar.json directly.
-fn resolve_hq_folder_path() -> Result<String, String> {
+pub(crate) fn resolve_hq_folder_path() -> Result<String, String> {
     let menubar_path = paths::menubar_json_path()?;
 
     let menubar_prefs: Option<MenubarPrefs> = if menubar_path.exists() {
@@ -2697,6 +2697,40 @@ async fn start_sync_inner(
     };
     crate::commands::cdp_mirror::note_sync_started(trigger, "runner");
 
+    // Resolve HQ folder — deregister on failure so future syncs aren't blocked
+    let hq_folder_path = match resolve_hq_folder_path() {
+        Ok(p) => {
+            log("sync", &format!("hq_folder resolved: {p}"));
+            p
+        }
+        Err(e) => {
+            log("sync", &format!("BAIL: resolve_hq_folder_path failed: {e}"));
+            #[cfg(debug_assertions)]
+            eprintln!("[sync] BAIL: resolve_hq_folder_path failed: {}", e);
+            let _ = abandon_process_generation(SYNC_HANDLE, sync_generation);
+            return Err(e);
+        }
+    };
+
+    // Admit every legacy trigger before npm work; only an explicit user retry
+    // resets the durable episode, after the live-runner guard above.
+    match hq_desktop_core::sync_retry_episode::allow_start(
+        std::path::Path::new(&hq_folder_path), HQ_CLOUD_VERSION,
+        trigger == crate::commands::cdp_mirror::SyncTrigger::Manual,
+    ) {
+        Ok(true) => {}
+        result => {
+            let message = match result {
+                Err(error) => error,
+                _ => hq_desktop_core::sync_retry_episode::hold_reason(
+                    std::path::Path::new(&hq_folder_path), HQ_CLOUD_VERSION,
+                ).ok().flatten().unwrap_or(hq_desktop_core::sync_retry_episode::RETRY_REQUIRED).to_string(),
+            };
+            let _ = abandon_process_generation(SYNC_HANDLE, sync_generation);
+            return Err(message);
+        }
+    }
+
     // Best-effort machineId bootstrap — log on failure but do not abort sync.
     if let Err(e) = ensure_machine_id() {
         log("sync", &format!("ensure_machine_id failed: {e}"));
@@ -2830,6 +2864,7 @@ async fn start_sync_inner(
     {
         Ok(Ok(())) => {}
         Ok(Err(msg)) => {
+            crate::commands::daemon::record_sync_retry_failure(&app, std::path::Path::new(&hq_folder_path), &msg);
             log("sync", &format!("BAIL: npx cache materialization: {msg}"));
             let _ = abandon_process_generation(SYNC_HANDLE, sync_generation);
             return Err(msg);
@@ -2844,21 +2879,6 @@ async fn start_sync_inner(
             return Err(msg);
         }
     }
-
-    // Resolve HQ folder — deregister on failure so future syncs aren't blocked
-    let hq_folder_path = match resolve_hq_folder_path() {
-        Ok(p) => {
-            log("sync", &format!("hq_folder resolved: {p}"));
-            p
-        }
-        Err(e) => {
-            log("sync", &format!("BAIL: resolve_hq_folder_path failed: {e}"));
-            #[cfg(debug_assertions)]
-            eprintln!("[sync] BAIL: resolve_hq_folder_path failed: {}", e);
-            let _ = abandon_process_generation(SYNC_HANDLE, sync_generation);
-            return Err(e);
-        }
-    };
 
     // Resolve the personal-sync toggle ONCE for the duration of this sync
     // run — same flag drives (a) whether we run the personal first-push pass
@@ -3672,7 +3692,7 @@ mod tests {
             "private_customer_notes.txt",
             "/Users/Ada/Library/Application Support/HQ/private.json",
             "ops@example.com",
-            "token=sk-live_1234567890",
+            "token=sk-live_1234567890", // gitleaks:allow -- synthetic credential-redaction fixture
         ];
         for detail in untrusted_details {
             let line = serde_json::json!({
@@ -3736,7 +3756,7 @@ mod tests {
             "type": "error",
             "company": "cmp_example",
             "path": "/srv/hq/.hq-sync-journal.json",
-            "message": "HQSNAP4 has an invalid journal payload at /srv/hq/vault/object-key for ops@example.com token=sk-live_1234567890"
+            "message": "HQSNAP4 has an invalid journal payload at /srv/hq/vault/object-key for ops@example.com token=sk-live_1234567890" // gitleaks:allow -- synthetic credential-redaction fixture
         })
         .to_string();
         let error_class = runner_exit_error_from_line(&line).expect("structured error line");

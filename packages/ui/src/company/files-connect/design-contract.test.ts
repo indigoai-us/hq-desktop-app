@@ -8,6 +8,8 @@ import { describe, expect, it } from "vitest";
 const FILES = [
   "./FilesConnectPage.svelte",
   "./DeployAccessForm.svelte",
+  "./CustomDomainForm.svelte",
+  "./CustomDomainOptions.svelte",
   "../../files/CompanyFileTree.svelte",
 ];
 

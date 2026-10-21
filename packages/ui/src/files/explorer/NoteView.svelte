@@ -415,6 +415,10 @@
     border-bottom: 1px solid var(--v4-hairline);
     text-align: left;
     vertical-align: top;
+    /* Wrap cells only between words so a wide table scrolls instead of
+       splitting words to fit the reading column. */
+    overflow-wrap: normal;
+    word-break: normal;
   }
   .markdown-body :global(th) { color: var(--v4-text-2); font-weight: 500; }
   .markdown-body :global(input[type="checkbox"]) { margin-right: 6px; accent-color: var(--v4-link); }

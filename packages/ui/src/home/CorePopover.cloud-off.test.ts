@@ -91,7 +91,7 @@ describe("Core popover with Cloud off (US-016)", () => {
     mountPopover({ cloudPaused: false, onopenCloudSettings: vi.fn() });
     expect(q("core-popover-paused")).toBeNull();
     expect(q("core-popover-cloud-settings")).toBeNull();
-    expect(q("core-popover-sync-state")?.textContent).toContain("All synced");
+    expect(q("core-popover-sync-state")?.textContent).toContain("HQ is synced");
   });
 
   it("says which vaults are off and opens Sync settings", () => {
