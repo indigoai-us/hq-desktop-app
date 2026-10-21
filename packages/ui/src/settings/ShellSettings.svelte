@@ -419,6 +419,8 @@
 
   // ── Profile checklist + public profile nudge ───────────────────────────────
   let publicProfileState = $state<PublicProfileState>({ kind: "unknown" });
+  /** The "Use on public profile" line is open, so don't also nudge about the public photo. */
+  let publicPhotoOfferOpen = $state(false);
 
   async function refreshPublicProfile(): Promise<void> {
     const getMyCreator = adapter?.marketplace?.getMyCreator;
@@ -613,6 +615,7 @@
                 disabled={!adapter}
                 save={savePhoto}
                 onsaved={photoSaved}
+                onofferchange={(open) => (publicPhotoOfferOpen = open)}
                 other={publicProfileTarget}
                 testid="settings-photo"
                 imgTestid="settings-avatar-img"
@@ -630,6 +633,7 @@
                         publicProfile={publicProfileState}
                         {storage}
                         onstep={goToStep}
+                        holdHint={publicPhotoOfferOpen}
                         onopenpublic={() => goToSection("public-profile")}
                       />
                     {:else}

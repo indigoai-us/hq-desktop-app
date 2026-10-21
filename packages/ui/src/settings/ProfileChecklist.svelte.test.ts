@@ -78,10 +78,11 @@ function renderWith(props: {
   storage?: ReturnType<typeof memoryStorage>;
   onstep?: (id: string) => void;
   onopenpublic?: () => void;
+  holdHint?: boolean;
 }) {
   host = document.createElement("div");
   document.body.appendChild(host);
-  const state = $state({ photo: props.photo, about: props.about });
+  const state = $state({ photo: props.photo, about: props.about, holdHint: props.holdHint ?? false });
   component = mount(ProfileChecklist, {
     target: host,
     props: {
@@ -92,6 +93,9 @@ function renderWith(props: {
       storage: props.storage ?? memoryStorage(),
       onstep: props.onstep,
       onopenpublic: props.onopenpublic ?? (() => {}),
+      get holdHint() {
+        return state.holdHint;
+      },
     },
   });
   flushSync();
@@ -141,6 +145,22 @@ describe("ProfileChecklist line", () => {
     expect(q("profile-checklist-complete")).toBeNull();
     expect(q("profile-public-hint")).toBeNull();
     expect(q("settings-open-public-profile")?.textContent).toContain("Public profile");
+  });
+
+  it("holds the public profile nudge while asked to, then shows what's still missing", () => {
+    const state = renderWith({
+      photo: true,
+      about: "Builds HQ",
+      publicProfile: { kind: "claimed", hasPhoto: false, hasBio: false },
+      storage: memoryStorage({ "hq.settings.profile-complete-celebrated": "1" }),
+      holdHint: true,
+    });
+    expect(q("profile-public-hint")).toBeNull();
+    expect(q("settings-open-public-profile")?.textContent).toContain("Public profile");
+
+    state.holdHint = false;
+    flushSync();
+    expect(q("profile-public-hint")?.textContent).toContain("Next: add a photo and bio to your public profile");
   });
 
   it("doesn't replay the celebration once it has been seen", () => {

@@ -232,6 +232,30 @@ describe("ProfilePhotoField", () => {
     expect(q("p-offer")).toBeNull();
   });
 
+  it("reports while the offer is waiting on an answer", async () => {
+    const onofferchange = vi.fn();
+    render({ other: { current: vi.fn(async () => null), apply: vi.fn(async () => true), copy }, onofferchange });
+    expect(onofferchange).toHaveBeenLastCalledWith(false);
+
+    await pick();
+    await settle(() => expect(q("p-offer")).not.toBeNull());
+    expect(onofferchange).toHaveBeenLastCalledWith(true);
+
+    q("p-offer-action")!.click();
+    await settle(() => expect(q("p-offer-text")?.textContent).toBe(copy.emptyDone));
+    expect(onofferchange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("reports the offer closed after Not now", async () => {
+    const onofferchange = vi.fn();
+    render({ other: { current: vi.fn(async () => null), apply: vi.fn(async () => true), copy }, onofferchange });
+    await pick();
+    await settle(() => expect(onofferchange).toHaveBeenLastCalledWith(true));
+    q("p-offer-dismiss")!.click();
+    flushSync();
+    expect(onofferchange).toHaveBeenLastCalledWith(false);
+  });
+
   it("display-only mode shows the photo without controls", () => {
     render({ photoUrl: MEMBER_URL, editable: false });
     expect(q("p-img")?.getAttribute("src")).toBe(MEMBER_URL);

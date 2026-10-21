@@ -17,10 +17,12 @@
     /** Account-scoped storage; remembers that the completion was celebrated. */
     storage?: Pick<Storage, "getItem" | "setItem"> | null;
     onstep?: (id: ChecklistStep["id"]) => void;
+    /** Hold the public profile nudge (e.g. while the photo offer is open). */
+    holdHint?: boolean;
     onopenpublic?: () => void;
   }
 
-  let { steps, publicProfile, storage = null, onstep, onopenpublic }: Props = $props();
+  let { steps, publicProfile, storage = null, onstep, holdHint = false, onopenpublic }: Props = $props();
 
   const SEEN_KEY = "hq.settings.profile-complete-celebrated";
   const RING = 2 * Math.PI * 5.5;
@@ -28,7 +30,7 @@
   const doneCount = $derived(steps.filter((s) => s.done).length);
   const complete = $derived(steps.length > 0 && doneCount === steps.length);
   const next = $derived(steps.find((s) => !s.done) ?? null);
-  const hint = $derived(publicProfileHint(publicProfile));
+  const hint = $derived(holdHint ? null : publicProfileHint(publicProfile));
 
   function readSeen(): boolean {
     try {
