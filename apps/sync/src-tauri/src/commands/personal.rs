@@ -1528,6 +1528,10 @@ pub(crate) enum PersonalFirstPushOutcome {
     /// The vault is provisioned and the running sync daemon will upload it.
     /// Nothing was uploaded by this call.
     HandedToSyncDaemon,
+    /// H8 paired root: the native uploader never runs. The vault is
+    /// provisioned and the owned hq-cloud runner does the first push under its
+    /// own lease, or nothing uploads (Cloud off, Personal off, held for review).
+    DeferredToOwnedRunner,
     /// This call walked the vault and uploaded what changed.
     Uploaded {
         files_uploaded: usize,
@@ -1617,6 +1621,10 @@ fn spawn_handoff_safety_net<R: tauri::Runtime + 'static>(
     probe: DaemonHandoffProbe,
 ) {
     use std::sync::atomic::Ordering;
+    // H8 (gated): no background native upload for a paired root.
+    if crate::commands::personal_root::paired_root_gate_enabled() {
+        return;
+    }
     if HANDOFF_SAFETY_NET_IN_FLIGHT
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -1706,6 +1714,21 @@ pub(crate) async fn ensure_impl_with<R: tauri::Runtime + 'static>(
     // cheap: once the record names this person it returns immediately without
     // touching the network.
     crate::commands::telemetry::reassert_consent_for_person(vault, &person_uid).await;
+
+    // ── H8 paired-root gate (off in shipped builds) ────────────────────────
+    // The direct S3 walk below is a second, unfenced writer. For a paired root
+    // it never runs: not in the install stage, not in the background safety
+    // net, not from Sync Now. The hq-cloud runner owns the first push under
+    // its own authority and lease. Nothing here clears Cloud off or starts a
+    // runner.
+    if crate::commands::personal_root::paired_root_gate_enabled() {
+        log(
+            "personal",
+            "personal first-push deferred — paired personal root, the hq-cloud runner owns the upload",
+        );
+        emit_first_push_complete_without_uploading(app, &person_uid);
+        return Ok(PersonalFirstPushOutcome::DeferredToOwnedRunner);
+    }
 
     // ── Steady-state gate ──────────────────────────────────────────────────
     // The warm-up first-push exists ONLY to seed a brand-new personal vault
@@ -3794,6 +3817,62 @@ mod tests {
             Duration::from_secs(5),
         );
         assert!(!probe.daemon_owns_personal_upload().await);
+    }
+
+    // H8 (gated): for a paired root the native uploader is a second, unfenced
+    // writer. Every mode (install with no daemon, background safety net, Sync
+    // Now) provisions authority but never walks, vends, or uploads.
+    #[tokio::test]
+    async fn paired_root_never_runs_the_native_uploader() {
+        for mode in [
+            FirstPushMode::InstallHandoff(fixed_probe(daemon_snapshot(
+                WatchDaemonState::Stopped,
+            ))),
+            FirstPushMode::ConcurrentWalk,
+            FirstPushMode::Legacy,
+        ] {
+            let server = MockServer::start().await;
+            mount_vault_with_bucket(&server).await;
+            let tmp_state = TempDir::new().unwrap();
+            let tmp_hq = TempDir::new().unwrap();
+            let tmp_home = TempDir::new().unwrap();
+            seed_vault_files(tmp_hq.path(), 5);
+            let upload_counter = Arc::new(AtomicUsize::new(0));
+            let scans = Arc::new(AtomicUsize::new(0));
+
+            let result = {
+                let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+                std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+                let _home = scoped_home(tmp_home.path());
+                let _gate = crate::commands::personal_root::GateOverride::set(true);
+                let app = tauri::test::mock_app();
+                let handle = app.handle().clone();
+                let sc = scans.clone();
+                app.listen(EVENT_SYNC_PERSONAL_FIRST_PUSH_SCAN, move |_| {
+                    sc.fetch_add(1, Ordering::SeqCst);
+                });
+                let vault = VaultClient::new(&server.uri(), "tok");
+                let r = ensure_impl_with(
+                    &handle,
+                    &vault,
+                    tmp_hq.path(),
+                    Some(make_counter_uploader(upload_counter.clone())),
+                    &mode,
+                )
+                .await;
+                std::env::remove_var("HQ_STATE_DIR");
+                r
+            };
+
+            assert_eq!(result, Ok(PersonalFirstPushOutcome::DeferredToOwnedRunner));
+            assert_eq!(upload_counter.load(Ordering::SeqCst), 0, "no uploads");
+            assert_eq!(scans.load(Ordering::SeqCst), 0, "no walk");
+            let reqs = server.received_requests().await.unwrap();
+            assert!(
+                !reqs.iter().any(|r| r.url.path() == "/sts/vend-self"),
+                "no upload credentials are vended for a paired root"
+            );
+        }
     }
 
     // REGRESSION (install initial-sync took ~2 of ~2.5 minutes): with the
