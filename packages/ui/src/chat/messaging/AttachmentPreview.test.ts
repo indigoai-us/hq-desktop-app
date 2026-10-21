@@ -191,3 +191,58 @@ describe("AttachmentPreview folder shares", () => {
     expect(host.textContent).not.toContain("Could not load the file");
   });
 });
+
+// iOS #44: an image fits the window and zooms on a gesture. On desktop that
+// is double-click (2x and back) and a trackpad pinch (ctrl-wheel).
+describe("AttachmentPreview image zoom", () => {
+  function zoomed(): boolean {
+    return host.querySelector(".att-preview-stage")?.classList.contains("is-zoomed") ?? false;
+  }
+
+  it("double-click zooms in, and again fits the image back", async () => {
+    mountPreview({ item: item({ previewUrl: "blob:photo" }), resolveUrl: async () => "blob:photo" });
+    await settle();
+    const img = host.querySelector<HTMLImageElement>(".att-preview-image")!;
+    expect(zoomed()).toBe(false);
+    img.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: 10, clientY: 10 }));
+    flushSync();
+    expect(zoomed()).toBe(true);
+    img.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: 10, clientY: 10 }));
+    flushSync();
+    expect(zoomed()).toBe(false);
+  });
+
+  it("a pinch (ctrl-wheel) zooms and is not left to scroll the window", async () => {
+    mountPreview({ item: item({ previewUrl: "blob:photo" }), resolveUrl: async () => "blob:photo" });
+    await settle();
+    const stage = host.querySelector(".att-preview-stage")!;
+    const pinch = new WheelEvent("wheel", { bubbles: true, cancelable: true, ctrlKey: true, deltaY: -60 });
+    // happy-dom drops some wheel fields from the init dict.
+    Object.defineProperty(pinch, "deltaY", { value: -60 });
+    Object.defineProperty(pinch, "ctrlKey", { value: true });
+    Object.defineProperty(pinch, "clientX", { value: 10 });
+    Object.defineProperty(pinch, "clientY", { value: 10 });
+    stage.dispatchEvent(pinch);
+    flushSync();
+    expect(pinch.defaultPrevented).toBe(true);
+    expect(zoomed()).toBe(true);
+
+    // A plain wheel still scrolls.
+    const scroll = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 40 });
+    stage.dispatchEvent(scroll);
+    expect(scroll.defaultPrevented).toBe(false);
+  });
+});
+
+describe("AttachmentPreview without a preview", () => {
+  it("says there is no preview instead of leaving the stage blank", async () => {
+    mountPreview({
+      item: item({ name: "archive.zip", contentType: "application/zip", kind: "file", vaultPath: "chat/a/archive.zip" }),
+      resolveUrl: async () => "blob:zip",
+    });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="attachment-no-preview"]')?.textContent).toContain("No preview");
+    });
+  });
+});

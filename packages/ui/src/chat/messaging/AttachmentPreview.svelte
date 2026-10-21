@@ -3,7 +3,8 @@
    * Typed attachment preview + download. Shared by the message strip tray
    * and the right-side attachments browser.
    */
-  import { onDestroy } from "svelte";
+  import { onDestroy, type Snippet } from "svelte";
+  import RailIcon from "../../common/button/RailIcon.svelte";
   import type { FileAttachmentModel } from "./channelMessageModels";
   import { fileTypeLabel } from "./chat-attachments";
   import { renderMessageBodyMarkdown } from "../../common/messageMarkdown.js";
@@ -23,9 +24,15 @@
     /** Releases a host-created object URL after this preview no longer uses it. */
     onreleaseurl?: (url: string) => void;
     compact?: boolean;
+    /**
+     * Extra controls for the end of the toolbar. The toolbar IS the preview's
+     * chrome — a host that needs a close button puts it here rather than
+     * stacking a second bar of its own above this one.
+     */
+    trailing?: Snippet;
   }
 
-  let { item, resolveUrl, onreleaseurl, thumbnailUrl = null, compact = false }: Props = $props();
+  let { item, resolveUrl, onreleaseurl, thumbnailUrl = null, compact = false, trailing }: Props = $props();
 
   const kind = $derived(
     attachmentPreviewKind({
@@ -58,6 +65,59 @@
   }
 
   onDestroy(releaseResolvedUrl);
+
+  // ---- Image zoom (iOS #44: the picture fits, and zooms on a gesture) ----
+  // 1 is "fit to the window". Double-click toggles 2x anchored at the click
+  // and back; a trackpad pinch (a ctrl-wheel in WebKit and Chromium) zooms
+  // smoothly between 1x and 4x. Zoomed, the stage scrolls to pan.
+  const ZOOM_MAX = 4;
+  let zoom = $state(1);
+  let fitW = $state(0);
+  let stageEl = $state<HTMLDivElement | null>(null);
+  let imageEl = $state<HTMLImageElement | null>(null);
+
+  function setZoom(next: number, anchor?: { x: number; y: number }): void {
+    const img = imageEl;
+    const stage = stageEl;
+    if (!img || !stage) return;
+    const clamped = Math.min(ZOOM_MAX, Math.max(1, next));
+    if (zoom === 1) fitW = img.getBoundingClientRect().width;
+    if (clamped === zoom) return;
+    // Where the anchor sits in the picture, as a fraction, before the zoom.
+    const before = img.getBoundingClientRect();
+    const fx = anchor && before.width ? (anchor.x - before.left) / before.width : 0.5;
+    const fy = anchor && before.height ? (anchor.y - before.top) / before.height : 0.5;
+    const stageBox = stage.getBoundingClientRect();
+    const ax = anchor ? anchor.x - stageBox.left : stageBox.width / 2;
+    const ay = anchor ? anchor.y - stageBox.top : stageBox.height / 2;
+    zoom = clamped;
+    if (zoom === 1) return;
+    requestAnimationFrame(() => {
+      const after = img.getBoundingClientRect();
+      // Keep the point under the cursor where it was.
+      stage.scrollLeft += after.left - stageBox.left + fx * after.width - ax;
+      stage.scrollTop += after.top - stageBox.top + fy * after.height - ay;
+    });
+  }
+
+  function onImageDoubleClick(event: MouseEvent): void {
+    setZoom(zoom === 1 ? 2 : 1, { x: event.clientX, y: event.clientY });
+  }
+
+  function onStageWheel(event: WheelEvent): void {
+    if (kind !== "image" || !event.ctrlKey) return;
+    event.preventDefault();
+    setZoom(zoom * Math.exp(-event.deltaY * 0.01), { x: event.clientX, y: event.clientY });
+  }
+
+  // Not `onwheel=`: Svelte attaches wheel handlers as passive, and a passive
+  // listener cannot stop the pinch from zooming the whole window instead.
+  $effect(() => {
+    const stage = stageEl;
+    if (!stage) return;
+    stage.addEventListener("wheel", onStageWheel, { passive: false });
+    return () => stage.removeEventListener("wheel", onStageWheel);
+  });
 
   $effect(() => {
     const key = item.id || item.vaultPath;
@@ -180,17 +240,11 @@
     {#if item.sizeLabel}
       <span class="att-preview-meta">{item.sizeLabel}</span>
     {/if}
-  </div>
-
-  <div class="att-preview-stage">
-    {#if kind === "folder"}
-      <p class="att-preview-status" data-testid="attachment-folder-note">
-        This is a shared folder. Open it in Files to see what is in it.
-      </p>
-    {:else}
+    <!-- A folder share is not an object: nothing to download (#1765). -->
+    {#if kind !== "folder"}
     <button
       type="button"
-      class="att-download"
+      class="att-preview-ic push-right"
       data-testid="attachment-download"
       aria-label={downloading ? "Saving" : `Download ${item.name}`}
       disabled={!src || downloading}
@@ -199,17 +253,27 @@
         void download();
       }}
     >
-      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-        <path
-          fill="currentColor"
-          d="M8 1.5a.75.75 0 0 1 .75.75v6.19l1.72-1.72a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 1.06-1.06l1.72 1.72V2.25A.75.75 0 0 1 8 1.5Zm-4.5 10a.75.75 0 0 0-1.5 0V13A1.5 1.5 0 0 0 3.5 14.5h9A1.5 1.5 0 0 0 14 13v-1.5a.75.75 0 0 0-1.5 0V13h-9v-1.5Z"
-        />
-      </svg>
+      <RailIcon name="download" size={15} />
     </button>
     {/if}
-    {#if kind === "image" && (src || (!error && !thumbnailFailed && thumbnailUrl))}
+    {@render trailing?.()}
+  </div>
+
+  <div
+    class="att-preview-stage"
+    class:is-zoomed={zoom > 1}
+    bind:this={stageEl}
+  >
+    {#if kind === "folder"}
+      <p class="att-preview-status" data-testid="attachment-folder-note">
+        This is a shared folder. Open it in Files to see what is in it.
+      </p>
+    {:else if kind === "image" && (src || (!error && !thumbnailFailed && thumbnailUrl))}
       <img
         class="att-preview-image"
+        bind:this={imageEl}
+        style={zoom > 1 ? `width: ${Math.round(fitW * zoom)}px` : undefined}
+        ondblclick={onImageDoubleClick}
         src={src || thumbnailUrl || ""}
         alt={item.name}
         onerror={() => {
@@ -256,15 +320,32 @@
         </table>
       </div>
     {:else}
+      <!-- Anything we do not render inline states what it is and offers the
+           one thing that is useful for it, Download in the toolbar. -->
       <div class="att-preview-file">
         <span class="att-preview-icon"
           >{fileTypeLabel(item.name, item.contentType)}</span
         >
-        <p>{item.name}</p>
+        <p class="att-preview-file-name">{item.name}</p>
         {#if loading}
           <p class="att-preview-status">Loading…</p>
         {:else if error}
           <p class="att-preview-status error">{error}</p>
+        {:else}
+          <!-- Say why there is no picture, rather than leaving a blank stage
+               that reads as still loading (iOS #44). -->
+          <p class="att-preview-status" data-testid="attachment-no-preview">
+            No preview for this file. Download it to open it.
+          </p>
+          <button
+            type="button"
+            class="att-preview-open"
+            data-testid="attachment-file-download"
+            disabled={!src || downloading}
+            onclick={() => void download()}
+          >
+            {downloading ? "Saving…" : "Download"}
+          </button>
         {/if}
       </div>
     {/if}
@@ -272,75 +353,101 @@
 </div>
 
 <style>
+  /* This preview always sits on a dark scrim, so its ink is FIXED rather
+     than themed. `--t1` is near-black in light mode, which left the
+     filename, the size and both toolbar icons invisible against the
+     scrim — the surface is dark in both themes, so the text must be light
+     in both themes. */
   .att-preview {
+    --lb-ink: #fff;
+    --lb-ink-mid: rgba(255, 255, 255, 0.72);
+    --lb-ink-dim: rgba(255, 255, 255, 0.55);
+    --lb-hover: rgba(255, 255, 255, 0.14);
+    --lb-line: rgba(255, 255, 255, 0.12);
+    --lb-surface: rgba(255, 255, 255, 0.06);
     display: flex;
     flex-direction: column;
-    gap: 10px;
     width: 100%;
     min-width: 0;
     min-height: 0;
   }
 
+  /* Concept `.lb-bar`: one 46px row that names the file and holds every
+     control. The file used to be named twice — once by the host's header and
+     again here — with a download button stranded over the artwork. */
   .att-preview-toolbar {
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
+    height: 46px;
+    padding: 0 14px 0 20px;
     min-width: 0;
   }
 
   .att-preview-stage {
     position: relative;
+    flex: 1 1 auto;
     display: grid;
     place-items: center;
     min-width: 0;
     min-height: 0;
     width: 100%;
+    padding: 4px 40px 40px;
   }
 
   .att-preview-name {
     min-width: 0;
     overflow: hidden;
-    color: var(--t1);
-    font: 600 13px/1.3 var(--font-ui);
+    color: var(--lb-ink);
+    font: 500 12px/1.3 var(--font-ui);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .att-preview-meta {
-    color: var(--t3, var(--t2));
-    font: 400 11px/1.2 var(--font-ui);
+    flex-shrink: 0;
+    color: var(--lb-ink-dim);
+    font: 400 10px/1.2 var(--font-mono, ui-monospace, Menlo, monospace);
   }
 
-  .att-download {
+  .push-right {
+    margin-left: auto;
+  }
+
+  /* Concept `.lb-ic`. `:global` so a host can drop its own button into the
+     `trailing` snippet and have it match without restating this. */
+  .att-preview-toolbar :global(.att-preview-ic) {
     appearance: none;
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    z-index: 2;
+    flex-shrink: 0;
     display: grid;
     place-items: center;
     width: 28px;
     height: 28px;
     padding: 0;
     border: 0;
-    border-radius: 8px;
-    background: rgba(12, 12, 14, 0.72);
-    color: #fff;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--lb-ink-mid);
     cursor: pointer;
+    transition:
+      background 0.12s,
+      color 0.12s;
   }
 
-  .att-download:disabled {
+  .att-preview-toolbar :global(.att-preview-ic:disabled) {
     opacity: 0.35;
     cursor: default;
   }
 
-  .att-download:hover:not(:disabled) {
-    background: rgba(12, 12, 14, 0.9);
+  .att-preview-toolbar :global(.att-preview-ic:hover:not(:disabled)) {
+    background: var(--lb-hover);
+    color: var(--lb-ink);
   }
 
   .att-preview-status {
     margin: 0;
-    color: var(--t2);
+    color: var(--lb-ink-dim);
     font: 400 12px/1.4 var(--font-ui);
   }
 
@@ -348,26 +455,32 @@
     color: #f87171;
   }
 
+  /* Concept `.lb-img`: the artwork is the point, so it takes the stage. */
   .att-preview-image {
     max-width: 100%;
     max-height: 100%;
-    border-radius: 8px;
+    border-radius: 12px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
     object-fit: contain;
+    cursor: zoom-in;
   }
 
-  .att-preview-pdf {
-    width: 100%;
-    min-height: 280px;
-    height: 52vh;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.1));
-    border-radius: 8px;
-    background: #fff;
+  /* Zoomed: the picture takes its zoomed width and the stage scrolls. */
+  .att-preview-stage.is-zoomed {
+    place-items: start;
+    overflow: auto;
   }
 
-  .compact .att-preview-pdf {
-    height: 220px;
-    min-height: 180px;
+  .is-zoomed .att-preview-image {
+    max-width: none;
+    max-height: none;
+    height: auto;
+    margin: auto;
+    border-radius: 0;
+    box-shadow: none;
+    cursor: zoom-out;
   }
+
 
   .att-preview-text,
   .att-preview-md {
@@ -375,10 +488,10 @@
     max-height: 360px;
     overflow: auto;
     padding: 10px 12px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.1));
+    border: 1px solid var(--lb-line);
     border-radius: 8px;
-    background: var(--sel, rgba(255, 255, 255, 0.03));
-    color: var(--t1);
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--lb-ink);
     font: 400 12px/1.45 var(--font-mono, ui-monospace, Menlo, monospace);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -392,8 +505,9 @@
   .att-preview-sheet-wrap {
     max-height: 360px;
     overflow: auto;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.1));
+    border: 1px solid var(--lb-line);
     border-radius: 8px;
+    color: var(--lb-ink);
   }
 
   .att-preview-sheet {
@@ -405,16 +519,18 @@
   .att-preview-sheet th,
   .att-preview-sheet td {
     padding: 5px 8px;
-    border-bottom: 1px solid var(--line2, rgba(255, 255, 255, 0.08));
-    border-right: 1px solid var(--line2, rgba(255, 255, 255, 0.06));
+    border-bottom: 1px solid var(--lb-line);
+    border-right: 1px solid var(--lb-line);
     text-align: left;
     white-space: nowrap;
   }
 
+  /* A literal colour, not `var(--bg)` — that token does not exist, so the
+     fallback was the only thing ever applied. */
   .att-preview-sheet th {
     position: sticky;
     top: 0;
-    background: var(--bg, #121418);
+    background: #17171a;
     font-weight: 600;
   }
 
@@ -423,7 +539,37 @@
     flex-direction: column;
     align-items: center;
     gap: 8px;
-    color: var(--t2);
+    color: var(--lb-ink-dim);
+  }
+
+  .att-preview-file-name {
+    margin: 0;
+    color: var(--lb-ink);
+    font: 500 13px/1.3 var(--font-ui);
+    overflow-wrap: anywhere;
+  }
+
+  .att-preview-open {
+    appearance: none;
+    height: 28px;
+    margin-top: 2px;
+    padding: 0 12px;
+    border: 1px solid var(--lb-line);
+    border-radius: 8px;
+    background: var(--lb-surface);
+    color: var(--lb-ink);
+    font: 500 12px/1 var(--font-ui);
+    cursor: pointer;
+    transition: background 0.12s;
+  }
+
+  .att-preview-open:hover:not(:disabled) {
+    background: var(--lb-hover);
+  }
+
+  .att-preview-open:disabled {
+    opacity: 0.35;
+    cursor: default;
   }
 
   .att-preview-icon {
@@ -432,7 +578,23 @@
     width: 48px;
     height: 48px;
     border-radius: 10px;
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--lb-surface);
+    color: var(--lb-ink-mid);
     font: 700 11px/1 var(--font-mono, ui-monospace, Menlo, monospace);
+  }
+
+  /* The PDF takes the stage, like an image does. */
+  .att-preview-pdf {
+    width: 100%;
+    min-height: 280px;
+    height: 100%;
+    border: 1px solid var(--lb-line);
+    border-radius: 8px;
+    background: #fff;
+  }
+
+  .compact .att-preview-pdf {
+    height: 220px;
+    min-height: 180px;
   }
 </style>
