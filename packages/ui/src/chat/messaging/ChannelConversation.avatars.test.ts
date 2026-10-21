@@ -128,3 +128,20 @@ describe("ChannelConversation message avatars", () => {
     expect(avatar?.querySelector(".monogram")?.textContent).toBe("AL");
   });
 });
+
+// iOS #44: a bot's name carries the app's one tag, BOT, in the bot hue, so a
+// bot reads as a bot without relying on its avatar's shape.
+describe("ChannelConversation bot tag", () => {
+  it("tags bot authors and leaves people untagged", async () => {
+    const root = mountWith({ messages });
+    await tick();
+    const metas = [...root.querySelectorAll(".dm-msg-meta")];
+    expect(metas).toHaveLength(3);
+    const tagged = metas.map((meta) => meta.querySelector('[data-testid="author-bot-tag"]'));
+    expect(tagged[0]?.classList.contains("hq-tag")).toBe(true);
+    expect(tagged[0]?.classList.contains("is-bot")).toBe(true);
+    expect(tagged[0]?.textContent).toBe("Bot");
+    expect(tagged[1]).not.toBeNull();
+    expect(tagged[2]).toBeNull();
+  });
+});

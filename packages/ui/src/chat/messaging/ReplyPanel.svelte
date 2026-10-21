@@ -1,4 +1,5 @@
 <script lang="ts">
+  import "../../common/tag.css";
   import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * ReplyPanel — Slack-style reply column (port of hq-desktop-app ThreadPanel).
@@ -1278,6 +1279,7 @@
               {:else}
                 <span class="reply-root-author">{messageAuthor(root)}</span>
               {/if}
+              {#if root.direction !== "out" && isAgent(root)}<span class="hq-tag is-bot" data-testid="author-bot-tag">Bot</span>{/if}
               <span class="reply-time">{formatTime(root.createdAt)}</span>
             </div>
             <div class="reply-root-body">
@@ -1424,6 +1426,7 @@
                 {:else}
                   <span class="reply-author">{messageAuthor(msg)}</span>
                 {/if}
+                {#if msg.direction !== "out" && isAgent(msg)}<span class="hq-tag is-bot" data-testid="author-bot-tag">Bot</span>{/if}
                 <span class="reply-time">{formatTime(msg.createdAt)}</span>
               </div>
               {#if replyForwarded}

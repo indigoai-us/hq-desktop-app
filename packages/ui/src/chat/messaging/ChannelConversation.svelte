@@ -26,6 +26,7 @@
 
   import "./message-row.css";
   import IdentityMark from "./IdentityMark.svelte";
+  import "../../common/tag.css";
   import SystemEventLine from "./SystemEventLine.svelte";
   import RunCompleteCard from "./RunCompleteCard.svelte";
   import LifecycleCard from "./LifecycleCard.svelte";
@@ -2261,6 +2262,7 @@
               <div class="dm-msg-column">
                 <div class="dm-msg-meta">
                   <span class="dm-msg-author">{messageAuthor(msg)}</span>
+                  {#if msg.direction !== "out" && isAgent(msg)}<span class="hq-tag is-bot" data-testid="author-bot-tag">Bot</span>{/if}
                   <span class="dm-msg-header-time">{row.timeLabel}</span>
                 </div>
                 <ShareRequestCard
@@ -2312,6 +2314,7 @@
               <div class="dm-msg-column">
                 <div class="dm-msg-meta">
                   <span class="dm-msg-author">{messageAuthor(msg)}</span>
+                  {#if msg.direction !== "out" && isAgent(msg)}<span class="hq-tag is-bot" data-testid="author-bot-tag">Bot</span>{/if}
                   <span class="dm-msg-header-time"
                     >{row.timeLabel}</span
                   >
@@ -2346,6 +2349,7 @@
               <div class="dm-msg-column">
                 <div class="dm-msg-meta">
                   <span class="dm-msg-author">{messageAuthor(msg)}</span>
+                  {#if msg.direction !== "out" && isAgent(msg)}<span class="hq-tag is-bot" data-testid="author-bot-tag">Bot</span>{/if}
                   <span class="dm-msg-header-time"
                     >{row.timeLabel}</span
                   >
@@ -2437,6 +2441,7 @@
                     {:else}
                       <span class="dm-msg-author">{messageAuthor(msg)}</span>
                     {/if}
+                    {#if msg.direction !== "out" && isAgent(msg)}<span class="hq-tag is-bot" data-testid="author-bot-tag">Bot</span>{/if}
                     <span class="dm-msg-header-time"
                       >{row.timeLabel}</span
                     >
