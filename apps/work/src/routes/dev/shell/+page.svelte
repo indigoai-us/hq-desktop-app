@@ -15,6 +15,7 @@
    * bar, and anything behind a native capability. The window chrome below is a
    * stand-in drawn to the shipping metrics, not the real AppKit one.
    */
+  import { onDestroy } from "svelte";
   import { dev } from "$app/environment";
   import { TAURI_CAPABILITIES, ok, type PlatformAdapter } from "@hq/platform";
   import {
@@ -32,9 +33,19 @@
     fixtureFilesFor,
     fixtureMessagesFor,
     fixtureReactionsFor,
+    bindPresenceStore,
     seedFixturePins,
+    setBadgeProgressSource,
+    setBadgeSource,
     settingsArea,
   } from "@hq/ui";
+  import { PresenceStore } from "@hq/core";
+  // The same sample badges the hq-sync design harness shows, so profile panes
+  // and avatar tier marks here look like the shipped app.
+  import {
+    sampleBadges,
+    sampleProgress,
+  } from "../../../../../sync/dev-harness/badge-fixtures";
 
   /**
    * The shell only reaches the adapter for host concerns (contacts, history
@@ -334,6 +345,34 @@
   // Pins live in localStorage; seed them before first paint so the sidebar
   // opens with its pinned section populated.
   if (dev) seedFixturePins();
+
+  /**
+   * Badges and presence both come from hq-pro in the app, and the harness has
+   * no account behind it, so without these every profile pane showed no
+   * badges and no avatar ever carried its online dot. Installed before the
+   * shell mounts so the production badge loader stays out.
+   */
+  if (dev) {
+    setBadgeSource(sampleBadges);
+    setBadgeProgressSource(sampleProgress);
+    const presence = new PresenceStore();
+    const at = new Date().toISOString();
+    for (const [actorUid, actorType] of [
+      ["person-sofia", "human"],
+      ["person-bryan", "human"],
+      ["person-priya", "human"],
+      ["agt_fleet", "agent"],
+      ["agt_hq", "agent"],
+    ] as const) {
+      presence.applyMqtt(`hq/Indigo/presence/${actorUid}`, {
+        status: "online",
+        actorUid,
+        actorType,
+        at,
+      });
+    }
+    onDestroy(bindPresenceStore(presence));
+  }
 
   /**
    * Desktop stage. The shipping window is transparent with an AppKit vibrancy
