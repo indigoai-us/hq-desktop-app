@@ -224,6 +224,15 @@ describe("VaultExplorer", () => {
     expect(host.querySelector(".vx-actions button:last-of-type")?.getAttribute("title")).toBe("Could not open file manager.");
   });
 
+  it("opens a shared folder path (trailing slash) as a folder listing, not a file (feedback 3e124bcd)", async () => {
+    const { host, calls } = await render({ path: "companies/acme/knowledge/" });
+    // The folder listing is a lazily loaded door.
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="vault-folder"]')?.textContent).toContain("pricing"));
+    expect(calls).toContain("list:companies/acme/knowledge");
+    expect(calls.some((c) => /^(read|whole):companies\/acme\/knowledge\/?$/.test(c))).toBe(false);
+    expect(host.querySelector('[data-testid="vault-home"]')).toBeNull();
+  });
+
   it("keeps Finder labels on macOS", async () => {
     Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)" });
     const { host } = await render({ path: "companies/acme/knowledge/pricing.md" });
