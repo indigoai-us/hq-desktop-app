@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Sync: the desktop npm-based runner now stops automatic recovery when npm cannot find the sync engine, or after repeated failures, instead of trying indefinitely. The reason stays visible after restarting HQ. After fixing the underlying problem, use Sync Now to try again; ordinary temporary failures still retry automatically.
+
 - Indigo beta: open Office directly from Company navigation to see your company's office hours and start native calls. Office stays hidden outside the enabled company and in browser hosts.
 - Cloud bot Brain tab: the model list for switching brains and for configuring the current brain now comes from Fleet's live model catalog. It shows only models your subscription can use, starts on the catalog's default model (GPT-6 Sol for OpenAI), and offers the thinking levels of the chosen model. Retired models such as GPT-5.5 are no longer offered, so a switch to OpenAI no longer fails with a model the account rejects. A bot still on a retired model opens on the default model so you can save it. If the catalog cannot be read, the tab uses its built-in list without GPT-5.5. Local bots are unchanged.
 
