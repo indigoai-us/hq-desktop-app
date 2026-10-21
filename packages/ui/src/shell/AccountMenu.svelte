@@ -22,6 +22,8 @@
     anchorBottom?: number;
     onclose?: () => void;
     onpage?: (page: AccountPageId) => void;
+    /** Opens Settings › Sync (usage-only-pricing US-016). Hidden when absent. */
+    onsync?: () => void;
     onsignout?: () => void;
   }
 
@@ -35,6 +37,7 @@
     anchorBottom = 16,
     onclose,
     onpage,
+    onsync,
     onsignout,
   }: Props = $props();
 
@@ -104,6 +107,12 @@
     <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1" /></svg>
     <span class="t">Settings</span>
   </button>
+  {#if onsync}
+    <button type="button" class="row" role="menuitem" data-testid="account-sync" onclick={() => onsync?.()}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18a5 5 0 0 1-.6-9.96A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9H7Z" /></svg>
+      <span class="t">Sync</span>
+    </button>
+  {/if}
   <div class="foot">
     <button type="button" class="row signout" role="menuitem" data-testid="account-sign-out" onclick={signOut}>
       <span class="t indent">Sign out</span>

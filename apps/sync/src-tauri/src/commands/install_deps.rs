@@ -7697,6 +7697,14 @@ fn patch_hq_cli_pack_install_rsync_at(target: &Path) -> Result<(), String> {
         return Ok(());
     }
 
+    // hq-cli 5.345.148 and later copy pack sources with a Node copyTree and
+    // never call rsync, so there is nothing to patch. Treating that as an
+    // error failed every fresh Windows install from 2026-10-19 10:23Z, even
+    // though hq-cli itself installed and worked.
+    if !content.contains("execFileSync('rsync'") {
+        return Ok(());
+    }
+
     const NEEDLE_MULTI: &str = "execFileSync('rsync', [\n        '-a',\n        '--exclude=.git',\n        '--exclude=node_modules',\n        '--exclude=.DS_Store',\n        srcSlashed,\n        destSlashed,\n    ], { stdio: 'inherit' });";
     const NEEDLE_SIMPLE_DEST: &str =
         "execFileSync('rsync', ['-a', srcSlashed, destSlashed], { stdio: 'inherit' });";
@@ -11112,6 +11120,33 @@ mod windows_tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn hq_cli_pack_install_patch_is_a_noop_when_hq_cli_has_no_rsync() {
+        // pack-install.js as published from hq-cli 5.345.148: the rsync call
+        // is gone and a Node copy replaces it.
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("pack-install.js");
+        let source = "import { copyTree, removeTreeNoFollow } from '../utils/copy-tree.js';\n/**\n * Copy a pack source directory's contents into the payload dir.\n */\nfunction copyPayloadDir(src, dest) {\n    copyTree(src, dest, { exclude: ['.git', 'node_modules', '.DS_Store'] });\n}\n";
+        std::fs::write(&target, source).unwrap();
+
+        patch_hq_cli_pack_install_rsync_at(&target)
+            .expect("an hq-cli without rsync needs no patch and must not fail the install");
+
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), source);
+    }
+
+    #[test]
+    fn hq_cli_pack_install_patch_still_fails_on_an_unknown_rsync_call() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("pack-install.js");
+        let source = "function copy(a, b) {\n    execFileSync('rsync', ['-rl', a, b], { stdio: 'inherit' });\n}\n";
+        std::fs::write(&target, source).unwrap();
+
+        let err = patch_hq_cli_pack_install_rsync_at(&target).unwrap_err();
+        assert!(err.contains("blocks not found"), "{err}");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), source);
     }
 
     #[test]

@@ -1,0 +1,572 @@
+/**
+ * Settings > Usage as one line per account (owner direction, Corey,
+ * 2026-10-19: "1 line for each company, that can accordian expand to see
+ * detail"). Personal first, then every company the caller owns or
+ * administers. Every number is hq-pro's:
+ *
+ * - Line (read when the screen opens): `GET /v1/billing/summary?companyUid=`
+ *   or `GET /v1/billing/person/summary` for the plan and card, and the month
+ *   statement (`GET /v1/billing/usage`) for this month's total and groups.
+ * - Detail (read when a line opens): the spend limit for a usage account, or
+ *   the switch status (`GET /v1/billing/usage-switch`, hq-pro US-014 and
+ *   #5081) for an account still on its old plan; `GET /v1/pricing` once for
+ *   meter labels and rates.
+ * - "Switch to usage pricing": `POST /v1/billing/usage-switch` with
+ *   `{ companyUid }` or `{ scope: "person" }`. A card is required and there is
+ *   no trial (#5081). When the route can't offer it (not deployed, kill switch
+ *   off, or a free account before #5081), the action says it isn't available.
+ */
+
+import type { AdapterResult, Json } from "@hq/platform";
+import { isUsageOnlySummary } from "../company/usage-billing.js";
+import { formatCardUsd, usagePricingFromFeed, type UsagePricing } from "../company/usage-pricing.js";
+import {
+  OTHER_USAGE_LABEL,
+  PERSONAL_ACCOUNT_KEY,
+  USAGE_GROUPS,
+  USAGE_RETRY_DELAYS_MS,
+  canReadBilling,
+  formatUsd,
+  isForbidden,
+  personalNoticeFromSummary,
+  runningTrialFromSummary,
+  trialPlanLabel,
+  usageAccountKey,
+  usageNoticeFromSummary,
+  type RunningTrial,
+  type UsageAccount,
+  type UsageNotice,
+} from "../home/core-usage-model.js";
+import { spendLimitFromBody, type SpendLimitDetail } from "./usage-settings-model.js";
+import type { StackMarker, StackSegment, StackTone } from "../home/usage-stack.js";
+
+/** Where an account stands. `legacy`: an older paid plan; `starter`: the older free plan. */
+export type AccountPlan = "trial" | "usage" | "legacy" | "starter";
+
+export const PLAN_LABELS: Readonly<Record<Exclude<AccountPlan, "trial">, string>> = {
+  usage: "Usage plan",
+  legacy: "Legacy plan",
+  starter: "Starter (free)",
+};
+
+export interface AccountMeter {
+  key: string;
+  label: string;
+  /** "$0.10 per sync"; "" when neither the feed nor the line has a rate. */
+  rate: string;
+  costCents: number | null;
+  waived: boolean;
+}
+
+export interface AccountGroup {
+  id: string;
+  label: string;
+  /** Sum of the measured meters; null when none is measured. */
+  cents: number | null;
+  /** True when some meter in the group is not measured yet. */
+  partial: boolean;
+  meters: AccountMeter[];
+}
+
+export interface AccountUsage {
+  periodStart: string;
+  periodEnd: string | null;
+  complete: boolean;
+  usageCents: number;
+  allowanceCents: number;
+  allowanceLeftCents: number;
+  projectedBillCents: number | null;
+  groups: AccountGroup[];
+  /** Raw statement lines, kept so labels can be redone once the price list arrives. */
+  lines: readonly Record<string, unknown>[];
+}
+
+export interface AccountRowReady {
+  kind: "ready";
+  plan: AccountPlan;
+  planLabel: string;
+  /** Null when hq-pro didn't say. */
+  cardOnFile: boolean | null;
+  trial: RunningTrial | null;
+  /** Null on the old plans, and when the statement could not be read. */
+  usage: AccountUsage | null;
+  /** On usage pricing, but the statement read failed. */
+  usageUnavailable: boolean;
+  notice: UsageNotice | null;
+}
+
+export type AccountRowView =
+  | { kind: "loading" }
+  /** Usage reads are owner-only on hq-pro; an admin's company shows this. */
+  | { kind: "owner-only" }
+  | { kind: "unavailable" }
+  | AccountRowReady;
+
+export interface UsageAccountsSource {
+  getBillingSummary?(companyUid: string): Promise<AdapterResult<Json>>;
+  getUsageStatement?(companyUid: string): Promise<AdapterResult<Json>>;
+  getPricing?(): Promise<AdapterResult<Json>>;
+  getSpendLimit?(companyUid: string): Promise<AdapterResult<Json>>;
+  getPersonalBillingSummary?(): Promise<AdapterResult<Json>>;
+  getPersonalUsageStatement?(): Promise<AdapterResult<Json>>;
+  getPersonalSpendLimit?(): Promise<AdapterResult<Json>>;
+  getUsageSwitch?(companyUid: string): Promise<AdapterResult<Json>>;
+  switchToUsagePricing?(companyUid: string): Promise<AdapterResult<Json>>;
+  getPersonalUsageSwitch?(): Promise<AdapterResult<Json>>;
+  switchPersonalToUsagePricing?(): Promise<AdapterResult<Json>>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function finite(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function str(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/**
+ * Quiet retries for the Settings > Usage reads (the lines, the spend limit
+ * and the switch offer), the same schedule as the Core meter: about three
+ * tries before a failure reaches the screen. Tests pass `delays: []`.
+ */
+export interface RetryOpts {
+  delays?: readonly number[];
+  sleep?: (ms: number) => Promise<void>;
+}
+
+const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+async function settleOnce<T>(work: () => Promise<AdapterResult<T>>, label: string): Promise<AdapterResult<T> | null> {
+  try {
+    return await work();
+  } catch (err) {
+    console.warn(`[usage-accounts] ${label} read threw`, err instanceof Error ? err.name : "unknown");
+    return null;
+  }
+}
+
+/**
+ * One read with quiet retries. A thrown read or a failed result is tried
+ * again after each delay; a 403 is an answer ("Owner only"), not a failure,
+ * so it is returned at once.
+ */
+async function settle<T>(
+  work: (() => Promise<AdapterResult<T>>) | null,
+  label: string,
+  opts: RetryOpts = {},
+): Promise<AdapterResult<T> | null> {
+  if (!work) return null;
+  const delays = opts.delays ?? USAGE_RETRY_DELAYS_MS;
+  const sleep = opts.sleep ?? defaultSleep;
+  let res = await settleOnce(work, label);
+  for (const delay of delays) {
+    if (res?.ok || (res && isForbidden(res))) break;
+    await sleep(delay);
+    res = await settleOnce(work, label);
+  }
+  return res;
+}
+
+const LIVE_SUBSCRIPTION = new Set(["active", "trialing", "past_due", "unpaid"]);
+
+/**
+ * An account not on usage pricing is on an older paid plan when it has a live
+ * flat plan (`plan: "team"`) or any live subscription, and on the older free
+ * plan otherwise.
+ */
+export function oldPlanFromSummary(summary: Record<string, unknown>): "legacy" | "starter" {
+  if (summary.plan === "team") return "legacy";
+  const status = str(summary.subscriptionStatus);
+  return status && LIVE_SUBSCRIPTION.has(status) ? "legacy" : "starter";
+}
+
+/** Card on file from a company or person summary; null when the summary doesn't say. */
+export function cardOnFileFromSummary(summary: Record<string, unknown>): boolean | null {
+  const trial = isRecord(summary.usageTrial) ? summary.usageTrial : null;
+  const personal = isRecord(summary.personalUsage) ? summary.personalUsage : null;
+  const pm = isRecord(summary.defaultPaymentMethod) ? summary.defaultPaymentMethod : null;
+  if (trial?.cardOnFile === true || personal?.cardOnFile === true || summary.cardOnFile === true || pm?.present === true) {
+    return true;
+  }
+  if (trial?.cardOnFile === false || personal?.cardOnFile === false || summary.cardOnFile === false || pm?.present === false) {
+    return false;
+  }
+  return null;
+}
+
+function rateText(unitUsd: number, unit: string): string {
+  return `${formatCardUsd(unitUsd)} per ${unit}`;
+}
+
+/** The three groups (plus "Other usage"), each with its meters, from statement lines. */
+export function accountGroups(lines: readonly Record<string, unknown>[], pricing: UsagePricing | null): AccountGroup[] {
+  const buckets = new Map<string, AccountMeter[]>();
+  const statuses = new Map<string, boolean>();
+  for (const raw of lines) {
+    const key = str(raw.key);
+    if (!key || raw.billed === false) continue;
+    const feedMeter = pricing?.meters.find((m) => m.id === key) ?? null;
+    const unit = feedMeter?.unit ?? str(raw.unit) ?? "";
+    const unitCents = finite(raw.unitCents);
+    const meter: AccountMeter = {
+      key,
+      label: feedMeter?.label ?? str(raw.displayName) ?? key,
+      rate: feedMeter ? rateText(feedMeter.unitUsd, feedMeter.unit) : unitCents !== null && unit ? rateText(unitCents / 100, unit) : "",
+      costCents: finite(raw.costCents),
+      waived: raw.waived === true,
+    };
+    const group = USAGE_GROUPS.find((g) => g.keys.includes(key))?.id ?? "other";
+    const bucket = buckets.get(group) ?? [];
+    bucket.push(meter);
+    buckets.set(group, bucket);
+    if (raw.status === "partial") statuses.set(group, true);
+  }
+  const out: AccountGroup[] = [];
+  const push = (id: string, label: string) => {
+    const meters = buckets.get(id);
+    if (!meters?.length) return;
+    const measured = meters.filter((m) => m.costCents !== null);
+    out.push({
+      id,
+      label,
+      cents: measured.length ? measured.reduce((sum, m) => sum + (m.costCents ?? 0), 0) : null,
+      partial: measured.length < meters.length || statuses.get(id) === true,
+      meters,
+    });
+  };
+  for (const g of USAGE_GROUPS) push(g.id, g.label);
+  push("other", OTHER_USAGE_LABEL);
+  return out;
+}
+
+function usageFromStatement(body: unknown, pricing: UsagePricing | null): AccountUsage | null {
+  if (!isRecord(body)) return null;
+  const usageCents = finite(body.usageCents);
+  const allowanceCents = finite(body.allowanceCents);
+  const allowanceLeftCents = finite(body.allowanceLeftCents);
+  const periodStart = str(body.periodStart);
+  if (usageCents === null || allowanceCents === null || allowanceLeftCents === null || !periodStart) return null;
+  const lines = Array.isArray(body.lines) ? body.lines.filter(isRecord) : [];
+  return {
+    periodStart,
+    periodEnd: str(body.periodEnd),
+    complete: body.complete === true,
+    usageCents,
+    allowanceCents,
+    allowanceLeftCents,
+    projectedBillCents: finite(body.projectedBillCents),
+    groups: accountGroups(lines, pricing),
+    lines,
+  };
+}
+
+/** Redo group labels and rates once the price list has been read. */
+export function withPricing(view: AccountRowView, pricing: UsagePricing | null): AccountRowView {
+  if (view.kind !== "ready" || !view.usage || !pricing) return view;
+  return { ...view, usage: { ...view.usage, groups: accountGroups(view.usage.lines, pricing) } };
+}
+
+/**
+ * Read one account's line. Never throws. A company the caller doesn't own is
+ * "owner-only" without a request (the reads are owner-gated); a 403 is too.
+ * A failed summary is "unavailable", never $0.
+ */
+export async function readAccountRow(
+  source: UsageAccountsSource | null | undefined,
+  account: UsageAccount,
+  pricing: UsagePricing | null = null,
+  now: () => Date = () => new Date(),
+  retry: RetryOpts = {},
+): Promise<AccountRowView> {
+  if (account.kind === "company") {
+    if (!account.uid) return { kind: "unavailable" };
+    if (!canReadBilling(account.role)) return { kind: "owner-only" };
+    const uid = account.uid;
+    if (!source?.getBillingSummary) return { kind: "unavailable" };
+    const summary = await settle(() => source.getBillingSummary!(uid), "billing summary", retry);
+    if (!summary) return { kind: "unavailable" };
+    if (!summary.ok) return isForbidden(summary) ? { kind: "owner-only" } : { kind: "unavailable" };
+    if (!isRecord(summary.value)) return { kind: "unavailable" };
+    const body = summary.value;
+    const cardOnFile = cardOnFileFromSummary(body);
+    if (!isUsageOnlySummary(body)) {
+      const plan = oldPlanFromSummary(body);
+      return { kind: "ready", plan, planLabel: PLAN_LABELS[plan], cardOnFile, trial: null, usage: null, usageUnavailable: false, notice: null };
+    }
+    const trial = runningTrialFromSummary(body, now());
+    const statement = await settle(source.getUsageStatement ? () => source.getUsageStatement!(uid) : null, "usage statement", retry);
+    const usage = statement?.ok ? usageFromStatement(statement.value, pricing) : null;
+    return {
+      kind: "ready",
+      plan: trial ? "trial" : "usage",
+      planLabel: trial ? trialPlanLabel(trial.daysLeft) : PLAN_LABELS.usage,
+      cardOnFile,
+      trial,
+      usage,
+      usageUnavailable: usage === null,
+      notice: usageNoticeFromSummary(body),
+    };
+  }
+  if (!source?.getPersonalBillingSummary) return { kind: "unavailable" };
+  const summary = await settle(() => source.getPersonalBillingSummary!(), "personal summary", retry);
+  if (!summary?.ok || !isRecord(summary.value)) return { kind: "unavailable" };
+  const body = summary.value;
+  const cardOnFile = cardOnFileFromSummary(body);
+  if (!isRecord(body.personalUsage)) {
+    const plan = oldPlanFromSummary(body);
+    return { kind: "ready", plan, planLabel: PLAN_LABELS[plan], cardOnFile, trial: null, usage: null, usageUnavailable: false, notice: null };
+  }
+  const statement = await settle(source.getPersonalUsageStatement ? () => source.getPersonalUsageStatement!() : null, "personal statement", retry);
+  const usage = statement?.ok ? usageFromStatement(statement.value, pricing) : null;
+  return {
+    kind: "ready",
+    plan: "usage",
+    planLabel: PLAN_LABELS.usage,
+    cardOnFile,
+    trial: null,
+    usage,
+    usageUnavailable: usage === null,
+    notice: personalNoticeFromSummary(body),
+  };
+}
+
+/** The line's right-hand total: "$8.00", "At least $4.20", "Owner only", "No usage bill". */
+export function rowTotalText(view: AccountRowView | undefined): string {
+  if (!view || view.kind === "loading") return "…";
+  if (view.kind === "owner-only") return "Owner only";
+  if (view.kind === "unavailable") return "Unavailable";
+  if (view.plan === "legacy" || view.plan === "starter") return "No usage bill";
+  if (view.trial) {
+    if (view.trial.usedCents === null) return "Not measured";
+    const text = formatUsd(view.trial.usedCents);
+    return view.trial.unknownMeters?.length ? `At least ${text}` : text;
+  }
+  if (!view.usage) return "Unavailable";
+  const text = formatUsd(view.usage.usageCents);
+  return usageIsPartial(view.usage) ? `At least ${text}` : text;
+}
+
+/** Same rule as the Core menu: an incomplete month or any unreported group makes the total a floor. */
+export function usageIsPartial(usage: AccountUsage): boolean {
+  return !usage.complete || usage.groups.some((g) => g.partial || g.cents === null);
+}
+
+export async function readPricing(source: UsageAccountsSource | null | undefined): Promise<UsagePricing | null> {
+  const res = await settle(source?.getPricing ? () => source.getPricing!() : null, "pricing", { delays: [] });
+  return res?.ok ? usagePricingFromFeed(res.value) : null;
+}
+
+export async function readSpendLimit(
+  source: UsageAccountsSource | null | undefined,
+  account: UsageAccount,
+  retry: RetryOpts = {},
+): Promise<SpendLimitDetail | null> {
+  const res =
+    account.kind === "personal"
+      ? await settle(source?.getPersonalSpendLimit ? () => source.getPersonalSpendLimit!() : null, "personal spend limit", retry)
+      : account.uid
+        ? await settle(source?.getSpendLimit ? () => source.getSpendLimit!(account.uid!) : null, "spend limit", retry)
+        : null;
+  return res?.ok ? spendLimitFromBody(res.value) : null;
+}
+
+// ---------------------------------------------------------------------------
+// Switch to usage pricing (hq-pro US-014 / #5081)
+// ---------------------------------------------------------------------------
+
+export type SwitchState =
+  | { kind: "loading" }
+  /** Offered and a card is on file: the switch can go ahead. */
+  | { kind: "offered" }
+  /** Offered once a card is added. */
+  | { kind: "card-required" }
+  /** Refused for a reason the person can act on or should know. */
+  | { kind: "refused"; reason: string; text: string }
+  /** Already on usage pricing. */
+  | { kind: "switched" }
+  /** The route can't offer it: not deployed, kill switch off, or not readable. */
+  | { kind: "not-available" };
+
+export const SWITCH_NOT_AVAILABLE_TEXT = "Switching to usage pricing isn't available for this account yet.";
+
+const REFUSAL_TEXT: Readonly<Record<string, string>> = {
+  comped: "This account's plan is set by HQ, so it can't switch here. Contact support to change it.",
+  "reversed-by-operator": "HQ moved this account back to its old plan. Contact support to switch again.",
+  "discounted-plan": "This plan has a discount that would be lost. Contact support to switch.",
+  "box-items-on-plan": "Cloud bots are billed on this plan. Contact support to switch.",
+  "estimate-incomplete": "Usage isn't fully measured yet, so switching isn't offered yet.",
+  "estimate-not-lower": "Usage pricing wouldn't cost less for this account right now.",
+  "on-individual-plan": "Your HQ Individual plan is still active. End it before switching.",
+  sponsored: "A company pays for your personal plan, so it can't switch here.",
+};
+
+/** Map a `GET /v1/billing/usage-switch` body to what the line can offer. */
+export function switchStateFromBody(body: unknown): SwitchState {
+  if (!isRecord(body) || !isRecord(body.offer)) return { kind: "not-available" };
+  const offer = body.offer;
+  if (body.enabled === false) return { kind: "not-available" };
+  if (offer.eligible === true) return body.cardOnFile === false ? { kind: "card-required" } : { kind: "offered" };
+  const reason = str(offer.reason) ?? "";
+  if (reason === "card-required") return { kind: "card-required" };
+  if (reason === "already-on-usage") return { kind: "switched" };
+  // Before hq-pro #5081 a free account is refused as "not-paying": the free
+  // opt-in isn't live yet. A live Workforce stamp with no flat plan is
+  // refused the same way and support has to fix it either way.
+  if (reason === "flag-off" || reason === "not-paying" || !reason) return { kind: "not-available" };
+  return { kind: "refused", reason, text: REFUSAL_TEXT[reason] ?? "This account can't switch to usage pricing right now." };
+}
+
+export async function readSwitchState(
+  source: UsageAccountsSource | null | undefined,
+  account: UsageAccount,
+  retry: RetryOpts = {},
+): Promise<SwitchState> {
+  const res =
+    account.kind === "personal"
+      ? await settle(source?.getPersonalUsageSwitch ? () => source.getPersonalUsageSwitch!() : null, "personal usage switch", retry)
+      : account.uid
+        ? await settle(source?.getUsageSwitch ? () => source.getUsageSwitch!(account.uid!) : null, "usage switch", retry)
+        : null;
+  if (!res?.ok) return { kind: "not-available" };
+  return switchStateFromBody(res.value);
+}
+
+export type SwitchOutcome =
+  | { kind: "switched" }
+  /** hq-pro refused (409 USAGE_SWITCH_NOT_OFFERED); `state` is re-read so the line shows why. */
+  | { kind: "refused"; state: SwitchState }
+  | { kind: "conflict" }
+  | { kind: "not-available" }
+  | { kind: "failed" };
+
+/** Press "Switch now". Never throws. */
+export async function switchAccountToUsage(
+  source: UsageAccountsSource | null | undefined,
+  account: UsageAccount,
+): Promise<SwitchOutcome> {
+  const work =
+    account.kind === "personal"
+      ? source?.switchPersonalToUsagePricing
+        ? () => source.switchPersonalToUsagePricing!()
+        : null
+      : account.uid && source?.switchToUsagePricing
+        ? () => source.switchToUsagePricing!(account.uid!)
+        : null;
+  if (!work) return { kind: "not-available" };
+  const res = await settle(work, "usage switch", { delays: [] }); // a mutation is never retried on its own
+  if (!res) return { kind: "failed" };
+  if (res.ok) return isRecord(res.value) && res.value.outcome === "switched" ? { kind: "switched" } : { kind: "failed" };
+  if (res.code === "USAGE_SWITCH_NOT_OFFERED") return { kind: "refused", state: await readSwitchState(source, account) };
+  if (res.code === "USAGE_SWITCH_CONFLICT") return { kind: "conflict" };
+  if (res.code === "http-404" || res.code === "NOT_FOUND" || res.code === "MISSING_COMPANY_UID" || res.code === "PERSON_NOT_FOUND") {
+    return { kind: "not-available" };
+  }
+  console.warn("[usage-accounts] usage switch failed", res.code ?? "unknown");
+  return { kind: "failed" };
+}
+
+export function switchOutcomeText(outcome: SwitchOutcome): string {
+  switch (outcome.kind) {
+    case "switched":
+      return "Switched to usage pricing.";
+    case "refused":
+      return outcome.state.kind === "refused"
+        ? outcome.state.text
+        : outcome.state.kind === "card-required"
+          ? "Add a card first, then switch."
+          : outcome.state.kind === "switched"
+            ? "This account is already on usage pricing."
+            : SWITCH_NOT_AVAILABLE_TEXT;
+    case "conflict":
+      return "Something changed while switching. Try again.";
+    case "not-available":
+      return SWITCH_NOT_AVAILABLE_TEXT;
+    default:
+      return "Couldn't switch. Try again.";
+  }
+}
+
+/** Accounts in screen order: Personal first, then companies by name. */
+export function orderedAccounts(accounts: readonly UsageAccount[]): UsageAccount[] {
+  const personal = accounts.filter((a) => a.kind === "personal");
+  const companies = accounts
+    .filter((a) => a.kind === "company")
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return [...personal, ...companies];
+}
+
+export function accountKey(account: UsageAccount): string {
+  return account.kind === "personal" ? PERSONAL_ACCOUNT_KEY : usageAccountKey(account);
+}
+
+// ---------------------------------------------------------------------------
+// The line's stacked bar (owner direction 2026-10-19, "Stacked bar rows")
+// ---------------------------------------------------------------------------
+
+export interface LineBar {
+  segments: StackSegment[];
+  scaleCents: number;
+  includedCents: number | null;
+  marker: StackMarker | null;
+  tone: StackTone;
+  /** "of $10.00 included" / "of $500.00 trial cap", under the total. */
+  helper: string;
+}
+
+const NEAR = 0.8;
+
+function toneFor(used: number, limit: number | null, paused: boolean): StackTone {
+  if (paused) return "at";
+  if (limit === null || limit <= 0) return "ok";
+  const ratio = used / limit;
+  return ratio >= 1 ? "at" : ratio >= NEAR ? "near" : "ok";
+}
+
+export function isPaused(view: AccountRowReady): boolean {
+  return view.notice?.kind === "paused-trial-cap" || view.notice?.kind === "paused-card-required";
+}
+
+/**
+ * The bar for a usage or trial line. Usage: the groups against the $10
+ * included (the scale grows with usage past it), with the spend limit as the
+ * marker. The limit that matters for the colour is the spend limit when a
+ * card is on file, and the included usage when there is none (sync pauses
+ * past it). Trial: trial usage against the cap. Null on the old plans.
+ */
+export function lineBar(view: AccountRowReady, spend: SpendLimitDetail | null | undefined): LineBar | null {
+  const paused = isPaused(view);
+  if (view.trial) {
+    const cap = view.trial.capCents;
+    const used = view.trial.usedCents;
+    if (cap === null || used === null) return null;
+    // The bar's end is the cap, named by the helper; no separate marker.
+    return {
+      segments: [{ id: "trial", label: "Trial usage", cents: used }],
+      scaleCents: Math.max(cap, used, 1),
+      includedCents: null,
+      marker: null,
+      tone: toneFor(used, cap, paused),
+      helper: `of ${formatUsd(cap)} trial cap`,
+    };
+  }
+  if (!view.usage) return null;
+  const { usageCents, allowanceCents } = view.usage;
+  const limit = spend && !spend.noLimit ? spend.limitCents : null;
+  const toneLimit = view.cardOnFile === true ? limit : allowanceCents;
+  const scaleCents = Math.max(allowanceCents, usageCents, 1);
+  return {
+    segments: view.usage.groups.map((g) => ({ id: g.id, label: g.label, cents: g.cents ?? 0 })),
+    scaleCents,
+    includedCents: allowanceCents > 0 ? allowanceCents : null,
+    // A limit is marked on the line only when it falls on the bar's scale;
+    // a limit far past this month's usage is in the detail instead.
+    marker: limit !== null && limit <= scaleCents ? { cents: limit, label: `Limit ${formatUsd(limit)}` } : null,
+    tone: toneFor(usageCents, toneLimit, paused),
+    helper: `of ${formatUsd(allowanceCents)} included`,
+  };
+}

@@ -101,6 +101,7 @@ export const COMPANY_SIDEPANE_SECTIONS: readonly SidepaneSection[] = [
     label: "People",
     rows: [
       { id: "team", label: "Team" },
+      { id: "office", label: "Office" },
       { id: "bots", label: "Bots" },
       { id: "groups", label: "Groups" },
       { id: "grants", label: "Grants" },
