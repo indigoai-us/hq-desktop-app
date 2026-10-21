@@ -102,7 +102,7 @@ describe("core-popover-model (US-016)", () => {
         expect(vm.syncHeader.syncing).toBe(false);
       }
       const on = buildCorePopoverViewModel({ cloudPaused: false, syncState: "idle" });
-      expect(on.syncHeader.stateWord).toBe("All synced");
+      expect(on.syncHeader.stateWord).toBe("HQ is synced");
     });
   });
 

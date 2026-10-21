@@ -92,6 +92,7 @@ pub mod machine_session;
 pub mod marketplace;
 pub mod meeting_auto_record;
 pub mod meeting_ledger;
+pub mod unattributed_seen;
 pub mod meetings;
 pub mod message_search;
 pub mod messages;
