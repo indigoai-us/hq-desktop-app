@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Library notes: wide markdown tables now scroll sideways instead of squeezing into the reading column, and table cells no longer split words in the middle (for example "Shopi/fy").
+- Meetings: a recording you make from the desktop app now stays in your Meetings list after it is saved. Before, the saved recording disappeared from the list once it finished, because it had no notetaker bot or calendar event to match, so it looked lost. Recordings made by teammates stay hidden as before. This needs the matching HQ server update. Recordings saved before that update can stay hidden until they are backfilled.
 - Indigo beta: open Office directly from Company navigation to see your company's office hours and start native calls. Office stays hidden outside the enabled company and in browser hosts.
 - Cloud bot Brain tab: the model list for switching brains and for configuring the current brain now comes from Fleet's live model catalog. It shows only models your subscription can use, starts on the catalog's default model (GPT-6 Sol for OpenAI), and offers the thinking levels of the chosen model. Retired models such as GPT-5.5 are no longer offered, so a switch to OpenAI no longer fails with a model the account rejects. A bot still on a retired model opens on the default model so you can save it. If the catalog cannot be read, the tab uses its built-in list without GPT-5.5. Local bots are unchanged.
 
