@@ -264,6 +264,8 @@
         offer = { kind: "empty", state: "idle", photo, thumb: photo.previewDataUrl, otherThumb: null };
         return;
       }
+      // A server photo can't be read (no CORS), so there is nothing to compare.
+      if (!readableUrl(current)) return;
       const [mine, theirs] = await Promise.all([
         photoFingerprint(await loadPhotoSource(photo.previewDataUrl)),
         photoFingerprint(await loadPhotoSource(current)),

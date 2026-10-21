@@ -36,6 +36,7 @@ import type { OtherProfile } from "./profile-photo.js";
 const MEMBER_URL =
   "https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/members/prs_1/a.jpg?sig=1";
 const LOCAL_PHOTO = "data:image/jpeg;base64,TE9DQUw=";
+const OTHER_LOCAL = "data:image/jpeg;base64,T1RIRVI=";
 const OTHER_URL =
   "https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/creators/drake/b.jpg?sig=2";
 
@@ -219,8 +220,8 @@ describe("ProfilePhotoField", () => {
   });
 
   it("offers an update only when the other profile's photo is different", async () => {
-    const other: OtherProfile = { current: vi.fn(async () => OTHER_URL), apply: vi.fn(async () => true), copy };
-    dom.fingerprints.set(OTHER_URL, Array.from({ length: 256 }, () => 220));
+    const other: OtherProfile = { current: vi.fn(async () => OTHER_LOCAL), apply: vi.fn(async () => true), copy };
+    dom.fingerprints.set(OTHER_LOCAL, Array.from({ length: 256 }, () => 220));
     render({ other });
 
     await pick();
@@ -229,7 +230,7 @@ describe("ProfilePhotoField", () => {
   });
 
   it("stays quiet when the other profile already has the same photo", async () => {
-    const current = vi.fn(async () => OTHER_URL);
+    const current = vi.fn(async () => OTHER_LOCAL);
     render({ other: { current, apply: vi.fn(async () => true), copy } });
 
     await pick();
@@ -237,6 +238,18 @@ describe("ProfilePhotoField", () => {
     await new Promise((r) => setTimeout(r, 20));
     flushSync();
     expect(q("p-offer")).toBeNull();
+  });
+
+  it("doesn't try to read the other profile's server photo (no CORS) and makes no offer", async () => {
+    const current = vi.fn(async () => OTHER_URL);
+    render({ other: { current, apply: vi.fn(async () => true), copy } });
+    await pick();
+    await settle(() => expect(current).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 20));
+    flushSync();
+    expect(q("p-offer")).toBeNull();
+    const { loadPhotoSource } = await import("./profile-photo.js");
+    expect(loadPhotoSource).not.toHaveBeenCalledWith(OTHER_URL);
   });
 
   it("stays quiet when there is no other profile", async () => {
