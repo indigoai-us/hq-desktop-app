@@ -60,8 +60,11 @@ export interface Story {
   lastActor?: StoryIdentity | null;
 }
 
-/** Work Mesh ledger story statuses (hq-pro ProjectView `status`). */
-export type StoryMeshStatus = "queued" | "in_progress" | "review" | "done";
+/**
+ * Work Mesh ledger story statuses (hq-pro ProjectView `status`). `retired`
+ * marks a superseded or archived story; the Board leaves it out.
+ */
+export type StoryMeshStatus = "queued" | "in_progress" | "review" | "done" | "retired";
 
 /** How the current assignee was chosen. Null on legacy stories and after a clear. */
 export type StoryAssigneeSource = "actor" | "explicit" | null;

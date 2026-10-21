@@ -10,6 +10,7 @@ import {
   boardActivityFromLive,
   normalizeStoryStage,
   overlayFromSnapshot,
+  projectToStatus,
   projectViewToBoard,
 } from "./map.js";
 
@@ -589,4 +590,47 @@ it('does not assign every story to the person who last updated the board', () =>
 it('preserves reaction attribution in the work mesh cache', () => {
   const reactors = [{personUid:'prs_ada',displayName:'Ada'}];
   expect(parseCachedReactions([{emoji:'👍',count:1,reactedByMe:false,reactors}])[0]?.reactors).toEqual(reactors);
+});
+
+describe("retired stories (feedback 2d8d6e29)", () => {
+  const project = {
+    companyUid: "cmp_indigo",
+    projectId: "replanned",
+    name: "Re-planned",
+    stories: [
+      { id: "US-1", title: "Kept", status: "in_progress" },
+      { id: "US-2", title: "Superseded", status: "retired" },
+      { id: "US-3", title: "Old done", status: "RETIRED", passes: true },
+      { id: "US-4", title: "Shipped", status: "done" },
+      { id: "US-5", title: "Odd", status: "something_new" },
+    ],
+    repos: [],
+  } as unknown as Parameters<typeof projectViewToBoard>[0];
+
+  it("leaves retired stories off the Board and adds no retired column", () => {
+    const board = projectViewToBoard(project);
+    expect(board.columns.map((c) => c.id)).toEqual([
+      "queued",
+      "in_progress",
+      "review",
+      "done",
+    ]);
+    const ids = board.columns.flatMap((c) => c.cards.map((card) => card.storyId));
+    expect(ids).not.toContain("US-2");
+    expect(ids).not.toContain("US-3");
+    expect(board.stories["US-2"]).toBeUndefined();
+    expect(ids.sort()).toEqual(["US-1", "US-4", "US-5"]);
+  });
+
+  it("puts an unknown status in To do without throwing", () => {
+    const board = projectViewToBoard(project);
+    const queued = board.columns.find((c) => c.id === "queued")!;
+    expect(queued.cards.map((c) => c.storyId)).toEqual(["US-5"]);
+  });
+
+  it("does not count retired stories in the project totals", () => {
+    const status = projectToStatus(project);
+    expect(status.storiesTotal).toBe(3);
+    expect(status.storiesComplete).toBe(1);
+  });
 });
