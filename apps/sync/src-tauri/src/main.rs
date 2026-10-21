@@ -868,6 +868,11 @@ fn main() {
             commands::install_directory::create_directory,
             commands::install_directory::check_writable,
             commands::install_directory::detect_hq,
+            commands::personal_root::personal_root_gate_enabled,
+            commands::personal_root::personal_root_state,
+            commands::personal_root::prepare_personal_root,
+            commands::personal_root::personal_root_plan_adoption,
+            commands::personal_root::personal_root_approve_phase,
             commands::content::fetch_and_extract_template,
             commands::content::cancel_content_download,
             commands::content::get_staging_source,
@@ -1314,6 +1319,9 @@ fn main() {
             prepare_first_run_welcome_window(app.handle(), early_first_run);
 
             commands::lifecycle::setup_lifecycle(app.handle());
+            // H8 (gated, off in shipped builds): hold personal sync until the
+            // installed root's owner is confirmed.
+            commands::personal_root::on_launch(app.handle());
             let launch_kind = commands::first_run::classify_launch(app.handle());
             commands::cdp_mirror::init(
                 app.handle(),

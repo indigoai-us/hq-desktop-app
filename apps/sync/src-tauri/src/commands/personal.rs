@@ -1132,6 +1132,19 @@ pub(crate) async fn create_person_entity_from_cognito(
 
 // ── Person resolution: cache → list+provision (no recursion) ─────────────────
 
+/// H8: make sure the person entity and personal bucket exist before the
+/// paired root flow asks the wrapper to initialize. Uploads nothing.
+pub(crate) async fn provision_personal_authority<R: tauri::Runtime + 'static>(
+    app: &tauri::AppHandle<R>,
+) -> Result<(), String> {
+    let jwt = crate::commands::sync::resolve_jwt().await?;
+    let vault_url = crate::commands::sync::resolve_vault_api_url()?;
+    let vault = VaultClient::new(&vault_url, &jwt);
+    // `None` is the benign 409 (the entity exists but is not resolvable this
+    // cycle). The wrapper authenticates on its own and pauses if it cannot.
+    resolve_or_provision(app, &vault).await.map(|_| ())
+}
+
 /// Resolves (person_uid, bucket_name) using the local cache when valid, falling
 /// back to a vault list + canonical sort + provision call if needed.
 ///

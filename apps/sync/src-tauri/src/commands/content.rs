@@ -1975,7 +1975,39 @@ pub async fn fetch_and_extract_template(
         );
         error
     })?;
-    install_template_into(app, handle, hq_root, failure_scope).await
+    // H8 (gated): seed only a root `initialize` just created; keep the files
+    // of a root that is already seeded or owned. Gate off: unchanged.
+    let state_dir = hq_desktop_core::journal::state_dir_canonical().ok();
+    let gate = crate::commands::personal_root::paired_root_gate_enabled();
+    let decision = match &state_dir {
+        Some(state_dir) => {
+            crate::commands::personal_root::seed_decision_with(gate, &hq_root, state_dir)
+        }
+        None if gate => Err("HQ could not find its state folder.".to_string()),
+        None => Ok(crate::commands::personal_root::SeedDecision::Legacy),
+    }
+    .inspect_err(|_| {
+        record_content_failure(
+            failure_scope.as_ref(),
+            OnboardingErrorCategory::Unknown,
+            ContentErrorKind::SetupPathUnavailable,
+        );
+    })?;
+    match decision {
+        crate::commands::personal_root::SeedDecision::KeepExisting => Ok(hq_root),
+        crate::commands::personal_root::SeedDecision::Legacy => {
+            install_template_into(app, handle, hq_root, failure_scope).await
+        }
+        crate::commands::personal_root::SeedDecision::Seed => {
+            let result = install_template_into(app, handle, hq_root.clone(), failure_scope).await;
+            if result.is_ok() {
+                if let Some(state_dir) = &state_dir {
+                    crate::commands::personal_root::mark_seeded(state_dir, &hq_root);
+                }
+            }
+            result
+        }
+    }
 }
 
 /// The template install itself, targeting an explicit HQ root. The onboarding

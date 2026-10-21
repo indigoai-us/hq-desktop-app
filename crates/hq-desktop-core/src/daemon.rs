@@ -148,7 +148,7 @@ pub fn sync_child_env(hq_folder_path: &str) -> HashMap<String, String> {
         env.insert("HQ_SYNC_SKIP_COMPANIES".to_string(), disabled.join(","));
     }
     // Mirror Sync Now: Personal Off must suppress the personal vault target.
-    let personal_sync_enabled = is_personal_sync_enabled();
+    let personal_sync_enabled = personal_target_allowed();
     if !personal_sync_enabled {
         env.insert("HQ_SYNC_SKIP_PERSONAL".to_string(), "1".to_string());
     }
@@ -180,7 +180,7 @@ pub fn build_watch_runner_args_for_target(
         "HQ_OP_LOCK_TIMEOUT".to_string(),
         WATCH_RUNNER_LOCK_TIMEOUT_SECS.to_string(),
     );
-    let personal_sync_enabled = is_personal_sync_enabled();
+    let personal_sync_enabled = personal_target_allowed();
 
     // Declare a V8 old-space ceiling for the runner child so its mid-pull heap
     // growth is bounded at an app-DECLARED point rather than one derived from
@@ -1490,6 +1490,26 @@ pub fn ensure_sync_spawn_allowed() -> Result<(), String> {
 /// runner must pass `--skip-personal` so Auto-sync honors the Off toggle.
 pub fn is_personal_sync_enabled() -> bool {
     read_menubar_bool(|p| p.personal_sync_enabled, true)
+}
+
+/// H8 (gated): a process-wide hold on the personal target only, while the
+/// paired personal root waits for adoption review or recovery. Company sync
+/// keeps running. Never persisted and never set with the gate off.
+static PERSONAL_PROJECTION_HOLD: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_personal_projection_hold(held: bool) {
+    PERSONAL_PROJECTION_HOLD.store(held, std::sync::atomic::Ordering::Release);
+}
+
+pub fn personal_projection_held() -> bool {
+    PERSONAL_PROJECTION_HOLD.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Whether a runner may include the personal target: the user's Personal
+/// switch is on and no paired-root hold is active.
+pub fn personal_target_allowed() -> bool {
+    is_personal_sync_enabled() && !personal_projection_held()
 }
 
 pub fn read_menubar_bool<F: FnOnce(&MenubarPrefs) -> Option<bool>>(
@@ -4253,6 +4273,29 @@ mod tests {
                 .any(|args| args == ["sync", "mutation"]),
             "the watch runner stays on the V1 runner surface: {:?}",
             args.args
+        );
+    }
+}
+
+#[cfg(test)]
+mod personal_projection_hold_tests {
+    use super::*;
+
+    /// H8: the hold removes only the personal target and is off by default.
+    #[test]
+    fn the_hold_removes_the_personal_target_until_lifted() {
+        let _guard = crate::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        assert!(!personal_projection_held());
+        set_personal_projection_hold(true);
+        let held_allowed = personal_target_allowed();
+        let env = sync_child_env("/tmp/hq");
+        set_personal_projection_hold(false);
+        assert!(!held_allowed);
+        assert_eq!(
+            env.get("HQ_SYNC_SKIP_PERSONAL").map(String::as_str),
+            Some("1")
         );
     }
 }

@@ -78,6 +78,7 @@ pub mod oauth;
 pub mod packages;
 pub mod permissions;
 pub mod personal;
+pub mod personal_root;
 pub mod prewarm;
 pub mod process;
 pub mod projects_local;

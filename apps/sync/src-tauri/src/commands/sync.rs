@@ -2877,6 +2877,10 @@ async fn start_sync_inner(
             true
         }
     };
+    // H8 (gated): a paired root waiting for review keeps personal out of this
+    // run; company vaults still sync.
+    let personal_sync_enabled =
+        personal_sync_enabled && !hq_desktop_core::daemon::personal_projection_held();
     log(
         "sync",
         &format!("personal_sync_enabled={}", personal_sync_enabled),

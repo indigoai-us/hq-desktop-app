@@ -64,6 +64,10 @@ pub struct CreateDirectoryResult {
 /// fresh, an existing HQ, or a non-empty foreign directory.
 #[tauri::command]
 pub fn create_directory(parent: String, name: String) -> Result<CreateDirectoryResult, String> {
+    // H8: with the paired root flow on, only `initialize` may create a root.
+    if crate::commands::personal_root::paired_root_gate_enabled() {
+        return Err("HQ creates this folder during setup.".to_string());
+    }
     let trimmed_name = name.trim();
     if trimmed_name.is_empty() {
         return Err("Folder name cannot be empty".to_string());
@@ -159,7 +163,21 @@ pub fn existing_hq_path() -> Option<String> {
 /// chosen location is honored everywhere rather than silently defaulting to
 /// `~/hq`.
 pub fn resolve_hq_path() -> Result<String, String> {
+    // H8 (gated): with the paired root flow on, stages never create the root.
+    // `initialize` already created it, or setup stops here.
+    if crate::commands::personal_root::paired_root_gate_enabled() {
+        return resolve_existing_hq_path();
+    }
     resolve_hq_path_with(true)
+}
+
+/// Resolve the chosen HQ folder only when it already exists. Never creates it.
+pub fn resolve_existing_hq_path() -> Result<String, String> {
+    let path = default_install_path();
+    if !path.is_dir() {
+        return Err(format!("{} is not set up yet", path.display()));
+    }
+    resolve_hq_path_at(path, false)
 }
 
 /// Tauri entry point for [`resolve_hq_path`]. It only creates the folder when
@@ -260,14 +278,12 @@ fn writable_without_creating(target: &Path) -> bool {
             // Whatever exists first on the way up must be a writable folder.
             // A file in the way (at the target or above it) means no.
             Ok(meta) => return meta.is_dir() && directory_accepts_writes(current, &meta),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                match current.parent() {
-                    Some(parent) if parent != current && !parent.as_os_str().is_empty() => {
-                        current = parent;
-                    }
-                    _ => return false,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => match current.parent() {
+                Some(parent) if parent != current && !parent.as_os_str().is_empty() => {
+                    current = parent;
                 }
-            }
+                _ => return false,
+            },
             Err(_) => return false,
         }
     }
@@ -566,7 +582,10 @@ mod tests {
         let target = dir.path().join("Projects").join("hq");
         let before = tree(dir.path());
 
-        assert_eq!(check_writable(target.to_string_lossy().into_owned()), Ok(true));
+        assert_eq!(
+            check_writable(target.to_string_lossy().into_owned()),
+            Ok(true)
+        );
         assert_eq!(
             check_writable(target.join("hq").to_string_lossy().into_owned()),
             Ok(true)
@@ -582,7 +601,10 @@ mod tests {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("notes.txt"), "mine").unwrap();
         let before = tree(dir.path());
-        assert_eq!(check_writable(dir.path().to_string_lossy().into_owned()), Ok(true));
+        assert_eq!(
+            check_writable(dir.path().to_string_lossy().into_owned()),
+            Ok(true)
+        );
         assert_eq!(tree(dir.path()), before);
     }
 
@@ -591,7 +613,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let file = dir.path().join("hq");
         fs::write(&file, "not a folder").unwrap();
-        assert_eq!(check_writable(file.to_string_lossy().into_owned()), Ok(false));
+        assert_eq!(
+            check_writable(file.to_string_lossy().into_owned()),
+            Ok(false)
+        );
         assert_eq!(
             check_writable(file.join("child").to_string_lossy().into_owned()),
             Ok(false)
@@ -631,8 +656,14 @@ mod tests {
 
         // Directory step: persist the choice and validate it.
         set_hq_install_path(chosen.to_string_lossy().into_owned()).unwrap();
-        assert_eq!(check_writable(chosen.to_string_lossy().into_owned()), Ok(true));
-        assert!(!chosen.exists(), "the Directory step must not create the folder");
+        assert_eq!(
+            check_writable(chosen.to_string_lossy().into_owned()),
+            Ok(true)
+        );
+        assert!(
+            !chosen.exists(),
+            "the Directory step must not create the folder"
+        );
 
         // Setup stage (content, git-init, personalize, sync) resolver.
         let resolved = resolve_hq_path().unwrap();
@@ -641,5 +672,30 @@ mod tests {
             fs::canonicalize(PathBuf::from(resolved)).unwrap(),
             fs::canonicalize(&chosen).unwrap()
         );
+    }
+
+    /// H8 (gated): with the paired root flow on, no stage resolver or IPC
+    /// creates the root. Only the wrapper's `initialize` may.
+    #[cfg(unix)]
+    #[test]
+    fn with_the_paired_gate_on_nothing_creates_the_root() {
+        let _g = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let home = tempdir().unwrap();
+        let _home = crate::util::test_support::scoped_home(home.path());
+        let _gate = crate::commands::personal_root::GateOverride::set(true);
+        let chosen = home.path().join("Work").join("hq");
+        set_hq_install_path(chosen.to_string_lossy().into_owned()).unwrap();
+
+        assert!(resolve_hq_path().is_err());
+        assert!(resolve_existing_hq_path().is_err());
+        assert!(create_directory(
+            home.path().join("Work").to_string_lossy().into_owned(),
+            "hq".to_string()
+        )
+        .is_err());
+        assert!(!chosen.exists());
+        assert!(!home.path().join("Work").exists());
     }
 }
