@@ -29,7 +29,6 @@
     claimCreatorHandle,
     getCreatorProfile,
     loadMyCreator,
-    pickAvatarFile,
     toClaimError,
     updateCreatorProfile,
     uploadCreatorAvatar,
@@ -40,14 +39,18 @@
   import type { PlatformAdapter } from "@hq/platform";
   import { safeLocalImageSrc } from "../common/local-image-src.js";
   import { marketplaceAvatarSrc } from "../avatars/csp-image-src.js";
+  import ProfilePhotoField from "../settings/ProfilePhotoField.svelte";
+  import { base64ToBytes, type OtherProfile } from "../settings/profile-photo.js";
 
   interface Props {
     /** Platform seam: `marketplace.*` creator routes + `shell.pickFile`
      *  (desktop-only avatar picker — hidden when unavailable). */
     adapter: PlatformAdapter;
+    /** A photo this panel copied to the member profile (Settings › Profile). */
+    onprofilephotosaved?: (src: string) => void;
   }
 
-  let { adapter }: Props = $props();
+  let { adapter, onprofilephotosaved }: Props = $props();
 
   /** The native avatar picker is desktop-only; hide the control elsewhere. */
   const canPickAvatar = $derived(adapter.isAvailable("canLaunchApps"));
@@ -87,12 +90,8 @@
   let bio = $state("");
   let tipUrl = $state("");
   let socialLinks = $state<SocialLink[]>([]);
-  /** A picked-but-not-yet-uploaded avatar path (uploaded on Save). */
-  let pendingAvatarPath = $state<string | null>(null);
   /** The currently-rendered avatar URL (from a prior upload / save echo). */
   let avatarUrl = $state<string | null>(null);
-  /** Native file picker is open; keep the control honest while it resolves. */
-  let choosingAvatar = $state(false);
 
   let saving = $state(false);
   let saveError = $state<string | null>(null);
@@ -118,21 +117,15 @@
     ),
   );
   const canSave = $derived(
-    !saving && !choosingAvatar && tipUrlHint === null && !hasInvalidSocialUrl,
+    !saving && tipUrlHint === null && !hasInvalidSocialUrl,
   );
 
-  const avatarPreviewName = $derived(
-    pendingAvatarPath
-      ? (pendingAvatarPath.split("/").filter(Boolean).pop() ??
-          pendingAvatarPath)
-      : null,
-  );
   // Saved avatars come back as presigned URLs on the allowlisted marketplace
   // assets host; any other remote URL still falls back to the initial.
-  const avatarSrc = (raw: string | null | undefined): string | null =>
-    safeLocalImageSrc(raw) ?? marketplaceAvatarSrc(raw);
-  const displayAvatarSrc = $derived(avatarSrc(avatarUrl));
-  const previewAvatarSrc = $derived(avatarSrc(preview?.creator.avatarUrl));
+  const previewAvatarSrc = $derived(
+    safeLocalImageSrc(preview?.creator.avatarUrl) ??
+      marketplaceAvatarSrc(preview?.creator.avatarUrl),
+  );
 
   // ── Claim flow ──────────────────────────────────────────────────────────────
   async function claim(): Promise<void> {
@@ -147,7 +140,6 @@
       bio = "";
       tipUrl = "";
       socialLinks = [];
-      pendingAvatarPath = null;
       avatarUrl = null;
       saved = false;
     } else {
@@ -159,22 +151,48 @@
   }
 
   // ── Avatar ───────────────────────────────────────────────────────────────
-  async function chooseAvatar(): Promise<void> {
-    if (saving || choosingAvatar) return;
-    choosingAvatar = true;
-    saveError = null;
-    const picked = await pickAvatarFile(adapter.shell);
-    if (picked.ok) {
-      if (picked.value) {
-        pendingAvatarPath = picked.value;
-        saved = false;
-      }
-    } else if (picked.reason !== "unavailable") {
-      console.warn("[marketplace] image picker failed", picked.message);
-      saveError = "Couldn't open the image picker. Try again.";
+  // The photo saves on its own as soon as it is picked or re-cropped; Save
+  // profile covers bio, links and the tip link.
+  async function savePublicPhoto(photo: { base64: string }) {
+    const res = await uploadCreatorAvatar(adapter.marketplace, base64ToBytes(photo.base64));
+    if (!res.ok) {
+      console.warn("[marketplace] avatar upload failed", res.message);
+      return { ok: false as const };
     }
-    choosingAvatar = false;
+    avatarUrl = res.value || avatarUrl;
+    if (preview) void loadPreview();
+    return { ok: true as const, url: res.value || null };
   }
+
+  /** Public profile offers its photo to the member profile teammates see. */
+  const memberProfileTarget = $derived.by((): OtherProfile | null => {
+    const identity = adapter.identity;
+    if (typeof identity?.getProfile !== "function" || typeof identity.updateProfile !== "function") {
+      return null;
+    }
+    return {
+      current: async () => {
+        const res = await identity.getProfile();
+        if (!res.ok) return undefined;
+        const url = res.value?.profile?.avatarUrl;
+        return typeof url === "string" && url ? url : null;
+      },
+      apply: async (photo) => {
+        const res = await identity.updateProfile({ avatarBase64: photo.base64 });
+        if (!res.ok) return false;
+        onprofilephotosaved?.(res.value?.profile?.avatarUrl || photo.previewDataUrl);
+        return true;
+      },
+      copy: {
+        emptyText: "Teammates still see your initials.",
+        emptyAction: "Use as profile photo",
+        emptyDone: "Now your profile photo.",
+        diffText: "Teammates see a different profile photo.",
+        diffAction: "Update profile photo",
+        diffDone: "Profile photo updated.",
+      },
+    };
+  });
 
   // ── Social links repeater ──────────────────────────────────────────────────
   function addSocial(): void {
@@ -191,19 +209,7 @@
     saveError = null;
     saved = false;
     try {
-      // 1. Upload a pending avatar first (server owns the avatarKey).
-      if (pendingAvatarPath) {
-        const uploaded = await uploadCreatorAvatar(
-          adapter.marketplace,
-          pendingAvatarPath,
-        );
-        if (!uploaded.ok) {
-          throw new Error(uploaded.message ?? "Avatar upload failed.");
-        }
-        avatarUrl = uploaded.value;
-        pendingAvatarPath = null;
-      }
-      // 2. Persist bio / tipUrl / socials. Only send non-empty social rows
+      // 1. Persist bio / tipUrl / socials. Only send non-empty social rows
       //    (a blank repeater row is dropped; an empty tipUrl clears it).
       const cleanedSocials = socialLinks
         .map((l) => ({ label: l.label.trim(), url: l.url.trim() }))
@@ -223,7 +229,7 @@
       socialLinks = merged.socialLinks ?? [];
       if (merged.avatarUrl) avatarUrl = merged.avatarUrl;
       saved = true;
-      // 3. Refresh the public preview from the public route.
+      // 2. Refresh the public preview from the public route.
       await loadPreview();
     } catch (err) {
       console.warn("[marketplace] profile save failed", err);
@@ -380,48 +386,25 @@
       <!-- Avatar -->
       <div class="field">
         <span class="field-label">Avatar</span>
-        <div class="avatar-row">
-          {#if displayAvatarSrc}
-            <img
-              class="avatar-img"
-              src={displayAvatarSrc}
-              alt="Your avatar"
-              data-testid="profile-avatar-img"
-            />
-          {:else}
-            <div
-              class="avatar-placeholder"
-              aria-hidden="true"
-              data-testid="profile-avatar-fallback"
-            >
-              {handle.slice(0, 1).toUpperCase()}
-            </div>
-          {/if}
-          <div class="avatar-actions">
-            {#if canPickAvatar}<button
-                type="button"
-                class="btn btn-secondary"
-                data-testid="profile-avatar-choose"
-                onclick={chooseAvatar}
-                disabled={saving || choosingAvatar}
-                aria-busy={choosingAvatar}
-              ><RailIcon name="upload" />
-                {choosingAvatar
-                  ? "Choosing…"
-                  : pendingAvatarPath || avatarUrl
-                    ? "Change image…"
-                    : "Upload image…"}
-              </button>{/if}
-            {#if avatarPreviewName}
-              <span class="avatar-chosen" title={pendingAvatarPath}
-                >{avatarPreviewName}</span
-              >
-            {/if}
-            <span class="field-hint"
-              >PNG, JPEG, WebP, or GIF · up to 2 MiB.</span
-            >
-          </div>
-        </div>
+        <ProfilePhotoField
+          photoUrl={avatarUrl}
+          initial={handle.slice(0, 1).toUpperCase()}
+          size={56}
+          editable={canPickAvatar}
+          disabled={saving}
+          changeLabel={avatarUrl ? "Change image…" : "Upload image…"}
+          save={savePublicPhoto}
+          other={memberProfileTarget}
+          testid="profile-photo"
+          imgTestid="profile-avatar-img"
+          fallbackTestid="profile-avatar-fallback"
+          inputTestid="profile-avatar-input"
+          changeTestid="profile-avatar-choose"
+        >
+          {#snippet meta()}
+            <span class="field-hint">PNG, JPEG, WebP, or GIF. Saves as soon as you pick it.</span>
+          {/snippet}
+        </ProfilePhotoField>
       </div>
 
       <!-- Bio -->
@@ -817,49 +800,6 @@
   .claim-status.error {
     color: var(--v4-error);
     overflow-wrap: anywhere;
-  }
-
-  /* ---- avatar ----------------------------------------------------------- */
-  .avatar-row {
-    display: flex;
-    align-items: center;
-    gap: var(--v4-space-3);
-  }
-
-  .avatar-img,
-  .avatar-placeholder {
-    width: 56px;
-    height: 56px;
-    border-radius: 999px;
-    object-fit: cover;
-    flex: 0 0 auto;
-  }
-
-  .avatar-placeholder {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid var(--v4-hairline);
-    background: var(--v4-active-row);
-    color: var(--v4-text-2);
-    font-size: var(--text-lg, 18px);
-    font-weight: 700;
-  }
-
-  .avatar-actions {
-    display: flex;
-    flex-direction: column;
-    gap: var(--v4-space-1);
-    min-width: 0;
-  }
-
-  .avatar-chosen {
-    color: var(--v4-text-1);
-    font-size: var(--text-micro);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 240px;
   }
 
   /* ---- social repeater -------------------------------------------------- */

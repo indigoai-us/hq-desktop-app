@@ -4,6 +4,25 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { flushSync, mount, unmount } from "svelte";
 import { ok, unavailable, type PlatformAdapter } from "@hq/platform";
+
+// Canvas cropping isn't available in happy-dom; the upload path is under test.
+vi.mock("../settings/profile-photo.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../settings/profile-photo.js")>();
+  return {
+    ...actual,
+    loadPhotoSource: vi.fn(async (input: Blob | string) => ({
+      url: typeof input === "string" ? input : "data:image/png;base64,PICKED",
+      width: 600,
+      height: 600,
+    })),
+    renderPhoto: vi.fn(async () => ({
+      base64: "QUJD",
+      previewDataUrl: "data:image/jpeg;base64,QUJD",
+    })),
+    photoFingerprint: vi.fn(async () => Array.from({ length: 256 }, () => 100)),
+  };
+});
+
 import ProfilePanel from "./ProfilePanel.svelte";
 
 /**
@@ -170,5 +189,73 @@ describe("ProfilePanel CSP-safe avatar fallback", () => {
     expect(
       host.querySelector('[data-testid="profile-preview-avatar-unavailable"]'),
     ).toBeNull();
+  });
+
+  it("uploads a picked photo straight away and offers it as the profile photo", async () => {
+    const saved =
+      "https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/creators/drake/avatar?sig=1";
+    const creator = { handle: "drake", displayName: "drake", bio: "", socialLinks: [], tipUrl: null };
+    const uploadCreatorAvatar = vi.fn(async () => ok<unknown>(saved));
+    const updateCreatorProfile = vi.fn(async () => ok<unknown>(creator));
+    const updateProfile = vi.fn(async () =>
+      ok<unknown>({ profile: { avatarUrl: "https://example.invalid/x.jpg" } }),
+    );
+    const onprofilephotosaved = vi.fn();
+    const adapter = {
+      ...fakeAdapter({
+        marketplace: {
+          getMyCreator: vi.fn(async () => ok<unknown>(creator)),
+          uploadCreatorAvatar,
+          updateCreatorProfile,
+        },
+      }),
+      isAvailable: () => true,
+      identity: {
+        getProfile: vi.fn(async () => ok<unknown>({ profile: null })),
+        updateProfile,
+      },
+    } as unknown as PlatformAdapter;
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ProfilePanel, { target: host, props: { adapter, onprofilephotosaved } });
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="profile-avatar-input"]')).not.toBeNull();
+    });
+    const input = host.querySelector('[data-testid="profile-avatar-input"]') as HTMLInputElement;
+    const file = new File([new Uint8Array([1, 2, 3])], "me.png", { type: "image/png" });
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="profile-avatar-img"]')?.getAttribute("src")).toBe(saved);
+    });
+    expect(Array.from((uploadCreatorAvatar.mock.calls as unknown as Uint8Array[][])[0]?.[0] as Uint8Array)).toEqual([
+      0x41, 0x42, 0x43,
+    ]);
+    // The photo doesn't wait for Save profile.
+    expect(updateCreatorProfile).not.toHaveBeenCalled();
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="profile-photo-offer-text"]')?.textContent).toBe(
+        "Teammates still see your initials.",
+      );
+    });
+    expect(
+      host.querySelector('[data-testid="profile-photo-offer-action"]')?.textContent?.trim(),
+    ).toBe("Use as profile photo");
+    (host.querySelector('[data-testid="profile-photo-offer-action"]') as HTMLButtonElement).click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="profile-photo-offer-text"]')?.textContent).toBe(
+        "Now your profile photo.",
+      );
+    });
+    expect(updateProfile).toHaveBeenCalledWith({ avatarBase64: "QUJD" });
+    expect(onprofilephotosaved).toHaveBeenCalledWith("https://example.invalid/x.jpg");
   });
 });

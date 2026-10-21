@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Profile photos: Settings › Public profile now shows the photo you uploaded, in the editor and in the preview. Before, the photo saved but the page showed your initial and "Avatar preview unavailable". A photo saved in Settings › Profile now shows right away in the team list, messages, profile cards and the account button at the bottom of the left rail, without restarting the app. The account button shows your photo instead of your initials. The Public profile photo and the Profile photo are still set separately.
+- Profile photos save as soon as you pick one, in Settings › Profile and Settings › Public profile. You can also drop an image onto your photo. "Photo updated · Undo" shows for a few seconds and Undo puts the previous photo back. "Adjust" opens a crop inside the same row: drag to move, use the slider or scroll to zoom, double-click to re-center, and see how it looks at the sizes the app uses. Done saves the crop and Cancel or Esc keeps the current photo. After a photo saves, a line offers to use the same photo on your other profile when that profile has no photo or a different one ("Use on public profile", "Update public profile", "Use as profile photo" or "Update profile photo"). "Save profile" on Public profile now covers only the bio, links and tip link.
 
 ## [0.11.15] — 2026-10-20
 

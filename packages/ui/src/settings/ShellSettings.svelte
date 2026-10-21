@@ -23,7 +23,8 @@
   import AgentsSettingsPane from "./AgentsSettingsPane.svelte";
   import BotsSettingsPane from "./BotsSettingsPane.svelte";
   import SettingsNavIcon from "./SettingsNavIcon.svelte";
-  import { avatarBase64FromFile } from "./avatar-image.js";
+  import ProfilePhotoField from "./ProfilePhotoField.svelte";
+  import { base64ToBytes, type OtherProfile } from "./profile-photo.js";
   import {
     PROFILE_SKELETON_DELAY_MS,
     profileFromMemberProfile,
@@ -189,9 +190,7 @@
   // ── Editable profile state (US: make profile editable in-app) ───────────────
   let editName = $state("");
   let editDescription = $state("");
-  /** Raw base64 (no data: prefix) of a freshly picked avatar, else null. */
-  let pendingAvatarBase64 = $state<string | null>(null);
-  /** Data-URL preview for the avatar (picked file or persisted avatarUrl). */
+  /** The saved avatar (persisted avatarUrl, or the photo just saved). */
   let avatarPreview = $state<string | null>(null);
   let profileLoaded = $state(false);
   let descriptionLoaded = $state(false);
@@ -201,8 +200,6 @@
   let profileLoading = $state(false);
   let profileRequest = 0;
   let observedSessionGeneration = $state<number | null>(null);
-  let avatarBusy = $state(false);
-  let fileInput = $state<HTMLInputElement | null>(null);
   let profileFetchPending = $state(
     typeof adapter?.identity?.getProfile === "function",
   );
@@ -224,7 +221,7 @@
     descriptionLoaded && editDescription.trim() !== initialDescription.trim(),
   );
   const profileDirty = $derived(
-    profileLoaded && (pendingAvatarBase64 !== null || nameDirty || descriptionDirty),
+    profileLoaded && (nameDirty || descriptionDirty),
   );
 
   function seedFromProfile(): void {
@@ -359,7 +356,6 @@
     profileError = null;
     profileLoaded = false;
     descriptionLoaded = false;
-    pendingAvatarBase64 = null;
     editName = "";
     initialName = "";
     editDescription = "";
@@ -372,30 +368,51 @@
     void loadProfile();
   });
 
-  function pickPhoto(): void {
-    profileError = null;
-    fileInput?.click();
+  // The photo saves on its own as soon as it is picked or re-cropped.
+  async function savePhoto(photo: { base64: string; previewDataUrl: string }) {
+    const identity = adapter?.identity;
+    if (!identity) return { ok: false as const };
+    const generation = sessionGeneration;
+    const res = await identity.updateProfile({ avatarBase64: photo.base64 });
+    if (generation !== sessionGeneration) return { ok: false as const };
+    if (!res.ok) {
+      console.warn("[settings] photo save failed", res.message);
+      return { ok: false as const };
+    }
+    return { ok: true as const, url: res.value?.profile?.avatarUrl ?? null };
   }
 
-  async function onPhotoChosen(event: Event): Promise<void> {
-    const input = event.currentTarget as HTMLInputElement;
-    const file = input.files?.[0];
-    input.value = "";
-    if (!file) return;
-    avatarBusy = true;
-    profileError = null;
-    try {
-      const { base64, previewDataUrl } = await avatarBase64FromFile(file);
-      pendingAvatarBase64 = base64;
-      avatarPreview = previewDataUrl;
-    } catch (err) {
-      profileError =
-        // raw-error-ok: avatar-image errors are app-written copy
-        err instanceof Error ? err.message : "Couldn't read that image.";
-    } finally {
-      avatarBusy = false;
-    }
+  function photoSaved(src: string): void {
+    avatarPreview = src;
+    onavatarsaved?.(src);
   }
+
+  /** Settings › Profile offers its photo to the public profile once a handle is claimed. */
+  const publicProfileTarget = $derived.by((): OtherProfile | null => {
+    const marketplace = adapter?.marketplace;
+    if (!marketplace?.getMyCreator || !marketplace.uploadCreatorAvatar) return null;
+    return {
+      current: async () => {
+        const res = await marketplace.getMyCreator();
+        if (!res.ok || !res.value) return undefined;
+        const me = res.value as { handle?: unknown; avatarUrl?: unknown; code?: unknown };
+        if (typeof me.handle !== "string" || me.code === "NO_CREATOR") return undefined;
+        return typeof me.avatarUrl === "string" && me.avatarUrl ? me.avatarUrl : null;
+      },
+      apply: async (photo) => {
+        const res = await marketplace.uploadCreatorAvatar(base64ToBytes(photo.base64));
+        return res.ok;
+      },
+      copy: {
+        emptyText: "Your public profile has no photo.",
+        emptyAction: "Use on public profile",
+        emptyDone: "Added to your public profile.",
+        diffText: "Your public profile shows a different photo.",
+        diffAction: "Update public profile",
+        diffDone: "Public profile photo updated.",
+      },
+    };
+  });
 
   async function saveProfile(): Promise<void> {
     if (!adapter || savingProfile) return;
@@ -411,12 +428,9 @@
     const update: {
       displayName?: string;
       description?: string;
-      avatarBase64?: string;
     } = {};
     if (nameDirty && name) update.displayName = name;
     if (descriptionDirty) update.description = description;
-    if (pendingAvatarBase64) update.avatarBase64 = pendingAvatarBase64;
-    const pickedPreview = pendingAvatarBase64 ? avatarPreview : null;
     if (Object.keys(update).length === 0) {
       savingProfile = false;
       return;
@@ -425,14 +439,8 @@
       const res = await adapter.identity.updateProfile(update);
       if (generation !== sessionGeneration) return;
       if (res.ok) {
-        pendingAvatarBase64 = null;
         if (nameDirty) initialName = name;
         if (descriptionDirty) initialDescription = description;
-        if (res.value?.profile?.avatarUrl) {
-          avatarPreview = res.value.profile.avatarUrl;
-        }
-        const savedAvatar = res.value?.profile?.avatarUrl || pickedPreview;
-        if (update.avatarBase64 && savedAvatar) onavatarsaved?.(savedAvatar);
         profileSavedAt = Date.now();
       } else {
         console.warn("[settings] profile save failed", res.message);
@@ -534,40 +542,27 @@
             class="ss-profile proto-stack"
             data-testid="settings-profile-pane"
           >
-            <input
-              bind:this={fileInput}
-              type="file"
-              accept="image/*"
-              class="ss-file-input"
-              data-testid="settings-photo-input"
-              onchange={(e) => void onPhotoChosen(e)}
-            />
             <div class="set-row ss-identity-row">
-              {#if avatarPreview}
-                <img
-                  class="ss-avatar ss-avatar-img"
-                  src={avatarPreview}
-                  alt="Your avatar"
-                  data-testid="settings-avatar-img"
-                />
-              {:else}
-                <div class="ss-avatar" aria-hidden="true">
-                  {resolvedProfile.initial}
-                </div>
-              {/if}
-              <div class="ss-identity-meta">
-                <span class="ss-name">{editName || resolvedProfile.fullName}</span>
-                <span class="ss-email">{resolvedProfile.email}</span>
-              </div>
-              <button
-                type="button"
-                class="chip"
-                data-testid="settings-change-photo"
-                disabled={avatarBusy || !adapter}
-                onclick={pickPhoto}
-              ><RailIcon name="upload" />
-                {avatarBusy ? "Reading…" : "Change photo"}
-              </button>
+              <ProfilePhotoField
+                photoUrl={avatarPreview}
+                initial={resolvedProfile.initial}
+                disabled={!adapter}
+                save={savePhoto}
+                onsaved={photoSaved}
+                other={publicProfileTarget}
+                testid="settings-photo"
+                imgTestid="settings-avatar-img"
+                fallbackTestid="settings-avatar-fallback"
+                inputTestid="settings-photo-input"
+                changeTestid="settings-change-photo"
+              >
+                {#snippet meta()}
+                  <div class="ss-identity-meta">
+                    <span class="ss-name">{editName || resolvedProfile.fullName}</span>
+                    <span class="ss-email">{resolvedProfile.email}</span>
+                  </div>
+                {/snippet}
+              </ProfilePhotoField>
             </div>
             <div class="set-row ss-input-row">
               <div>
@@ -718,7 +713,7 @@
       {:else if active === "public-profile"}
         {#if adapter}
           {#await import("../marketplace/ProfilePanel.svelte") then m}
-            <m.default {adapter} />
+            <m.default {adapter} onprofilephotosaved={photoSaved} />
           {/await}
         {/if}
       {:else if active === "billing"}
@@ -937,27 +932,6 @@
     display: flex;
     align-items: center;
     gap: 14px;
-  }
-
-  .ss-avatar {
-    display: grid;
-    place-items: center;
-    flex: 0 0 auto;
-    width: 48px;
-    height: 48px;
-    border-radius: 50%;
-    background: var(--ice-ink);
-    color: var(--badge-fg);
-    font-size: 20px;
-    font-weight: 600;
-  }
-
-  .ss-avatar-img {
-    object-fit: cover;
-  }
-
-  .ss-file-input {
-    display: none;
   }
 
   .ss-input-row .ss-input {

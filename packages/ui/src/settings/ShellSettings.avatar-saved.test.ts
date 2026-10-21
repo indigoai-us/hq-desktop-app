@@ -1,17 +1,27 @@
 // @vitest-environment happy-dom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mount, unmount, flushSync, tick } from "svelte";
+import { mount, unmount, flushSync } from "svelte";
 
 import type { PlatformAdapter } from "@hq/platform";
 
 // Canvas cropping is not available in happy-dom; the save path is what's under test.
-vi.mock("./avatar-image.js", () => ({
-  avatarBase64FromFile: vi.fn(async () => ({
-    base64: "QUJD",
-    previewDataUrl: "data:image/jpeg;base64,QUJD",
-  })),
-}));
+vi.mock("./profile-photo.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./profile-photo.js")>();
+  return {
+    ...actual,
+    loadPhotoSource: vi.fn(async (input: Blob | string) => ({
+      url: typeof input === "string" ? input : "data:image/png;base64,PICKED",
+      width: 600,
+      height: 600,
+    })),
+    renderPhoto: vi.fn(async () => ({
+      base64: "QUJD",
+      previewDataUrl: "data:image/jpeg;base64,QUJD",
+    })),
+    photoFingerprint: vi.fn(async () => Array.from({ length: 256 }, () => 100)),
+  };
+});
 
 import ShellSettings from "./ShellSettings.svelte";
 
@@ -32,17 +42,10 @@ const profile = {
   verified: true,
 };
 
-async function settle(): Promise<void> {
-  for (let i = 0; i < 6; i += 1) {
-    await tick();
-    await Promise.resolve();
-  }
-  flushSync();
-}
-
 function mountWith(
-  update: () => Promise<unknown>,
+  update: (input: Record<string, unknown>) => Promise<unknown>,
   onavatarsaved: (src: string) => void,
+  marketplace?: Record<string, unknown>,
 ): void {
   const adapter = {
     isAvailable: () => false,
@@ -53,6 +56,7 @@ function mountWith(
       }),
       updateProfile: update,
     },
+    ...(marketplace ? { marketplace } : {}),
   } as unknown as PlatformAdapter;
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -62,63 +66,99 @@ function mountWith(
   });
 }
 
-async function pickPhotoAndSave(): Promise<void> {
-  await settle();
-  const input = host.querySelector(
-    '[data-testid="settings-photo-input"]',
-  ) as HTMLInputElement;
-  const file = new File([new Uint8Array([1, 2, 3])], "me.png", {
-    type: "image/png",
+async function pickPhoto(): Promise<void> {
+  await vi.waitFor(() => {
+    flushSync();
+    expect(host.querySelector('[data-testid="settings-photo-input"]')).not.toBeNull();
   });
+  const input = host.querySelector('[data-testid="settings-photo-input"]') as HTMLInputElement;
+  const file = new File([new Uint8Array([1, 2, 3])], "me.png", { type: "image/png" });
   Object.defineProperty(input, "files", { value: [file], configurable: true });
   input.dispatchEvent(new Event("change", { bubbles: true }));
-  await settle();
-  (
-    host.querySelector('[data-testid="settings-profile-save"]') as HTMLButtonElement
-  ).click();
-  await settle();
 }
 
-describe("ShellSettings profile photo save", () => {
-  it("hands the saved photo URL to the app so it shows everywhere", async () => {
+describe("ShellSettings profile photo", () => {
+  it("saves a picked photo without pressing Save and tells the app", async () => {
     const saved =
       "https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/members/prs_jd/a.jpg?sig=1";
-    const update = vi.fn(async () => ({
-      ok: true as const,
-      value: { profile: { avatarUrl: saved } },
-    }));
+    const update = vi.fn(async () => ({ ok: true as const, value: { profile: { avatarUrl: saved } } }));
     const onavatarsaved = vi.fn();
     mountWith(update, onavatarsaved);
 
-    await pickPhotoAndSave();
+    await pickPhoto();
+    await vi.waitFor(() => expect(onavatarsaved).toHaveBeenCalledWith(saved));
 
-    expect(update).toHaveBeenCalledWith(
-      expect.objectContaining({ avatarBase64: "QUJD" }),
-    );
-    expect(onavatarsaved).toHaveBeenCalledWith(saved);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith({ avatarBase64: "QUJD" });
+    // The name/about Save button stays clean: the photo isn't pending.
+    flushSync();
+    expect(
+      (host.querySelector('[data-testid="settings-profile-save"]') as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 
   it("falls back to the local preview when the server echoes no URL", async () => {
     const onavatarsaved = vi.fn();
-    mountWith(
-      async () => ({ ok: true as const, value: { profile: {} } }),
-      onavatarsaved,
-    );
+    mountWith(async () => ({ ok: true as const, value: { profile: {} } }), onavatarsaved);
 
-    await pickPhotoAndSave();
-
-    expect(onavatarsaved).toHaveBeenCalledWith("data:image/jpeg;base64,QUJD");
+    await pickPhoto();
+    await vi.waitFor(() => expect(onavatarsaved).toHaveBeenCalledWith("data:image/jpeg;base64,QUJD"));
   });
 
   it("does not report a photo when the save fails", async () => {
     const onavatarsaved = vi.fn();
+    mountWith(async () => ({ ok: false as const, message: "nope" }), onavatarsaved);
+
+    await pickPhoto();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="settings-photo-status"]')?.textContent).toContain(
+        "Couldn't save your photo",
+      );
+    });
+    expect(onavatarsaved).not.toHaveBeenCalled();
+  });
+
+  it("offers the photo to a claimed public profile with no photo", async () => {
+    const uploadCreatorAvatar = vi.fn(async () => ({ ok: true as const, value: { avatarUrl: "x" } }));
     mountWith(
-      async () => ({ ok: false as const, message: "nope" }),
-      onavatarsaved,
+      async () => ({ ok: true as const, value: { profile: {} } }),
+      vi.fn(),
+      {
+        getMyCreator: vi.fn(async () => ({ ok: true as const, value: { handle: "drake", avatarUrl: null } })),
+        uploadCreatorAvatar,
+      },
     );
 
-    await pickPhotoAndSave();
+    await pickPhoto();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="settings-photo-offer-text"]')?.textContent).toBe(
+        "Your public profile has no photo.",
+      );
+    });
+    (host.querySelector('[data-testid="settings-photo-offer-action"]') as HTMLButtonElement).click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="settings-photo-offer-text"]')?.textContent).toBe(
+        "Added to your public profile.",
+      );
+    });
+    const sent = (uploadCreatorAvatar.mock.calls as unknown as Uint8Array[][])[0]?.[0] as Uint8Array;
+    expect(sent).toBeInstanceOf(Uint8Array);
+    expect(Array.from(sent)).toEqual([0x41, 0x42, 0x43]);
+  });
 
-    expect(onavatarsaved).not.toHaveBeenCalled();
+  it("makes no offer before a public profile handle is claimed", async () => {
+    const getMyCreator = vi.fn(async () => ({ ok: true as const, value: null }));
+    mountWith(async () => ({ ok: true as const, value: { profile: {} } }), vi.fn(), {
+      getMyCreator,
+      uploadCreatorAvatar: vi.fn(),
+    });
+
+    await pickPhoto();
+    await vi.waitFor(() => expect(getMyCreator).toHaveBeenCalled());
+    flushSync();
+    expect(host.querySelector('[data-testid="settings-photo-offer"]')).toBeNull();
   });
 });
