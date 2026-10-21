@@ -422,11 +422,11 @@
     flex-shrink: 0;
     display: grid;
     place-items: center;
-    width: 28px;
-    height: 28px;
+    width: var(--hq-btn-h);
+    height: var(--hq-btn-h);
     padding: 0;
     border: 0;
-    border-radius: 7px;
+    border-radius: var(--hq-btn-radius);
     background: transparent;
     color: var(--lb-ink-mid);
     cursor: pointer;
