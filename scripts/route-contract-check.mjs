@@ -126,33 +126,53 @@ export function extractRustRegistryRoutes(sourceText) {
   return routes;
 }
 
-/** Parses the `WEB_PATHS.company*` family out of
- * `packages/platform/src/web/index.ts` and pairs each with the HTTP verb
- * its `WebPlatformAdapter` call site uses (`this.get(...)` -> GET,
- * `this.post(...)` -> POST, ...). Both halves are read from the same file
- * so a rename on either side breaks extraction loudly instead of silently
- * matching the wrong thing. */
+/** Names in `WEB_PATHS` that this check covers: the `company*` family and
+ * the usage-pricing `personal*` / `usageSwitch` paths (the personal account's
+ * billing reads, hq-desktop-app #1699). */
+function isCheckedWebPath(name) {
+  return name.startsWith("company") || name.startsWith("personal") || name === "usageSwitch";
+}
+
+/** Parses the `WEB_PATHS.company*`, `WEB_PATHS.personal*` and
+ * `WEB_PATHS.usageSwitch` entries out of `packages/platform/src/web/index.ts`
+ * and pairs each with the HTTP verb its `WebPlatformAdapter` call site uses
+ * (`this.get(...)` -> GET, `this.post(...)` -> POST, ...). Entries are
+ * either path builders (arrow functions returning a template) or plain
+ * string constants. Both halves are read from the same file so a rename on
+ * either side breaks extraction loudly instead of silently matching the
+ * wrong thing. */
 export function extractWebPathsCompanyRoutes(sourceText) {
   const pathDefs = new Map();
   const defRe =
     /(\w+):\s*\(([^)]*)\)\s*=>\s*`([^`]*)`/g;
   for (const match of sourceText.matchAll(defRe)) {
     const [, name, , template] = match;
-    if (!name.startsWith("company")) continue;
+    if (!isCheckedWebPath(name)) continue;
     const path = template.replace(/\$\{[^}]*\}/g, "{param}");
+    pathDefs.set(name, path);
+  }
+  // String constants: `personalBillingSummary: "/v1/billing/person/summary",`
+  const constRe = /^\s*(\w+):\s*"(\/[^"]*)",?\s*$/gm;
+  for (const match of sourceText.matchAll(constRe)) {
+    const [, name, path] = match;
+    if (!isCheckedWebPath(name) || pathDefs.has(name)) continue;
     pathDefs.set(name, path);
   }
 
   const verbByMethod = { get: "GET", post: "POST", put: "PUT", del: "DELETE", patch: "PATCH" };
-  const callRe = /this\.(get|post|put|del|patch)\(WEB_PATHS\.(\w+)\(/g;
+  // `this.get(WEB_PATHS.companyBoard(slug))` or `this.get(WEB_PATHS.personalSpendLimit)`.
+  const callRe = /this\.(get|post|put|del|patch)\(WEB_PATHS\.(\w+)[(,)]/g;
   const routes = [];
+  const seen = new Set();
   for (const match of sourceText.matchAll(callRe)) {
     const [, verb, name] = match;
     if (!pathDefs.has(name)) continue;
-    routes.push({
-      name: `WEB_PATHS.${name}`,
-      route: normalizeRoute(`${verbByMethod[verb]} ${pathDefs.get(name)}`),
-    });
+    const route = normalizeRoute(`${verbByMethod[verb]} ${pathDefs.get(name)}`);
+    // One path used from two call sites with the same verb is one route.
+    const id = `${name} ${route}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    routes.push({ name: `WEB_PATHS.${name}`, route });
   }
   return routes;
 }
