@@ -61,6 +61,7 @@ import {
   type RequestPolicyOptions,
 } from "../request-policy.js";
 import { hqProFailure, parseHqProErrorBody } from "../plan-limit.js";
+import { creatorAvatarBody } from "../creator-avatar-body.js";
 
 /** One HTTP attempt: the caller-facing result plus what the policy reads. */
 interface WebAttempt<T> {
@@ -247,6 +248,20 @@ export const WEB_PATHS = {
   /** GET, owner-gated: this calendar month's usage statement. */
   companyUsageStatement: (companyUid: string) =>
     `/v1/billing/usage?companyUid=${encodeURIComponent(companyUid)}&window=month`,
+  /** GET, owner-gated: the monthly spend limit and this month's measured spend. */
+  companySpendLimit: (companyUid: string) =>
+    `/v1/billing/spend-limit?companyUid=${encodeURIComponent(companyUid)}`,
+  /** Personal account (the caller, from the JWT). */
+  personalBillingSummary: "/v1/billing/person/summary",
+  personalUsageStatement: "/v1/billing/usage?scope=person&window=month",
+  personalSpendLimit: "/v1/billing/person/spend-limit",
+  personalBillingCheckout: "/v1/billing/checkout/person",
+  personalBillingPortal: "/v1/billing/person/portal",
+  /** GET (owner) / POST (owner, body `{ companyUid }`): switch to usage pricing. */
+  companyUsageSwitch: (companyUid: string) =>
+    `/v1/billing/usage-switch?companyUid=${encodeURIComponent(companyUid)}`,
+  usageSwitch: "/v1/billing/usage-switch",
+  personalUsageSwitch: "/v1/billing/usage-switch?scope=person",
   /** GET, public price list. */
   pricing: "/v1/pricing",
   firstWeekReturnNudge: (companyUid: string) =>
@@ -1067,7 +1082,13 @@ export class WebPlatformAdapter implements PlatformAdapter {
     claimHandle: (handle) => this.post(WEB_PATHS.claimHandle, { handle }),
     updateCreatorProfile: (p) =>
       this.request("PUT", WEB_PATHS.myCreatorProfile, p),
-    uploadCreatorAvatar: (data) => this.post(WEB_PATHS.creatorAvatar, { data }),
+    uploadCreatorAvatar: async (data) => {
+      if (typeof data === "string") return this.post(WEB_PATHS.creatorAvatar, { data });
+      // Cropped photos arrive as bytes; send the body the server expects.
+      const avatar = creatorAvatarBody(data);
+      if (!avatar.ok) return failure("invalid-argument", avatar.message);
+      return this.post(WEB_PATHS.creatorAvatar, avatar.body);
+    },
     requestCreatorAccess: (payload) => this.post(WEB_PATHS.creatorAccess, payload),
     listCreatorApplications: () => this.get(WEB_PATHS.creatorApplications),
     decideCreatorApplication: (id, decision) =>
@@ -1196,6 +1217,17 @@ export class WebPlatformAdapter implements PlatformAdapter {
     getUsageStatement: (companyUid) =>
       this.get(WEB_PATHS.companyUsageStatement(companyUid)),
     getPricing: () => this.get(WEB_PATHS.pricing),
+    getSpendLimit: (companyUid) =>
+      this.get(WEB_PATHS.companySpendLimit(companyUid)),
+    getPersonalBillingSummary: () => this.get(WEB_PATHS.personalBillingSummary),
+    getPersonalUsageStatement: () => this.get(WEB_PATHS.personalUsageStatement),
+    getPersonalSpendLimit: () => this.get(WEB_PATHS.personalSpendLimit),
+    createPersonalBillingCheckoutSession: () => this.post(WEB_PATHS.personalBillingCheckout, {}),
+    createPersonalBillingPortalSession: () => this.post(WEB_PATHS.personalBillingPortal, {}),
+    getUsageSwitch: (companyUid) => this.get(WEB_PATHS.companyUsageSwitch(companyUid)),
+    switchToUsagePricing: (companyUid) => this.post(WEB_PATHS.usageSwitch, { companyUid }),
+    getPersonalUsageSwitch: () => this.get(WEB_PATHS.personalUsageSwitch),
+    switchPersonalToUsagePricing: () => this.post(WEB_PATHS.usageSwitch, { scope: "person" }),
     getFirstWeekReturnNudge: (companyUid) =>
       this.get(WEB_PATHS.firstWeekReturnNudge(companyUid)),
   };

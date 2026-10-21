@@ -22,7 +22,6 @@
 //!   POST   /v1/bot/{botId}/cancel                    — cancel scheduled bot
 //!   GET    /v1/meetings/{recallBotId}?view=live      — live transcript poll
 
-use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 
 use serde::Deserialize;
@@ -43,6 +42,9 @@ pub use hq_desktop_core::meetings::{
     InviteBotBody, MeetingEvent, NotifyDetectedPayload, OntologyParticipant, ScheduledBot,
     SelectedCalendarRef, SetCompanyBody, SetCompanyErrorBody, SetCompanyResult,
     UNATTRIBUTED_BANNER_CAP_PER_POLL,
+};
+use hq_desktop_core::unattributed_seen::{
+    dedupe_new_persistent, load_seen, save_seen, unattributed_seen_path, UnattributedSeen,
 };
 
 // ── Feature flag ─────────────────────────────────────────────────────────────
@@ -695,10 +697,19 @@ pub async fn meetings_check_bot_for_url(
     Ok(first_active_bot(parsed.bots))
 }
 
-static UNATTRIBUTED_SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+/// Meetings already bannered by the unattributed poller, loaded from
+/// `~/.hq/unattributed-banner-seen.json` on first use so a restart does not
+/// raise the same "Assign" banners again (feedback_73935996).
+static UNATTRIBUTED_SEEN: OnceLock<Mutex<UnattributedSeen>> = OnceLock::new();
 
-fn unattributed_seen() -> &'static Mutex<HashSet<String>> {
-    UNATTRIBUTED_SEEN.get_or_init(|| Mutex::new(HashSet::new()))
+fn unattributed_seen() -> &'static Mutex<UnattributedSeen> {
+    UNATTRIBUTED_SEEN.get_or_init(|| {
+        let seen = match unattributed_seen_path() {
+            Ok(path) => load_seen(&path, chrono::Utc::now()),
+            Err(_) => UnattributedSeen::new(),
+        };
+        Mutex::new(seen)
+    })
 }
 
 const UNATTRIBUTED_POLL_INTERVAL_SECS: u64 = 120;
@@ -789,7 +800,18 @@ pub async fn poll_unattributed_once(app: AppHandle) {
         let mut guard = unattributed_seen()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        dedupe_new(&mut guard, &candidates)
+        let before = guard.len();
+        let new_ids = dedupe_new_persistent(&mut guard, &candidates, chrono::Utc::now());
+        if guard.len() != before {
+            let saved = unattributed_seen_path().and_then(|path| save_seen(&path, &guard));
+            if let Err(e) = saved {
+                crate::util::logfile::log(
+                    "meetings",
+                    &format!("unattributed seen save failed: {e}"),
+                );
+            }
+        }
+        new_ids
     };
     let surfaced = new_ids.len();
     let new_ids =

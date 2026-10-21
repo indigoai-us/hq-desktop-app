@@ -453,7 +453,7 @@ export function syncStateWord(phase: string | null | undefined): string {
     case "cloud-off":
       return "Cloud off";
     default:
-      return "All synced";
+      return "HQ is synced";
   }
 }
 
@@ -483,7 +483,7 @@ export function lastSyncLine(label: string | null | undefined): string {
 }
 
 export interface CorePopoverSyncHeader {
-  /** "All synced" / "Syncing" / "Uploads paused" / … */
+  /** "HQ is synced" / "Syncing" / "Uploads paused" / … */
   stateWord: string;
   tone: CoreSyncTone;
   /** Always present: "Last sync · …". */

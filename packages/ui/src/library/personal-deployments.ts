@@ -33,6 +33,8 @@ export interface PersonalDeployment {
   project: string;
   detail: string;
   scope: "personal" | "company";
+  /** hq-deploy app record id for `/api/apps/{id}/…`; absent when the row has none. */
+  appId?: string;
   /** Scope id is stable even when two companies share a display name. */
   scopeId?: string;
   scopeLabel: string;
@@ -208,6 +210,7 @@ export function deploymentFromApp(
   const version = str(app.version) || str(app.liveVersion);
   return {
     id: `${scope.id}:${str(app.id) || sub || name}`,
+    ...(str(app.id) ? { appId: str(app.id) } : {}),
     name,
     url,
     host,

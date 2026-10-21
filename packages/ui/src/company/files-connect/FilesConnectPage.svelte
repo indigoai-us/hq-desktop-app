@@ -27,6 +27,9 @@
   import "../../chat/chat-tokens.css";
   import { companyStore } from "../company-store.svelte.js";
   import DeployAccessForm from "./DeployAccessForm.svelte";
+  import CustomDomainForm from "./CustomDomainForm.svelte";
+  import CustomDomainOptions from "./CustomDomainOptions.svelte";
+  import { canManageDomains, domainPricesFromFeed, type DeployDomainRequest } from "./custom-domain.js";
   import HiddenFromAiRow from "./HiddenFromAiRow.svelte";
   import { createRedactionPresetsApi, viewerCanEditRedaction, type RedactionPresetsApi } from "./redaction-presets.js";
   import ConnectionCardLogo from "../../chat/messaging/ConnectionCardLogo.svelte";
@@ -97,6 +100,10 @@
     listDeployApps?: (scope: string) => AdapterPromise<Json>;
     /** hq-deploy access routes for the Access sheet (QA-059). */
     deployAccessRequest?: DeployAccessRequest;
+    /** hq-deploy custom-domain routes for the Custom domain sheet (US-007). */
+    deployDomainRequest?: DeployDomainRequest;
+    /** The caller's role in this company; owners and admins manage custom domains. */
+    companyRole?: string | null;
     /** RELEASE-001 gate: false hides Redeploy and the Selected people access mode. */
     deployActions?: boolean;
     /** OWNER-R13: the company name the Vault root shows. */
@@ -109,7 +116,7 @@
     redactionPresets?: RedactionPresetsApi | null;
   }
 
-  let { page, slug, files, shell, settings, openExternal, adapter = null, companyUid = null, listDeployApps, deployAccessRequest, deployActions = true, companyLabel = null, vaultCloudRead = null, redactionPresets = null }: Props = $props();
+  let { page, slug, files, shell, settings, openExternal, adapter = null, companyUid = null, listDeployApps, deployAccessRequest, deployDomainRequest, companyRole = null, deployActions = true, companyLabel = null, vaultCloudRead = null, redactionPresets = null }: Props = $props();
 
   const redactionApi = $derived(redactionPresets ?? createRedactionPresetsApi(adapter?.company));
   const workflow = $derived({ settings, shell } as AgentWorkflowApi);
@@ -531,6 +538,36 @@
     loadMembers();
   }
 
+  // ---- custom domain (US-007) ----------------------------------------------
+  const domainRequest = $derived<DeployDomainRequest | null>(
+    deployDomainRequest ?? (adapter?.company?.deployDomainRequest as DeployDomainRequest | undefined) ?? null,
+  );
+  const manageDomains = $derived(canManageDomains(companyRole));
+  /** The deployment the Custom domain sheet is for; the options sheet can pick another. */
+  let domainTarget = $state<string | null>(null);
+  const domainDeploy = $derived((deployments ?? []).find((row) => row.id === domainTarget) ?? deployCurrent);
+
+  function openDomain(id?: string): void {
+    domainTarget = id ?? deployCurrent?.id ?? null;
+    if (id) selectedDeploy = id;
+    sheet = "deploy-domain";
+  }
+
+  async function loadDomainPrices() {
+    const read = adapter?.company?.getPricing;
+    if (!read) return null;
+    const res = await read();
+    return res.ok ? domainPricesFromFeed(res.value) : null;
+  }
+
+  /** A Stripe card-entry Checkout for this company; null when the caller can't mint one. */
+  async function domainCardEntryUrl(): Promise<string | null> {
+    const mint = adapter?.company?.createBillingCheckoutSession;
+    if (!mint || !companyUid) return null;
+    const res = await mint(companyUid);
+    return res.ok && typeof res.value?.url === "string" ? res.value.url : null;
+  }
+
   const accessRequest = $derived<DeployAccessRequest | null>(
     deployAccessRequest ?? (adapter?.company?.deployAccessRequest as DeployAccessRequest | undefined) ?? null,
   );
@@ -762,6 +799,10 @@
         return "Allowlist";
       case "deploy-access":
         return "Deploy access";
+      case "deploy-domain":
+        return "Custom domain";
+      case "domain-options":
+        return "Custom domains";
       case "confirm-redeploy":
         return `Redeploy ${redeployName}?`;
       case "upload":
@@ -1064,6 +1105,7 @@
       <h1>Deployments</h1>
       {#if deployments && !(deploymentsError && deployments.length === 0)}<span class="count" data-testid="deployments-count">{countLabel("Deployments", deployments.length)}</span>{/if}
       <span class="grow"></span>
+      {#if manageDomains && domainRequest}<RailButton icon="link" data-testid="domain-options" onclick={() => (sheet = "domain-options")}>Custom domains</RailButton>{/if}
       <RailButton icon="send" variant="primary" data-testid="deploy-from-project" onclick={openDeploy}>Deploy</RailButton>
     </header>
     {#if deployments === null}
@@ -1103,6 +1145,7 @@
                 <RailButton icon="external" disabled={!deployCurrent.url} onclick={() => openExternal?.(deployCurrent.url)}>Open</RailButton>
                 {#if deployActions}<RailButton icon="refresh" data-testid="redeploy" onclick={() => askRedeploy(deployCurrent)}>Redeploy</RailButton>{/if}
                 {#if deployCurrent.appId}<RailButton icon="key" data-testid="deploy-access" onclick={openDeployAccess}>Access</RailButton>{/if}
+                {#if deployCurrent.appId && domainRequest}<RailButton icon="link" data-testid="deploy-domain" onclick={() => openDomain()}>Custom domain</RailButton>{/if}
               </div>
               {#if !deployCurrent.appId}<p class="meta" data-testid="deploy-access-unmanaged">Access for this deployment is managed where it was deployed.</p>{/if}
             </div>
@@ -1125,7 +1168,28 @@
         <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
       </button>
     </header>
-    {#if sheet === "deploy-access" && deployCurrent?.appId}
+    {#if sheet === "deploy-domain" && domainDeploy?.appId}
+      <CustomDomainForm
+        appId={domainDeploy.appId}
+        appName={domainDeploy.name}
+        appUrl={domainDeploy.url}
+        scope={slug}
+        request={domainRequest}
+        canManage={manageDomains}
+        loadPrices={loadDomainPrices}
+        cardEntryUrl={domainCardEntryUrl}
+        openExternal={(url) => openExternal?.(url)}
+        onclose={closeSheet}
+        ondone={(message) => (status = message)}
+      />
+    {:else if sheet === "domain-options"}
+      <CustomDomainOptions
+        deployments={(deployments ?? []).filter((row) => row.appId).map((row) => ({ id: row.id, name: row.name, url: row.url }))}
+        loadPrices={loadDomainPrices}
+        onpick={(id) => openDomain(id)}
+        onclose={closeSheet}
+      />
+    {:else if sheet === "deploy-access" && deployCurrent?.appId}
       <DeployAccessForm
         appId={deployCurrent.appId}
         appName={deployCurrent.name}

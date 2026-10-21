@@ -42,7 +42,7 @@ All commands are registered in `src-tauri/src/main.rs`.
 | `get_company_summary` | Returns counts for the company header and overview stats. |
 | `get_company_board` | Reads board data from the vault API at `/companies/{companyUid}/board`. |
 | `get_company_activity` | Reads activity data from the vault API at `/companies/{companyUid}/activity`. |
-| `get_company_deployments` | Reads hq-deploy apps from `https://api.indigo-hq.com/api/apps/me` with `x-org-slug`. |
+| `get_company_deployments` | Reads hq-deploy apps from `https://api.hq.work/api/apps/me` with `x-org-slug` (`api.indigo-hq.com` serves the same API). |
 | `get_company_secrets` | Reads hq-pro secrets metadata from `/secrets/{companyUid}` and returns grouped key metadata only. |
 | `get_local_company_goals`, `get_local_projects`, `get_local_project_prd`, `get_local_project_readme` | Read local HQ work-system data for V4 goals, projects, tasks, and detail views. |
 | `set_local_project_status`, `set_local_story_passes` | Write V4 project and story status changes back to local project files. |
