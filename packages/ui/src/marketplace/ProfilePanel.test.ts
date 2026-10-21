@@ -259,6 +259,46 @@ describe("ProfilePanel CSP-safe avatar fallback", () => {
     expect(onprofilephotosaved).toHaveBeenCalledWith("https://example.invalid/x.jpg");
   });
 
+  it("never says teammates see initials once a profile photo is saved", async () => {
+    const creator = { handle: "drake", displayName: "drake", bio: "", socialLinks: [], tipUrl: null };
+    const getProfile = vi.fn(async () =>
+      ok<unknown>({
+        profile: {
+          avatarUrl: "https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/members/prs_1/a.jpg?sig=1",
+        },
+      }),
+    );
+    const adapter = {
+      ...fakeAdapter({
+        marketplace: {
+          getMyCreator: vi.fn(async () => ok<unknown>(creator)),
+          uploadCreatorAvatar: vi.fn(async () => ok<unknown>("data:image/jpeg;base64,QUJD")),
+        },
+      }),
+      isAvailable: () => true,
+      identity: { getProfile, updateProfile: vi.fn() },
+    } as unknown as PlatformAdapter;
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ProfilePanel, { target: host, props: { adapter } });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="profile-avatar-input"]')).not.toBeNull();
+    });
+    const input = host.querySelector('[data-testid="profile-avatar-input"]') as HTMLInputElement;
+    const file = new File([new Uint8Array([1, 2, 3])], "me.png", { type: "image/png" });
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+
+    await vi.waitFor(() => expect(getProfile).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 20));
+    flushSync();
+    expect(host.querySelector('[data-testid="profile-photo-offer-text"]')?.textContent ?? "").not.toContain(
+      "initials",
+    );
+  });
+
   it("links back to Settings › Profile when hosted in Settings", async () => {
     const creator = { handle: "drake", displayName: "drake", bio: "", socialLinks: [], tipUrl: null };
     const onopenprofile = vi.fn();

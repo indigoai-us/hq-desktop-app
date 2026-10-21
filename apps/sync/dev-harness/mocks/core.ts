@@ -2224,7 +2224,9 @@ function scaledAnswer(cmd: string, args?: Record<string, unknown>): unknown {
 }
 
 // ?creator=1 gives the signed-in person a claimed public profile (@drake) so
-// Settings › Public profile shows its edit step; uploads echo back.
+// Settings › Public profile shows its edit step; uploads echo back. It also
+// keeps what Settings › Profile saves (name, About, photo) so each page reads
+// back what the other saved.
 const harnessCreator = {
   handle: 'drake',
   displayName: 'drake',
@@ -2233,8 +2235,26 @@ const harnessCreator = {
   tipUrl: null as string | null,
   avatarUrl: null as string | null,
 };
+const harnessMember: { displayName?: string; description?: string; avatarUrl?: string } = {};
 function creatorAnswer(cmd: string, args?: Record<string, unknown>): unknown {
   if (typeof window === 'undefined' || !new URLSearchParams(window.location.search).has('creator')) return NOT_HANDLED;
+  if (cmd === 'hq_pro_fetch' && args?.url === '/v1/profile') {
+    if (args?.method === 'PUT') {
+      try {
+        const sent = JSON.parse(String(args?.body ?? '{}')) as {
+          displayName?: string;
+          description?: string;
+          avatarBase64?: string;
+        };
+        if (typeof sent.displayName === 'string') harnessMember.displayName = sent.displayName;
+        if (typeof sent.description === 'string') harnessMember.description = sent.description;
+        if (sent.avatarBase64) harnessMember.avatarUrl = `data:image/jpeg;base64,${sent.avatarBase64}`;
+      } catch {
+        // keep what was saved before
+      }
+    }
+    return { status: 200, body: JSON.stringify({ profile: { ...harnessMember } }) };
+  }
   if (cmd === 'get_my_creator') return { ...harnessCreator };
   if (cmd === 'get_creator_profile') return { creator: { ...harnessCreator }, listings: [] };
   if (cmd === 'update_creator_profile') {
