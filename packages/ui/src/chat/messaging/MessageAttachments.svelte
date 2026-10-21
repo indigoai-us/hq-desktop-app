@@ -161,6 +161,9 @@
   .msg-attachments {
     display: flex;
     flex-wrap: wrap;
+    /* Each attachment keeps its own height. Stretched, a file card beside a
+       screenshot grew to the image's height and floated in a tall grey box. */
+    align-items: flex-start;
     gap: 8px;
     margin-top: 8px;
   }

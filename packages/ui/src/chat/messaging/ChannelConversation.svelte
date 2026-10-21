@@ -3227,6 +3227,13 @@
     min-width: 0;
   }
 
+  /* The name row lines up on the text baseline, but a tag's baseline is its
+     small mono label, so a baseline tag sat low against the name. Centre it
+     on the row instead. */
+  .dm-msg-meta > :global(.hq-tag) {
+    align-self: center;
+  }
+
   .dm-msg-author {
     max-width: 42ch;
     overflow: hidden;

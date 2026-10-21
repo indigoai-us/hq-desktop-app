@@ -2127,6 +2127,13 @@
     min-width: 0;
   }
 
+  /* The name row lines up on the text baseline, but a tag's baseline is its
+     small mono label, so a baseline tag sat low against the name. Centre it
+     on the row instead. */
+  .reply-meta > :global(.hq-tag) {
+    align-self: center;
+  }
+
   .reply-send-state {
     display: inline-block;
     margin-top: 2px;
