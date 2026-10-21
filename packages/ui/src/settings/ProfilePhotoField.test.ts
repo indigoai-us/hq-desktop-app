@@ -115,6 +115,20 @@ describe("ProfilePhotoField", () => {
     expect(q("p-undo")).toBeNull();
   });
 
+  it("plays the HQ glow after a save, and not after a failed one", async () => {
+    render({});
+    expect(q("p-glow")).toBeNull();
+    await pick();
+    await settle(() => expect(q("p-glow")).not.toBeNull());
+  });
+
+  it("no glow when the save fails", async () => {
+    render({ save: vi.fn(async () => ({ ok: false as const })) });
+    await pick();
+    await settle(() => expect(q("p-status")?.textContent).toContain("Couldn't save"));
+    expect(q("p-glow")).toBeNull();
+  });
+
   it("shows an error and keeps the old photo when the save fails", async () => {
     const onsaved = vi.fn();
     render({ photoUrl: MEMBER_URL, save: vi.fn(async () => ({ ok: false as const })), onsaved });

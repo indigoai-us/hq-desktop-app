@@ -258,4 +258,22 @@ describe("ProfilePanel CSP-safe avatar fallback", () => {
     expect(updateProfile).toHaveBeenCalledWith({ avatarBase64: "QUJD" });
     expect(onprofilephotosaved).toHaveBeenCalledWith("https://example.invalid/x.jpg");
   });
+
+  it("links back to Settings › Profile when hosted in Settings", async () => {
+    const creator = { handle: "drake", displayName: "drake", bio: "", socialLinks: [], tipUrl: null };
+    const onopenprofile = vi.fn();
+    const adapter = {
+      ...fakeAdapter({ marketplace: { getMyCreator: vi.fn(async () => ok<unknown>(creator)) } }),
+      isAvailable: () => true,
+    } as unknown as PlatformAdapter;
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ProfilePanel, { target: host, props: { adapter, onopenprofile } });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="profile-open-settings-profile"]')).not.toBeNull();
+    });
+    (host.querySelector('[data-testid="profile-open-settings-profile"]') as HTMLButtonElement).click();
+    expect(onopenprofile).toHaveBeenCalledTimes(1);
+  });
 });

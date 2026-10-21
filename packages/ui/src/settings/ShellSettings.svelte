@@ -24,6 +24,12 @@
   import BotsSettingsPane from "./BotsSettingsPane.svelte";
   import SettingsNavIcon from "./SettingsNavIcon.svelte";
   import ProfilePhotoField from "./ProfilePhotoField.svelte";
+  import ProfileChecklist from "./ProfileChecklist.svelte";
+  import {
+    profileChecklistSteps,
+    publicProfileStateFrom,
+    type PublicProfileState,
+  } from "./profile-checklist.js";
   import { base64ToBytes, type OtherProfile } from "./profile-photo.js";
   import {
     PROFILE_SKELETON_DELAY_MS,
@@ -387,6 +393,60 @@
     onavatarsaved?.(src);
   }
 
+  function goToSection(section: ShellSettingsSection): void {
+    if (onsectionchange) onsectionchange(section);
+    else active = section;
+  }
+
+  let profilePane = $state<HTMLDivElement | null>(null);
+
+  /** The progress line's next step: jump to that field. */
+  function goToStep(step: "name" | "photo" | "about"): void {
+    const id =
+      step === "photo"
+        ? "settings-photo-input"
+        : step === "name"
+          ? "settings-display-name-input"
+          : "settings-description-input";
+    const el = profilePane?.querySelector<HTMLInputElement>(`[data-testid="${id}"]`);
+    if (!el) return;
+    if (step === "photo") el.click();
+    else {
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+      el.focus({ preventScroll: true });
+    }
+  }
+
+  // ── Profile checklist + public profile nudge ───────────────────────────────
+  let publicProfileState = $state<PublicProfileState>({ kind: "unknown" });
+
+  async function refreshPublicProfile(): Promise<void> {
+    const getMyCreator = adapter?.marketplace?.getMyCreator;
+    if (typeof getMyCreator !== "function") return;
+    const generation = sessionGeneration;
+    try {
+      const res = await getMyCreator.call(adapter?.marketplace);
+      if (generation !== sessionGeneration || !res.ok) return;
+      publicProfileState = publicProfileStateFrom(res.value);
+    } catch {
+      // Unknown stays unknown: no nudge rather than a wrong one.
+    }
+  }
+
+  // Re-read whenever Profile is shown, so a public profile finished in the
+  // other section clears the nudge on the way back.
+  $effect(() => {
+    if (active === "profile") void refreshPublicProfile();
+  });
+
+  const checklistSteps = $derived(
+    profileChecklistSteps({
+      displayName: initialName,
+      hasPhoto: Boolean(avatarPreview),
+      about: initialDescription,
+    }),
+  );
+
   /** Settings › Profile offers its photo to the public profile once a handle is claimed. */
   const publicProfileTarget = $derived.by((): OtherProfile | null => {
     const marketplace = adapter?.marketplace;
@@ -401,6 +461,9 @@
       },
       apply: async (photo) => {
         const res = await marketplace.uploadCreatorAvatar(base64ToBytes(photo.base64));
+        if (res.ok && publicProfileState.kind === "claimed") {
+          publicProfileState = { ...publicProfileState, hasPhoto: true };
+        }
         return res.ok;
       },
       copy: {
@@ -541,6 +604,7 @@
           <div
             class="ss-profile proto-stack"
             data-testid="settings-profile-pane"
+            bind:this={profilePane}
           >
             <div class="set-row ss-identity-row">
               <ProfilePhotoField
@@ -560,10 +624,27 @@
                   <div class="ss-identity-meta">
                     <span class="ss-name">{editName || resolvedProfile.fullName}</span>
                     <span class="ss-email">{resolvedProfile.email}</span>
+                    {#if profileLoaded && descriptionLoaded}
+                      <ProfileChecklist
+                        steps={checklistSteps}
+                        publicProfile={publicProfileState}
+                        {storage}
+                        onstep={goToStep}
+                        onopenpublic={() => goToSection("public-profile")}
+                      />
+                    {:else}
+                      <button
+                        type="button"
+                        class="ss-link"
+                        data-testid="settings-open-public-profile"
+                        onclick={() => goToSection("public-profile")}
+                      >Public profile ›</button>
+                    {/if}
                   </div>
                 {/snippet}
               </ProfilePhotoField>
             </div>
+
             <div class="set-row ss-input-row">
               <div>
                 <div class="sn">Display name</div>
@@ -713,7 +794,11 @@
       {:else if active === "public-profile"}
         {#if adapter}
           {#await import("../marketplace/ProfilePanel.svelte") then m}
-            <m.default {adapter} onprofilephotosaved={photoSaved} />
+            <m.default
+              {adapter}
+              onprofilephotosaved={photoSaved}
+              onopenprofile={() => goToSection("profile")}
+            />
           {/await}
         {/if}
       {:else if active === "billing"}
@@ -972,6 +1057,28 @@
 
   .ss-save-ok {
     color: var(--ok, #34c759);
+  }
+
+  .ss-link {
+    align-self: flex-start;
+    margin-top: 2px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--t2);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .ss-link:hover {
+    color: var(--t1);
+  }
+
+  .ss-link:focus-visible {
+    outline: 1.5px solid var(--v4-focus-ring, #6366f1);
+    outline-offset: 2px;
+    border-radius: 3px;
   }
 
   .ss-identity-meta {

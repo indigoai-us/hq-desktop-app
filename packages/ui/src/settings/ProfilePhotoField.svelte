@@ -37,6 +37,11 @@
     onsaved?: (src: string) => void;
     other?: OtherProfile | null;
     meta?: Snippet;
+    /** "row": meta in the middle, buttons on the right (Settings › Profile).
+     *  "stacked": buttons over the meta, beside the photo (Public profile). */
+    layout?: "row" | "stacked";
+    /** "chip": the small Settings button. "button": the page's regular button. */
+    buttonStyle?: "chip" | "button";
     testid: string;
     imgTestid: string;
     fallbackTestid: string;
@@ -55,6 +60,8 @@
     onsaved,
     other = null,
     meta,
+    layout = "row",
+    buttonStyle = "chip",
     testid,
     imgTestid,
     fallbackTestid,
@@ -86,6 +93,8 @@
   let statusTimer: ReturnType<typeof setTimeout> | undefined;
   let offerTimer: ReturnType<typeof setTimeout> | undefined;
   let saveSeq = 0;
+  /** Bumped on each successful save to replay the HQ glow around the photo. */
+  let glowKey = $state(0);
 
   const shownSrc = $derived(paintableAvatarSrc(savedSrc ?? photoUrl));
   const hasPhoto = $derived(Boolean(savedSrc ?? photoUrl));
@@ -129,6 +138,7 @@
     session = next;
     savedSrc = src;
     onsaved?.(src);
+    glowKey += 1;
     setStatus(opts.kind);
     void checkOffer(photo);
     return true;
@@ -275,8 +285,17 @@
   }
 </script>
 
-<div class="ppf" data-testid={testid}>
+<div class="ppf" data-testid={testid} style={`--ppf-size:${size}px`}>
   {#if editable}
+    <span class="avatar-wrap" style={`--ppf-size:${size}px`}>
+    {#key glowKey}
+      {#if glowKey > 0}
+        <span class="glow" aria-hidden="true" data-testid={`${testid}-glow`}>
+          <span class="glow-halo"></span>
+          <span class="glow-ring"></span>
+        </span>
+      {/if}
+    {/key}
     <button
       type="button"
       class="avatar"
@@ -302,6 +321,7 @@
       {/if}
       <span class="hover" aria-hidden="true">{dropping ? "Drop" : hasPhoto ? "Adjust" : "Choose"}</span>
     </button>
+    </span>
   {:else}
     <span class="avatar static" style={`--ppf-size:${size}px`}>
       {#if shownSrc}
@@ -312,47 +332,76 @@
     </span>
   {/if}
 
-  {#if meta}<div class="meta">{@render meta()}</div>{/if}
-
-  {#if editable}
-    <div class="actions">
-      <span
-        class="status"
-        class:ok={status === "saved" || status === "crop-saved"}
-        class:err={status === "error"}
-        role="status"
-        data-testid={`${testid}-status`}
-      >
-        {#if status === "saving"}<span class="spin" aria-hidden="true"></span>Saving…
-        {:else if status === "saved"}Photo updated{#if previous}&nbsp;·&nbsp;<button
-              type="button"
-              class="link"
-              data-testid={`${testid}-undo`}
-              onclick={() => void undo()}>Undo</button
-            >{/if}
-        {:else if status === "crop-saved"}Saved
-        {:else if status === "error"}{errorText}
-        {/if}
-      </span>
-      {#if hasPhoto && !editing}
-        <button
-          type="button"
-          class="chip"
-          data-testid={`${testid}-adjust`}
-          disabled={busy || disabled}
-          onclick={() => void openEditor()}>Adjust</button
-        >
+  {#snippet statusLine()}
+    <span
+      class="status"
+      class:ok={status === "saved" || status === "crop-saved"}
+      class:err={status === "error"}
+      role="status"
+      data-testid={`${testid}-status`}
+    >
+      {#if status === "saving"}<span class="spin" aria-hidden="true"></span>Saving…
+      {:else if status === "saved"}Photo updated{#if previous}&nbsp;·&nbsp;<button
+            type="button"
+            class="link"
+            data-testid={`${testid}-undo`}
+            onclick={() => void undo()}>Undo</button
+          >{/if}
+      {:else if status === "crop-saved"}Saved
+      {:else if status === "error"}{errorText}
       {/if}
+    </span>
+  {/snippet}
+
+  {#snippet adjustButton()}
+    {#if hasPhoto && !editing}
       <button
         type="button"
         class="chip"
-        data-testid={changeTestid}
+        class:big={buttonStyle === "button"}
+        data-testid={`${testid}-adjust`}
         disabled={busy || disabled}
-        onclick={() => fileInput?.click()}
-        ><RailIcon name="upload" />
-        {changeLabel}</button
+        onclick={() => void openEditor()}>Adjust</button
       >
+    {/if}
+  {/snippet}
+
+  {#snippet changeButton()}
+    <button
+      type="button"
+      class="chip"
+      class:big={buttonStyle === "button"}
+      data-testid={changeTestid}
+      disabled={busy || disabled}
+      onclick={() => fileInput?.click()}
+      ><RailIcon name="upload" />
+      {changeLabel}</button
+    >
+  {/snippet}
+
+  {#if layout === "stacked"}
+    <div class="stack">
+      {#if editable}
+        <div class="actions stacked">
+          {@render changeButton()}
+          {@render adjustButton()}
+          {@render statusLine()}
+        </div>
+      {/if}
+      {#if meta}<div class="meta">{@render meta()}</div>{/if}
     </div>
+  {:else}
+    {#if meta}<div class="meta">{@render meta()}</div>{/if}
+    {#if editable}
+      <div class="actions">
+        {@render statusLine()}
+        {@render adjustButton()}
+        {@render changeButton()}
+      </div>
+    {/if}
+  {/if}
+
+  {#if editable}
     <input
       bind:this={fileInput}
       class="file"
@@ -416,6 +465,70 @@
     align-items: center;
     gap: 14px;
     width: 100%;
+  }
+
+  /* HQ glow: the app icon's pink and violet, warming up around the photo after
+     a save and settling away. Opacity and transform only. */
+  .avatar-wrap {
+    position: relative;
+    flex: none;
+    width: var(--ppf-size);
+    height: var(--ppf-size);
+    --hq-glow-a: #f08ac0;
+    --hq-glow-b: #9a6bff;
+  }
+
+  .glow {
+    position: absolute;
+    inset: -5px;
+    border-radius: 50%;
+    pointer-events: none;
+    opacity: 0;
+    animation: ppf-glow 2.4s ease-in-out forwards;
+  }
+
+  .glow-ring,
+  .glow-halo {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: conic-gradient(
+      from 200deg,
+      var(--hq-glow-a),
+      var(--hq-glow-b),
+      #ffc58f,
+      var(--hq-glow-a)
+    );
+  }
+
+  .glow-ring {
+    -webkit-mask: radial-gradient(circle, transparent calc(50% - 3px), #000 calc(50% - 2.5px));
+    mask: radial-gradient(circle, transparent calc(50% - 3px), #000 calc(50% - 2.5px));
+  }
+
+  .glow-halo {
+    inset: -4px;
+    filter: blur(12px);
+    opacity: 0.6;
+  }
+
+  @keyframes ppf-glow {
+    0% {
+      opacity: 0;
+      transform: scale(0.95) rotate(-30deg);
+    }
+    30% {
+      opacity: 1;
+      transform: scale(1) rotate(15deg);
+    }
+    60% {
+      opacity: 1;
+      transform: scale(1.01) rotate(55deg);
+    }
+    100% {
+      opacity: 0;
+      transform: scale(1.04) rotate(95deg);
+    }
   }
 
   .avatar {
@@ -493,6 +606,33 @@
   .meta {
     flex: 1 1 auto;
     min-width: 0;
+  }
+
+  .stack {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .actions.stacked {
+    margin-left: 0;
+  }
+
+  /* The page's regular button (Public profile), not the small Settings chip. */
+  .chip.big {
+    height: var(--hq-btn-h, 30px);
+    padding: 0 var(--v4-space-3, 12px);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button, 6px);
+    background: var(--v4-raised);
+    color: var(--v4-text-1);
+    font-size: var(--text-base, 13px);
+  }
+
+  .chip.big:hover:not(:disabled) {
+    border-color: var(--v4-control-border);
+    background: var(--v4-active-row);
   }
 
   .actions {
@@ -639,6 +779,17 @@
     color: var(--ok, var(--v4-ok, #34c759));
   }
 
+  @keyframes ppf-glow-still {
+    0%,
+    100% {
+      opacity: 0;
+    }
+    30%,
+    60% {
+      opacity: 1;
+    }
+  }
+
   @keyframes ppf-rise {
     from {
       opacity: 0;
@@ -647,6 +798,9 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
+    .glow {
+      animation: ppf-glow-still 1.4s ease-out forwards;
+    }
     .offer,
     .hover {
       animation: none;

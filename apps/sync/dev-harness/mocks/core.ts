@@ -2223,6 +2223,33 @@ function scaledAnswer(cmd: string, args?: Record<string, unknown>): unknown {
   return NOT_HANDLED;
 }
 
+// ?creator=1 gives the signed-in person a claimed public profile (@drake) so
+// Settings › Public profile shows its edit step; uploads echo back.
+const harnessCreator = {
+  handle: 'drake',
+  displayName: 'drake',
+  bio: '',
+  socialLinks: [] as unknown[],
+  tipUrl: null as string | null,
+  avatarUrl: null as string | null,
+};
+function creatorAnswer(cmd: string, args?: Record<string, unknown>): unknown {
+  if (typeof window === 'undefined' || !new URLSearchParams(window.location.search).has('creator')) return NOT_HANDLED;
+  if (cmd === 'get_my_creator') return { ...harnessCreator };
+  if (cmd === 'get_creator_profile') return { creator: { ...harnessCreator }, listings: [] };
+  if (cmd === 'update_creator_profile') {
+    Object.assign(harnessCreator, {
+      bio: typeof args?.bio === 'string' ? args.bio : harnessCreator.bio,
+      tipUrl: typeof args?.tipUrl === 'string' ? args.tipUrl : harnessCreator.tipUrl,
+    });
+    return { ...harnessCreator };
+  }
+  if (cmd === 'hq_pro_fetch' && args?.url === '/v1/creators/me/avatar') {
+    return { status: 200, body: JSON.stringify({ handle: 'drake' }) };
+  }
+  return NOT_HANDLED;
+}
+
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const scaled = scaledAnswer(cmd, args);
   if (scaled !== NOT_HANDLED) return scaled as T;
@@ -2233,6 +2260,8 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
   }
   const storage = storageAnswer(cmd);
   if (storage !== NOT_HANDLED) return storage as T;
+  const creator = creatorAnswer(cmd, args);
+  if (creator !== NOT_HANDLED) return creator as T;
   if (companyFlowEnabled()) {
     const answer = await companyFlowAnswer(cmd, args);
     if (answer !== NOT_HANDLED) return answer as T;

@@ -48,9 +48,11 @@
     adapter: PlatformAdapter;
     /** A photo this panel copied to the member profile (Settings › Profile). */
     onprofilephotosaved?: (src: string) => void;
+    /** Opens Settings › Profile (only when hosted in Settings). */
+    onopenprofile?: () => void;
   }
 
-  let { adapter, onprofilephotosaved }: Props = $props();
+  let { adapter, onprofilephotosaved, onopenprofile }: Props = $props();
 
   /** The native avatar picker is desktop-only; hide the control elsewhere. */
   const canPickAvatar = $derived(adapter.isAvailable("canLaunchApps"));
@@ -400,9 +402,19 @@
           fallbackTestid="profile-avatar-fallback"
           inputTestid="profile-avatar-input"
           changeTestid="profile-avatar-choose"
+          layout="stacked"
+          buttonStyle="button"
         >
           {#snippet meta()}
-            <span class="field-hint">PNG, JPEG, WebP, or GIF. Saves as soon as you pick it.</span>
+            <span class="avatar-meta">
+              <span class="field-hint">PNG, JPEG, WebP, or GIF · up to 2 MiB.</span>
+              {#if onopenprofile}<button
+                  type="button"
+                  class="profile-link"
+                  data-testid="profile-open-settings-profile"
+                  onclick={onopenprofile}>Profile ›</button
+                >{/if}
+            </span>
           {/snippet}
         </ProfilePhotoField>
       </div>
@@ -800,6 +812,34 @@
   .claim-status.error {
     color: var(--v4-error);
     overflow-wrap: anywhere;
+  }
+
+  /* ---- avatar ----------------------------------------------------------- */
+  .avatar-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .profile-link {
+    align-self: flex-start;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--v4-text-2);
+    font: inherit;
+    font-size: var(--text-micro, 12px);
+    cursor: pointer;
+  }
+
+  .profile-link:hover {
+    color: var(--v4-text-1);
+  }
+
+  .profile-link:focus-visible {
+    outline: 1.5px solid var(--v4-focus-ring, #6366f1);
+    outline-offset: 2px;
+    border-radius: 3px;
   }
 
   /* ---- social repeater -------------------------------------------------- */
