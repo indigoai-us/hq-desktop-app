@@ -843,6 +843,8 @@
   let messageSearchLoading = $state(false);
   let messageSearchError = $state<string | null>(null);
   let messageSearchSeq = 0;
+  /** Bumped by "Try again" to re-run the same message search. */
+  let messageSearchRetry = $state(0);
   /**
    * The unified create modal (search-first: DM ↔ channel is inferred from what
    * the user types). Replaces the old "+" dropdown and BOTH the new-message and
@@ -3171,6 +3173,7 @@
   // query so the user never has to say which one they meant.
   $effect(() => {
     if (!searchOpen) return;
+    void messageSearchRetry;
     const q = searchQuery.trim();
     const seq = ++messageSearchSeq;
     if (!q) {
@@ -5004,7 +5007,15 @@
               {/if}
             </div>
             {#if messageSearchError}
-              <div class="chat-empty" role="alert">{messageSearchError}</div>
+              <div class="chat-empty chat-search-error" role="alert">
+                <span>{messageSearchError}</span>
+                <button
+                  type="button"
+                  class="chat-search-retry"
+                  data-testid="chat-search-retry"
+                  onclick={() => (messageSearchRetry += 1)}>Try again</button
+                >
+              </div>
             {:else}
               {#each messageSearchHits as hit, hitIndex (hit.messageId + (hit.createdAt ?? ""))}
                 {@const row = resolveSearchHitRow(hit, allRows, peerDirectory)}
@@ -5065,8 +5076,13 @@
                a query that matches nothing, "no conversations" and "no
                messages" stacked to say the same thing twice. -->
           {#if searchItems.length === 0 && !messageSearchLoading && !messageSearchError && searchQueryProblem !== "too-long"}
-            <div class="chat-empty">
-              {searchQuery.trim() ? "No matching results" : "No conversations"}
+            <!-- Names the query, as iOS's empty search does: "no results" on its
+                 own reads as the search having failed rather than the words
+                 matching nothing. -->
+            <div class="chat-empty" data-testid="chat-search-empty">
+              {searchQuery.trim()
+                ? `No matching results for “${searchQuery.trim()}”`
+                : "No conversations"}
             </div>
           {/if}
         </div>
@@ -6940,6 +6956,31 @@
      margin as the section labels above it. */
   .chat-switcher-list .chat-empty {
     padding: 12px 10px;
+  }
+
+  .chat-search-error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .chat-search-retry {
+    flex: none;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
+    appearance: none;
+    -webkit-appearance: none;
+    border: 1px solid transparent;
+    border-radius: var(--hq-btn-radius);
+    background: var(--btn-bg);
+    color: var(--t1);
+    font: var(--hq-btn-font-weight) var(--hq-btn-font-size) / var(--hq-btn-line-height) var(--font-ui);
+    cursor: pointer;
+  }
+
+  .chat-search-retry:hover {
+    border-color: var(--line2);
   }
 
   .chat-text-btn {

@@ -178,3 +178,42 @@ describe("ChatSidebar message search and the app's requests to a bot (review B-3
     expect(document.querySelector('[data-testid="chat-search-hit"]')).toBeNull();
   });
 });
+
+// iOS #44: an empty search names the query, and a failed message search
+// offers Try again rather than leaving the person to retype.
+describe("ChatSidebar search empty and failed states", () => {
+  it("names the query when nothing matches", async () => {
+    component = mount(ChatSidebar, {
+      target: host,
+      props: { api: stubApi(), seedDirectory: [seedRow] },
+    });
+    const input = await openSearch();
+    input.value = "zzqx";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(() =>
+      expect(document.querySelector('[data-testid="chat-search-empty"]')?.textContent).toContain(
+        "No matching results for “zzqx”",
+      ),
+    );
+  });
+
+  it("re-runs a failed message search from Try again", async () => {
+    let calls = 0;
+    const searchMessages = vi.fn<ChatSidebarApi["searchMessages"]>(async () => {
+      calls += 1;
+      if (calls === 1) throw "Search is offline";
+      return { results: [] };
+    });
+    component = mount(ChatSidebar, {
+      target: host,
+      props: { api: stubApi({ searchMessages }), seedDirectory: [seedRow] },
+    });
+    const input = await openSearch();
+    input.value = "setup";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="chat-search-retry"]')).not.toBeNull());
+    document.querySelector<HTMLButtonElement>('[data-testid="chat-search-retry"]')!.click();
+    await vi.waitFor(() => expect(searchMessages).toHaveBeenCalledTimes(2));
+    expect(searchMessages.mock.calls[1]?.[0]).toMatchObject({ q: "setup" });
+  });
+});
