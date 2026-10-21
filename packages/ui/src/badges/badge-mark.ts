@@ -55,6 +55,10 @@ export const BADGE_ICON_COLOR: Readonly<Record<BadgeIcon, { line: string; tint: 
   pulse: { line: "#ff6f91", tint: "#ff6f91" },
   code: { line: "#8fc7ff", tint: "#ffd23f" },
   rat: { line: "#c9b6a8", tint: "#f2a6b8" },
+  ruler: { line: "#c9d6e8", tint: "#8fc7ff" },
+  sparkle: { line: "#f0e6ea", tint: "#f2c6d8" },
+  sun: { line: "#f0c040", tint: "#ffe066" },
+  eye: { line: "#c3c9dd", tint: "#8fd6ff" },
 };
 
 /** CSS pixel size of a mark. */

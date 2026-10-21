@@ -13,6 +13,9 @@ import {
   type AdapterPromise,
   type AgentProvisionOptionsView,
   type ChannelSummary,
+  type CloudSwitchOutcome,
+  type VaultSwitchOutcome,
+  type VaultSyncSwitches,
   type Json,
   type NotifyPrefsResponse,
   type PlatformAdapter,
@@ -69,6 +72,7 @@ import {
   createHqProRestFetch,
   createScopedFeatureFlagGates,
   resolveCompanyFeature,
+  readCompanyFeature,
   MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
   type FeatureFlagGateOptions,
 } from '../flags.js';
@@ -711,6 +715,8 @@ export function createSyncPlatformAdapter(
           ? // Pinned per release; the registry cannot turn it off.
             Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT))
           : flagsFor(scope?.companyUid).resolve(flag, () => hasFeatureLegacy(flag)),
+      readCompanyFeature: (flag, companyUid) =>
+        readCompanyFeature(createHqProFlagFetch(invokeFn), flag, companyUid),
       hasCompanyFeature: (flag, companyUid) =>
         resolveCompanyFeature(createHqProFlagFetch(invokeFn), flag, companyUid),
       subscribeFeature: (flag, onChange) =>
@@ -1640,6 +1646,13 @@ export function createSyncPlatformAdapter(
         return result;
       },
       cancelSync: () => call('cancel_sync'),
+      getCloudEnabled: () => call<boolean>('get_cloud_enabled'),
+      setCloudEnabled: (enabled) =>
+        call<CloudSwitchOutcome>('set_cloud_enabled', { enabled }),
+      getVaultSyncSwitches: () =>
+        call<VaultSyncSwitches>('get_vault_sync_switches'),
+      setVaultSyncEnabled: (vault, enabled) =>
+        call<VaultSwitchOutcome>('set_vault_sync_enabled', { vault, enabled }),
       getSyncStatus: () => call('get_sync_status'),
       getActivityLog: () => call('get_activity_log'),
       resolveConflict: (path, strategy) =>

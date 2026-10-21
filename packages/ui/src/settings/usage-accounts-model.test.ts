@@ -6,6 +6,8 @@ import {
   oldPlanFromSummary,
   orderedAccounts,
   readAccountRow,
+  readSpendLimit,
+  readSwitchState,
   rowTotalText,
   switchAccountToUsage,
   switchOutcomeText,
@@ -122,5 +124,56 @@ describe("switch to usage pricing", () => {
     const switchPersonalToUsagePricing = vi.fn(async () => ok({ outcome: "switched" }));
     expect(await switchAccountToUsage({ switchPersonalToUsagePricing }, person)).toEqual({ kind: "switched" });
     expect(switchPersonalToUsagePricing).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("quiet retries on the Settings > Usage reads (review, 2026-10-20)", () => {
+  const owner = { kind: "company" as const, uid: "cmp_a", name: "A", role: "owner" };
+  const noWait = async () => {};
+
+  it("a line read tries again after each delay and settles on the recovered body", async () => {
+    const getBillingSummary = vi
+      .fn()
+      .mockResolvedValueOnce(fail("http-500"))
+      .mockRejectedValueOnce(new Error("network"))
+      .mockResolvedValueOnce(ok({ pricingPlan: "current", plan: "team", subscriptionStatus: "active" }));
+    const view = await readAccountRow({ getBillingSummary }, owner, null, () => new Date(), { delays: [1, 1], sleep: noWait });
+    expect(getBillingSummary).toHaveBeenCalledTimes(3);
+    expect(view).toMatchObject({ kind: "ready", plan: "legacy" });
+  });
+
+  it("a line read gives up after the last delay", async () => {
+    const getBillingSummary = vi.fn(async () => fail("http-500"));
+    const view = await readAccountRow({ getBillingSummary }, owner, null, () => new Date(), { delays: [1, 1], sleep: noWait });
+    expect(getBillingSummary).toHaveBeenCalledTimes(3);
+    expect(view).toEqual({ kind: "unavailable" });
+  });
+
+  it("a 403 is an answer, not a failure: no retry", async () => {
+    const getBillingSummary = vi.fn(async () => ({ ok: false as const, reason: "error" as const, code: "FORBIDDEN", status: 403, message: "forbidden" }));
+    const view = await readAccountRow({ getBillingSummary }, owner, null, () => new Date(), { delays: [1, 1], sleep: noWait });
+    expect(getBillingSummary).toHaveBeenCalledTimes(1);
+    expect(view).toEqual({ kind: "owner-only" });
+  });
+
+  it("the spend limit and the switch offer retry the same way", async () => {
+    const getSpendLimit = vi.fn().mockResolvedValueOnce(fail("http-500")).mockResolvedValueOnce(ok({ limitCents: 2500, custom: true, paused: false }));
+    const limit = await readSpendLimit({ getSpendLimit }, owner, { delays: [1], sleep: noWait });
+    expect(getSpendLimit).toHaveBeenCalledTimes(2);
+    expect(limit).toMatchObject({ limitCents: 2500 });
+
+    const getUsageSwitch = vi
+      .fn()
+      .mockResolvedValueOnce(fail("http-500"))
+      .mockResolvedValueOnce(ok({ enabled: true, phase: "none", cardOnFile: true, offer: { eligible: true, freeOptIn: true } }));
+    const state = await readSwitchState({ getUsageSwitch }, owner, { delays: [1], sleep: noWait });
+    expect(getUsageSwitch).toHaveBeenCalledTimes(2);
+    expect(state.kind).not.toBe("not-available");
+  });
+
+  it("with no delays a failure is reported after one try", async () => {
+    const getSpendLimit = vi.fn(async () => fail("http-500"));
+    expect(await readSpendLimit({ getSpendLimit }, owner, { delays: [] })).toBeNull();
+    expect(getSpendLimit).toHaveBeenCalledTimes(1);
   });
 });

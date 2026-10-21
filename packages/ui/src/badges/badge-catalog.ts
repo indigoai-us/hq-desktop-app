@@ -13,7 +13,7 @@ export type BadgeTier = 1 | 2 | 3 | "L";
 export type BadgeIcon =
   | "flag" | "house" | "bug" | "rocket" | "bolt" | "toolbox" | "bulb" | "people"
   | "robot" | "plug" | "plane" | "calendar" | "box" | "clipboard" | "flame"
-  | "crown" | "wheel" | "pulse" | "code" | "rat";
+  | "crown" | "wheel" | "pulse" | "code" | "rat" | "ruler" | "sparkle" | "sun" | "eye";
 
 /** "honors": given to the people who built and lead HQ, not earned by use. */
 export type BadgeFamily = "early" | "usage" | "honors";
@@ -52,6 +52,10 @@ export const BADGES: readonly BadgeDef[] = [
   { id: "patientzero", name: "Patient Zero", icon: "pulse", family: "honors", crit: "The first person to run HQ", levels: "Single level", tier: "L" },
   { id: "corebuilder", name: "Core Builder", icon: "code", family: "honors", crit: "Pull requests merged into HQ core", levels: "1 · 10 · 100 · 200 PRs", tier: 1 },
   { id: "ecomrat", name: "Ecom Rat", icon: "rat", family: "honors", crit: "Honorary rat of ecommerce", levels: "Single level", tier: "L" },
+  { id: "architect", name: "The Architect", icon: "ruler", family: "honors", crit: "Builds the systems the rest of us stand on", levels: "Single level", tier: "L" },
+  { id: "angel", name: "The Angel", icon: "sparkle", family: "honors", crit: "Believed in HQ before there was anything to see", levels: "Single level", tier: "L" },
+  { id: "optimist", name: "The Optimist", icon: "sun", family: "honors", crit: "Sees the upside first and brings everyone along", levels: "Single level", tier: "L" },
+  { id: "visionary", name: "The Visionary", icon: "eye", family: "honors", crit: "Sees where this is going before anyone else", levels: "Single level", tier: "L" },
 ];
 
 export const BADGE_BY_ID: Readonly<Record<string, BadgeDef>> = Object.fromEntries(BADGES.map((b) => [b.id, b]));

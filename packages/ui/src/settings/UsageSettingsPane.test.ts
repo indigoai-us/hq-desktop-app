@@ -121,7 +121,7 @@ async function render(src: ReturnType<typeof source>, extra: Record<string, unkn
   document.body.append(host);
   component = mount(UsageSettingsPane, {
     target: host,
-    props: { company: src as never, accounts: ACCOUNTS, onopenurl: vi.fn(), onopensync: vi.fn(), ...extra },
+    props: { company: src as never, accounts: ACCOUNTS, onopenurl: vi.fn(), onopensync: vi.fn(), retryDelays: [], ...extra },
   });
   await settle();
 }
@@ -217,11 +217,34 @@ describe("UsageSettingsPane: one line per account", () => {
     expect(document.activeElement).toBe(first);
   });
 
-  it("opens on the account the Core menu was showing", async () => {
+  it("opens on the account the Core menu was showing, once", async () => {
     setPreferredUsageAccount("cmp_elm");
     await render(source());
     expect(header("cmp_elm").getAttribute("aria-expanded")).toBe("true");
     expect(clean(q("usage-total", detail()!))).toBe("$1.20");
+    // The menu's ask is spent: a later visit from the Settings nav opens on
+    // the selected company, not on the line the menu showed.
+    await unmount(component!);
+    component = null;
+    host.remove();
+    await render(source(), { selectedCompanyUid: "cmp_northwind" });
+    expect(header("cmp_elm").getAttribute("aria-expanded")).toBe("false");
+    expect(header("cmp_northwind").getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("a spend limit that can't be read offers Try again", async () => {
+    // Northwind's spend-limit read fails on load and again when the line opens; every other read answers.
+    let northwindReads = 0;
+    const getSpendLimit = vi.fn(async (uid: string) =>
+      uid === "cmp_northwind" && northwindReads++ < 2 ? fail("http-500") : ok({ limitCents: 25000, custom: true, paused: false }),
+    );
+    await render(source({ getSpendLimit }));
+    await open("cmp_northwind");
+    expect(clean(q("usage-spend-limit", detail()!))).toContain("Can't be shown");
+    q("usage-spend-limit-retry", detail()!)!.click();
+    await settle();
+    expect(clean(q("usage-spend-limit", detail()!))).toBe("$250.00 a month");
+    expect(q("usage-spend-limit-retry", detail()!)).toBeNull();
   });
 
   it("an admin's company says only an owner can see usage", async () => {

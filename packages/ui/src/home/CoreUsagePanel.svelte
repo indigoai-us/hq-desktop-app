@@ -5,7 +5,7 @@
    * Company name and plan ("Usage plan" or "Trial, N days left"), this
    * month's usage against the included allowance (or trial usage against the
    * trial cap), one row per meter group, and the actions: Set up billing,
-   * Usage details (Settings > Usage) and Turn off sync (Settings > Sync). All
+   * Usage details (Settings > Usage) and the Sync link (Settings > Sync). All
    * numbers come from hq-pro (core-usage-model.ts); this file renders and
    * routes clicks. A failed read retries quietly, then offers Try again; it
    * never shows $0 or server text.
@@ -78,7 +78,10 @@
     onopenurl?: (url: string) => void;
     /** Open Settings > Usage (on the account shown here). */
     onopenusage?: () => void;
-    /** Open the Sync section of Settings (repointed to US-016's per-vault section when it lands). */
+    /**
+     * Open Settings › Sync, where each vault's sync can be turned off
+     * (usage-only-pricing US-016). Hidden when the host has no Sync section.
+     */
     onopensync?: () => void;
     /** Test seam: waits between automatic retries. */
     retryDelays?: readonly number[];
@@ -133,7 +136,7 @@
   const listed = $derived(accounts.length > 1);
   /** Account row views, keyed by account; read when the menu opens. */
   let rowViews = $state<Record<string, CoreUsageView>>({});
-  const top = $derived(topUsageAccounts(accounts, rowViews, TOP_USAGE_COMPANIES));
+  const top = $derived(topUsageAccounts(accounts, rowViews, TOP_USAGE_COMPANIES, currentKey));
 
   // The list shows as soon as the menu opens, so the row totals are read on
   // mount and whenever the accounts or their roles change (cached totals
@@ -180,6 +183,9 @@
       cancelled: () => cancelled,
     }).then((next) => {
       if (cancelled) return;
+      // A read that was in flight across a sign-out belongs to the previous
+      // person: never paint it, never cache it.
+      if (generation !== coreUsageGeneration()) return;
       retrying = false;
       // Keep the last good numbers on screen when a refresh fails, and say
       // when they were read.
@@ -303,7 +309,9 @@
       const cached = cachedCoreUsage(key);
       rowViews = { ...rowViews, [key]: cached ?? { kind: "loading", companyName: acct.name } };
       const generation = coreUsageGeneration();
-      void readAccountUsage(source as never, acct, { delays: [] }).then((next) => {
+      // Quiet retries, like the meter's own read, so one dropped request
+      // does not leave a row at "Unavailable" for the whole open.
+      void readAccountUsage(source as never, acct, retryDelays ? { delays: retryDelays } : {}).then((next) => {
         rememberCoreUsage(key, next, Date.now(), generation);
         if (generation !== coreUsageGeneration()) return;
         // A failed re-read keeps the last good total on screen.
@@ -533,18 +541,32 @@
       <p class="core-usage-note" role="status" data-testid="core-usage-billing-hint">{hint}</p>
     {/if}
   {/if}
-
-  {#if view.kind !== "no-usage" && onopensync}
+  {#if onopensync}
     <button
       type="button"
-      class="core-usage-link"
-      data-testid="core-usage-sync-off"
+      class="core-usage-sync-link"
+      data-testid="core-usage-sync-settings"
       onclick={() => onopensync?.()}
-    >Turn off sync</button>
+    >Turn sync off or on for each vault</button>
   {/if}
 </section>
 
 <style>
+  .core-usage-sync-link {
+    align-self: flex-start;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--t2);
+    font: inherit;
+    font-size: 12px;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .core-usage-sync-link:hover {
+    color: var(--t1);
+  }
+
   .core-usage {
     display: flex;
     flex-direction: column;

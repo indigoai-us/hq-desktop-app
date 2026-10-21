@@ -844,12 +844,15 @@ export function accountTotalCents(view: CoreUsageView | null | undefined): numbe
  * (ties by name); companies without one ("Owner only", no usage, unavailable)
  * follow in their given order. Until every company row has finished loading
  * the companies keep their given (name) order, so rows don't jump as totals
- * arrive.
+ * arrive. The account the meter shows (`pin`) is always listed: when it
+ * would fall past the cutoff it takes the last place, so the selected row
+ * is never missing from the list.
  */
 export function topUsageAccounts(
   accounts: readonly UsageAccount[],
   views: Readonly<Record<string, CoreUsageView | undefined>>,
   limit: number = TOP_USAGE_COMPANIES,
+  pin: string | null = null,
 ): { rows: UsageAccount[]; ranked: boolean; hidden: number } {
   const personal = accounts.filter((a) => a.kind === "personal");
   const companies = accounts.filter((a) => a.kind === "company");
@@ -868,6 +871,8 @@ export function topUsageAccounts(
     ordered = [...readable, ...rest];
   }
   const shown = ordered.slice(0, Math.max(0, limit));
+  const pinned = pin === null ? undefined : companies.find((a) => usageAccountKey(a) === pin);
+  if (pinned && shown.length > 0 && !shown.includes(pinned)) shown[shown.length - 1] = pinned;
   return { rows: [...personal, ...shown], ranked: settled, hidden: companies.length - shown.length };
 }
 

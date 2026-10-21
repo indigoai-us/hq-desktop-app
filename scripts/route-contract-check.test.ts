@@ -162,6 +162,35 @@ describe("extractWebPathsCompanyRoutes", () => {
     ]);
   });
 
+  it("covers the personal* and usageSwitch string constants with their call-site verbs (#1699)", () => {
+    const src = `
+      export const WEB_PATHS = {
+        personalBillingSummary: "/v1/billing/person/summary",
+        personalUsageStatement: "/v1/billing/usage?scope=person&window=month",
+        personalBillingPortal: "/v1/billing/person/portal",
+        usageSwitch: "/v1/billing/usage-switch",
+        personalUsageSwitch: "/v1/billing/usage-switch?scope=person",
+        pricing: "/v1/pricing",
+      };
+      class X {
+        getPersonalBillingSummary = () => this.get(WEB_PATHS.personalBillingSummary);
+        getPersonalUsageStatement = () => this.get(WEB_PATHS.personalUsageStatement);
+        createPersonalBillingPortalSession = () => this.post(WEB_PATHS.personalBillingPortal, {});
+        switchToUsagePricing = (companyUid) => this.post(WEB_PATHS.usageSwitch, { companyUid });
+        switchPersonalToUsagePricing = () => this.post(WEB_PATHS.usageSwitch, { scope: "person" });
+        getPersonalUsageSwitch = () => this.get(WEB_PATHS.personalUsageSwitch);
+        getPricing = () => this.get(WEB_PATHS.pricing);
+      }
+    `;
+    expect(extractWebPathsCompanyRoutes(src)).toEqual([
+      { name: "WEB_PATHS.personalBillingSummary", route: "GET /v1/billing/person/summary" },
+      { name: "WEB_PATHS.personalUsageStatement", route: "GET /v1/billing/usage" },
+      { name: "WEB_PATHS.personalBillingPortal", route: "POST /v1/billing/person/portal" },
+      { name: "WEB_PATHS.usageSwitch", route: "POST /v1/billing/usage-switch" },
+      { name: "WEB_PATHS.personalUsageSwitch", route: "GET /v1/billing/usage-switch" },
+    ]);
+  });
+
   it("does not pair a definition with no matching call site", () => {
     const src = `
       export const WEB_PATHS = {
