@@ -104,6 +104,7 @@ pub mod oauth;
 pub mod package_root;
 pub mod package_use_lease;
 pub mod paths;
+pub mod personal_projection;
 pub mod plan_limit;
 pub mod prewarm;
 pub mod process_exit_wait;
