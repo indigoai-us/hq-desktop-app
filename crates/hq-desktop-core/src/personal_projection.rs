@@ -967,18 +967,135 @@ fn kill_tree(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
+/// The exact reviewed hq-cloud build the wrapper must come from.
+///
+/// `version` is an exact semver (never a range). `integrity` is npm's
+/// `sha512-…` tarball integrity for `@indigoai-us/hq-cloud`. `closure_sha256`
+/// is [`dependency_closure_digest`] over the installed tree, so a matching
+/// package that later resolved different dependencies is still refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArtifactPin {
+    pub version: &'static str,
+    pub integrity: &'static str,
+    pub closure_sha256: &'static str,
+}
+
+/// The published, reviewed build for the paired personal-projection API.
+///
+/// Empty on purpose: no compatible build is published, so the client is
+/// unreachable in production. Fill this only with a published build that
+/// passed paired review. A tilde bump of `HQ_CLOUD_VERSION` never enables it.
+pub const HQ_CLOUD_PERSONAL_PROJECTION_ARTIFACT: Option<ArtifactPin> = None;
+
+/// True only when the pin names an exact version with full integrity data.
+pub fn pin_is_well_formed(pin: &ArtifactPin) -> bool {
+    let exact = semver::Version::parse(pin.version).is_ok();
+    let integrity = pin
+        .integrity
+        .strip_prefix("sha512-")
+        .is_some_and(|rest| rest.len() >= 80);
+    let closure =
+        pin.closure_sha256.len() == 64 && pin.closure_sha256.bytes().all(|b| b.is_ascii_hexdigit());
+    exact && integrity && closure
+}
+
+/// The paired client may run only when the pin is well formed and the sync
+/// runner is launched from that same exact build. The runner spec is a tilde
+/// range today, so this stays false until both move to the pinned build.
+pub fn supported_with(pin: Option<ArtifactPin>, runner_version: &str) -> bool {
+    pin.is_some_and(|pin| pin_is_well_formed(&pin) && runner_version == pin.version)
+}
+
+/// Gate for every production use of the paired client.
+pub fn personal_projection_supported() -> bool {
+    supported_with(
+        HQ_CLOUD_PERSONAL_PROJECTION_ARTIFACT,
+        crate::hq_cloud::HQ_CLOUD_VERSION,
+    )
+}
+
+/// The production client, or `None` while the build is not pinned.
+pub fn production_client() -> Option<PersonalProjectionClient<NpxProjectionRunner>> {
+    let pin = HQ_CLOUD_PERSONAL_PROJECTION_ARTIFACT?;
+    personal_projection_supported()
+        .then(|| PersonalProjectionClient::new(NpxProjectionRunner::for_pin(pin)))
+}
+
+const HQ_CLOUD_LOCK_KEY: &str = "node_modules/@indigoai-us/hq-cloud";
+
+/// sha256 over every installed package in an npm lockfile, as sorted
+/// `path NUL version NUL integrity` lines. Any added, removed, or changed
+/// dependency changes the digest.
+pub fn dependency_closure_digest(lock: &serde_json::Value) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let packages = lock.get("packages")?.as_object()?;
+    let mut lines: Vec<String> = packages
+        .iter()
+        .filter(|(path, _)| !path.is_empty())
+        .map(|(path, entry)| {
+            let field = |name: &str| entry.get(name).and_then(|v| v.as_str()).unwrap_or("");
+            format!("{path}\0{}\0{}\n", field("version"), field("integrity"))
+        })
+        .collect();
+    lines.sort();
+    let mut hasher = Sha256::new();
+    for line in &lines {
+        hasher.update(line.as_bytes());
+    }
+    Some(
+        hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+    )
+}
+
+/// Check that an npx cache entry holds exactly the pinned build and closure.
+/// Reads npm's hidden lockfile first, then the entry's `package-lock.json`.
+pub fn verify_artifact_entry(entry: &std::path::Path, pin: &ArtifactPin) -> Result<(), String> {
+    let candidates = [
+        entry.join("node_modules").join(".package-lock.json"),
+        entry.join("package-lock.json"),
+    ];
+    let raw = candidates
+        .iter()
+        .find_map(|path| std::fs::read(path).ok())
+        .ok_or_else(|| "pinned hq-cloud build is not installed".to_string())?;
+    let lock: serde_json::Value =
+        serde_json::from_slice(&raw).map_err(|_| "hq-cloud lockfile is unreadable".to_string())?;
+    let package = lock
+        .get("packages")
+        .and_then(|p| p.get(HQ_CLOUD_LOCK_KEY))
+        .ok_or_else(|| "hq-cloud is missing from the lockfile".to_string())?;
+    let field = |name: &str| package.get(name).and_then(|v| v.as_str());
+    if field("version") != Some(pin.version) {
+        return Err("installed hq-cloud version is not the pinned build".to_string());
+    }
+    if field("integrity") != Some(pin.integrity) {
+        return Err("installed hq-cloud integrity is not the pinned build".to_string());
+    }
+    if dependency_closure_digest(&lock).as_deref() != Some(pin.closure_sha256) {
+        return Err("installed hq-cloud dependencies are not the pinned closure".to_string());
+    }
+    Ok(())
+}
+
 /// Production runner: `npx -y --package=@indigoai-us/hq-cloud@<exact> hq-cloud
 /// personal-projection ACTION --stdin-json`, through the same npx program and
-/// child PATH the sync runner uses.
+/// child PATH the sync runner uses. Before every spawn it checks that npx's
+/// cache entry for the exact spec is the pinned build; otherwise nothing runs.
 pub struct NpxProjectionRunner {
+    pin: ArtifactPin,
     package_spec: String,
     cancel: Arc<AtomicBool>,
 }
 
 impl NpxProjectionRunner {
-    pub(crate) fn for_exact_version(version: &str) -> Self {
+    pub(crate) fn for_pin(pin: ArtifactPin) -> Self {
         Self {
-            package_spec: format!("{}@{}", crate::hq_cloud::HQ_CLOUD_PACKAGE, version),
+            package_spec: format!("{}@{}", crate::hq_cloud::HQ_CLOUD_PACKAGE, pin.version),
+            pin,
             cancel: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -998,10 +1115,23 @@ impl NpxProjectionRunner {
         args.extend(action.argv().iter().map(|arg| arg.to_string()));
         args
     }
+
+    fn verify_installed(&self) -> bool {
+        let Some(cache) = crate::runner_target::npx_cache_dir() else {
+            return false;
+        };
+        let entry = cache.join(crate::runner_target::npx_cache_entry_hash(
+            &self.package_spec,
+        ));
+        verify_artifact_entry(&entry, &self.pin).is_ok()
+    }
 }
 
 impl ProjectionRunner for NpxProjectionRunner {
     fn run(&self, action: Action, stdin: &[u8]) -> RunOutput {
+        if !self.verify_installed() {
+            return RunOutput::ArtifactUnverified;
+        }
         let npx = crate::paths::resolve_bin("npx");
         let args = self.npx_args(action);
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();

@@ -531,7 +531,7 @@ mod process {
 
     #[test]
     fn npx_args_name_the_hq_cloud_bin_and_the_action() {
-        let runner = NpxProjectionRunner::for_exact_version("9.9.9");
+        let runner = NpxProjectionRunner::for_pin(super::test_pin("9.9.9"));
         assert_eq!(
             runner.npx_args(Action::PlanAdoption),
             [
@@ -543,5 +543,122 @@ mod process {
                 "--stdin-json"
             ]
         );
+    }
+}
+
+fn test_pin(version: &'static str) -> ArtifactPin {
+    ArtifactPin {
+        version,
+        integrity: concat!(
+            "sha512-",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+        ),
+        closure_sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+    }
+}
+
+mod pin {
+    use super::*;
+
+    #[test]
+    fn the_shipped_pin_is_empty_so_the_client_is_unreachable() {
+        assert_eq!(HQ_CLOUD_PERSONAL_PROJECTION_ARTIFACT, None);
+        assert!(!personal_projection_supported());
+        assert!(production_client().is_none());
+    }
+
+    #[test]
+    fn only_an_exact_version_with_full_integrity_is_well_formed() {
+        assert!(pin_is_well_formed(&test_pin("6.19.0")));
+        for range in [
+            "~6.19.0", "^6.19.0", ">=6.19.0", "6.19", "6.19.x", "latest", "",
+        ] {
+            assert!(!pin_is_well_formed(&test_pin(range)), "{range}");
+        }
+        let mut short = test_pin("6.19.0");
+        short.integrity = "sha512-abc";
+        assert!(!pin_is_well_formed(&short));
+        let mut closure = test_pin("6.19.0");
+        closure.closure_sha256 = "not-hex";
+        assert!(!pin_is_well_formed(&closure));
+    }
+
+    #[test]
+    fn the_runner_must_use_the_same_exact_build() {
+        assert!(supported_with(Some(test_pin("6.19.0")), "6.19.0"));
+        assert!(!supported_with(Some(test_pin("6.19.0")), "~6.19.0"));
+        assert!(!supported_with(Some(test_pin("6.19.0")), "6.19.1"));
+        assert!(!supported_with(None, "6.19.0"));
+        // Today's runner spec is a tilde range, so no pin could enable it.
+        assert!(!supported_with(
+            Some(test_pin("6.18.80")),
+            crate::hq_cloud::HQ_CLOUD_VERSION
+        ));
+    }
+
+    fn write_entry(dir: &std::path::Path, version: &str, integrity: &str, extra_dep: &str) {
+        let lock = serde_json::json!({
+            "name": "npx-entry",
+            "lockfileVersion": 3,
+            "packages": {
+                "": {"dependencies": {"@indigoai-us/hq-cloud": version}},
+                "node_modules/@indigoai-us/hq-cloud": {"version": version, "integrity": integrity},
+                "node_modules/left-pad": {"version": extra_dep, "integrity": "sha512-left"},
+            }
+        });
+        std::fs::create_dir_all(dir.join("node_modules")).unwrap();
+        std::fs::write(
+            dir.join("node_modules/.package-lock.json"),
+            serde_json::to_vec(&lock).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn pin_for(dir: &std::path::Path, version: &'static str) -> ArtifactPin {
+        let lock: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.join("node_modules/.package-lock.json")).unwrap(),
+        )
+        .unwrap();
+        let closure = Box::leak(dependency_closure_digest(&lock).unwrap().into_boxed_str());
+        ArtifactPin {
+            version,
+            integrity: test_pin(version).integrity,
+            closure_sha256: closure,
+        }
+    }
+
+    #[test]
+    fn verification_accepts_only_the_pinned_build_and_closure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = tmp.path().join("entry");
+        write_entry(&entry, "6.19.0", test_pin("6.19.0").integrity, "1.0.0");
+        let pin = pin_for(&entry, "6.19.0");
+        assert_eq!(verify_artifact_entry(&entry, &pin), Ok(()));
+
+        // Same package, different dependency closure.
+        write_entry(&entry, "6.19.0", test_pin("6.19.0").integrity, "1.0.1");
+        assert!(verify_artifact_entry(&entry, &pin).is_err());
+
+        // Different integrity.
+        write_entry(&entry, "6.19.0", "sha512-other", "1.0.0");
+        assert!(verify_artifact_entry(&entry, &pin).is_err());
+
+        // Different version.
+        write_entry(&entry, "6.19.1", test_pin("6.19.0").integrity, "1.0.0");
+        assert!(verify_artifact_entry(&entry, &pin).is_err());
+
+        // Not installed at all.
+        assert!(verify_artifact_entry(&tmp.path().join("absent"), &pin).is_err());
+    }
+
+    #[test]
+    fn an_unverified_artifact_is_unsupported_without_running_actions() {
+        let fake = FakeRunner::new(vec![RunOutput::ArtifactUnverified]);
+        let client = PersonalProjectionClient::new(&fake);
+        assert_eq!(
+            client.initialize(ROOT),
+            Outcome::Paused(Pause::Local(LocalPause::UnsupportedCli))
+        );
+        assert_eq!(actions(&fake), [Action::Inspect]);
     }
 }
