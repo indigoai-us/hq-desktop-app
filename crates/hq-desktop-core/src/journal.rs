@@ -79,6 +79,84 @@ pub fn state_dir() -> PathBuf {
     dirs::home_dir().expect("home dir").join(".hq")
 }
 
+/// Lexical `path.resolve`: make `input` absolute against the current
+/// directory and fold `.` and `..` without touching the filesystem.
+fn resolve_lexically(input: &std::path::Path) -> std::io::Result<PathBuf> {
+    use std::path::Component;
+    let absolute = if input.is_absolute() {
+        input.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(input)
+    };
+    let mut out = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    Ok(out)
+}
+
+/// Port of hq-cloud's `canonicalProspectivePath`: resolve lexically, then
+/// realpath; when the path does not exist yet, canonicalize the nearest
+/// existing parent and re-append the missing tail. Errors other than "not
+/// found" are returned, as in the cloud.
+pub fn canonical_prospective_path(input: &std::path::Path) -> std::io::Result<PathBuf> {
+    let absolute = resolve_lexically(input)?;
+    canonical_prospective_absolute(&absolute)
+}
+
+fn canonical_prospective_absolute(absolute: &std::path::Path) -> std::io::Result<PathBuf> {
+    match fs::canonicalize(absolute) {
+        Ok(real) => Ok(real),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let (Some(parent), Some(name)) = (absolute.parent(), absolute.file_name()) else {
+                return Err(error);
+            };
+            Ok(canonical_prospective_absolute(parent)?.join(name))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// The state directory exactly as hq-cloud derives it for personal projection
+/// ownership: `realpath(HQ_STATE_DIR ?? ~/.hq)`, prospectively when absent.
+pub fn state_dir_canonical() -> std::io::Result<PathBuf> {
+    canonical_prospective_path(&state_dir())
+}
+
+/// The value passed as `HQ_STATE_DIR` to every child the Desktop spawns, so a
+/// symlinked `~/.hq` or a relative override resolves to the same key in the
+/// app, the runner, the CLI, and the personal-projection wrapper. Falls back
+/// to the uncanonicalized value when canonicalization fails, which is what the
+/// child would have inherited anyway.
+pub fn state_dir_for_children() -> PathBuf {
+    state_dir_canonical().unwrap_or_else(|_| state_dir())
+}
+
+/// Set `HQ_STATE_DIR` on a child command explicitly.
+pub fn apply_state_dir_env(command: &mut std::process::Command) {
+    command.env("HQ_STATE_DIR", state_dir_for_children());
+}
+
+/// Pin the canonical state directory into this process's environment, so
+/// children spawned without one of the shared command builders inherit the
+/// same value. Call once at startup, before any thread is spawned.
+pub fn pin_state_dir_for_children() {
+    std::env::set_var("HQ_STATE_DIR", state_dir_for_children());
+}
+
+/// True when the state directory lies inside (or is) the given root. Both
+/// paths must already be canonical. hq-cloud refuses such a root, so the
+/// Desktop refuses it before calling the wrapper.
+pub fn root_contains_state_dir(root: &std::path::Path, state_dir: &std::path::Path) -> bool {
+    state_dir.starts_with(root)
+}
+
 /// Verbatim port of `sanitizeSlug(slug)`:
 ///   - replace `[^a-zA-Z0-9_-]` with `_`
 ///   - throw if empty OR result is all `_`/`-`.
@@ -264,5 +342,81 @@ mod tests {
             let read_back = read_journal("testslug").unwrap();
             assert_eq!(original, read_back);
         });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_dir_canonical_resolves_a_symlinked_state_dir_like_hq_cloud() {
+        let _guard = crate::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real = tmp.path().join("real-state");
+        fs::create_dir_all(&real).unwrap();
+        let link = tmp.path().join("link-state");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        std::env::set_var("HQ_STATE_DIR", &link);
+        let canonical = state_dir_canonical().unwrap();
+        let for_children = state_dir_for_children();
+        let mut command = std::process::Command::new("true");
+        apply_state_dir_env(&mut command);
+        let passed: Vec<_> = command
+            .get_envs()
+            .filter(|(key, _)| *key == "HQ_STATE_DIR")
+            .map(|(_, value)| value.map(PathBuf::from))
+            .collect();
+        std::env::remove_var("HQ_STATE_DIR");
+
+        let expected = fs::canonicalize(&real).unwrap();
+        assert_eq!(canonical, expected);
+        assert_eq!(for_children, expected);
+        assert_eq!(passed, vec![Some(expected)]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_absent_state_dir_is_canonicalized_prospectively_without_creating_it() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real_parent = tmp.path().join("real-parent");
+        fs::create_dir_all(&real_parent).unwrap();
+        let link_parent = tmp.path().join("link-parent");
+        std::os::unix::fs::symlink(&real_parent, &link_parent).unwrap();
+        let prospective = link_parent.join("missing").join(".hq");
+
+        let canonical = canonical_prospective_path(&prospective).unwrap();
+        assert_eq!(
+            canonical,
+            fs::canonicalize(&real_parent)
+                .unwrap()
+                .join("missing")
+                .join(".hq")
+        );
+        assert!(!real_parent.join("missing").exists());
+    }
+
+    #[test]
+    fn dot_dot_segments_fold_before_canonicalizing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base = fs::canonicalize(tmp.path()).unwrap();
+        let input = base.join("a").join("..").join("b").join(".").join("c");
+        assert_eq!(
+            canonical_prospective_path(&input).unwrap(),
+            base.join("b").join("c")
+        );
+    }
+
+    #[test]
+    fn a_root_that_contains_the_state_dir_is_detected() {
+        let root = std::path::Path::new("/Users/me/hq");
+        assert!(root_contains_state_dir(root, root));
+        assert!(root_contains_state_dir(root, &root.join(".hq")));
+        assert!(!root_contains_state_dir(
+            root,
+            std::path::Path::new("/Users/me/.hq")
+        ));
+        assert!(!root_contains_state_dir(
+            root,
+            std::path::Path::new("/Users/me/hq2/.hq")
+        ));
     }
 }

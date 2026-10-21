@@ -207,6 +207,17 @@ const boundaryContracts: BoundaryContract[] = [
     endMarker: "// Wire the foundation crate's injected dependencies",
   },
   {
+    // H8. Every child the app spawns must see the canonical state directory
+    // hq-cloud derives. The pin runs once at startup, before telemetry or any
+    // other thread starts, so later children inherit it.
+    label: "canonical state directory pin",
+    file: "main",
+    hook: "hq_desktop_core::journal::pin_state_dir_for_children();",
+    startMarker: "windows_update::run_helper_if_requested();",
+    endMarker: "// Wire the foundation crate's injected dependencies",
+    beforeMarkers: ["hq_telemetry::init_with_identity("],
+  },
+  {
     label: "exiting phase",
     file: "main",
     hook:

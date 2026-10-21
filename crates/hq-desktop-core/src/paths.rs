@@ -2558,6 +2558,8 @@ pub fn spawn_command(path: &str, args: &[&str]) -> std::process::Command {
     let mut cmd = std::process::Command::new(path);
     cmd.args(args);
     no_window(&mut cmd);
+    // Every child gets the canonical state directory hq-cloud derives.
+    crate::journal::apply_state_dir_env(&mut cmd);
     cmd
 }
 
@@ -2586,6 +2588,7 @@ pub fn git_command() -> Command {
     no_window(&mut cmd);
     cmd.env("PATH", path);
     cmd.env("GIT_OPTIONAL_LOCKS", "0");
+    crate::journal::apply_state_dir_env(&mut cmd);
     cmd
 }
 
@@ -2595,6 +2598,7 @@ pub fn tokio_spawn_command(path: &str, args: &[&str]) -> tokio::process::Command
     let mut cmd = tokio::process::Command::new(path);
     cmd.args(args);
     no_window_tokio(&mut cmd);
+    cmd.env("HQ_STATE_DIR", crate::journal::state_dir_for_children());
     cmd
 }
 

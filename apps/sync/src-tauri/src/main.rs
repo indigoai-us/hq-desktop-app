@@ -390,6 +390,11 @@ fn main() {
         commands::process::run_sync_cancel_probe_main();
     }
 
+    // H8: every child (sync runner, hq CLI, personal-projection wrapper, and
+    // any helper spawned without the shared command builders) inherits the
+    // canonical state directory hq-cloud derives. Set before any thread starts.
+    hq_desktop_core::journal::pin_state_dir_for_children();
+
     // Sentry init + the PII/secret scrubber live in the hq-telemetry crate. The
     // build-time values (DSN/version/environment, emitted by build.rs) are read
     // here in the binary and passed in, so the crate carries no build-env coupling.

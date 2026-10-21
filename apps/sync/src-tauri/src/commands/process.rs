@@ -2013,6 +2013,10 @@ fn build_spawn_command(path: &str, args: &[String]) -> Command {
     // caller-controlled HQ paths and package ranges into shell syntax.
     let mut cmd = Command::new(path);
     cmd.args(args);
+    // Pass the canonical state directory explicitly, so the runner, the CLI,
+    // and the personal-projection wrapper key state the same way the app does.
+    // A caller's own `SpawnArgs.env` entry is applied later and still wins.
+    hq_desktop_core::journal::apply_state_dir_env(&mut cmd);
     // Shared CREATE_NO_WINDOW helper — daemons, probes, and other background
     // children stay invisible. Explicit user-requested terminals do not use
     // this spawn path.
@@ -2064,6 +2068,27 @@ mod hq_cloud_cache_use_tests {
         assert!(spawn_uses_hq_cloud_npx_cache(&manual));
         assert!(spawn_uses_hq_cloud_npx_cache(&watcher));
         assert!(!spawn_uses_hq_cloud_npx_cache(&local_override));
+    }
+}
+
+#[cfg(test)]
+mod state_dir_env_tests {
+    use super::*;
+
+    /// H8: runner and CLI children get the canonical state directory
+    /// explicitly instead of inheriting whatever the app was launched with.
+    #[test]
+    fn spawned_children_receive_the_canonical_state_dir() {
+        let cmd = build_spawn_command("npx", &["-y".to_string()]);
+        let passed = cmd
+            .get_envs()
+            .find_map(|(key, value)| (key == "HQ_STATE_DIR").then_some(value))
+            .flatten()
+            .map(std::path::PathBuf::from);
+        assert_eq!(
+            passed,
+            Some(hq_desktop_core::journal::state_dir_for_children())
+        );
     }
 }
 
