@@ -72,6 +72,7 @@ import {
   createHqProRestFetch,
   createScopedFeatureFlagGates,
   resolveCompanyFeature,
+  readCompanyFeature,
   MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
   type FeatureFlagGateOptions,
 } from '../flags.js';
@@ -714,6 +715,8 @@ export function createSyncPlatformAdapter(
           ? // Pinned per release; the registry cannot turn it off.
             Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT))
           : flagsFor(scope?.companyUid).resolve(flag, () => hasFeatureLegacy(flag)),
+      readCompanyFeature: (flag, companyUid) =>
+        readCompanyFeature(createHqProFlagFetch(invokeFn), flag, companyUid),
       hasCompanyFeature: (flag, companyUid) =>
         resolveCompanyFeature(createHqProFlagFetch(invokeFn), flag, companyUid),
       subscribeFeature: (flag, onChange) =>
