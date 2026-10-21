@@ -17,6 +17,7 @@
     CENTER_CROP,
     loadPhotoSource,
     photoFingerprint,
+    cropView,
     renderPhoto,
     sameFingerprint,
     type OtherProfile,
@@ -86,6 +87,8 @@
   let savedSrc = $state<string | null>(null);
   /** Original image + crop for lossless re-adjusting this session. */
   let session = $state<{ source: PhotoSource; crop: PhotoCrop } | null>(null);
+  /** The crop being adjusted, shown live in the avatar while the editor is open. */
+  let liveCrop = $state<PhotoCrop | null>(null);
   let previous = $state<Previous>(null);
   let status = $state<"idle" | "saving" | "saved" | "crop-saved" | "error">("idle");
   let errorText = $state("");
@@ -104,6 +107,14 @@
   let glowKey = $state(0);
 
   const shownSrc = $derived(paintableAvatarSrc(savedSrc ?? photoUrl));
+  const live = $derived.by(() => {
+    if (!editing || !session || !liveCrop) return null;
+    const v = cropView(session.source, liveCrop, size);
+    return {
+      src: session.source.url,
+      style: `width:${v.width}px;height:${v.height}px;transform:translate(calc(-50% + ${v.dx}px), calc(-50% + ${v.dy}px));`,
+    };
+  });
   const hasPhoto = $derived(Boolean(savedSrc ?? photoUrl));
   const busy = $derived(status === "saving" || editBusy);
 
@@ -188,6 +199,7 @@
   async function openEditor(): Promise<void> {
     if (busy || disabled) return;
     if (session) {
+      liveCrop = null;
       editing = true;
       setStatus("idle");
       return;
@@ -200,6 +212,7 @@
     editBusy = true;
     try {
       session = { source: await loadPhotoSource(url), crop: CENTER_CROP };
+      liveCrop = null;
       editing = true;
       setStatus("idle");
     } catch {
@@ -321,7 +334,9 @@
         void acceptFile(e.dataTransfer?.files?.[0]);
       }}
     >
-      {#if shownSrc}
+      {#if live}
+        <img class="live" src={live.src} alt="Your avatar" style={live.style} data-testid={`${testid}-live`} />
+      {:else if shownSrc}
         <img src={shownSrc} alt="Your avatar" data-testid={imgTestid} />
       {:else}
         <span class="initial" data-testid={fallbackTestid}>{initial}</span>
@@ -432,6 +447,7 @@
         busy={editBusy || status === "saving"}
         ondone={(crop) => void finishEdit(crop)}
         oncancel={() => (editing = false)}
+        onchange={(crop) => (liveCrop = crop)}
       />
     </div>
   {:else if offer}
@@ -487,7 +503,7 @@
 
   .glow {
     position: absolute;
-    inset: -5px;
+    inset: -3px;
     border-radius: 50%;
     pointer-events: none;
     opacity: 0;
@@ -509,14 +525,14 @@
   }
 
   .glow-ring {
-    -webkit-mask: radial-gradient(circle, transparent calc(50% - 3px), #000 calc(50% - 2.5px));
-    mask: radial-gradient(circle, transparent calc(50% - 3px), #000 calc(50% - 2.5px));
+    -webkit-mask: radial-gradient(circle, transparent calc(50% - 1.5px), #000 calc(50% - 1px));
+    mask: radial-gradient(circle, transparent calc(50% - 1.5px), #000 calc(50% - 1px));
   }
 
   .glow-halo {
-    inset: -4px;
-    filter: blur(12px);
-    opacity: 0.6;
+    inset: -2px;
+    filter: blur(8px);
+    opacity: 0.4;
   }
 
   @keyframes ppf-glow {
@@ -564,6 +580,14 @@
     height: 100%;
     object-fit: cover;
     display: block;
+  }
+
+  .avatar img.live {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    max-width: none;
+    object-fit: fill;
   }
 
   .initial {

@@ -1,8 +1,9 @@
 <script lang="ts">
   /**
-   * Inline photo crop editor: a round window you drag to move, a zoom slider
-   * (scroll also zooms), and live previews at the sizes the app uses. It lives
-   * inside the settings row that opened it — no dialog.
+   * Inline photo crop editor: the whole photo with everything outside the
+   * round crop dimmed, drag to move, a zoom slider (scroll also zooms). It
+   * lives inside the settings row that opened it — no dialog. The row's own
+   * avatar shows the result live through `onchange`.
    */
   import {
     CENTER_CROP,
@@ -20,12 +21,14 @@
     busy?: boolean;
     ondone: (crop: PhotoCrop) => void;
     oncancel: () => void;
+    /** Called with the crop as it changes, for a live preview elsewhere. */
+    onchange?: (crop: PhotoCrop) => void;
   }
 
-  let { source, crop = CENTER_CROP, busy = false, ondone, oncancel }: Props = $props();
+  let { source, crop = CENTER_CROP, busy = false, ondone, oncancel, onchange }: Props = $props();
 
+  const STAGE = 184;
   const WINDOW = 144;
-  const PREVIEWS = [48, 26];
 
   // svelte-ignore state_referenced_locally
   let draft = $state<PhotoCrop>(clampCrop(source.width, source.height, crop));
@@ -89,8 +92,12 @@
     stage?.focus({ preventScroll: true });
   });
 
-  function imgStyle(size: number): string {
-    const v = size === WINDOW ? view : cropView(source, draft, size);
+  $effect(() => {
+    onchange?.(draft);
+  });
+
+  function imgStyle(): string {
+    const v = view;
     return `width:${v.width}px;height:${v.height}px;transform:translate(calc(-50% + ${v.dx}px), calc(-50% + ${v.dy}px));`;
   }
 </script>
@@ -105,13 +112,13 @@
     tabindex="0"
     aria-label="Photo crop. Drag or use arrow keys to move, scroll to zoom, Enter to save, Escape to cancel."
     data-testid="photo-crop-stage"
-    style={`--window:${WINDOW}px`}
+    style={`--stage:${STAGE}px;--window:${WINDOW}px`}
     onpointerdown={startDrag}
     onwheel={onWheel}
     onkeydown={onKeydown}
     ondblclick={() => (draft = clampCrop(source.width, source.height, { ...draft, x: 0, y: 0 }))}
   >
-    <img src={source.url} alt="" draggable="false" style={imgStyle(WINDOW)} />
+    <img src={source.url} alt="" draggable="false" style={imgStyle()} />
     <span class="ring" aria-hidden="true"></span>
   </div>
 
@@ -131,15 +138,6 @@
       />
       <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="4" /></svg>
     </label>
-
-    <div class="previews" aria-hidden="true">
-      {#each PREVIEWS as size (size)}
-        <span class="preview" style={`width:${size}px;height:${size}px`}>
-          <img src={source.url} alt="" draggable="false" style={imgStyle(size)} />
-        </span>
-      {/each}
-      <span class="preview-label">How it looks in the app</span>
-    </div>
 
     <p class="hint">Drag to move · scroll to zoom · double-click to re-center</p>
 
@@ -176,9 +174,9 @@
   .stage {
     position: relative;
     flex: none;
-    width: var(--window);
-    height: var(--window);
-    border-radius: 50%;
+    width: var(--stage);
+    height: var(--stage);
+    border-radius: 10px;
     overflow: hidden;
     background: var(--v4-raised, #161618);
     cursor: grab;
@@ -193,11 +191,9 @@
   .stage:focus-visible {
     outline: 1.5px solid var(--v4-focus-ring, #6366f1);
     outline-offset: 3px;
-    border-radius: 50%;
   }
 
-  .stage img,
-  .preview img {
+  .stage img {
     position: absolute;
     left: 50%;
     top: 50%;
@@ -213,7 +209,10 @@
     height: var(--window);
     margin: calc(var(--window) / -2) 0 0 calc(var(--window) / -2);
     border-radius: 50%;
-    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.12);
+    /* The spread shadow dims the photo outside the crop; the stage clips it. */
+    box-shadow:
+      0 0 0 1px rgb(255 255 255 / 0.5),
+      0 0 0 999px rgb(10 10 10 / 0.6);
     pointer-events: none;
   }
 
@@ -275,21 +274,6 @@
     outline-offset: 3px;
   }
 
-  .previews {
-    display: flex;
-    align-items: flex-end;
-    gap: 10px;
-  }
-
-  .preview {
-    position: relative;
-    flex: none;
-    border-radius: 50%;
-    overflow: hidden;
-    background: var(--v4-raised, #161618);
-  }
-
-  .preview-label,
   .hint {
     margin: 0;
     color: var(--v4-text-3, rgb(250 250 250 / 0.4));

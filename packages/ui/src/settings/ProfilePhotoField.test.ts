@@ -246,6 +246,25 @@ describe("ProfilePhotoField", () => {
     expect(onphotobusy).toHaveBeenLastCalledWith(false);
   });
 
+  it("the avatar shows the crop live while adjusting, and goes back on Cancel", async () => {
+    render({ photoUrl: MEMBER_URL, size: 64 });
+    q("p-adjust")!.click();
+    await settle(() => expect(q("p-live")).not.toBeNull());
+    expect(q("p-img")).toBeNull();
+    const before = q("p-live")!.getAttribute("style");
+
+    const zoom = q("photo-crop-zoom") as HTMLInputElement;
+    zoom.value = "2";
+    zoom.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    expect(q("p-live")!.getAttribute("style")).not.toBe(before);
+
+    q("photo-crop-cancel")!.click();
+    flushSync();
+    expect(q("p-live")).toBeNull();
+    expect(q("p-img")).not.toBeNull();
+  });
+
   it("reports busy while the crop is open", async () => {
     const onphotobusy = vi.fn();
     render({ photoUrl: MEMBER_URL, onphotobusy });
