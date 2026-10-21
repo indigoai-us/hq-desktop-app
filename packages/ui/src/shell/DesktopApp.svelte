@@ -8586,6 +8586,8 @@
     channelActionError = null;
   });
   let selfAvatarUrl = $state<string | null>(null);
+  /** Counts photo saves so the rail's account button can point at the new photo. */
+  let selfAvatarPulse = $state(0);
   let selfDescription = $state<string | null>(null);
 
   /** personUid → presigned avatar URL, sourced from every loaded channel
@@ -13718,6 +13720,7 @@
       {unreadCount}
       youInitials={resolvedAccountInitials ?? ""}
       youPhoto={selfAvatarUrl}
+      youPhotoPulse={selfAvatarPulse}
       onselect={selectRailItem}
       onreorderpins={reorderPinnedCompanies}
       onmore={toggleMoreCompanies}
@@ -13976,7 +13979,10 @@
             void navigate(companyRowDestination("general", uid));
           }}
           onback={closeSettings}
-          onavatarsaved={(src) => (selfAvatarUrl = src)}
+          onavatarsaved={(src) => {
+            selfAvatarUrl = src;
+            selfAvatarPulse += 1;
+          }}
           onsignout={onsignout ? signOutWithImageCleanup : undefined}
           onopenconsole={onOpenConsole
             ? (url) => onOpenConsole(url ?? HQ_CONSOLE_BASE)

@@ -13,6 +13,7 @@
   import { paintableAvatarSrc } from "../avatars/csp-image-src.js";
   import type { PreparedAvatar } from "./avatar-image.js";
   import PhotoCropEditor from "./PhotoCropEditor.svelte";
+  import HqGlow from "./HqGlow.svelte";
   import {
     CENTER_CROP,
     loadPhotoSource,
@@ -310,10 +311,7 @@
     <span class="avatar-wrap" style={`--ppf-size:${size}px`}>
     {#key glowKey}
       {#if glowKey > 0}
-        <span class="glow" aria-hidden="true" data-testid={`${testid}-glow`}>
-          <span class="glow-halo"></span>
-          <span class="glow-ring"></span>
-        </span>
+        <HqGlow testid={`${testid}-glow`} />
       {/if}
     {/key}
     <button
@@ -490,68 +488,12 @@
     width: 100%;
   }
 
-  /* HQ glow: the app icon's pink and violet, warming up around the photo after
-     a save and settling away. Opacity and transform only. */
+  /* Holds the photo and its HQ glow. */
   .avatar-wrap {
     position: relative;
     flex: none;
     width: var(--ppf-size);
     height: var(--ppf-size);
-    --hq-glow-a: #f08ac0;
-    --hq-glow-b: #9a6bff;
-  }
-
-  .glow {
-    position: absolute;
-    inset: -3px;
-    border-radius: 50%;
-    pointer-events: none;
-    opacity: 0;
-    animation: ppf-glow 2.4s ease-in-out forwards;
-  }
-
-  .glow-ring,
-  .glow-halo {
-    position: absolute;
-    inset: 0;
-    border-radius: 50%;
-    background: conic-gradient(
-      from 200deg,
-      var(--hq-glow-a),
-      var(--hq-glow-b),
-      #ffc58f,
-      var(--hq-glow-a)
-    );
-  }
-
-  .glow-ring {
-    -webkit-mask: radial-gradient(circle, transparent calc(50% - 1.5px), #000 calc(50% - 1px));
-    mask: radial-gradient(circle, transparent calc(50% - 1.5px), #000 calc(50% - 1px));
-  }
-
-  .glow-halo {
-    inset: -2px;
-    filter: blur(8px);
-    opacity: 0.4;
-  }
-
-  @keyframes ppf-glow {
-    0% {
-      opacity: 0;
-      transform: scale(0.95) rotate(-30deg);
-    }
-    30% {
-      opacity: 1;
-      transform: scale(1) rotate(15deg);
-    }
-    60% {
-      opacity: 1;
-      transform: scale(1.01) rotate(55deg);
-    }
-    100% {
-      opacity: 0;
-      transform: scale(1.04) rotate(95deg);
-    }
   }
 
   .avatar {
@@ -810,17 +752,6 @@
     color: var(--ok, var(--v4-ok, #34c759));
   }
 
-  @keyframes ppf-glow-still {
-    0%,
-    100% {
-      opacity: 0;
-    }
-    30%,
-    60% {
-      opacity: 1;
-    }
-  }
-
   @keyframes ppf-rise {
     from {
       opacity: 0;
@@ -829,9 +760,6 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .glow {
-      animation: ppf-glow-still 1.4s ease-out forwards;
-    }
     .offer,
     .hover {
       animation: none;

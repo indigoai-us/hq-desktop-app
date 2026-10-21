@@ -17,18 +17,30 @@ afterEach(async () => {
   host?.remove();
 });
 
-async function renderRail(youPhoto: string | null): Promise<HTMLElement> {
+async function renderRail(youPhoto: string | null, youPhotoPulse = 0): Promise<HTMLElement> {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(AppRail, {
     target: host,
-    props: { items, activeId: null, youInitials: "JD", youPhoto, onselect: () => {} },
+    props: { items, activeId: null, youInitials: "JD", youPhoto, youPhotoPulse, onselect: () => {} },
   });
   await tick();
   return host.querySelector<HTMLElement>("[data-testid='rail-you'] .avatar")!;
 }
 
 describe("rail You avatar photo", () => {
+  it("points at the photo with the HQ glow and an arrow after a save", async () => {
+    await renderRail("data:image/png;base64,AAAA", 1);
+    expect(host.querySelector("[data-testid='rail-you-glow']")).not.toBeNull();
+    expect(host.querySelector("[data-testid='rail-you-arrow']")).not.toBeNull();
+  });
+
+  it("shows no arrow before any save", async () => {
+    await renderRail("data:image/png;base64,AAAA");
+    expect(host.querySelector("[data-testid='rail-you-arrow']")).toBeNull();
+    expect(host.querySelector("[data-testid='rail-you-glow']")).toBeNull();
+  });
+
   it("shows the saved profile photo instead of initials", async () => {
     const photo =
       "https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/members/prs_jd/a.jpg?sig=1";
