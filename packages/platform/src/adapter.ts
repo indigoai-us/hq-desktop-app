@@ -475,6 +475,8 @@ export interface IdentityApi {
    * no company flag source (web) resolve `false`.
    */
   hasCompanyFeature?(flag: string, companyUid: string): Promise<boolean>;
+  /** null means a transient read failure; false is an explicit denial or invalid answer. */
+  readCompanyFeature?(flag: string, companyUid: string): Promise<boolean | null>;
   /** Status-aware flag read for telemetry that distinguishes explicit-off from missing/unreadable. */
   resolveFeatureFlagStatus?(flag: string): AdapterPromise<{
     enabled: boolean;
