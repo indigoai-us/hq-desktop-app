@@ -76,7 +76,8 @@
     }
 
     try {
-      const path = await invoke<string>('resolve_hq_path');
+      // Display only: never create the folder from an error screen.
+      const path = await invoke<string>('resolve_hq_path', { create: false });
       if (path) recoveredPath = path;
     } catch {
       // best effort only

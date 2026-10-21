@@ -2062,8 +2062,8 @@
     directoryNotice = null;
     try {
       // The default path is only resolved before auth exists. Validate it
-      // here, after sign-in, before allowing setup to use it; check_writable
-      // creates the folder, so this Install step is where it first appears.
+      // here, after sign-in, before allowing setup to use it. check_writable
+      // creates nothing; the first setup stage creates the folder.
       const [detection, writable] = await Promise.all([
         invokeCommand<DetectHqResult>('detect_hq', { path: selectedPath }),
         invokeCommand<boolean>('check_writable', { path: selectedPath }),

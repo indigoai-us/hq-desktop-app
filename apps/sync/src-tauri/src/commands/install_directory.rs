@@ -1,5 +1,4 @@
-use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
@@ -163,14 +162,15 @@ pub fn resolve_hq_path() -> Result<String, String> {
     resolve_hq_path_with(true)
 }
 
-/// Tauri entry point for [`resolve_hq_path`]. `create: false` resolves the
-/// folder without creating it: the setup wizard asks for the default before
-/// the person has chosen a location, and only the install step may create the
-/// HQ folder. Omitting `create` keeps the creating behavior for other callers.
+/// Tauri entry point for [`resolve_hq_path`]. It only creates the folder when
+/// the caller passes `create: true`. The setup wizard asks for the default
+/// before the person has chosen a location, and recovery screens only display
+/// the path, so neither may create it. The setup stages create the folder
+/// through the Rust [`resolve_hq_path`], not this command.
 pub mod command {
     #[tauri::command]
     pub fn resolve_hq_path(create: Option<bool>) -> Result<String, String> {
-        super::resolve_hq_path_with(create.unwrap_or(true))
+        super::resolve_hq_path_with(create.unwrap_or(false))
     }
 }
 
@@ -241,35 +241,51 @@ pub fn set_hq_install_path(path: String) -> Result<(), String> {
     )
 }
 
+/// Whether HQ could create or write the folder at `path`, checked without
+/// changing anything on disk.
+///
+/// The folder picker and the Install button both call this before setup. It
+/// never creates the folder, its parents, or a probe file: an existing folder
+/// is checked directly, and an absent one is checked through its nearest
+/// existing ancestor. The setup stages still create the folder when they run.
 #[tauri::command]
 pub fn check_writable(path: String) -> Result<bool, String> {
-    let dir = expand_tilde(&path);
-    if dir.exists() && !dir.is_dir() {
-        return Ok(false);
-    }
-    if std::fs::create_dir_all(&dir).is_err() {
-        return Ok(false);
-    }
+    Ok(writable_without_creating(&expand_tilde(&path)))
+}
 
-    let probe = dir.join(format!(
-        ".hq-desktop-write-probe-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-
-    match std::fs::File::create(&probe).and_then(|mut f| f.write_all(b"ok")) {
-        Ok(()) => {
-            let _ = std::fs::remove_file(&probe);
-            Ok(true)
-        }
-        Err(_) => {
-            let _ = std::fs::remove_file(&probe);
-            Ok(false)
+fn writable_without_creating(target: &Path) -> bool {
+    let mut current = target;
+    loop {
+        match std::fs::metadata(current) {
+            // Whatever exists first on the way up must be a writable folder.
+            // A file in the way (at the target or above it) means no.
+            Ok(meta) => return meta.is_dir() && directory_accepts_writes(current, &meta),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match current.parent() {
+                    Some(parent) if parent != current && !parent.as_os_str().is_empty() => {
+                        current = parent;
+                    }
+                    _ => return false,
+                }
+            }
+            Err(_) => return false,
         }
     }
+}
+
+#[cfg(unix)]
+fn directory_accepts_writes(dir: &Path, _meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c_path) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `access` reads a NUL-terminated path and has no other effects.
+    unsafe { libc::access(c_path.as_ptr(), libc::W_OK | libc::X_OK) == 0 }
+}
+
+#[cfg(not(unix))]
+fn directory_accepts_writes(_dir: &Path, meta: &std::fs::Metadata) -> bool {
+    !meta.permissions().readonly()
 }
 
 #[tauri::command]
@@ -385,8 +401,9 @@ mod tests {
         );
     }
 
-    /// The setup wizard's default-folder lookup must not create the folder;
-    /// only the install step may. Other callers keep the creating behavior.
+    /// The setup wizard's default-folder lookup and the error screen's path
+    /// display must not create the folder. Only an explicit `create: true`
+    /// does; the setup stages create it through the Rust resolver.
     /// Unix only: the default folder hangs off `$HOME`, which `scoped_home`
     /// can redirect. On Windows the home folder comes from the known-folder
     /// API, so this test would resolve (and create) the runner's real
@@ -405,7 +422,12 @@ mod tests {
         assert_eq!(PathBuf::from(&resolved), default_root);
         assert!(!default_root.exists());
 
-        let created = command::resolve_hq_path(None).unwrap();
+        // Omitting `create` (the error screen's call) no longer creates it.
+        let resolved = command::resolve_hq_path(None).unwrap();
+        assert_eq!(PathBuf::from(&resolved), default_root);
+        assert!(!default_root.exists());
+
+        let created = command::resolve_hq_path(Some(true)).unwrap();
         assert!(default_root.is_dir());
         assert_eq!(
             fs::canonicalize(PathBuf::from(created)).unwrap(),
@@ -518,5 +540,106 @@ mod tests {
         let r = detect_hq(dir.path().to_string_lossy().into_owned());
         assert!(r.exists);
         assert!(r.is_hq);
+    }
+
+    fn tree(dir: &std::path::Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(next) = stack.pop() {
+            for entry in fs::read_dir(&next).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path.clone());
+                }
+                out.push(path);
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// H8: the picker and the Install button check an absent folder without
+    /// creating it, its parent, or a probe file.
+    #[test]
+    fn check_writable_creates_nothing_for_an_absent_folder() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("Projects").join("hq");
+        let before = tree(dir.path());
+
+        assert_eq!(check_writable(target.to_string_lossy().into_owned()), Ok(true));
+        assert_eq!(
+            check_writable(target.join("hq").to_string_lossy().into_owned()),
+            Ok(true)
+        );
+        assert_eq!(tree(dir.path()), before);
+        assert!(!target.exists());
+        assert!(!dir.path().join("Projects").exists());
+    }
+
+    /// An existing folder is checked in place, with nothing written into it.
+    #[test]
+    fn check_writable_leaves_an_existing_folder_untouched() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("notes.txt"), "mine").unwrap();
+        let before = tree(dir.path());
+        assert_eq!(check_writable(dir.path().to_string_lossy().into_owned()), Ok(true));
+        assert_eq!(tree(dir.path()), before);
+    }
+
+    #[test]
+    fn check_writable_rejects_a_file_in_the_way() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("hq");
+        fs::write(&file, "not a folder").unwrap();
+        assert_eq!(check_writable(file.to_string_lossy().into_owned()), Ok(false));
+        assert_eq!(
+            check_writable(file.join("child").to_string_lossy().into_owned()),
+            Ok(false)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_writable_rejects_a_read_only_ancestor_without_creating_anything() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+        // Root ignores mode bits; the check is only meaningful for a user.
+        let is_root = unsafe { libc::geteuid() } == 0;
+        let result = check_writable(locked.join("hq").to_string_lossy().into_owned());
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        if !is_root {
+            assert_eq!(result, Ok(false));
+        }
+        assert!(!locked.join("hq").exists());
+    }
+
+    /// H8 regression for the fresh-install path with the paired gate off: the
+    /// Directory step no longer creates the folder, and the first setup stage
+    /// still does, through the Rust resolver every stage uses.
+    #[cfg(unix)]
+    #[test]
+    fn fresh_install_still_creates_the_folder_at_the_setup_stage() {
+        let _g = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let home = tempdir().unwrap();
+        let _home = crate::util::test_support::scoped_home(home.path());
+        let chosen = home.path().join("Work").join("hq");
+
+        // Directory step: persist the choice and validate it.
+        set_hq_install_path(chosen.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(check_writable(chosen.to_string_lossy().into_owned()), Ok(true));
+        assert!(!chosen.exists(), "the Directory step must not create the folder");
+
+        // Setup stage (content, git-init, personalize, sync) resolver.
+        let resolved = resolve_hq_path().unwrap();
+        assert!(chosen.is_dir(), "the setup stage creates the folder");
+        assert_eq!(
+            fs::canonicalize(PathBuf::from(resolved)).unwrap(),
+            fs::canonicalize(&chosen).unwrap()
+        );
     }
 }
