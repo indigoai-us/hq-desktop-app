@@ -514,3 +514,208 @@ fn the_gate_is_off_in_shipped_builds() {
     assert!(!paired_root_gate_enabled());
     assert_eq!(personal_root_state(), PersonalRootView::legacy());
 }
+
+/// Opt-in run against a real local hq-cloud build (ignored by default).
+mod artifact {
+    // Opt-in end-to-end run of the gated paired-root flow against a real,
+    // locally built hq-cloud artifact. Ignored by default; run with:
+    //
+    // ```text
+    // HQ_H8_ARTIFACT_BIN=/tmp/h8art/.../dist/bin/sync-mutation.js \
+    // HQ_H8_STUB_VAULT_URL=http://127.0.0.1:47811 \
+    // HQ_H8_OLD_BIN=/path/to/published/dist/bin/sync-mutation.js \
+    // cargo test --bin hq-sync-menubar -- --ignored personal_root_artifact
+    // ```
+    //
+    // Every child gets a cleared environment with a temp HOME, a temp
+    // HQ_STATE_DIR holding a fake session, Keychain reads off, and a local stub
+    // vault. Roots live in a temp folder. Nothing reads or writes the real HQ
+    // folder, state, or Keychain.
+
+    use super::*;
+    use base64::Engine as _;
+    use hq_desktop_core::personal_projection::{run_bounded, Action, RunOutput};
+
+    struct NodeWrapper {
+        bin: String,
+        home: PathBuf,
+        state: PathBuf,
+        vault: String,
+    }
+
+    impl ProjectionRunner for NodeWrapper {
+        fn run(&self, action: Action, stdin: &[u8]) -> RunOutput {
+            let mut command =
+                std::process::Command::new(hq_desktop_core::paths::resolve_bin("node"));
+            command
+                .env_clear()
+                .arg(&self.bin)
+                .args(action.argv())
+                .env("PATH", "/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin")
+                .env("HOME", &self.home)
+                .env("HQ_STATE_DIR", &self.state)
+                .env("HQ_TOKEN_KEYCHAIN", "0")
+                .env("HQ_VAULT_API_URL", &self.vault);
+            run_bounded(command, stdin, action.timeout(), None)
+        }
+    }
+
+    fn b64(value: &str) -> String {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value)
+    }
+
+    /// A fake, unsigned session that only the local stub vault ever sees.
+    fn write_fake_session(state: &Path) {
+        std::fs::create_dir_all(state).unwrap();
+        let exp = chrono::Utc::now() + chrono::Duration::hours(1);
+        let token = |claims: &str| format!("{}.{}.sig", b64(r#"{"alg":"none"}"#), b64(claims));
+        let session = serde_json::json!({
+            "accessToken": token(&format!(r#"{{"sub":"h8-test","exp":{},"token_use":"access"}}"#, exp.timestamp())),
+            "idToken": token(&format!(r#"{{"sub":"h8-test","exp":{},"email":"h8@example.test"}}"#, exp.timestamp())),
+            "refreshToken": "h8-test-only",
+            "expiresAt": exp.to_rfc3339(),
+        });
+        std::fs::write(state.join("cognito-tokens.json"), session.to_string()).unwrap();
+    }
+
+    struct Env {
+        _tmp: tempfile::TempDir,
+        base: PathBuf,
+    }
+
+    impl Env {
+        fn new() -> Self {
+            let tmp = tempfile::tempdir().unwrap();
+            let base = std::fs::canonicalize(tmp.path()).unwrap();
+            Self { _tmp: tmp, base }
+        }
+
+        fn wrapper(&self, bin: &str, state: &Path) -> NodeWrapper {
+            let home = self.base.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            write_fake_session(state);
+            NodeWrapper {
+                bin: bin.to_string(),
+                home,
+                state: state.to_path_buf(),
+                vault: std::env::var("HQ_H8_STUB_VAULT_URL").expect("HQ_H8_STUB_VAULT_URL"),
+            }
+        }
+    }
+
+    fn artifact() -> String {
+        std::env::var("HQ_H8_ARTIFACT_BIN").expect("HQ_H8_ARTIFACT_BIN")
+    }
+
+    #[test]
+    #[ignore = "needs a local hq-cloud artifact and a stub vault"]
+    fn personal_root_artifact_new_root_is_initialized_then_seeded_once() {
+        let env = Env::new();
+        let state = env.base.join("state");
+        let root = env.base.join("Work").join("hq");
+        let wrapper = env.wrapper(&artifact(), &state);
+        let client = PersonalProjectionClient::new(wrapper);
+
+        let record = prepare_with(&client, &s(&root), &state);
+        assert_eq!(record.phase, RootPhase::Initialized, "{record:?}");
+        assert!(record.projection_id.is_some());
+        assert!(root.is_dir(), "initialize created the root");
+        assert_eq!(
+            std::fs::read_dir(&root).unwrap().count(),
+            0,
+            "nothing seeded yet"
+        );
+
+        assert_eq!(
+            seed_decision_with(true, &s(&root), &state),
+            Ok(SeedDecision::Seed)
+        );
+        std::fs::write(root.join("README.md"), "seeded").unwrap();
+        mark_seeded(&state, &s(&root));
+        assert_eq!(
+            seed_decision_with(true, &s(&root), &state),
+            Ok(SeedDecision::KeepExisting)
+        );
+
+        // Next launch: a fresh client probes, inspect confirms the owner.
+        let client = PersonalProjectionClient::new(env.wrapper(&artifact(), &state));
+        assert!(launch_check_with(&client, &s(&root), &state));
+    }
+
+    #[test]
+    #[ignore = "needs a local hq-cloud artifact and a stub vault"]
+    fn personal_root_artifact_existing_folder_goes_to_review_never_initialize() {
+        let env = Env::new();
+        let state = env.base.join("state");
+        let root = env.base.join("Existing").join("hq");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("notes.md"), "mine").unwrap();
+        let client = PersonalProjectionClient::new(env.wrapper(&artifact(), &state));
+
+        let record = prepare_with(&client, &s(&root), &state);
+        assert_eq!(record.phase, RootPhase::AdoptionReview, "{record:?}");
+        assert_eq!(
+            std::fs::read_to_string(root.join("notes.md")).unwrap(),
+            "mine"
+        );
+
+        // The plan step returns either the reviewed plan or a typed pause; never
+        // an unsupported-binary result. Nothing is uploaded or deleted.
+        let planned = plan_adoption_with(&client, &state).unwrap();
+        eprintln!(
+            "plan-adoption: phase={:?} reason={:?} plan={}",
+            planned.phase,
+            planned.reason,
+            planned.plan.is_some()
+        );
+        assert_ne!(planned.reason.as_deref(), Some("unsupported_cli"));
+        assert_eq!(
+            std::fs::read_to_string(root.join("notes.md")).unwrap(),
+            "mine"
+        );
+
+        // The real wrapper accepts the verbatim plan for the two local-only
+        // phases. Preserve snapshots and adopt records pending ownership;
+        // neither uploads. Baseline (upload) is not run here.
+        let digest = PersonalRootView::from_record(&planned)
+            .plan
+            .expect("reviewed plan")
+            .approved_plan_digest;
+        for (phase, expected) in [
+            (Phase::Preserve, RootPhase::Preserved),
+            (Phase::Adopt, RootPhase::Adopted),
+        ] {
+            let client = PersonalProjectionClient::new(env.wrapper(&artifact(), &state));
+            let approval = UserApproval {
+                phase,
+                plan_digest: digest.clone(),
+            };
+            let result = approve_with(&client, &state, &approval).unwrap();
+            assert_eq!(result.record.phase, expected, "{:?}", result.record);
+            assert!(!result.start_runner);
+        }
+        assert_eq!(
+            std::fs::read_to_string(root.join("notes.md")).unwrap(),
+            "mine"
+        );
+    }
+
+    #[test]
+    #[ignore = "needs a published hq-cloud build without the paired API"]
+    fn personal_root_artifact_unsupported_binary_pauses_and_creates_nothing() {
+        let old = std::env::var("HQ_H8_OLD_BIN").expect("HQ_H8_OLD_BIN");
+        let env = Env::new();
+        let state = env.base.join("state");
+        let root = env.base.join("Work").join("hq");
+        let client = PersonalProjectionClient::new(env.wrapper(&old, &state));
+
+        let record = prepare_with(&client, &s(&root), &state);
+        assert_eq!(
+            record.reason.as_deref(),
+            Some("unsupported_cli"),
+            "{record:?}"
+        );
+        assert!(!root.exists());
+        assert!(!root.parent().unwrap().exists());
+    }
+}
