@@ -7,6 +7,7 @@
   import type { Component } from "svelte";
   import type { AdapterPromise, Json } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
+  import type { DeployDomainRequest, DomainPrices } from "../company/files-connect/custom-domain.js";
 
   interface Props {
     accountId?: string;
@@ -19,13 +20,17 @@
       refresh: boolean,
       gate?: { scope: string; protected: boolean },
     ) => AdapterPromise<Json>;
-    companies?: Pick<Workspace, "slug" | "displayName" | "kind" | "state">[];
+    companies?: (Pick<Workspace, "slug" | "displayName" | "kind" | "state"> & Partial<Pick<Workspace, "cloudUid" | "role">>)[];
+    /** US-007: the company Custom domain sheet on company rows. */
+    deployDomainRequest?: DeployDomainRequest | null;
+    loadDomainPrices?: (() => Promise<DomainPrices | null>) | null;
+    domainCardEntryUrl?: ((companyUid: string) => Promise<string | null>) | null;
     openExternal?: (url: string) => void;
     /** RELEASE-001 gate for Redeploy and the "Your bots" filter. */
     actions?: boolean;
   }
 
-  let { accountId = "local", listDeployApps, deployAppPreview, deployAppSnapshot, companies = [], openExternal, actions = true }: Props = $props();
+  let { accountId = "local", listDeployApps, deployAppPreview, deployAppSnapshot, companies = [], deployDomainRequest = null, loadDomainPrices = null, domainCardEntryUrl = null, openExternal, actions = true }: Props = $props();
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let Page = $state<Component<any> | null>(null);
@@ -46,7 +51,7 @@
 
 <div class="host" data-testid="personal-deployments-host">
   {#if Page}
-    <Page {accountId} {listDeployApps} {deployAppPreview} {deployAppSnapshot} {companies} {openExternal} {actions} />
+    <Page {accountId} {listDeployApps} {deployAppPreview} {deployAppSnapshot} {companies} {deployDomainRequest} {loadDomainPrices} {domainCardEntryUrl} {openExternal} {actions} />
   {:else}
     <div class="loading" aria-busy="true">
       <ReadLoader testid="personal-deployments-loading" />
