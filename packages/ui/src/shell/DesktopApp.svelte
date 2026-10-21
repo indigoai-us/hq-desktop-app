@@ -14464,6 +14464,7 @@
               listDeployApps: adapter.company?.listDeployApps,
               adapter,
               companyUid: companyPaneCompany.uid ?? null,
+              companyRole: companyPaneRole ?? null,
               deployActions: railGate(RAIL_DEPLOYMENTS_ACTIONS_FLAG),
               companyLabel: companyPaneCompany.label,
               vaultCloudRead: (key: string) => vaultCloudRead(companyPaneCompany?.uid ?? null, key),

@@ -1412,6 +1412,8 @@ export function createSyncPlatformAdapter(
         }),
       deployAccessRequest: (scope, method, path, body) =>
         call('deploy_access_request', { scope, method, path, body: body ?? null }),
+      deployDomainRequest: (scope, method, path, body) =>
+        call('deploy_domain_request', { scope, method, path, body: body ?? null }),
       getSecrets: (slug) => call('get_company_secrets', { slug }),
       listMembers: (slug) =>
         call('list_company_members', { companyUid: slug }),
