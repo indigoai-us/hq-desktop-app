@@ -1300,7 +1300,7 @@ mod tests {
 
     #[test]
     fn materialization_preserves_terminal_resolution_without_raw_stderr() {
-        for code in ["ETARGET", "E404"] {
+        for code in ["ETARGET", "E404", "EINVALIDPACKAGENAME", "EUNSUPPORTEDPROTOCOL", "EBADENGINE", "EACCES", "E401", "E403", "ENEEDAUTH"] {
             let error = npx_materialization_error(Some(1), &format!("npm error code {code}\nprivate path"));
             assert!(crate::sync_retry_episode::terminal_resolution_failure(&error));
             assert!(!error.contains("private path"));

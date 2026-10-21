@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 pub const MAX_FAILURES: u32 = 6;
 pub const RETRY_REQUIRED: &str =
     "Automatic sync recovery stopped after a setup failure. Fix the problem, then try Sync Now again.";
-pub const TERMINAL_RESOLUTION: &str = "HQ Sync could not find the sync engine in the package registry. Check the npm registry/cache setup, then try Sync Now again.";
+pub const TERMINAL_RESOLUTION: &str = "HQ Sync could not start its sync engine because npm reported a setup or access problem. Correct the npm registry, credentials or permissions, then try Sync Now again.";
 const FILE: &str = ".hq-sync-retry.json";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -22,6 +22,10 @@ struct Episode {
     version: String,
     failures: u32,
     terminal_resolution: bool,
+    // Preserve forward-compatible recovery metadata without interpreting or
+    // logging its contents. The complete record remains bounded to 4096 bytes.
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Episode {
@@ -39,7 +43,20 @@ pub fn terminal_resolution_failure(message: &str) -> bool {
             ["npm error code ", "npm ERR! code "].iter().any(|prefix| {
                 line.strip_prefix(prefix)
                     .and_then(|rest| rest.split_whitespace().next())
-                    .is_some_and(|code| matches!(code, "ETARGET" | "E404"))
+                    .is_some_and(|code| {
+                        matches!(
+                            code,
+                            "ETARGET"
+                                | "E404"
+                                | "EINVALIDPACKAGENAME"
+                                | "EUNSUPPORTEDPROTOCOL"
+                                | "EBADENGINE"
+                                | "EACCES"
+                                | "E401"
+                                | "E403"
+                                | "ENEEDAUTH"
+                        )
+                    })
             })
         })
 }
@@ -94,17 +111,20 @@ fn update<T>(
     };
     let before = serde_json::to_vec(&episode).map_err(|e| e.to_string())?;
     if episode.version != version {
-        episode = Episode {
-            version: version.to_string(),
-            ..Episode::default()
-        };
+        episode.version = version.to_string();
+        episode.failures = 0;
+        episode.terminal_resolution = false;
     }
     let result = action(&mut episode);
-    if serde_json::to_vec(&episode).map_err(|e| e.to_string())? == before {
+    let after = serde_json::to_vec(&episode).map_err(|e| e.to_string())?;
+    if after == before {
         return Ok(result);
     }
+    if after.len() > 4096 {
+        return Err("Sync recovery metadata exceeds the safe size limit; existing state was preserved. Contact support to reset it.".into());
+    }
     let mut temp = tempfile::NamedTempFile::new_in(root).map_err(|e| e.to_string())?;
-    serde_json::to_writer(&mut temp, &episode).map_err(|e| e.to_string())?;
+    temp.write_all(&after).map_err(|e| e.to_string())?;
     temp.flush().map_err(|e| e.to_string())?;
     temp.as_file().sync_all().map_err(|e| e.to_string())?;
     temp.persist(&file).map_err(|e| e.to_string())?;
@@ -160,6 +180,82 @@ pub fn healthy(root: &Path, version: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authoritative_npm_codes_match_only_exact_diagnostic_lines() {
+        for code in [
+            "ETARGET",
+            "E404",
+            "EINVALIDPACKAGENAME",
+            "EUNSUPPORTEDPROTOCOL",
+            "EBADENGINE",
+            "EACCES",
+            "E401",
+            "E403",
+            "ENEEDAUTH",
+        ] {
+            for prefix in ["npm error code ", "npm ERR! code "] {
+                assert!(
+                    terminal_resolution_failure(&format!("{prefix}{code}")),
+                    "{prefix}{code}"
+                );
+                assert!(!terminal_resolution_failure(&format!(
+                    "{prefix}{code}_OTHER"
+                )));
+            }
+            assert!(!terminal_resolution_failure(code));
+            assert!(!terminal_resolution_failure(&format!(
+                "/tmp/npm error code {code}"
+            )));
+        }
+        for code in [
+            "ECONNRESET",
+            "ETIMEDOUT",
+            "ENOTFOUND",
+            "EAI_AGAIN",
+            "ECONNREFUSED",
+            "EINTEGRITY",
+            "EPERM",
+            "EBUSY",
+            "ENOSPC",
+        ] {
+            for prefix in ["npm error code ", "npm ERR! code "] {
+                assert!(
+                    !terminal_resolution_failure(&format!("{prefix}{code}")),
+                    "{prefix}{code}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn optional_and_unknown_metadata_survive_updates_and_version_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let metadata = serde_json::json!({"reason":"npm_setup", "detail":"safe owner detail",
+            "window_started_at":1, "held_at":2, "updated_at":3,
+            "future_metadata":{"schema":2}});
+        let mut record = metadata.as_object().unwrap().clone();
+        record.extend(
+            serde_json::json!({"version":"v1", "failures":6,
+            "terminal_resolution":true})
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        fs::write(dir.path().join(FILE), serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(!allow_start(dir.path(), "v1", false).unwrap());
+        assert!(allow_start(dir.path(), "v1", true).unwrap());
+        record_failure(dir.path(), "v1", "temporary timeout").unwrap();
+        healthy(dir.path(), "v1").unwrap();
+        assert!(allow_start(dir.path(), "v2", false).unwrap());
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.path().join(FILE)).unwrap()).unwrap();
+        for (key, value) in metadata.as_object().unwrap() {
+            assert_eq!(&saved[key], value, "metadata key {key}");
+        }
+        assert_eq!(saved["version"], "v2");
+        assert_eq!(saved["failures"], 0);
+    }
 
     #[test]
     fn explicit_retry_preserves_invalid_state_before_repair() {

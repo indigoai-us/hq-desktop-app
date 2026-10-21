@@ -8,7 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- Sync: the desktop npm-based runner now stops automatic recovery when npm cannot find the sync engine, or after repeated failures, instead of trying indefinitely. The reason stays visible after restarting HQ. After fixing the underlying problem, use Sync Now to try again; ordinary temporary failures still retry automatically.
+- Sync: the desktop npm-based runner now stops automatic recovery when npm reports a permanent setup or access problem, or after repeated failures, instead of trying indefinitely. The reason stays visible after restarting HQ. After fixing the underlying problem, use Sync Now to try again; ordinary temporary failures still retry automatically.
 
 - Library notes: wide markdown tables now scroll sideways instead of squeezing into the reading column, and table cells no longer split words in the middle (for example "Shopi/fy").
 - Indigo beta: open Office directly from Company navigation to see your company's office hours and start native calls. Office stays hidden outside the enabled company and in browser hosts.
