@@ -26,7 +26,7 @@ for (const scheme of ['dark', 'light']) {
   const page = await browser.newPage({ viewport: { width: 760, height: 720 }, colorScheme: scheme });
   page.on('pageerror', (e) => errors.push(`${scheme} ${e.message}`));
   for (const s of STATES) {
-    await page.goto(base + s.state, { waitUntil: 'networkidle' });
+    await page.goto(`${base}${s.state}&theme=${scheme}`, { waitUntil: 'networkidle' });
     await page.waitForSelector('[data-testid="custom-domain-form"]', { timeout: 15000 });
     await page.waitForTimeout(500);
     if (s.type) await page.fill('[data-testid="custom-domain-input"]', s.type);

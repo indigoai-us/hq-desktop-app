@@ -5,6 +5,7 @@
 -->
 <script lang="ts">
   import CustomDomainForm from '../../../packages/ui/src/company/files-connect/CustomDomainForm.svelte';
+  import '../src/desktop-alt/v4/tokens.css';
   import '../../../packages/ui/src/home/tokens.css';
   import '../../../packages/ui/src/chat/chat-tokens.css';
 
@@ -30,7 +31,7 @@
   }
 </script>
 
-<div class="stage">
+<div class="stage chat-shell">
   <div class="sheet" role="dialog" aria-label="Custom domain">
     <header class="sh"><span>Custom domain</span></header>
     <CustomDomainForm
@@ -50,7 +51,8 @@
 </div>
 
 <style>
-  .stage { min-height: 100vh; display: grid; place-items: center; background: var(--v4-ground, #111); font-family: var(--font-ui); font-size: 13px; color: var(--t1, #eee); }
-  .sheet { width: 560px; border: 1px solid var(--line, #333); border-radius: 12px; background: var(--raised, #1b1b1b); overflow: hidden; }
-  .sh { display: flex; align-items: center; height: 44px; padding: 0 20px; border-bottom: 1px solid var(--line, #333); font-weight: 500; }
+  /* The company Deployments sheet frame (FilesConnectPage.svelte), on the app ground. */
+  .stage { min-height: 100vh; display: grid; place-items: center; background: var(--v4-ground); font: 400 13px/1.45 var(--font-ui, var(--font-sans)); color: var(--t1, var(--v4-text-1)); }
+  .sheet { width: min(480px, calc(100vw - 32px)); border: 1px solid var(--panel-border, var(--v4-hairline)); border-radius: 8px; background: var(--overlay-bg, var(--panel-bg, var(--v4-popover))); overflow: hidden; }
+  .sh { display: flex; align-items: center; height: 52px; padding: 0 20px; border-bottom: 1px solid var(--panel-border, var(--v4-hairline)); font-weight: 500; }
 </style>
