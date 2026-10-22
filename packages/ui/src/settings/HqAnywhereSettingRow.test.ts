@@ -129,7 +129,7 @@ describe("Settings > HQ Anywhere", () => {
 
     await vi.waitFor(() => expect(toggle()?.getAttribute("aria-checked")).toBe("true"));
     expect(putHqAnywherePersonSetting).toHaveBeenCalledWith(true);
-    await vi.waitFor(() => expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(true));
+    await vi.waitFor(() => expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(true, true));
   });
 
   it("turns the setting off", async () => {
@@ -141,7 +141,7 @@ describe("Settings > HQ Anywhere", () => {
 
     await vi.waitFor(() => expect(toggle()?.getAttribute("aria-checked")).toBe("false"));
     expect(putHqAnywherePersonSetting).toHaveBeenCalledWith(false);
-    await vi.waitFor(() => expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(false));
+    await vi.waitFor(() => expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(false, true));
   });
 
   it("keeps the toggle optimistic and shows a muted setup hint while install runs", async () => {
@@ -264,6 +264,26 @@ describe("Settings > HQ Anywhere", () => {
     expect(host.querySelector('[data-testid="hq-anywhere-setting-retry"]')).toBeNull();
   });
 
+  it("retries a failed startup reconciliation as launch sync, never as the person's own switch-off", async () => {
+    const syncRuntime = vi.fn<(enabled: boolean, explicit?: boolean) => Promise<AdapterResult<void>>>(
+      async () => failure("network", "raw startup setup detail"),
+    );
+    const { adapter } = createAdapter({ initialValue: true, syncRuntime });
+    render(adapter);
+    await vi.waitFor(() => expect(toggle()?.disabled).toBe(false));
+
+    await ensureHqAnywhereGlobalRuntime(adapter.identity, adapter.settings, {
+      pause: async () => {},
+    });
+    expect(syncRuntime).toHaveBeenCalledTimes(3);
+    expect(syncRuntime.mock.calls.every(([, explicit]) => explicit === false)).toBe(true);
+
+    syncRuntime.mockResolvedValue(ok(undefined));
+    host.querySelector<HTMLButtonElement>('[data-testid="hq-anywhere-setting-retry"]')!.click();
+    await vi.waitFor(() => expect(syncRuntime).toHaveBeenCalledTimes(4));
+    expect(syncRuntime).toHaveBeenLastCalledWith(true, false);
+  });
+
   it("shows one unavailable line and skips every setting call when the kill switch is explicitly false", async () => {
     let releaseFlag!: () => void;
     let flagSettled = false;
@@ -358,5 +378,17 @@ describe("Settings > HQ Anywhere", () => {
     expect(unavailableRow()).toBeNull();
     expect(getHqAnywherePersonSetting).toHaveBeenCalledTimes(1);
     warn.mockRestore();
+  });
+
+  it("does not add a line about removing an install", async () => {
+    const { adapter } = createAdapter({ initialValue: true });
+    render(adapter);
+
+    await vi.waitFor(() => expect(toggle()?.getAttribute("aria-checked")).toBe("true"));
+    expect(host.querySelector('[data-testid="hq-anywhere-setting-adopted-off"]')).toBeNull();
+    expect(host.textContent).not.toContain("Turning this off removes that install.");
+    expect(host.textContent).toContain(
+      "Use your HQ context in Claude Code, Codex, ChatGPT and Grok",
+    );
   });
 });

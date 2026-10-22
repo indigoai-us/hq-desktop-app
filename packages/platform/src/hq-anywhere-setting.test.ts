@@ -87,7 +87,7 @@ describe("HQ Anywhere setting support", () => {
       getHqAnywherePersonSetting: vi.fn(async () => ok(true)), syncHqAnywhereGlobal,
     } as unknown as PlatformAdapter["settings"];
     await ensureHqAnywhereGlobalRuntime(identity, settings);
-    expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(true);
+    expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(true, false);
   });
 
   it("retries a setting request three times with increasing backoff", async () => {
@@ -128,7 +128,7 @@ describe("HQ Anywhere setting support", () => {
     await expect(ensureHqAnywhereGlobalRuntime(identity, settings, { pause: async () => {} }))
       .resolves.toEqual(ok(undefined));
     expect(settings.getHqAnywherePersonSetting).toHaveBeenCalledTimes(1);
-    expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(true);
+    expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(true, false);
   });
 
   it("preserves manually installed runtimes when startup reads an opt-out", async () => {
@@ -144,6 +144,29 @@ describe("HQ Anywhere setting support", () => {
     await expect(ensureHqAnywhereGlobalRuntime(identity, settings, { pause: async () => {} }))
       .resolves.toEqual(ok(undefined));
     expect(syncHqAnywhereGlobal).not.toHaveBeenCalled();
+  });
+
+  // The desktop removes a setup whose record no longer matches only when the
+  // person turned the switch off themselves (hq_anywhere.rs GlobalInstallTrigger).
+  it("passes a person's own choice to the desktop and keeps launch sync a reconcile", async () => {
+    const syncHqAnywhereGlobal = vi.fn(async () => ok(undefined));
+    const settings = {
+      getHqAnywherePersonSetting: vi.fn(async () => ok(false)),
+      syncHqAnywhereGlobal,
+    } as unknown as PlatformAdapter["settings"];
+    const identity = {
+      resolveFeatureFlagStatus: vi.fn(async () => ok({ enabled: true, configured: true })),
+    } as unknown as PlatformAdapter["identity"];
+
+    await expect(
+      setHqAnywhereGlobalRuntime(identity, settings, false, { pause: async () => {}, explicit: true }),
+    ).resolves.toEqual(ok(undefined));
+    await expect(setHqAnywhereGlobalRuntime(identity, settings, false, { pause: async () => {} }))
+      .resolves.toEqual(ok(undefined));
+    await expect(ensureHqAnywhereGlobalRuntime(identity, settings, { pause: async () => {} }))
+      .resolves.toEqual(ok(undefined));
+    // Launch sync with a saved opt-out leaves the runtime alone (#1686), so only the two set calls reach the desktop.
+    expect(syncHqAnywhereGlobal.mock.calls).toEqual([[false, true], [false, false]]);
   });
 
   it("does not read or change global files while the runtime flag is off", async () => {
@@ -195,7 +218,7 @@ describe("HQ Anywhere setting support", () => {
       .resolves.toEqual(ok(undefined));
     expect(getHqAnywherePersonSetting).toHaveBeenCalledTimes(1);
     expect(syncHqAnywhereGlobal).toHaveBeenCalledTimes(1);
-    expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(true);
+    expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(true, false);
     warn.mockRestore();
   });
 
@@ -220,7 +243,7 @@ describe("HQ Anywhere setting support", () => {
       await expect(
         ensureHqAnywhereGlobalRuntime(identity, settings, { pause: async () => {} }),
       ).resolves.toEqual(ok(undefined));
-      expect(statuses).toContainEqual({ state: "running", enabled: null });
+      expect(statuses).toContainEqual({ state: "running", enabled: null, explicit: false });
       expect(statuses.at(-1)).toEqual({ state: "idle" });
       expect(syncHqAnywhereGlobal).not.toHaveBeenCalled();
     } finally {
@@ -303,7 +326,7 @@ describe("HQ Anywhere setting support", () => {
       });
       expect(isHqAnywhereSetupPending(result)).toBe(true);
       expect(syncHqAnywhereGlobal).toHaveBeenCalledTimes(1);
-      expect(statuses.at(-1)).toEqual({ state: "pending", enabled: true });
+      expect(statuses.at(-1)).toEqual({ state: "pending", enabled: true, explicit: false });
     } finally {
       unsubscribe();
     }

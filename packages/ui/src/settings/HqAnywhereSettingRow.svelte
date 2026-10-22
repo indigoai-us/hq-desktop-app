@@ -103,7 +103,8 @@
       retryValue = null;
     } else if (status.state === "failed" || status.state === "pending") {
       setupRunning = false;
-      retryKind = status.enabled === null ? "reconcile" : "setup";
+      // Only the person's own switch retries as their choice; launch sync retries as launch sync.
+      retryKind = status.explicit && status.enabled !== null ? "setup" : "reconcile";
       retryValue = status.enabled;
     } else {
       setupRunning = false;
@@ -165,7 +166,9 @@
     } finally {
       saving = false;
     }
-    if (saved) await configureGlobalRuntime(value);
+    if (saved) {
+      await configureGlobalRuntime(value);
+    }
   }
 
   async function configureGlobalRuntime(value: boolean): Promise<void> {
@@ -179,6 +182,7 @@
         adapter.identity,
         adapter.settings,
         value,
+        { explicit: true },
       );
       if (!result.ok) {
         console.warn("[hq-anywhere] global runtime setup failed:", result);

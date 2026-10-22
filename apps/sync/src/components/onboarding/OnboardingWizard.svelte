@@ -3969,6 +3969,7 @@
         onboardingFeatureFlags.identity,
         onboardingFeatureFlags.settings,
         value,
+        { explicit: true },
       );
       if (!result.ok) {
         console.warn('[onboarding-hq-anywhere] global runtime setup failed:', result);
