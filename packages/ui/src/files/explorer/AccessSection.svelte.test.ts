@@ -166,8 +166,8 @@ describe("OWNER-R17 AccessSection", () => {
     const el = render({ vault: COMPANY, path: `companies/acme/${uniquePath("projects")}`, isDir: true, companyUid: "cmp_acme", readTree, ongrant: vi.fn() });
     await settle();
     expect(el.querySelector("[data-testid='access-failed']")).toBeNull();
-    const rows = [...el.querySelectorAll("[data-testid='access-row']")].map((r) => r.textContent?.replace(/\s+/g, " ").trim());
-    expect(rows).toEqual(["Company owners Admin Owner of this company"]);
+    // With no row on or above the folder the panel states the default (PR 1760).
+    expect(el.querySelector("[data-testid='access-no-record']")?.textContent?.trim()).toBe("Uses the company's default access");
     expect(el.querySelector("[data-testid='access-grant']")).not.toBeNull();
   });
 
