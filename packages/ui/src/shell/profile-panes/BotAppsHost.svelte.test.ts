@@ -18,7 +18,7 @@ async function setup(flag = true, granted = false, mutationOk = true) {
     install: vi.fn(async () => ({ ok: true, value: {} })),
     startOAuth: vi.fn(), uninstall: vi.fn(),
   };
-  const adapter = { integrations, identity: { hasFeature: vi.fn(async () => ({ ok: true, value: flag })) }, agents: { getProfile: vi.fn(async () => ({ ok: true, value: { agent: { uid: 'agt_a' }, box: {} } })) } };
+  const adapter = { integrations, identity: { hasFeature: vi.fn(async () => ({ ok: true, value: flag })) }, agents: { getProfile: vi.fn(async () => ({ ok: true, value: { agent: { uid: 'agt_a', role: 'member' }, box: {} } })) } };
   component = mount(BotAppsHost, { target, props: { uid: 'agt_a', companyUid: 'cmp_a', name: 'Scout', adapter: adapter as never, onopenurl: vi.fn() } });
   await settle(); return integrations;
 }
@@ -89,7 +89,7 @@ it('ignores a connect result that finishes after the panel switched to another b
     install: vi.fn(() => new Promise(resolve => { finishInstall = resolve; })),
     startOAuth: vi.fn(), uninstall: vi.fn(),
   };
-  const adapter = { integrations, identity: { hasFeature: vi.fn(async () => ({ ok: true, value: true })) }, agents: { getProfile: vi.fn(async (uid: string) => ({ ok: true, value: { agent: { uid }, box: {} } })) } };
+  const adapter = { integrations, identity: { hasFeature: vi.fn(async () => ({ ok: true, value: true })) }, agents: { getProfile: vi.fn(async (uid: string) => ({ ok: true, value: { agent: { uid, role: 'member' }, box: {} } })) } };
   const props = $state({ uid: 'agt_a', companyUid: 'cmp_a', name: 'Scout', adapter: adapter as never, onopenurl: vi.fn() });
   component = mount(BotAppsHost, { target, props: props as never });
   await settle();

@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { botApps, companyHasCatalogApp, supportedApps } from './bot-apps.js';
 import { profileFromPayload } from '../../chat/agent-detail-model.js';
 const connection = { id: 'c1', name: 'Linear', provider: 'linear', domain: 'linear.app', mode: 'shared', createdBy: 'person_a', createdAt: '' };
-const profile = profileFromPayload({ agent: { uid: 'agt_a' }, box: {} }, { uid: 'agt_a', displayName: 'Scout' });
+const profile = profileFromPayload({ agent: { uid: 'agt_a', role: 'member' }, box: {} }, { uid: 'agt_a', displayName: 'Scout' });
+const noRole = profileFromPayload({ agent: { uid: 'agt_a' }, box: {} }, { uid: 'agt_a', displayName: 'Scout' });
 const acl = { mode: 'shared', canManage: true, entries: [{ granteeType: 'person', granteeId: 'agt_a', permission: 'read' }] };
 describe('bot apps', () => {
   it('lists only supported MCP entries with known connection methods', () => {
@@ -116,6 +117,15 @@ describe('bot apps', () => {
   it('treats a missing bot profile as unverified rather than not on the bot', () => {
     expect(botApps([connection], { c1: { ...acl, entries: [] } }, null, 'agt_a', true)[0]).toMatchObject({ onBot: false, status: 'unknown', canToggle: false });
     expect(botApps([connection], { c1: acl }, null, 'agt_a', true)[0]).toMatchObject({ onBot: true, status: 'ready' });
+  });
+  it('treats a bot profile without a role as unverified, keeping proven grants and known denials', () => {
+    expect(noRole?.role).toBeNull();
+    const empty = { ...acl, entries: [] };
+    expect(botApps([connection], { c1: empty }, noRole, 'agt_a', true)[0]).toMatchObject({ onBot: false, enabled: false, status: 'unknown', canToggle: true, detail: 'HQ could not load this bot’s company role, so it cannot confirm whether the bot has this connection. Refresh to try again.' });
+    expect(botApps([connection], { c1: acl }, noRole, 'agt_a', true)[0]).toMatchObject({ onBot: true, enabled: true, status: 'ready' });
+    expect(botApps([{ ...connection, mode: 'everyone' }], { c1: empty }, noRole, 'agt_a', true)[0]).toMatchObject({ onBot: true, status: 'ready' });
+    expect(botApps([connection], { c1: empty }, profile, 'agt_a', true)[0]).toMatchObject({ onBot: false, status: 'available' });
+    expect(botApps([connection], { c1: empty }, { ...noRole!, role: 'admin', freshness: { source: 'cache' as const, fetchedAt: null } }, 'agt_a', true)[0]).toMatchObject({ onBot: true, status: 'ready' });
   });
   it('marks a hidden grant as unverified when a sleeping bot reports no apps', () => {
     const asleep = { ...profile!, freshness: { source: 'cache' as const, fetchedAt: null } };

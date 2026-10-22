@@ -2,7 +2,8 @@
 import { mount, unmount, tick } from 'svelte';
 import { afterEach, expect, it, vi } from 'vitest';
 import BotAppsPanel from './BotAppsPanel.svelte';
-import { botAppLogo, type BotApp, type SupportedApp } from './bot-apps.js';
+import { botAppLogo, botApps, type BotApp, type SupportedApp } from './bot-apps.js';
+import { profileFromPayload } from '../../chat/agent-detail-model.js';
 let component: ReturnType<typeof mount> | undefined, target: HTMLElement;
 afterEach(async () => { if (component) await unmount(component); component = undefined; target?.remove(); });
 const settle = async () => { for (let i = 0; i < 5; i++) { await tick(); await Promise.resolve(); } };
@@ -134,6 +135,14 @@ it('shows a short empty line when no company apps are connected', async () => {
   expect(target.querySelector('[aria-label="Filter bot apps"]')).toBeNull();
   await openBrowse();
   expect(names('[data-testid=company-app]')).toEqual(['Notion', 'Slack']);
+});
+it('does not say no apps are connected when the bot profile has no role', async () => {
+  const profile = profileFromPayload({ agent: { uid: 'agt_a' }, box: {} }, { uid: 'agt_a', displayName: 'Scout' });
+  const linear = { id: 'c1', name: 'Linear', provider: 'linear', domain: 'linear.app', mode: 'shared', createdBy: 'person_a', createdAt: '' };
+  await setup({ rows: botApps([linear], { c1: { mode: 'shared', canManage: true, entries: [] } }, profile, 'agt_a', true), title: 'Company apps' });
+  expect(target.querySelector('[data-testid=bot-apps-empty]')).toBeNull();
+  expect(target.textContent).not.toContain('No company apps are connected to this bot.');
+  expect(target.textContent).toContain('Could not check this bot’s access to 1 company app.');
 });
 it('shows an error instead of the empty line when the access check failed', async () => {
   await setup({ rows: [row('notion', 'Notion', 'unknown', false), row('slack', 'Slack', 'available', false)] });

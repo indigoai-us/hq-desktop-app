@@ -44,7 +44,7 @@ export function botApps(connections: CompanyConnection[], access: Record<string,
     const grant = acl && input ? botConnectionGrantState({ ...input, access: acl }) : null;
     const readOnly = state === 'read-only';
     const redacted = !!acl && readOnly && grant === 'off' && acl.entries.length === 0 && (connection.mode === 'shared' || connection.mode === 'private');
-    const roleUnknown = !!acl && !profile && grant === 'off';
+    const roleUnknown = !!acl && !profile?.role && grant === 'off';
     const grantUnknown = !acl || redacted || roleUnknown;
     if (grantUnknown) unknownGrant.add(connection.provider);
     const granted = !grantUnknown && grant !== null && botConnectionIsOn(grant);
