@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Company jobs: owners and admins can add, edit, pause, resume, remove, and run scheduled jobs for a company Outpost, including a Watchdog starting point. A one-time job cannot be edited, but it can be paused, run, or removed. The list shows the last run, the next run, and whether a job is waiting for its first run, ran on time, was missed, blocked, out of date, paused, or unknown. Members can view jobs but cannot change them. If a company cannot use Outposts yet, the screen says so and offers a Contact us button.
 - Setup and the hq CLI repair now write the managed `PATH` into `.claude/settings.local.json` and no longer add it to `.claude/settings.json`, so setup stops making that file show up as Core Drift. Directories you already had in either file's `PATH`, and every other value in settings.local.json, are kept. If settings.local.json doesn't exist yet, it is created. Update / Restore now tells the rescue step where the hq CLI is installed, so rescue can read the HQ setting that moves `PATH` into settings.local.json. Before, rescue could not find the CLI and always wrote `PATH` into settings.json.
 - Knowledge: the company file browser now lists all file types, including images, PDFs, HTML and Word documents, in folders, search and file counts. Images and PDFs use the existing authorized preview; HTML appears as text, and files that cannot be previewed can be shown in their folder.
 
