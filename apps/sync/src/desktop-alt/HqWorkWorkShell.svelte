@@ -15,6 +15,7 @@
   import {
     approvedPlanUpgradeUrl,
     parseUsagePause,
+    roleCanManageBilling,
     createSyncPlatformAdapter,
     DESKTOP_LIMIT_STATUS_PUSH_FLAG,
     type SyncInvokeFn,
@@ -688,7 +689,11 @@
             workspace.slug,
             upgradeUrl,
             pause.usageReason
-              ? usagePauseFromReason(pause.usageReason, workspace.displayName || workspace.slug, pause.usageContext)
+              ? usagePauseFromReason(pause.usageReason, workspace.displayName || workspace.slug, {
+                  ...pause.usageContext,
+                  // Owners and admins get the Billing pointer in the copy.
+                  canManageBilling: roleCanManageBilling(workspace.role),
+                })
               : null,
           );
         } catch (error) {

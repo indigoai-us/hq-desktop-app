@@ -205,6 +205,25 @@ describe("billingState wins on account lines (US-024)", () => {
     expect(accountTrial({ usageTrial: { status: "active", endsAt: "2026-10-30T00:00:00.000Z" } }, NOW)?.daysLeft).toBe(8);
   });
 
+  it("review #1773: a carded trial cap with resumesOn null shows the first-invoice resume, not the trial end", async () => {
+    const getBillingSummary = vi.fn(async () =>
+      ok({
+        usageTrial: { status: "active", endsAt: "2026-10-27T00:00:00.000Z", capCents: 2500, syncPaused: true, pauseReason: "usage_trial_cap", capReached: true },
+        billingState: state("usage-trial", {
+          trial: { daysLeft: 5, endsAt: "2026-10-27T00:00:00.000Z", capCents: 2500, usedCents: 2500 },
+          cardOnFile: true,
+          paused: { reason: "usage_trial_cap", resumesOn: null },
+          actions: { addCard: false, raiseLimit: true, switchToUsage: false, manageBilling: true },
+        }),
+      }),
+    );
+    const view = await readAccountRow({ getBillingSummary }, owner, null, () => NOW);
+    if (view.kind !== "ready" || !view.notice) throw new Error("expected a ready line with a notice");
+    expect(view.notice.text).toContain("Usage resumes when the first invoice is paid.");
+    expect(view.notice.text).not.toMatch(/Oct 27|trial ends|add a card/i);
+    expect(view.notice.actionLabel).toBe("Manage billing");
+  });
+
   it("a person summary with a usage billingState reads as usage without a personalUsage record", async () => {
     const getPersonalBillingSummary = vi.fn(async () => ok({ billingState: { ...state("usage"), scope: "person" } }));
     const view = await readAccountRow({ getPersonalBillingSummary }, { kind: "personal", uid: null, name: "Personal", role: null } as never, null, () => NOW);

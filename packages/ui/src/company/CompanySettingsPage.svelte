@@ -154,8 +154,12 @@
   const usageVaultCents = $derived(usage ? vaultCostCents(usage.statement) : null);
   const usageTrialActive = $derived(usage?.trial?.status === "active");
   // A usage pause in force: from the owner summary, else the membership row
-  // (admins and members cannot read the summary).
-  const pauseState = $derived(usage?.billingState?.paused ? usage.billingState : billingState?.paused ? billingState : null);
+  // (admins and members cannot read the summary). When the owner summary has
+  // a billingState it decides: `paused: null` there means no pause, even if
+  // an older membership row still carries one.
+  const pauseState = $derived(
+    usage?.billingState ? (usage.billingState.paused ? usage.billingState : null) : billingState?.paused ? billingState : null,
+  );
   const pausedReason = $derived(pauseState?.paused?.reason ?? null);
   // The pause copy follows the whole state, not the reason alone: a trial
   // cap with a card on file lifts at trial end, so it never asks for a card.

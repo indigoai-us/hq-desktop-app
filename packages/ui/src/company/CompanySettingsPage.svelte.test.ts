@@ -489,6 +489,41 @@ describe("CompanySettingsPage Billing: usage-priced companies (US-014)", () => {
     expect(target.querySelector("[data-testid='usage-paused-ask-owner']")).toBeNull();
   });
 
+  it("review #1773: a carded capped trial with resumesOn null says usage resumes at the first paid invoice, not the trial end", async () => {
+    const pausedState = { ...usageTrialState, cardOnFile: true, paused: { reason: "usage_trial_cap", resumesOn: null }, actions: { addCard: false, raiseLimit: true, switchToUsage: false, manageBilling: true } };
+    const company = {
+      ...roster(),
+      getBillingSummary: vi.fn(async () => ({ ok: true as const, value: { companyUid: "cmp_unicom", billingState: pausedState } })),
+      getUsageStatement: vi.fn(async () => ({ ok: true as const, value: statement })),
+    };
+    const target = render({ slug: "unicom-cap-first-invoice", companyUid: "cmp_unicom", company, role: "Owner" });
+    openWorkforce(target);
+    await vi.waitFor(() => {
+      flushSync();
+      expect(text(target, "usage-paused")).toContain("Cloud sync is paused.");
+    });
+    expect(text(target, "usage-paused")).toContain("Usage resumes when the first invoice is paid.");
+    expect(text(target, "usage-paused")).not.toMatch(/trial ends|paused until|add a card/i);
+    // The company name still renders through CompanyLabel.
+    expect(target.querySelector("[data-testid='usage-paused'] [data-testid='company-label']")).not.toBeNull();
+  });
+
+  it("review #1773: an owner summary with billingState.paused null hides a stale pause on the membership row", async () => {
+    const staleRow = { version: 1, scope: "company", kind: "usage-trial", view: "member", trial: null, cardOnFile: null, paused: { reason: "usage_trial_cap", resumesOn: null }, actions: { addCard: false, raiseLimit: false, switchToUsage: false, manageBilling: false } };
+    const company = {
+      ...roster(),
+      getBillingSummary: vi.fn(async () => ({ ok: true as const, value: { companyUid: "cmp_unicom", billingState: { ...usageTrialState, paused: null } } })),
+      getUsageStatement: vi.fn(async () => ({ ok: true as const, value: statement })),
+    };
+    const target = render({ slug: "unicom-pause-lifted", companyUid: "cmp_unicom", company, role: "Owner", billingState: staleRow });
+    openWorkforce(target);
+    await vi.waitFor(() => {
+      flushSync();
+      expect(target.querySelector("[data-testid='usage-billing']")).not.toBeNull();
+    });
+    expect(target.querySelector("[data-testid='usage-paused']")).toBeNull();
+  });
+
   it("control: a capped trial that offers Add a card and has no card keeps the add-card copy", async () => {
     const pausedState = { ...usageTrialState, cardOnFile: false, paused: { reason: "usage_trial_cap", resumesOn: null }, actions: { addCard: true, raiseLimit: false, switchToUsage: false, manageBilling: false } };
     const company = {

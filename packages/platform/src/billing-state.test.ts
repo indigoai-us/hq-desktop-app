@@ -145,6 +145,19 @@ describe("usagePauseAction", () => {
     });
     expect(roleCanManageBilling("guest")).toBe(false);
   });
+
+  it("review #1773: a member refused by a trial cap is not asked to add a card unless the state offers one", () => {
+    const cap = { reason: "usage_trial_cap" as const, actionUrl: ACTION_URL };
+    expect(usagePauseAction(cap, "member")).toEqual({ kind: "ask-owner", hint: "Ask a company owner or admin about billing." });
+    expect(usagePauseAction(cap, "member", { cardOnFile: true, addCard: false })).toEqual({
+      kind: "ask-owner",
+      hint: "Ask a company owner or admin about billing.",
+    });
+    expect(usagePauseAction(cap, "member", { cardOnFile: false, addCard: true })).toEqual({
+      kind: "ask-owner",
+      hint: "Ask a company owner or admin to add a card on the Billing page.",
+    });
+  });
 });
 
 describe("usage pause on an hq-pro refusal", () => {
@@ -168,6 +181,29 @@ describe("usage pause on an hq-pro refusal", () => {
 });
 
 describe("billingPauseMessage", () => {
+  it("review #1773: a carded trial cap with resumesOn null says it resumes at the first paid invoice, with no date", () => {
+    const context = { company: "Unicom", cardOnFile: true, addCard: false, resumesOn: null };
+    const text = billingPauseMessage("usage_trial_cap", context);
+    expect(text).toBe(
+      "Cloud sync is paused. Unicom used the usage included in its trial. Usage resumes when the first invoice is paid. Files on this computer are not affected.",
+    );
+    expect(text).not.toMatch(/trial ends|add a card/i);
+    // An owner or admin gets the Billing pointer; a member does not.
+    expect(billingPauseMessage("usage_trial_cap", { ...context, canManageBilling: true })).toBe(
+      "Cloud sync is paused. Unicom used the usage included in its trial. Usage resumes when the first invoice is paid. Open Billing for Unicom for details. Files on this computer are not affected.",
+    );
+    expect(billingPauseMessage("usage_trial_cap", { ...context, canManageBilling: false })).not.toContain("Open Billing");
+    // The server message still wins.
+    expect(billingPauseMessage("usage_trial_cap", { ...context, canManageBilling: true, message: "Server says." })).toBe("Server says.");
+  });
+
+  it("control: a pause that offers Add a card gets no extra Billing pointer", () => {
+    const text = billingPauseMessage("usage_trial_cap", { company: "Unicom", cardOnFile: false, addCard: true, canManageBilling: true });
+    expect(text).toContain("Add a card on the Billing page to resume.");
+    expect(text).not.toContain("Open Billing for");
+    expect(text).not.toContain("first invoice");
+  });
+
   const trialEnd = "2026-11-15T13:00:00Z";
   const shortDate = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
@@ -215,8 +251,15 @@ describe("billingPauseMessage", () => {
 
 describe("askOwnerHint with pause state", () => {
   it("control: a member is still asked to contact an owner or admin", () => {
-    expect(askOwnerHint("usage_trial_cap")).toBe("Ask a company owner or admin to add a card on the Billing page.");
+    expect(askOwnerHint("usage_card_required")).toBe("Ask a company owner or admin to add a card on the Billing page.");
+    expect(askOwnerHint("usage_trial_cap", { cardOnFile: false, addCard: true })).toBe("Ask a company owner or admin to add a card on the Billing page.");
     expect(askOwnerHint("usage_spend_limit")).toBe("Ask a company owner or admin to raise the spend limit.");
+  });
+
+  it("review #1773: with no pause state a trial cap hint is neutral, since a card may already be on file", () => {
+    expect(askOwnerHint("usage_trial_cap")).toBe("Ask a company owner or admin about billing.");
+    expect(askOwnerHint(null)).toBe("Ask a company owner or admin about billing.");
+    expect(askOwnerHint("usage_card_required", { addCard: false })).toBe("Ask a company owner or admin about billing.");
   });
 
   it("does not ask an owner to add a card when one is on file or the pause has an end date", () => {

@@ -224,6 +224,12 @@ export interface BillingPauseContext {
   addCard?: boolean | null;
   /** The server's `usagePause.message`. Shown as is when present. */
   message?: string | null;
+  /**
+   * The reader can manage billing (owner or admin). True adds the Billing
+   * pointer to a pause the reader cannot clear with a card; false or unknown
+   * leaves it out.
+   */
+  canManageBilling?: boolean | null;
 }
 
 /**
@@ -249,18 +255,27 @@ export function formatPauseDate(value: string | null | undefined): string | null
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(dateOnly ? { timeZone: "UTC" } : {}) });
 }
 
-/** What a member is asked to do, by pause reason and, when known, the pause state. */
+/**
+ * What a member is asked to do, by pause reason and, when known, the pause
+ * state. A card is asked for only when the state says one can help
+ * (`addCard`, or the card-required reason) and no card is on file. With no
+ * state the hint is neutral, since a trial cap with a card on file cannot be
+ * cleared by adding one.
+ */
 export function askOwnerHint(
   reason: UsagePauseReason | null | undefined,
-  context: Pick<BillingPauseContext, "cardOnFile" | "resumesOn"> = {},
+  context: Pick<BillingPauseContext, "cardOnFile" | "resumesOn" | "addCard"> = {},
 ): string {
   if (reason === "usage_spend_limit") {
     return "Ask a company owner or admin to raise the spend limit.";
   }
-  if (context.cardOnFile === true || formatPauseDate(context.resumesOn)) {
+  if (context.cardOnFile === true || formatPauseDate(context.resumesOn) || context.addCard === false) {
     return "Ask a company owner or admin about billing.";
   }
-  return "Ask a company owner or admin to add a card on the Billing page.";
+  if (context.addCard === true || reason === "usage_card_required") {
+    return "Ask a company owner or admin to add a card on the Billing page.";
+  }
+  return "Ask a company owner or admin about billing.";
 }
 
 /**
@@ -271,8 +286,9 @@ export function askOwnerHint(
 export function usagePauseAction(
   pause: Pick<UsagePause, "reason" | "actionUrl">,
   role: string | null | undefined,
+  context: Pick<BillingPauseContext, "cardOnFile" | "resumesOn" | "addCard"> = {},
 ): UsagePauseAction {
-  if (!roleCanManageBilling(role)) return { kind: "ask-owner", hint: askOwnerHint(pause.reason) };
+  if (!roleCanManageBilling(role)) return { kind: "ask-owner", hint: askOwnerHint(pause.reason, context) };
   return { kind: "billing", label: USAGE_PAUSE_BILLING_LABEL, url: pause.actionUrl };
 }
 
@@ -297,5 +313,12 @@ export function billingPauseMessage(reason: UsagePauseReason, context: BillingPa
   const steps: string[] = [];
   if (until) steps.push(reason === "usage_trial_cap" ? `Usage is paused until ${until}, when the trial ends.` : `Usage is paused until ${until}.`);
   if (addCard) steps.push(until ? "Add a card on the Billing page to resume sooner." : "Add a card on the Billing page to resume.");
+  // A trial cap with a card on file and no resumesOn holds until the first
+  // paid invoice (hq-pro billing-state awaitingFirstInvoice), not the trial
+  // end, so no date is given.
+  if (!until && !addCard && reason === "usage_trial_cap" && context.cardOnFile === true) {
+    steps.push("Usage resumes when the first invoice is paid.");
+  }
+  if (!addCard && context.canManageBilling === true) steps.push(`Open Billing for ${who} for details.`);
   return ["Cloud sync is paused.", what, ...steps, keep].join(" ");
 }

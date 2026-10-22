@@ -267,6 +267,36 @@ describe('usage pause rows (US-024)', () => {
     expect(message).toContain(`Usage is paused until ${day}, when the trial ends.`);
   });
 
+  it('review #1773: a status-push carded trial cap with resumesOn null resumes at the first invoice and points owners to Billing', () => {
+    const body = {
+      billingState: {
+        version: 1, kind: 'usage-trial', scope: 'company', view: 'full', cardOnFile: true,
+        trial: { daysLeft: 0, endsAt: '2026-11-03T00:00:00Z', capCents: 50000, usedCents: 50000 },
+        paused: { reason: 'usage_trial_cap', resumesOn: null },
+        actions: { addCard: false, raiseLimit: true, switchToUsage: false, manageBilling: true },
+      },
+    };
+    const pause = statusPushFilesPause(body);
+    if (!pause.paused || !pause.usageReason) throw new Error('expected a usage pause');
+    const owner = usagePauseFromReason(pause.usageReason, 'Unicom', { ...pause.usageContext, canManageBilling: true }).message;
+    expect(owner).toBe(
+      'Cloud sync is paused. Unicom used the usage included in its trial. Usage resumes when the first invoice is paid. Open Billing for Unicom for details. Files on this computer are not affected.',
+    );
+    expect(owner).not.toMatch(/trial ends|Nov 3|add a card/i);
+    const member = usagePauseFromReason(pause.usageReason, 'Unicom', { ...pause.usageContext, canManageBilling: false }).message;
+    expect(member).toContain('Usage resumes when the first invoice is paid.');
+    expect(member).not.toContain('Open Billing');
+    // The row carries the Billing link when the body had one.
+    const { created } = recordPlanLimitPauses(
+      [],
+      [{ company: 'Unicom', companyUid: null, upgradeUrl: BILLING, usagePause: { reason: 'usage_trial_cap', message: owner } }],
+      1_000,
+      nonce,
+    );
+    expect(created[0].targetRef).toBe(BILLING);
+    expect(created[0].body).toBe(`${owner} Open to go to Billing.`);
+  });
+
   it('control: a status-push pause that offers Add a card with no card on file keeps the add-card copy', () => {
     const body = {
       billingState: {
