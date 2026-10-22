@@ -263,10 +263,6 @@ pub(crate) fn publish_auth_session(
         (current, changed)
     };
     set_auth_session_diagnostic(current.0.status.clone(), None, "none");
-    if current.0.status == AuthSessionStatus::Active {
-        // A signed-in session reopens personal work closed by a sign-out.
-        hq_desktop_core::work_admission::personal_work().reopen_after_sign_in();
-    }
     if current.1 {
         // The desktop label is intentional: auth events for the compact main
         // window must not be mistaken for an embedded Work tenant transition.
@@ -508,6 +504,10 @@ pub(crate) async fn complete_auth_session(
     record_last_auth_transition("sign_in");
 
     let state = authenticated_state_from_tokens(tokens);
+    // A completed sign-in is the only thing that reopens personal work closed
+    // by a sign-out. An auth-state read that happened to see the old tokens
+    // cannot, and nothing reopens while a sign-out is still running.
+    hq_desktop_core::work_admission::personal_work().reopen_after_sign_in();
     publish_auth_session(
         app,
         AuthSessionEnvelope {
@@ -881,19 +881,29 @@ pub async fn get_stored_token_presence() -> String {
 /// Upper bound on how long sign-out waits for personal work to stop.
 pub(crate) const SIGN_OUT_PERSONAL_DRAIN: std::time::Duration = std::time::Duration::from_secs(10);
 
-pub(crate) async fn stop_personal_work_for_sign_out() {
-    let gate = hq_desktop_core::work_admission::personal_work();
-    gate.close(hq_desktop_core::work_admission::Closed::SignedOut);
-    let drained =
-        tauri::async_runtime::spawn_blocking(move || gate.wait_drained(SIGN_OUT_PERSONAL_DRAIN))
-            .await
-            .unwrap_or(false);
+pub(crate) const SIGN_OUT_DRAIN_FAILED: &str =
+    "HQ is still stopping personal sync work. You are still signed in. Try signing out again in a moment.";
+
+/// Close personal admission for the whole sign-out and wait for owned
+/// personal work to end. On a failed drain the caller must stop before
+/// touching any token: the guard drops, admission stays closed, and the
+/// person can sign out again.
+pub(crate) async fn stop_personal_work_for_sign_out_with(
+    gate: &'static hq_desktop_core::work_admission::WorkAdmission,
+    bound: std::time::Duration,
+) -> Result<hq_desktop_core::work_admission::SignOutGuard, String> {
+    let guard = gate.begin_sign_out();
+    let drained = tauri::async_runtime::spawn_blocking(move || gate.wait_drained(bound))
+        .await
+        .unwrap_or(false);
     if !drained {
         crate::util::logfile::log(
             "auth",
-            "sign-out: personal work did not finish within the drain bound",
+            "sign-out stopped: personal work did not finish within the drain bound; tokens kept",
         );
+        return Err(SIGN_OUT_DRAIN_FAILED.to_string());
     }
+    Ok(guard)
 }
 
 #[tauri::command]
@@ -910,7 +920,11 @@ pub async fn sign_out(app: AppHandle) -> Result<(), String> {
     // personal work is refused, a running wrapper child is signalled, and
     // in-flight personal uploads stop at their next file. Wait (bounded) for
     // them to end. Company sync and shared runners are left alone.
-    stop_personal_work_for_sign_out().await;
+    let _sign_out = stop_personal_work_for_sign_out_with(
+        hq_desktop_core::work_admission::personal_work(),
+        SIGN_OUT_PERSONAL_DRAIN,
+    )
+    .await?;
     let cache_account_id = active_auth_session_snapshot().and_then(|session| session.account_id);
     // Choose from the token store as it is now, not from the source the last
     // probe cached: the hq CLI may have written a person session since then.
@@ -1557,20 +1571,57 @@ mod tests {
 
 #[cfg(test)]
 mod personal_work_lifecycle_tests {
-    /// H8: sign-out stops and drains the owned personal operation before it
-    /// reads or clears any token, and an active session reopens admission.
+    use super::*;
+
+    /// Review C2: sign-out keeps the tokens when personal work does not stop
+    /// in time, and only a completed sign-in reopens admission.
     #[test]
-    fn sign_out_drains_personal_work_before_touching_tokens() {
+    fn sign_out_stops_before_tokens_and_only_a_completed_sign_in_reopens() {
         let source = include_str!("auth.rs");
         let body_start = source.find("pub async fn sign_out(app: AppHandle)").unwrap();
         let body = &source[body_start..];
-        let stop = body.find("stop_personal_work_for_sign_out().await").unwrap();
+        let stop = body
+            .find("stop_personal_work_for_sign_out_with(")
+            .expect("sign_out drains personal work");
+        let early_return = body[stop..].find(".await?;").unwrap() + stop;
         let tokens = body.find("cognito::stored_token_presence()").unwrap();
-        assert!(stop < tokens, "personal work must stop before tokens are touched");
+        assert!(early_return < tokens, "a failed drain returns before tokens are touched");
 
-        let publish = source.find("fn publish_auth_session(").unwrap();
-        let reopen = source[publish..].find("reopen_after_sign_in()").unwrap();
-        let end = source[publish..].find("\n}\n").unwrap();
-        assert!(reopen < end, "publish_auth_session reopens admission");
+        let publish = source.find("pub(crate) fn publish_auth_session(").unwrap();
+        let publish_end = publish + source[publish..].find("\n}\n").unwrap();
+        assert!(
+            !source[publish..publish_end].contains("reopen_after_sign_in"),
+            "publishing an Active session must not reopen admission"
+        );
+        let complete = source.find("pub(crate) async fn complete_auth_session(").unwrap();
+        let complete_end = complete + source[complete..].find("\n}\n").unwrap();
+        assert!(source[complete..complete_end].contains("reopen_after_sign_in()"));
+    }
+
+    /// Review C2: with old personal work still running and a sign-in published
+    /// concurrently, the sign-out drain fails, admission stays closed, and no
+    /// new personal work is admitted.
+    #[tokio::test]
+    async fn a_stuck_drain_fails_the_sign_out_and_keeps_admission_closed() {
+        let gate: &'static hq_desktop_core::work_admission::WorkAdmission =
+            Box::leak(Box::new(hq_desktop_core::work_admission::WorkAdmission::new()));
+        let stuck = gate.admit().unwrap();
+        let concurrent_sign_in = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            gate.reopen_after_sign_in()
+        });
+        let result =
+            stop_personal_work_for_sign_out_with(gate, std::time::Duration::from_millis(150)).await;
+        assert_eq!(result.err().as_deref(), Some(SIGN_OUT_DRAIN_FAILED));
+        assert!(!concurrent_sign_in.join().unwrap(), "no reopen during sign-out");
+        assert!(gate.admit().is_err(), "no new personal work after a failed sign-out");
+        drop(stuck);
+
+        // Once the work ends, a retried sign-out drains and succeeds.
+        let guard = stop_personal_work_for_sign_out_with(gate, std::time::Duration::from_millis(150))
+            .await
+            .expect("drained");
+        drop(guard);
+        assert!(gate.admit().is_err());
     }
 }

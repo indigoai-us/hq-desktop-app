@@ -862,6 +862,9 @@
       await invoke('sign_out');
     } catch (err) {
       console.error('Sign out: failed to clear stored tokens', err);
+      // Sign-out refuses to clear tokens while personal work is still
+      // stopping. Show the real state instead of a signed-out screen.
+      void checkAuth();
     }
   }
 

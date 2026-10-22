@@ -40,6 +40,8 @@ struct Inner {
     in_flight: usize,
     next_cancel_id: u64,
     cancels: Vec<(u64, Arc<AtomicBool>)>,
+    /// Sign-outs in progress. While non-zero nothing may reopen admission.
+    signing_out: usize,
 }
 
 /// The latch. Use [`personal_work`] for the process-wide instance.
@@ -63,6 +65,7 @@ impl WorkAdmission {
                 in_flight: 0,
                 next_cancel_id: 0,
                 cancels: Vec::new(),
+                signing_out: 0,
             }),
             drained: Condvar::new(),
         }
@@ -124,11 +127,19 @@ impl WorkAdmission {
         }
     }
 
-    /// Reopen after a sign-in. Never reopens a quitting process. Work admitted
-    /// before the close stays stale: the epoch moved on.
+    /// Start a sign-out: close admission and hold it closed until the returned
+    /// guard is dropped. No sign-in published meanwhile can reopen it.
+    pub fn begin_sign_out(&'static self) -> SignOutGuard {
+        self.close(Closed::SignedOut);
+        self.lock().signing_out += 1;
+        SignOutGuard { gate: self }
+    }
+
+    /// Reopen after a sign-in. Never reopens a quitting process or during a
+    /// sign-out. Work admitted before the close stays stale: the epoch moved on.
     pub fn reopen_after_sign_in(&self) -> bool {
         let mut inner = self.lock();
-        if inner.closed == Some(Closed::SignedOut) {
+        if inner.signing_out == 0 && inner.closed == Some(Closed::SignedOut) {
             inner.closed = None;
             return true;
         }
@@ -204,6 +215,19 @@ impl Drop for Ticket {
     }
 }
 
+/// Held for the whole sign-out. Admission stays closed after it drops; only
+/// a later sign-in reopens it.
+pub struct SignOutGuard {
+    gate: &'static WorkAdmission,
+}
+
+impl Drop for SignOutGuard {
+    fn drop(&mut self) {
+        let mut inner = self.gate.lock();
+        inner.signing_out = inner.signing_out.saturating_sub(1);
+    }
+}
+
 /// Uncounted, copyable staleness check.
 #[derive(Clone, Copy)]
 pub struct Token {
@@ -261,6 +285,28 @@ mod tests {
         assert!(gate.reopen_after_sign_in());
         assert!(gate.admit().is_ok());
         assert_eq!(running.check(), Err(Closed::SignedOut));
+    }
+
+    /// Review C2: a sign-in published while a sign-out is draining cannot
+    /// reopen admission, so no new work starts during the sign-out.
+    #[test]
+    fn a_sign_in_published_during_sign_out_cannot_reopen_admission() {
+        let gate = gate();
+        let old_work = gate.admit().unwrap();
+        let sign_out = gate.begin_sign_out();
+
+        assert!(!gate.reopen_after_sign_in());
+        assert_eq!(gate.admit().err(), Some(Closed::SignedOut));
+        assert!(!gate.wait_drained(Duration::from_millis(20)));
+        assert_eq!(old_work.check(), Err(Closed::SignedOut));
+
+        drop(old_work);
+        assert!(gate.wait_drained(Duration::from_millis(20)));
+        drop(sign_out);
+        // Still closed after the sign-out; a later sign-in reopens it.
+        assert!(!gate.is_open());
+        assert!(gate.reopen_after_sign_in());
+        assert!(gate.admit().is_ok());
     }
 
     #[test]
