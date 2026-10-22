@@ -31,6 +31,14 @@ export interface AccessView {
   inheritedFrom: string | null;
   /** True when the caller can grant on this path (admin on it). */
   canGrant: boolean;
+  /**
+   * True when nothing in the tree names this path: no own row, no inherited
+   * grants and no grants below. This is the 200 body for which
+   * `hq files acl <prefix>` prints "No ACL record exists" (feedback 227937a0);
+   * that sentence is the CLI's, hq-pro never sends it. The path then follows
+   * its folder's default access.
+   */
+  noRecord: boolean;
 }
 
 /** What the Access section is asked about. */
@@ -225,7 +233,16 @@ export function accessView(body: unknown, groups: Map<string, string> = new Map(
     if (inheritedFrom === null || folder.length > inheritedFrom.length) inheritedFrom = folder;
   }
 
-  return { rows: [...rows.values()], inheritedFrom, canGrant: b.effectivePermission === "admin" };
+  // A parent row with no grants still governs this path: hq-pro names it as
+  // coveringAclPath. Point at it when no inherited grant did.
+  const covering = typeof b.coveringAclPath === "string" ? b.coveringAclPath : null;
+  const ownPrefix = typeof b.prefix === "string" ? b.prefix : null;
+  if (inheritedFrom === null && covering !== null && covering !== ownPrefix) inheritedFrom = folderOfPrefix(covering);
+
+  const children = Array.isArray(b.children) ? b.children : [];
+  const noRecord = directRow === null && direct.length === 0 && inherited.length === 0 && children.length === 0 && inheritedFrom === null;
+
+  return { rows: [...rows.values()], inheritedFrom, canGrant: b.effectivePermission === "admin", noRecord };
 }
 
 /** HQ-relative path of an inherited source folder ("" is the vault root). */
@@ -250,13 +267,3 @@ export class AccessCache {
 
 export const accessCache = new AccessCache();
 
-/**
- * True when an access-tree read failed only because the path has no ACL row
- * of its own yet (hq-pro answers "No ACL record exists"). That is not a
- * failure: nobody was granted on the path directly, so it shows the
- * owner-only view instead of "Couldn't read who has access".
- */
-export function isNoAclRecord(failure: { code?: string; message?: string } | null | undefined): boolean {
-  if (!failure) return false;
-  return /no acl record/i.test(failure.message ?? "") || /^no[_-]?acl[_-]?record$/i.test(failure.code ?? "");
-}

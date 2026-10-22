@@ -7,7 +7,7 @@
  */
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { failure, ok, unavailable } from "@hq/platform";
+import { ok, unavailable } from "@hq/platform";
 import AccessSection from "./AccessSection.svelte";
 import AccessSectionHarness from "./AccessSectionHarness.test-support.svelte";
 import { accessCache, accessView } from "./access-model.js";
@@ -162,20 +162,40 @@ describe("OWNER-R17 AccessSection", () => {
     warn.mockRestore();
   });
 
-  it("feedback 227937a0: 'No ACL record exists' shows the owner-only view, not the failed state", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const readTree = vi.fn(async () => failure("http_404", "No ACL record exists"));
+  // feedback 227937a0: `hq files acl projects/` printed "No ACL record exists"
+  // for these prefixes. That line is the CLI's own; it prints it when the
+  // 200 tree body below has no row, no inherited and no child grants.
+  const NO_RECORD_TREE = {
+    prefix: "projects/",
+    direct: [],
+    inherited: [],
+    children: [],
+    directRow: null,
+    effectivePermission: "admin",
+    coveringAclPath: null,
+    identities: {},
+    masking: [],
+  };
+
+  it("feedback 227937a0: a folder with no ACL record says it inherits its folder's access, not an owners-only list", async () => {
+    const readTree = vi.fn(async () => ok(NO_RECORD_TREE));
     const el = render({ vault: COMPANY, path: `${COMPANY.root}/${uniquePath("noacl")}`, isDir: true, companyUid: "cmp_acme", readTree });
     await settle();
     expect(el.querySelector("[data-testid='access-failed']")).toBeNull();
-    const rows = [...el.querySelectorAll("[data-testid='access-row']")].map((r) => r.textContent?.replace(/\s+/g, " ").trim());
-    expect(rows).toEqual(["Company owners Admin Owner of this company"]);
-    expect(el.textContent).not.toContain("No ACL record");
-    warn.mockRestore();
+    expect(el.querySelector("[data-testid='access-no-record']")?.textContent).toBe("Inherits access from its folder");
+    expect(el.querySelectorAll("[data-testid='access-row']")).toHaveLength(0);
+  });
+
+  it("feedback 227937a0: a subfolder under a parent row with no grants links to that parent", async () => {
+    const readTree = vi.fn(async () => ok({ ...NO_RECORD_TREE, prefix: "projects/launch-tasks/", coveringAclPath: "projects/" }));
+    const el = render({ vault: COMPANY, path: `${COMPANY.root}/${uniquePath("noacl-sub")}`, isDir: true, companyUid: "cmp_acme", readTree });
+    await settle();
+    expect(el.querySelector("[data-testid='access-no-record']")).toBeNull();
+    expect(el.querySelector("[data-testid='access-inherited-link']")?.textContent?.trim()).toBe("projects");
   });
 
   it("feedback 227937a0: personal vault path with no ACL record reads Only you", async () => {
-    const readTree = vi.fn(async () => failure(undefined, "No ACL record exists"));
+    const readTree = vi.fn(async () => ok({ ...NO_RECORD_TREE, prefix: "notes/" }));
     const el = render({ vault: PERSONAL, path: `personal/${uniquePath("noacl")}.md`, isDir: false, companyUid: "prs_SELF0000", readTree });
     await settle();
     expect(el.querySelector("[data-testid='access-failed']")).toBeNull();

@@ -19,7 +19,6 @@
     accessView,
     groupNames,
     inheritedPath,
-    isNoAclRecord,
     type AccessView,
   } from "./access-model.js";
 
@@ -84,10 +83,8 @@
       try {
         const [res, groups] = await Promise.all([read(t.companyUid, t.prefix), groupsFor(t.companyUid)]);
         if (mine !== seq) return;
-        // A path nobody was granted on directly has no ACL row; that is the
-        // owner-only view, not a failed read.
-        if (!res.ok && !isNoAclRecord(res)) throw new Error(res.message ?? res.reason);
-        const next = accessView(res.ok ? res.value : {}, groups);
+        if (!res.ok) throw new Error(res.message ?? res.reason);
+        const next = accessView(res.value, groups);
         accessCache.set(t, next);
         view = next;
       } catch (err) {
@@ -109,6 +106,9 @@
   {:else if view}
     {#if vault.kind === "personal" && view.rows.length <= 1}
       <p class="muted" data-testid="access-only-you">Only you</p>
+    {:else if view.noRecord}
+      <!-- No ACL row on or above this path: it follows its folder's default access. -->
+      <p class="muted" data-testid="access-no-record">Inherits access from its folder</p>
     {:else}
       <ul class="rows" data-testid="access-rows">
         {#each view.rows.filter((r) => vault.kind === "company" || r.kind !== "owner") as row (row.key)}

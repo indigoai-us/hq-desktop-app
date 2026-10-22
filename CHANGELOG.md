@@ -8,7 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- Files: the Access section for a file or folder that nobody has been granted on directly now shows who has access (company owners, or "Only you" in your personal vault) instead of "Couldn't read who has access" with a Try again button that never cleared it.
+- Files: the Access section for a company folder with no access record of its own, and none above or below it, now says "Inherits access from its folder" instead of listing only company owners. A folder under a parent record with no grants links to that parent. Personal vault paths still read "Only you".
 - Knowledge: the company file browser now lists all file types, including images, PDFs, HTML and Word documents, in folders, search and file counts. Images and PDFs use the existing authorized preview; HTML appears as text, and files that cannot be previewed can be shown in their folder.
 
 - Company list: when a sync leaves a folder named after a company's cloud ID (`companies/cmp_...`), HQ no longer lists it as a second company named "Cmp_..." and no longer adds a second entry for it to `companies/manifest.yaml`; the company keeps its one real entry. A manifest that already has the extra `cmp_...` entry keeps it until you delete that entry by hand. On a fresh install whose manifest has an empty `companies:` line, HQ now adds your companies instead of failing with "`companies` key is not a mapping". A `companies:` list is still left untouched.
