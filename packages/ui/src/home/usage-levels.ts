@@ -5,17 +5,14 @@
  * 2026-10-20: "unlock different company levels as they advance between
  * different $ tiers"; levels follow the highest month ever).
  *
- * A level, once reached, stays: the record keeps the best month seen and the
- * highest level unlocked, and only ever moves up. The accomplishment card for
- * a level fires once per person per account: `announced` records the highest
- * level a card was shown for.
- *
- * Data sources: the owner usage history, `GET /v1/billing/usage/history`
- * (hq-pro #5087: the last 12 months, `complete: true` for closed months), and
- * this month's statement, `GET /v1/billing/usage?window=month`, which is
- * fresher than the history's open current month. The best month is the
- * largest of the stored best, every closed month in the history and this
- * month, so a new device shows the level an earlier month reached.
+ * The best month comes from the server. The owner usage history,
+ * `GET /v1/billing/usage/history` (hq-pro #5087), returns the last 12
+ * calendar months, this one included; this month's statement,
+ * `GET /v1/billing/usage?window=month`, is fresher than the history's open
+ * month. The best month is the largest of every month the history returns
+ * and this month. Nothing about spend is kept on the device: the only thing
+ * stored is the highest level a card was shown for (`announced`), per person
+ * per account, so the accomplishment card for a level fires once.
  *
  * Pure. Nothing here touches the DOM; storage is passed in.
  */
@@ -102,97 +99,60 @@ export function monthName(month: string): string {
   return Number.isNaN(d.getTime()) ? month : d.toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
 }
 
-/** What is stored per person, per account, on this device. */
-export interface LevelRecord {
-  /** The highest month total seen, in cents. */
-  bestCents: number;
-  /** The month it was seen in ("2026-10"). */
-  bestMonth: string | null;
-  /** The highest level unlocked. Never goes down. */
-  level: number;
-  /** The highest level a card was shown for. Never goes down. */
-  announced: number;
-}
-
-export const EMPTY_LEVEL_RECORD: LevelRecord = { bestCents: 0, bestMonth: null, level: 0, announced: 0 };
-
-/** One month as a statement reports it. */
+/** One month and its usage, in cents. */
 export interface MonthObservation {
   month: string;
   cents: number;
 }
 
-export interface ObserveResult {
-  record: LevelRecord;
-  /** The level to announce now (the highest newly unlocked), or null. */
-  announce: number | null;
+/** A readable `GET /v1/billing/usage/history` body. */
+export interface UsageHistory {
+  /** Every month with a readable figure, oldest first as the server sends them. */
+  months: MonthObservation[];
+  /** The closed months (`complete: true`): the server marks the open month and any month with a missing meter incomplete. */
+  closed: MonthObservation[];
 }
 
 /**
- * Fold one month into the record. The best month and the level only rise; a
- * lower month (a new month that just started) changes nothing. When the level
- * passes the last one announced, the highest new level is announced once,
- * even when several were passed at once (one card, not four).
+ * Read a history body (`{ months: [{ month, usageCents, complete }] }`).
+ * Every month with a readable figure counts toward the best month: an
+ * incomplete month can only be lower than what was used, never higher, so it
+ * cannot raise a level that was not reached. Null when the body is not a
+ * history at all, which callers treat as a failed read.
  */
-export function observeMonth(prev: LevelRecord | null | undefined, obs: MonthObservation): ObserveResult {
-  const base = prev ?? EMPTY_LEVEL_RECORD;
-  const cents = Number.isFinite(obs.cents) ? Math.max(0, obs.cents) : 0;
-  const better = cents > base.bestCents;
-  const bestCents = better ? cents : base.bestCents;
-  const bestMonth = better ? obs.month : base.bestMonth;
-  const level = Math.max(base.level, levelForCents(bestCents));
-  const announce = level > base.announced ? level : null;
-  return {
-    record: { bestCents, bestMonth, level, announced: announce ?? base.announced },
-    announce,
-  };
-}
-
-/**
- * The closed months in a `GET /v1/billing/usage/history` body
- * (`{ months: [{ month, usageCents, complete }] }`). Only `complete: true`
- * months count: the server marks the open current month and any month with a
- * missing meter as incomplete, and a month with no data as `usageCents: 0,
- * complete: false`, so neither is a reliable figure. An unreadable body is [].
- */
-export function closedMonthsFromHistory(body: unknown): MonthObservation[] {
-  if (typeof body !== "object" || body === null) return [];
-  const months = (body as Record<string, unknown>).months;
-  if (!Array.isArray(months)) return [];
-  const out: MonthObservation[] = [];
-  for (const m of months) {
+export function readUsageHistory(body: unknown): UsageHistory | null {
+  if (typeof body !== "object" || body === null) return null;
+  const rows = (body as Record<string, unknown>).months;
+  if (!Array.isArray(rows)) return null;
+  const months: MonthObservation[] = [];
+  const closed: MonthObservation[] = [];
+  for (const m of rows) {
     if (typeof m !== "object" || m === null) continue;
     const row = m as Record<string, unknown>;
-    if (row.complete !== true || typeof row.month !== "string" || !/^\d{4}-\d{2}$/.test(row.month)) continue;
+    if (typeof row.month !== "string" || !/^\d{4}-\d{2}$/.test(row.month)) continue;
     const cents = nonNeg(row.usageCents);
     if (cents === null) continue;
-    out.push({ month: row.month, cents });
+    const obs = { month: row.month, cents };
+    months.push(obs);
+    if (row.complete === true) closed.push(obs);
   }
-  return out;
+  return { months, closed };
 }
 
-/**
- * Fold the server's closed months into the record. The best month and level
- * rise as with any month, but nothing is marked announced here: the caller
- * folds this month next and that fold announces the highest new level once.
- * With `quiet`, the levels the closed months reach count as announced
- * instead. That is for a device with no record of its own for this person and
- * account: the person most likely saw those cards on another device, so a
- * fresh device shows the level without repeating them. A higher level this
- * month reaches is not covered and still gets its card.
- */
-export function observeHistory(
-  prev: LevelRecord | null | undefined,
-  months: readonly MonthObservation[],
-  opts: { quiet: boolean },
-): LevelRecord {
-  let record = prev ?? EMPTY_LEVEL_RECORD;
-  let historyLevel = 0;
+/** The month with the most usage (the earlier one on a tie), or null when no month has any. */
+export function bestOfMonths(months: readonly (MonthObservation | null | undefined)[]): MonthObservation | null {
+  let best: MonthObservation | null = null;
   for (const m of months) {
-    record = { ...observeMonth(record, m).record, announced: record.announced };
-    historyLevel = Math.max(historyLevel, levelForCents(m.cents));
+    if (!m || !Number.isFinite(m.cents) || m.cents <= 0) continue;
+    if (!best || m.cents > best.cents) best = m;
   }
-  return opts.quiet ? { ...record, announced: Math.max(record.announced, historyLevel) } : record;
+  return best;
+}
+
+/** What is stored per person, per account, on this device: only which cards were shown. */
+export interface CardRecord {
+  /** The highest level a card was shown for. Never goes down. */
+  announced: number;
 }
 
 export type LevelStorage = Pick<Storage, "getItem" | "setItem">;
@@ -208,33 +168,30 @@ function nonNeg(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
 }
 
-/** The stored record, or null when there is none or it is unreadable. */
-export function loadLevelRecord(storage: LevelStorage | null, viewerUid: string, accountKey: string): LevelRecord | null {
+/**
+ * The stored card record, or null when there is none or it is unreadable.
+ * Records written by earlier builds also carried a best month and a level;
+ * only `announced` is read, so a card shown then is not shown again.
+ */
+export function loadCardRecord(storage: LevelStorage | null, viewerUid: string, accountKey: string): CardRecord | null {
   if (!storage) return null;
   try {
     const raw = storage.getItem(levelStorageKey(viewerUid, accountKey));
     if (!raw) return null;
-    const v = JSON.parse(raw) as Record<string, unknown>;
-    const bestCents = nonNeg(v.bestCents);
-    const level = nonNeg(v.level);
-    const announced = nonNeg(v.announced);
-    if (bestCents === null || level === null || announced === null) return null;
-    return {
-      bestCents,
-      bestMonth: typeof v.bestMonth === "string" ? v.bestMonth : null,
-      level: Math.min(MAX_LEVEL, Math.floor(level)),
-      announced: Math.min(MAX_LEVEL, Math.floor(announced)),
-    };
+    const v = JSON.parse(raw) as Record<string, unknown> | null;
+    const announced = nonNeg(v?.announced);
+    if (announced === null) return null;
+    return { announced: Math.min(MAX_LEVEL, Math.floor(announced)) };
   } catch {
     return null;
   }
 }
 
-/** Store the record. Returns false when storage refused it (full, blocked). */
-export function saveLevelRecord(storage: LevelStorage | null, viewerUid: string, accountKey: string, record: LevelRecord): boolean {
+/** Store the card record. Returns false when storage refused it (full, blocked). */
+export function saveCardRecord(storage: LevelStorage | null, viewerUid: string, accountKey: string, record: CardRecord): boolean {
   if (!storage) return false;
   try {
-    storage.setItem(levelStorageKey(viewerUid, accountKey), JSON.stringify(record));
+    storage.setItem(levelStorageKey(viewerUid, accountKey), JSON.stringify({ announced: record.announced }));
     return true;
   } catch {
     return false;

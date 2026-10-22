@@ -12974,8 +12974,8 @@
   const youBadges = $derived(badgesFor(youSubject));
 
   /**
-   * usage-only-pricing US-019: company levels are stored per signed-in person,
-   * and the level-up card's "See usage" opens Settings > Usage on that account.
+   * usage-only-pricing US-019: which level-up cards were shown is stored per
+   * signed-in person, and the card's "See usage" opens Settings > Usage on that account.
    */
   $effect(() => {
     setUsageLevelViewer(self?.uid ?? null);
@@ -12987,8 +12987,8 @@
     });
     return () => setUsageLevelOpener(null);
   });
-  // Levels follow the highest month ever: the owner usage history
-  // (GET /v1/billing/usage/history, hq-pro #5087), read once per account.
+  // Levels follow the owner usage history (GET /v1/billing/usage/history,
+  // hq-pro #5087), read once per account. With no history there is no card.
   $effect(() => {
     const company = adapter.company;
     setUsageLevelHistoryLoader(

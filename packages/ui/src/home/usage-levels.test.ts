@@ -1,25 +1,23 @@
-// Company levels (usage-only-pricing US-019): the level math, the once-only
-// record and its storage.
+// Company levels (usage-only-pricing US-019): the level math, the server
+// history read, and the once-only card record and its storage.
 
 import { describe, expect, it } from "vitest";
 import {
-  EMPTY_LEVEL_RECORD,
   MAX_LEVEL,
   USAGE_LEVELS,
-  closedMonthsFromHistory,
+  bestOfMonths,
   countsFromLines,
   levelForCents,
   levelLabel,
   levelProgress,
   levelStorageKey,
   levelThresholdText,
-  loadLevelRecord,
+  loadCardRecord,
   monthOf,
   nextLevel,
   nextLevelLine,
-  observeHistory,
-  observeMonth,
-  saveLevelRecord,
+  readUsageHistory,
+  saveCardRecord,
   teamDoneLine,
   type LevelStorage,
 } from "./usage-levels";
@@ -90,71 +88,34 @@ describe("levels", () => {
   });
 });
 
-describe("observeMonth: highest month ever, once-only cards", () => {
-  it("unlocks and announces the level a month reaches", () => {
-    const { record, announce } = observeMonth(null, { month: "2026-10", cents: 6_000 });
-    expect(record).toEqual({ bestCents: 6_000, bestMonth: "2026-10", level: 2, announced: 2 });
-    expect(announce).toBe(2);
-  });
-
-  it("announces only the highest of several levels passed at once", () => {
-    const { record, announce } = observeMonth(null, { month: "2026-10", cents: 60_000 });
-    expect(announce).toBe(4);
-    expect(record.announced).toBe(4);
-  });
-
-  it("does not announce again on the same level", () => {
-    const first = observeMonth(null, { month: "2026-10", cents: 6_000 });
-    const again = observeMonth(first.record, { month: "2026-10", cents: 7_000 });
-    expect(again.announce).toBeNull();
-    expect(again.record.bestCents).toBe(7_000);
-  });
-
-  it("keeps the level when a new month starts lower", () => {
-    const october = observeMonth(null, { month: "2026-10", cents: 120_000 });
-    const november = observeMonth(october.record, { month: "2026-11", cents: 300 });
-    expect(november.record).toEqual({ bestCents: 120_000, bestMonth: "2026-10", level: 5, announced: 5 });
-    expect(november.announce).toBeNull();
-  });
-
-  it("announces the next level when a later month beats the best", () => {
-    const october = observeMonth(null, { month: "2026-10", cents: 120_000 });
-    const december = observeMonth(october.record, { month: "2026-12", cents: 510_000 });
-    expect(december.announce).toBe(6);
-    expect(december.record.bestMonth).toBe("2026-12");
-  });
-
-  it("never lowers a stored level, even if the stored best is lower", () => {
-    const { record, announce } = observeMonth({ bestCents: 0, bestMonth: null, level: 3, announced: 3 }, { month: "2026-10", cents: 2_000 });
-    expect(record.level).toBe(3);
-    expect(announce).toBeNull();
-  });
-
-  it("has nothing to announce below $10", () => {
-    expect(observeMonth(EMPTY_LEVEL_RECORD, { month: "2026-10", cents: 999 }).announce).toBeNull();
-  });
-});
-
-describe("level storage", () => {
-  it("round-trips a record per person and account", () => {
+describe("card record storage", () => {
+  it("round-trips the shown level per person and account, and stores nothing about spend", () => {
     const s = memory();
-    const rec = { bestCents: 60_000, bestMonth: "2026-10", level: 4, announced: 4 };
-    expect(saveLevelRecord(s, "prs_a", "cmp_1", rec)).toBe(true);
-    expect(loadLevelRecord(s, "prs_a", "cmp_1")).toEqual(rec);
-    expect(loadLevelRecord(s, "prs_b", "cmp_1")).toBeNull();
-    expect(loadLevelRecord(s, "prs_a", "personal")).toBeNull();
+    expect(saveCardRecord(s, "prs_a", "cmp_1", { announced: 4 })).toBe(true);
+    expect(loadCardRecord(s, "prs_a", "cmp_1")).toEqual({ announced: 4 });
+    expect(loadCardRecord(s, "prs_b", "cmp_1")).toBeNull();
+    expect(loadCardRecord(s, "prs_a", "personal")).toBeNull();
     expect([...s.data.keys()]).toEqual([levelStorageKey("prs_a", "cmp_1")]);
     expect(levelStorageKey("prs_a", "cmp_1")).toBe("hq.usage.levels.v1.prs_a.cmp_1");
+    expect(JSON.parse(s.data.get(levelStorageKey("prs_a", "cmp_1")) ?? "")).toEqual({ announced: 4 });
+  });
+
+  it("reads only the shown level from a record an earlier build wrote", () => {
+    const s = memory();
+    s.data.set(levelStorageKey("prs_a", "old"), JSON.stringify({ bestCents: 61_000, bestMonth: "2026-09", level: 4, announced: 4 }));
+    expect(loadCardRecord(s, "prs_a", "old")).toEqual({ announced: 4 });
   });
 
   it("ignores unreadable records and clamps levels", () => {
     const s = memory();
     s.data.set(levelStorageKey("prs_a", "x"), "{not json");
-    expect(loadLevelRecord(s, "prs_a", "x")).toBeNull();
-    s.data.set(levelStorageKey("prs_a", "y"), JSON.stringify({ bestCents: -1, level: 2, announced: 2 }));
-    expect(loadLevelRecord(s, "prs_a", "y")).toBeNull();
-    s.data.set(levelStorageKey("prs_a", "z"), JSON.stringify({ bestCents: 5, level: 99, announced: 99 }));
-    expect(loadLevelRecord(s, "prs_a", "z")?.level).toBe(7);
+    expect(loadCardRecord(s, "prs_a", "x")).toBeNull();
+    s.data.set(levelStorageKey("prs_a", "y"), JSON.stringify({ announced: -2 }));
+    expect(loadCardRecord(s, "prs_a", "y")).toBeNull();
+    s.data.set(levelStorageKey("prs_a", "n"), "null");
+    expect(loadCardRecord(s, "prs_a", "n")).toBeNull();
+    s.data.set(levelStorageKey("prs_a", "z"), JSON.stringify({ announced: 99 }));
+    expect(loadCardRecord(s, "prs_a", "z")?.announced).toBe(7);
   });
 
   it("reports a refused write and survives no storage", () => {
@@ -164,9 +125,9 @@ describe("level storage", () => {
         throw new Error("QuotaExceededError");
       },
     };
-    expect(saveLevelRecord(refusing, "prs_a", "c", EMPTY_LEVEL_RECORD)).toBe(false);
-    expect(saveLevelRecord(null, "prs_a", "c", EMPTY_LEVEL_RECORD)).toBe(false);
-    expect(loadLevelRecord(null, "prs_a", "c")).toBeNull();
+    expect(saveCardRecord(refusing, "prs_a", "c", { announced: 1 })).toBe(false);
+    expect(saveCardRecord(null, "prs_a", "c", { announced: 1 })).toBe(false);
+    expect(loadCardRecord(null, "prs_a", "c")).toBeNull();
   });
 });
 
@@ -194,52 +155,49 @@ describe("what the team got done", () => {
 });
 
 describe("usage history (GET /v1/billing/usage/history)", () => {
-  it("keeps only complete months with a readable figure", () => {
+  it("reads every month with a readable figure, and marks the closed ones", () => {
     expect(
-      closedMonthsFromHistory({
+      readUsageHistory({
         months: [
           { month: "2026-08", usageCents: 0, complete: false },
           { month: "2026-09", usageCents: 61_000, complete: true },
-          { month: "2026-10", usageCents: 2_000_000, complete: false },
+          { month: "2026-10", usageCents: 2_000, complete: false },
           { month: "2026-07", usageCents: -5, complete: true },
           { month: "2026-7", usageCents: 100, complete: true },
           { month: "2026-06", usageCents: "100", complete: true },
           null,
         ],
       }),
-    ).toEqual([{ month: "2026-09", cents: 61_000 }]);
-    expect(closedMonthsFromHistory(null)).toEqual([]);
-    expect(closedMonthsFromHistory({ months: "nope" })).toEqual([]);
-    expect(closedMonthsFromHistory({})).toEqual([]);
+    ).toEqual({
+      months: [
+        { month: "2026-08", cents: 0 },
+        { month: "2026-09", cents: 61_000 },
+        { month: "2026-10", cents: 2_000 },
+      ],
+      closed: [{ month: "2026-09", cents: 61_000 }],
+    });
   });
 
-  it("raises the best month and level without marking a card shown", () => {
-    const record = observeHistory(
-      { bestCents: 2_000, bestMonth: "2026-10", level: 1, announced: 1 },
-      [
+  it("treats a body that is not a history as a failed read", () => {
+    expect(readUsageHistory(null)).toBeNull();
+    expect(readUsageHistory("nope")).toBeNull();
+    expect(readUsageHistory({ months: "nope" })).toBeNull();
+    expect(readUsageHistory({})).toBeNull();
+    expect(readUsageHistory({ months: [] })).toEqual({ months: [], closed: [] });
+  });
+
+  it("picks the month with the most usage across the returned months", () => {
+    expect(
+      bestOfMonths([
         { month: "2026-08", cents: 6_000 },
         { month: "2026-09", cents: 61_000 },
-      ],
-      { quiet: false },
-    );
-    expect(record).toEqual({ bestCents: 61_000, bestMonth: "2026-09", level: 4, announced: 1 });
-    // The next fold of this month announces the highest new level, once.
-    expect(observeMonth(record, { month: "2026-10", cents: 2_000 }).announce).toBe(4);
-  });
-
-  it("quiet: levels the closed months reach count as shown, a higher level this month does not", () => {
-    // A fresh device that already folded this month (Level 4) before the history answered.
-    const held = { bestCents: 61_000, bestMonth: "2026-10", level: 4, announced: 0 };
-    const record = observeHistory(held, [{ month: "2026-09", cents: 6_000 }], { quiet: true });
-    expect(record).toEqual({ bestCents: 61_000, bestMonth: "2026-10", level: 4, announced: 2 });
-    expect(observeMonth(record, { month: "2026-10", cents: 61_000 }).announce).toBe(4);
-
-    const past = observeHistory(null, [{ month: "2026-09", cents: 61_000 }], { quiet: true });
-    expect(past).toEqual({ bestCents: 61_000, bestMonth: "2026-09", level: 4, announced: 4 });
-    expect(observeMonth(past, { month: "2026-10", cents: 2_000 }).announce).toBeNull();
-  });
-
-  it("an empty history changes nothing", () => {
-    expect(observeHistory(null, [], { quiet: true })).toEqual(EMPTY_LEVEL_RECORD);
+        { month: "2026-10", cents: 2_000 },
+      ]),
+    ).toEqual({ month: "2026-09", cents: 61_000 });
+    // A tie keeps the earlier month; empty, zero and missing months have no best.
+    expect(bestOfMonths([{ month: "2026-09", cents: 500 }, { month: "2026-10", cents: 500 }])?.month).toBe("2026-09");
+    expect(bestOfMonths([{ month: "2026-09", cents: 0 }, null, undefined])).toBeNull();
+    expect(bestOfMonths([])).toBeNull();
+    expect(levelForCents(bestOfMonths([{ month: "2026-09", cents: 1_000_000 }])?.cents)).toBe(7);
   });
 });
