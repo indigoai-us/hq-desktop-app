@@ -59,6 +59,8 @@ const ALLOWLIST: Record<string, string> = {
     "Sentence: \"{name} is not connected to HQ cloud\".",
   "meetings/MeetingsStatesBody.svelte::companyName":
     "Sentence: \"Join opens 10 min before \u00b7 {name}\".",
+  "inbox/SharedFilesOverlay.svelte::folder.companyLabel":
+    "Sentence: \"Sync {name} to see everything.\"; the header scope line renders CompanyLabel.",
 };
 
 /**

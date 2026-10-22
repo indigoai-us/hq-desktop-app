@@ -143,27 +143,34 @@ export function vaultRelativePath(vault: Vault, path: string): string {
   return path;
 }
 
+/** Where a DM folder share points, with or without a local copy of the company. */
+export interface FolderShareTarget {
+  /** Company cloud uid the share belongs to (the share's own uid, or the roster's). */
+  companyUid: string;
+  companySlug: string;
+  /** Company display name, for the shared-folder header. */
+  companyLabel: string;
+  /** Company-relative folder prefix with a trailing slash; `""` for a whole-company share. */
+  prefix: string;
+  /** The Files explorer location when the company folder is on this computer; otherwise null. */
+  local: { vault: string; path: string | null } | null;
+}
+
 /**
- * Where a DM folder share ("Shared a folder with you") opens in the Files
- * explorer. Share attachments carry a company-relative folder key ending in
- * `/` (for example `knowledge/clients/acme/`), which is a folder marker, not an
- * object the file preview can fetch. The result is the company vault id and an
- * HQ-relative folder path that keeps the trailing `/`, or `path: null` for a
- * whole-company share. Null when the company is unknown, has no local folder,
- * or the key has a `..` segment.
+ * Resolve a DM folder share against the roster. Null for an unknown company,
+ * a parent segment, or a folder Files hides. `local` is null when the company
+ * is not synced on this computer, so the share can still be listed remotely.
  */
-export function folderShareLocation(
+export function folderShareTarget(
   share: { vaultPath: string; companyUid: string },
   workspaces: readonly Workspace[] | null | undefined,
-): { vault: string; path: string | null } | null {
+): FolderShareTarget | null {
   const key = (share.companyUid ?? "").trim();
   if (!key) return null;
   const company = (workspaces ?? []).find(
     (w) => w.kind === "company" && ((w.cloudUid ?? "").trim() === key || w.slug === key),
   );
   if (!company) return null;
-  const vault = vaultsFor(workspaces).find((v) => v.slug === company.slug);
-  if (!vault) return null;
   const parts = share.vaultPath.replace(/\\/g, "/").split("/").filter(Boolean);
   // A glob share ("projects/x/*" or "/**") names the folder it covers.
   while (parts.length > 0 && /^\*{1,2}$/.test(parts[parts.length - 1])) parts.pop();
@@ -171,8 +178,64 @@ export function folderShareLocation(
   if (parts[0] === "companies" && parts[1] === company.slug) parts.splice(0, 2);
   // Files never shows settings, secrets or dot folders; a share does not either.
   if (parts.some((part) => part.startsWith(".") || isSensitiveName(part, true))) return null;
-  if (parts.length === 0) return { vault: vault.id, path: null };
-  return { vault: vault.id, path: `${vault.root}/${parts.join("/")}/` };
+  const vault = vaultsFor(workspaces).find((v) => v.slug === company.slug) ?? null;
+  const prefix = parts.length === 0 ? "" : `${parts.join("/")}/`;
+  return {
+    companyUid: (company.cloudUid ?? "").trim() || key,
+    companySlug: company.slug,
+    companyLabel: company.displayName?.trim() || company.slug,
+    prefix,
+    local: vault
+      ? { vault: vault.id, path: parts.length === 0 ? null : `${vault.root}/${prefix}` }
+      : null,
+  };
+}
+
+/**
+ * The Files explorer location for a DM folder share, or null when the company
+ * folder is not on this computer (see `folderShareTarget`).
+ */
+export function folderShareLocation(
+  share: { vaultPath: string; companyUid: string },
+  workspaces: readonly Workspace[] | null | undefined,
+): { vault: string; path: string | null } | null {
+  return folderShareTarget(share, workspaces)?.local ?? null;
+}
+
+/** One row of a remotely listed shared folder. */
+export interface SharedFolderEntry {
+  name: string;
+  isDir: boolean;
+}
+
+/**
+ * The immediate children of `prefix` among vault listing keys
+ * (`GET /v1/files/list` returns every object under the prefix). Folders are
+ * collapsed to one row; keys outside the prefix and names Files hides are
+ * dropped. Folders first, then files, each alphabetically.
+ */
+export function sharedFolderEntries(prefix: string, keys: readonly string[]): SharedFolderEntry[] {
+  const dirs = new Set<string>();
+  const files = new Set<string>();
+  for (const key of keys) {
+    if (!key.startsWith(prefix) || key === prefix) continue;
+    const rest = key.slice(prefix.length);
+    const slash = rest.indexOf("/");
+    const name = slash === -1 ? rest : rest.slice(0, slash);
+    if (!name || name.startsWith(".")) continue;
+    if (slash === -1) {
+      if (isSensitiveName(name, false)) continue;
+      files.add(name);
+    } else {
+      if (isSensitiveName(name, true)) continue;
+      dirs.add(name);
+    }
+  }
+  const byName = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: "base" });
+  return [
+    ...[...dirs].sort(byName).map((name) => ({ name, isDir: true })),
+    ...[...files].sort(byName).map((name) => ({ name, isDir: false })),
+  ];
 }
 
 /** Breadcrumb segments for `path` inside `vault`, with the path each one opens. */

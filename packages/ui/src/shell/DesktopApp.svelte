@@ -563,7 +563,7 @@
     type TourEnterAction,
     type TourState,
   } from "../tour/guided-tour.js";
-  import { folderShareLocation, vaultsFor } from "../files/explorer/vault-model.js";
+  import { folderShareTarget, vaultsFor } from "../files/explorer/vault-model.js";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
   import LocalBotDetailPanel from "../chat/LocalBotDetailPanel.svelte";
@@ -606,6 +606,7 @@
     type NavigationEntry,
     type NavigationScrollState,
     type ProjectsFocusTab,
+    type SharedFolderFocus,
   } from "./navigation-history.js";
   import { settleThreadSidebarClose } from "./thread-sidebar-close.js";
   import { resetThreadComposerDrafts } from "../chat/messaging/thread-composer-draft.js";
@@ -1976,6 +1977,8 @@
   /** Files explorer location (vault id + HQ-relative file). */
   let explorerVault = $state<string | null>(null);
   let explorerPath = $state<string | null>(null);
+  /** DM folder share the shared-files view lists remotely (company not synced here). */
+  let sharedFolderFocus = $state<SharedFolderFocus | null>(null);
   let extraPageId = $state<string | null>(null);
   let extraPageParam = $state<string | null>(null);
   /** Which pending request the Requests panel should bring into view first. */
@@ -10574,7 +10577,7 @@
       case "library":
         return { kind: "library", tab: libraryTab, itemId: libraryItemId };
       case "shared-files":
-        return { kind: "shared-files" };
+        return { kind: "shared-files", folder: sharedFolderFocus };
       case "explorer":
         return { kind: "explorer", vault: explorerVault, path: explorerPath };
       case "projects":
@@ -11024,6 +11027,7 @@
         extraPageParam = null;
         break;
       case "shared-files":
+        sharedFolderFocus = next.folder ?? null;
         view = "shared-files";
         settingsSection = null;
         extraPageId = null;
@@ -12436,18 +12440,25 @@
    * A DM folder share ("Shared a folder with you") opens that folder in Files.
    * Its trailing-slash key is not an object, so the attachment preview would
    * fail with "Could not load the file" (feedback 3e124bcd). Without a local
-   * copy of the company, the shared-with-me list is the closest place.
+   * copy of the company, the shared-with-me view lists the folder from the
+   * vault (ACL-filtered) and says which company to sync to open it in Files.
+   * An unknown company lands on the plain shared-with-me list.
    */
   function openFolderShare(item: FileAttachmentModel, companyUid: string | null): void {
-    const location = folderShareLocation(
+    const target = folderShareTarget(
       { vaultPath: item.vaultPath, companyUid: item.companyUid || companyUid || "" },
       effectiveCompanies,
     );
-    if (location) {
-      void navigate({ kind: "explorer", vault: location.vault, path: location.path });
+    if (target?.local) {
+      void navigate({ kind: "explorer", vault: target.local.vault, path: target.local.path });
       return;
     }
-    void navigate({ kind: "shared-files" });
+    void navigate({
+      kind: "shared-files",
+      folder: target
+        ? { companyUid: target.companyUid, companyLabel: target.companyLabel, prefix: target.prefix }
+        : null,
+    });
   }
 
   async function resolveTrayUrl(
@@ -14373,6 +14384,7 @@
         {:else if view === "shared-files"}
           <SharedFilesOverlay
             {adapter}
+            folder={sharedFolderFocus}
             onback={() => {
               void leaveCurrentDestination();
             }}
