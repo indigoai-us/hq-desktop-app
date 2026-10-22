@@ -17,7 +17,7 @@
   import Caret from "../common/Caret.svelte";
   import UsageStackBar from "../home/UsageStackBar.svelte";
   import UsageLevelChip from "../home/UsageLevelChip.svelte";
-  import { levelSegmentColor } from "../home/usage-level-theme.js";
+  import { levelSegmentVars } from "../home/usage-level-theme.js";
   import { observeAccountRow, usageLevelState, usageLevelViewer } from "../home/usage-levels.svelte.js";
   import {
     approvedCheckoutUrl,
@@ -407,7 +407,7 @@
                   <ul class="groups" aria-label="This month by group">
                     {#each view.usage.groups as group (group.id)}
                       <li class="group" class:show={metersOpen[key + ":" + group.id]} title={group.meters.map((m) => `${m.label}: ${m.waived ? "waived" : m.costCents === null ? "not reported" : formatUsd(m.costCents)}${m.rate ? ` (${m.rate})` : ""}`).join("\n")}>
-                        <button type="button" class="g-label g-toggle" aria-pressed={Boolean(metersOpen[key + ":" + group.id])} data-testid="usage-group-toggle" onclick={() => (metersOpen = { ...metersOpen, [key + ":" + group.id]: !metersOpen[key + ":" + group.id] })}><span class="dot" style={`background:${levelSegmentColor(group.id, lvl?.level ?? 0, bar.tone)}`} aria-hidden="true"></span>{group.label}</button>
+                        <button type="button" class="g-label g-toggle" aria-pressed={Boolean(metersOpen[key + ":" + group.id])} data-testid="usage-group-toggle" onclick={() => (metersOpen = { ...metersOpen, [key + ":" + group.id]: !metersOpen[key + ":" + group.id] })}><span class="dot" style={levelSegmentVars("dot", group.id, lvl?.level ?? 0, bar.tone)} aria-hidden="true"></span>{group.label}</button>
                         <span class="g-amt" data-testid="usage-group" data-group={group.id}>{group.cents === null ? "Not reported" : `${group.partial ? "At least " : ""}${formatUsd(group.cents)}`}</span>
                         <span class="g-bar">
                           <UsageStackBar
@@ -756,6 +756,15 @@
     margin-right: 6px;
     border-radius: 2px;
     vertical-align: 0;
+    background: var(--dot);
+  }
+  @media (prefers-color-scheme: dark) {
+    .dot {
+      background: var(--dot-dark, var(--dot));
+    }
+  }
+  :global(:root[data-force-theme="light"]) .dot {
+    background: var(--dot);
   }
 
   /* Facts sit side by side at their natural width; labels never wrap. */

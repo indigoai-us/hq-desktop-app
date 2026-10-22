@@ -16,7 +16,7 @@
   import UsageStackBar from "./UsageStackBar.svelte";
   import UsageLevelChip from "./UsageLevelChip.svelte";
   import UsageLevelMark from "./UsageLevelMark.svelte";
-  import { levelSegmentColor } from "./usage-level-theme.js";
+  import { levelSegmentVars } from "./usage-level-theme.js";
   import { observeCoreView, usageLevelState, usageLevelViewer } from "./usage-levels.svelte.js";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import {
@@ -488,7 +488,7 @@
       <ul class="core-usage-rows" data-testid="core-usage-rows">
         {#each usage.rows as row (row.id)}
           <li class="core-usage-row" data-testid="core-usage-row" data-group={row.id}>
-            <span class="core-usage-row-label"><span class="core-usage-dot" style={`background:${levelSegmentColor(row.id, level, meterTone)}`} aria-hidden="true"></span>{row.label}</span>
+            <span class="core-usage-row-label"><span class="core-usage-dot" style={levelSegmentVars("dot", row.id, level, meterTone)} aria-hidden="true"></span>{row.label}</span>
             {#if row.amount.kind === "amount"}
               <span
                 class="core-usage-row-amount"
@@ -721,6 +721,15 @@
     margin-right: 6px;
     border-radius: 2px;
     vertical-align: 1px;
+    background: var(--dot);
+  }
+  @media (prefers-color-scheme: dark) {
+    .core-usage-dot {
+      background: var(--dot-dark, var(--dot));
+    }
+  }
+  :global(:root[data-force-theme="light"]) .core-usage-dot {
+    background: var(--dot);
   }
 
   .core-usage-rows {

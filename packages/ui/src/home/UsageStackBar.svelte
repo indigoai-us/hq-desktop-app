@@ -33,7 +33,7 @@
    */
   import { onMount, untrack } from "svelte";
   import { type StackMarker, type StackSegment, type StackTone } from "./usage-stack.js";
-  import { levelHasSheen, levelPaletteActive, levelSegmentColor } from "./usage-level-theme.js";
+  import { levelHasSheen, levelPaletteActive, levelSegmentVars } from "./usage-level-theme.js";
 
   let {
     segments,
@@ -156,7 +156,7 @@
   <span class="track">
     <span class="fill" style={`--reveal:${reveal}%;`} data-reveal={Math.round(fillPct)}>
       {#each parts as part (part.id)}
-        <span class="seg" data-segment={part.id} style={`width:${part.pct}%;--seg:${levelSegmentColor(part.id, level, tone)};`}></span>
+        <span class="seg" data-segment={part.id} style={`width:${part.pct}%;${levelSegmentVars("seg", part.id, level, tone)}`}></span>
       {/each}
       {#if sheen}<span class="sheen" aria-hidden="true" data-testid="usage-bar-sheen"></span>{/if}
     </span>
@@ -214,6 +214,16 @@
   .seg {
     flex: none;
     height: 100%;
+    background: var(--seg);
+  }
+
+  /* Each level has a dark palette, so the parts stay 3:1 on dark surfaces. */
+  @media (prefers-color-scheme: dark) {
+    .seg {
+      background: var(--seg-dark, var(--seg));
+    }
+  }
+  :global(:root[data-force-theme="light"]) .seg {
     background: var(--seg);
   }
 

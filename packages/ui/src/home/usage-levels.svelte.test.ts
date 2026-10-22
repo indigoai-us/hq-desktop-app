@@ -319,6 +319,21 @@ describe("levels from the usage history (hq-pro #5087)", () => {
     expect(usageLevelState("cmp_ridge")?.level).toBe(4);
   });
 
+  it("a fresh device does not repeat the card for a past month the server still marks incomplete", async () => {
+    // hq-pro marks a closed month incomplete when one of its meters is
+    // missing; the person most likely saw its card on another computer.
+    const storage = memory();
+    setUsageLevelViewer("prs_owner");
+    useHistory([
+      { month: "2026-08", usageCents: 61_000, complete: false },
+      { month: "2026-10", usageCents: 2_000, complete: false },
+    ]);
+    observeUsageLevel("cmp_ridge", "Ridge", { periodStart: "2026-10-01", cents: 2_000 }, { storage });
+    await flush();
+    expect(usageLevelState("cmp_ridge")).toMatchObject({ level: 4, bestMonth: "2026-08" });
+    expect(levelToasts()).toHaveLength(0);
+  });
+
   it("a fresh device still gets the card for a higher level this month reached", async () => {
     const storage = memory();
     setUsageLevelViewer("prs_owner");

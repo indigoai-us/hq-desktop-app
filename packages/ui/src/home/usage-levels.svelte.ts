@@ -268,11 +268,15 @@ function finishHistoryRead(accountKey: string, read: HistoryRead, history: Usage
   read.held = null;
   if (history && read.fresh && loadCardRecord(storage, read.viewer, accountKey) === null) {
     // A device with no record of its own for this person and account: the
-    // person most likely saw the cards for levels the closed months reached
-    // on another device, so those count as shown. A higher level this month
-    // reaches is not covered and still gets its card.
-    const closedLevel = levelForCents(bestOfMonths(history.closed)?.cents ?? 0);
-    if (closedLevel > 0) saveCardRecord(storage, read.viewer, accountKey, { announced: closedLevel });
+    // person most likely saw the cards for levels the earlier months reached
+    // on another device, so those count as shown. Every month before this
+    // one counts, complete or not: hq-pro marks a past month incomplete when
+    // a meter is missing, and its level was still shown when it was reached.
+    // A higher level this month reaches is not covered and still gets its card.
+    const current = monthOf(held?.input.periodStart) ?? monthOf(new Date().toISOString());
+    const earlier = history.months.filter((m) => current === null || m.month < current);
+    const earlierLevel = levelForCents(bestOfMonths(earlier)?.cents ?? 0);
+    if (earlierLevel > 0) saveCardRecord(storage, read.viewer, accountKey, { announced: earlierLevel });
   }
   if (held) {
     observeUsageLevel(accountKey, held.accountName, held.input, held.opts);
