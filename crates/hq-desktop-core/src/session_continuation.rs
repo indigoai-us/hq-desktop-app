@@ -34,13 +34,23 @@ use sha2::{Digest, Sha256};
 /// different one is not understood, and not understood means disabled.
 pub const SUPPORTED_PROTOCOL_VERSION: u32 = 1;
 
-/// How long a pending attempt may live. Matches the loopback listener's own
-/// five-minute timeout, so neither side outlives the other.
-pub const ATTEMPT_LIFETIME: Duration = Duration::from_secs(300);
+/// How long a provider-less attempt waits for the browser to come back.
+///
+/// The loopback listener for that attempt uses this same bound, so neither
+/// side outlives the other. Ninety seconds is long enough to finish in the
+/// browser and short enough that a website error is not a five-minute dead
+/// end. A named-provider sign-in keeps its own longer listener timeout.
+pub const CALLBACK_WINDOW: Duration = Duration::from_secs(90);
 
-/// How long the "Continue as …" confirmation stays answerable, bounded by the
-/// attempt deadline — a confirmation window cannot extend an expired attempt.
+/// How long the "Continue as …" confirmation stays answerable once tokens
+/// arrive, bounded by the attempt deadline.
 pub const CONFIRMATION_WINDOW: Duration = Duration::from_secs(120);
+
+/// How long a pending attempt may live in total: the longest browser wait
+/// followed by a full confirmation window. The browser wait alone must not
+/// cut the confirmation short.
+pub const ATTEMPT_LIFETIME: Duration =
+    Duration::from_secs(CALLBACK_WINDOW.as_secs() + CONFIRMATION_WINDOW.as_secs());
 
 /// Longest a config response is trusted before it is fetched again.
 pub const CONFIG_CACHE_TTL: Duration = Duration::from_secs(120);
@@ -231,6 +241,11 @@ pub type EpochMillis = i64;
 pub enum AttemptPhase {
     /// Browser opened; waiting for the loopback callback.
     AwaitingCallback,
+    /// The callback arrived inside the browser wait. The code exchange and the
+    /// backend check are running. Only the attempt lifetime bounds this phase:
+    /// the browser wait measures when the person finished in the browser, not
+    /// how long Cognito and hq-pro take to answer afterwards.
+    Exchanging,
     /// Tokens are held in memory, unwritten, waiting for the person to confirm.
     AwaitingConfirmation { confirm_deadline: EpochMillis },
     /// Over. Nothing further will be accepted.
@@ -274,6 +289,8 @@ pub struct ContinuationAttempt {
     /// without any of the transitions having to find and cancel this attempt.
     auth_generation: u64,
     started_at: EpochMillis,
+    /// When the browser wait ends if no callback has arrived.
+    callback_deadline: EpochMillis,
     deadline: EpochMillis,
     phase: AttemptPhase,
 }
@@ -292,6 +309,7 @@ impl ContinuationAttempt {
             nonce: nonce.into(),
             auth_generation,
             started_at: now,
+            callback_deadline: now + CALLBACK_WINDOW.as_millis() as i64,
             deadline: now + ATTEMPT_LIFETIME.as_millis() as i64,
             phase: AttemptPhase::AwaitingCallback,
         }
@@ -340,7 +358,7 @@ impl ContinuationAttempt {
     /// loopback listener too, and that listener is addressed by state. Without
     /// it, pressing **Use another account** would drop the custody entry while
     /// the native listener kept both sockets and the blur-suppression flag
-    /// alive until a callback or the five-minute timeout — a Cancel that
+    /// alive until a callback or the callback window — a Cancel that
     /// visibly cancels nothing.
     ///
     /// Not a secret in the sense a token is: it is a per-attempt random value
@@ -350,16 +368,37 @@ impl ContinuationAttempt {
         &self.state
     }
 
+    /// The loopback callback arrived. From here the browser-wait cutoff no
+    /// longer applies, so a callback at 89 s whose exchange and verification
+    /// finish at 92 s still reaches the confirmation prompt.
+    ///
+    /// Refused once the attempt is over, and refused for a second callback.
+    pub fn callback_arrived(&mut self, now: EpochMillis) -> Result<(), AttemptEnd> {
+        self.tick(now);
+        match self.phase {
+            AttemptPhase::AwaitingCallback => {
+                self.phase = AttemptPhase::Exchanging;
+                Ok(())
+            }
+            AttemptPhase::Exchanging | AttemptPhase::AwaitingConfirmation { .. } => {
+                Err(AttemptEnd::Failed)
+            }
+            AttemptPhase::Finished(end) => Err(end),
+        }
+    }
+
     /// Fold in the passage of time. Call before every decision.
     pub fn tick(&mut self, now: EpochMillis) {
         if self.is_finished() {
             return;
         }
-        let confirm_deadline = match &self.phase {
-            AttemptPhase::AwaitingConfirmation { confirm_deadline } => Some(*confirm_deadline),
-            _ => None,
+        let effective = match &self.phase {
+            AttemptPhase::AwaitingConfirmation { confirm_deadline } => {
+                (*confirm_deadline).min(self.deadline)
+            }
+            AttemptPhase::Exchanging => self.deadline,
+            _ => self.callback_deadline.min(self.deadline),
         };
-        let effective = confirm_deadline.map_or(self.deadline, |c| c.min(self.deadline));
         if now >= effective {
             self.phase = AttemptPhase::Finished(AttemptEnd::Expired);
         }
@@ -373,7 +412,7 @@ impl ContinuationAttempt {
     pub fn tokens_received(&mut self, now: EpochMillis) -> Result<(), AttemptEnd> {
         self.tick(now);
         match self.phase {
-            AttemptPhase::AwaitingCallback => {
+            AttemptPhase::AwaitingCallback | AttemptPhase::Exchanging => {
                 let confirm_deadline =
                     (now + CONFIRMATION_WINDOW.as_millis() as i64).min(self.deadline);
                 self.phase = AttemptPhase::AwaitingConfirmation { confirm_deadline };
@@ -402,7 +441,7 @@ impl ContinuationAttempt {
                 self.phase = AttemptPhase::Finished(AttemptEnd::Activated);
                 ConfirmOutcome::Activate
             }
-            AttemptPhase::AwaitingCallback => {
+            AttemptPhase::AwaitingCallback | AttemptPhase::Exchanging => {
                 // Nothing to confirm yet. Not an error state to end on, but not
                 // an activation either.
                 ConfirmOutcome::Discard(AttemptEnd::Failed)
@@ -743,8 +782,90 @@ mod tests {
     }
 
     #[test]
-    fn an_attempt_expires_after_five_minutes() {
+    fn a_browser_wait_with_no_callback_expires_after_ninety_seconds() {
+        // A person who is staring at a broken website sign-in should not wait
+        // five minutes. Ninety seconds is the backstop for the browser wait;
+        // one second earlier the attempt is still alive.
+        assert_eq!(CALLBACK_WINDOW, std::time::Duration::from_secs(90));
+        let mut live = attempt();
+        assert!(live.tokens_received(NOW + 89_000).is_ok());
         let mut attempt = attempt();
+        assert_eq!(
+            attempt.tokens_received(NOW + CALLBACK_WINDOW.as_millis() as i64),
+            Err(AttemptEnd::Expired)
+        );
+        let mut waiting = self::attempt();
+        waiting.tick(NOW + CALLBACK_WINDOW.as_millis() as i64);
+        assert_eq!(
+            waiting.phase(),
+            &AttemptPhase::Finished(AttemptEnd::Expired)
+        );
+    }
+
+    #[test]
+    fn tokens_that_arrive_late_in_the_wait_still_get_a_full_confirmation() {
+        // A new user picks Google on the website, chooses an account and
+        // passes 2FA. That takes 80 seconds. They then read "Continue as …"
+        // and press it 70 seconds later. The browser wait is 90 seconds; the
+        // confirmation that follows it is a full two minutes, not the ten
+        // seconds that would be left if the wait capped it.
+        let mut attempt = attempt();
+        attempt.tokens_received(NOW + 80_000).unwrap();
+        match attempt.phase() {
+            AttemptPhase::AwaitingConfirmation { confirm_deadline } => {
+                assert_eq!(
+                    *confirm_deadline,
+                    NOW + 80_000 + CONFIRMATION_WINDOW.as_millis() as i64
+                );
+            }
+            other => panic!("expected a confirmation window, got {other:?}"),
+        }
+        assert_eq!(attempt.confirm(NOW + 150_000, 7), ConfirmOutcome::Activate);
+    }
+
+    #[test]
+    fn a_confirmation_window_cannot_outlive_the_attempt() {
+        // The attempt lifetime covers the longest browser wait plus a full
+        // confirmation window, and no more. Even tokens that arrive at the
+        // last moment of the wait expire with their window.
+        let mut attempt = attempt();
+        let last = NOW + CALLBACK_WINDOW.as_millis() as i64 - 1;
+        attempt.tokens_received(last).unwrap();
+        assert_eq!(
+            attempt.confirm(last + CONFIRMATION_WINDOW.as_millis() as i64, 7),
+            ConfirmOutcome::Discard(AttemptEnd::Expired)
+        );
+        assert!(ATTEMPT_LIFETIME >= CALLBACK_WINDOW + CONFIRMATION_WINDOW);
+    }
+
+    #[test]
+    fn a_callback_inside_the_wait_survives_a_slow_exchange() {
+        // The person finishes in the browser at 89 s. The Cognito exchange and
+        // the hq-pro check take three seconds, so the tokens land at 92 s. The
+        // cutoff applies to when the callback arrived, so the tokens are held
+        // and the person can still confirm at 200 s.
+        let mut attempt = attempt();
+        assert_eq!(attempt.callback_arrived(NOW + 89_000), Ok(()));
+        assert_eq!(attempt.phase(), &AttemptPhase::Exchanging);
+        attempt.tick(NOW + 92_000);
+        assert_eq!(attempt.phase(), &AttemptPhase::Exchanging);
+        assert_eq!(attempt.tokens_received(NOW + 92_000), Ok(()));
+        assert_eq!(attempt.confirm(NOW + 200_000, 7), ConfirmOutcome::Activate);
+    }
+
+    #[test]
+    fn a_callback_after_the_wait_is_refused() {
+        let mut attempt = attempt();
+        assert_eq!(
+            attempt.callback_arrived(NOW + CALLBACK_WINDOW.as_millis() as i64),
+            Err(AttemptEnd::Expired)
+        );
+    }
+
+    #[test]
+    fn an_exchange_that_never_returns_ends_with_the_attempt() {
+        let mut attempt = attempt();
+        attempt.callback_arrived(NOW + 89_000).unwrap();
         assert_eq!(
             attempt.tokens_received(NOW + ATTEMPT_LIFETIME.as_millis() as i64),
             Err(AttemptEnd::Expired)
@@ -752,22 +873,18 @@ mod tests {
     }
 
     #[test]
-    fn a_confirmation_window_cannot_outlive_the_attempt() {
-        // Tokens arrive 30 seconds before the attempt deadline. The two-minute
-        // confirmation window would run past it; the attempt deadline wins.
+    fn a_second_callback_during_the_exchange_is_refused() {
         let mut attempt = attempt();
-        let late = NOW + ATTEMPT_LIFETIME.as_millis() as i64 - 30_000;
-        attempt.tokens_received(late).unwrap();
-        match attempt.phase() {
-            AttemptPhase::AwaitingConfirmation { confirm_deadline } => {
-                assert_eq!(*confirm_deadline, NOW + ATTEMPT_LIFETIME.as_millis() as i64);
-            }
-            other => panic!("expected a confirmation window, got {other:?}"),
-        }
+        attempt.callback_arrived(NOW).unwrap();
         assert_eq!(
-            attempt.confirm(late + 60_000, 7),
-            ConfirmOutcome::Discard(AttemptEnd::Expired)
+            attempt.callback_arrived(NOW + 1_000),
+            Err(AttemptEnd::Failed)
         );
+        assert_eq!(
+            attempt.confirm(NOW + 1_000, 7),
+            ConfirmOutcome::Discard(AttemptEnd::Failed)
+        );
+        assert_eq!(attempt.tokens_received(NOW + 2_000), Ok(()));
     }
 
     #[test]

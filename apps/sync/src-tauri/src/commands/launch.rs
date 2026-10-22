@@ -113,16 +113,201 @@ pub(crate) fn unix_terminal_shell_command(
     binary: &str,
     prompt: Option<&str>,
 ) -> String {
-    let escaped_path = path.replace('\'', "'\\''");
+    format!(
+        "cd {} && {}",
+        posix_single_quote(path),
+        unix_terminal_tool_command(binary, prompt)
+    )
+}
+
+/// `<binary>` and, with a prompt, ` -- '<prompt>'`: the part of
+/// [`unix_terminal_shell_command`] after the `cd`.
+fn unix_terminal_tool_command(binary: &str, prompt: Option<&str>) -> String {
     match prompt {
-        Some(prompt) => format!(
-            "cd '{}' && {} -- {}",
-            escaped_path,
-            binary,
-            posix_single_quote(prompt)
-        ),
-        None => format!("cd '{}' && {}", escaped_path, binary),
+        Some(prompt) => format!("{binary} -- {}", posix_single_quote(prompt)),
+        None => binary.to_string(),
     }
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+/// POSIX sh text that puts each managed CLI dir (the npm bin holding hq, qmd
+/// and claude, then the managed node bin) at the front of PATH unless it is
+/// already there. Dirs are prepended last to first so they end up in
+/// `managed` order. A dir that is empty or holds a `:` or a control
+/// character cannot go on PATH and is skipped. No usable dir gives an empty
+/// prefix.
+///
+/// A dir already on PATH is left where it is, so a user's own earlier `hq`
+/// (or a stale `npm -g` copy listed before the managed dir by an rc file)
+/// still wins in that case; only missing dirs are added. Users without the
+/// installer rc block get HQ's Node and npm first in the session, ahead of
+/// volta or nvm project pins.
+pub(crate) fn unix_terminal_path_prefix(managed: &[PathBuf]) -> String {
+    let mut dirs: Vec<String> = Vec::new();
+    for dir in managed {
+        let dir = dir.to_string_lossy();
+        let unusable = dir.is_empty() || dir.contains(':') || dir.chars().any(char::is_control);
+        if !unusable && !dirs.iter().any(|seen| seen.as_str() == dir) {
+            dirs.push(dir.into_owned());
+        }
+    }
+    if dirs.is_empty() {
+        return String::new();
+    }
+    // One loop names each dir once, which keeps the line Terminal types
+    // short (see `TERMINAL_TYPED_LINE_MAX_BYTES`).
+    let list: Vec<String> = dirs
+        .iter()
+        .rev()
+        .map(|dir| posix_single_quote(dir))
+        .collect();
+    format!(
+        "for d in {}; do case \":$PATH:\" in *\":$d:\"*|*\":$d/:\"*) ;; *) PATH=\"$d${{PATH:+:$PATH}}\";; esac; done; export PATH; ",
+        list.join(" ")
+    )
+}
+
+/// Longest line the app types into a new Terminal window. Terminal's
+/// `do script` usually types while the login shell is still reading its rc
+/// files, and macOS drops typed-ahead input over about 1,024 bytes (the
+/// whole line, newline included). Anything longer goes through a script
+/// file (see [`unix_terminal_launch`]).
+pub(crate) const TERMINAL_TYPED_LINE_MAX_BYTES: usize = 900;
+
+/// What a macOS Terminal launch types, and the script file it needs first.
+#[cfg_attr(windows, allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct TerminalLaunch {
+    /// The line typed into Terminal. Always at most
+    /// `TERMINAL_TYPED_LINE_MAX_BYTES` bytes.
+    pub line: String,
+    /// `Some(text)` when `line` runs a script file: the caller must write
+    /// `text` to the script path (new file, mode 0600) before typing `line`.
+    pub script: Option<String>,
+}
+
+/// True when `path` can be typed into any login shell (sh, zsh, bash,
+/// fish, tcsh) unquoted and is read the same way by all of them.
+fn is_plain_shell_word(path: &str) -> bool {
+    !path.is_empty()
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'_' | b'-'))
+}
+
+/// The Terminal launch for a session. When the session line from
+/// [`unix_terminal_session_command`] fits in
+/// `TERMINAL_TYPED_LINE_MAX_BYTES`, it is typed as is. Otherwise (a long
+/// prompt, folder or home path) the `cd`, the PATH change and the tool go
+/// into a `/bin/sh` script at `script_path` and the typed line is only
+/// `/bin/sh <script_path>`. The script deletes itself when it starts.
+/// `script_path` must be a plain shell word (letters, digits, `/._-`) so
+/// every login shell reads it unquoted; the prompt and folder are only ever
+/// inside the script, POSIX-quoted.
+pub(crate) fn unix_terminal_launch(
+    path: &str,
+    binary: &str,
+    prompt: Option<&str>,
+    managed: &[PathBuf],
+    script_path: &std::path::Path,
+) -> Result<TerminalLaunch, String> {
+    let line = unix_terminal_session_command(path, binary, prompt, managed);
+    if line.len() <= TERMINAL_TYPED_LINE_MAX_BYTES {
+        return Ok(TerminalLaunch { line, script: None });
+    }
+    let script_path = script_path
+        .to_str()
+        .filter(|p| is_plain_shell_word(p))
+        .ok_or_else(|| "terminal script path is not a plain shell word".to_string())?;
+    let line = format!("/bin/sh {script_path}");
+    if line.len() > TERMINAL_TYPED_LINE_MAX_BYTES {
+        return Err("terminal script path is too long".to_string());
+    }
+    let script = format!(
+        "rm -f -- {}\ncd {} || exit 1\n{}exec {}\n",
+        posix_single_quote(script_path),
+        posix_single_quote(path),
+        unix_terminal_path_prefix(managed),
+        unix_terminal_tool_command(binary, prompt)
+    );
+    Ok(TerminalLaunch {
+        line,
+        script: Some(script),
+    })
+}
+
+/// A new, unused script path for [`unix_terminal_launch`]: the user's temp
+/// dir when its path is a plain shell word, else `/tmp`.
+#[cfg(not(windows))]
+fn terminal_script_path() -> PathBuf {
+    let dir = std::env::temp_dir();
+    let dir = if dir.to_str().is_some_and(is_plain_shell_word) {
+        dir
+    } else {
+        PathBuf::from("/tmp")
+    };
+    dir.join(format!("hq-terminal-{}.sh", uuid::Uuid::new_v4().simple()))
+}
+
+/// Write a launch script as a new file only the user can read. `create_new`
+/// fails rather than following a planted file or symlink.
+#[cfg(not(windows))]
+fn write_terminal_script(path: &std::path::Path, text: &str) -> Result<(), String> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| format!("Failed to create terminal script: {e}"))?;
+    file.write_all(text.as_bytes())
+        .map_err(|e| format!("Failed to write terminal script: {e}"))
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+/// The line Terminal runs for a session: [`unix_terminal_shell_command`]
+/// with the managed CLI dirs put on PATH first (see
+/// [`unix_terminal_path_prefix`]). Terminal hands the line to the user's
+/// login shell, which may be zsh, bash, fish, tcsh or another shell, and
+/// those shells quote differently: fish reads `\'` inside single quotes and
+/// csh expands `!` there. So the PATH change and the tool run in `/bin/sh`
+/// from a base64-encoded script; after the `cd`, which is the same as
+/// before, the login shell only parses fixed text and base64 characters.
+/// The PATH change runs after the user's rc files, so their PATH is kept,
+/// and it writes no file. With no usable managed dir the line is unchanged.
+pub(crate) fn unix_terminal_session_command(
+    path: &str,
+    binary: &str,
+    prompt: Option<&str>,
+    managed: &[PathBuf],
+) -> String {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let prefix = unix_terminal_path_prefix(managed);
+    if prefix.is_empty() {
+        return unix_terminal_shell_command(path, binary, prompt);
+    }
+    let script = STANDARD.encode(format!(
+        "{prefix}exec {}",
+        unix_terminal_tool_command(binary, prompt)
+    ));
+    format!(
+        "cd {} && /bin/sh -c 'eval \"$(echo {script} | /usr/bin/base64 --decode)\"'",
+        posix_single_quote(path)
+    )
+}
+
+/// `base` PATH for a child the app spawns, with the managed CLI dirs that
+/// exist on this machine put in front unless already present. A dir already
+/// in `base` keeps its place, so where `base` is the extended search path
+/// (which lists the managed Node bin before the npm bin) the order is
+/// unchanged and this only adds a dir `base` lacks.
+fn managed_cli_child_path(base: &str) -> String {
+    hq_desktop_core::paths::path_with_managed_cli(
+        Some(base),
+        &hq_desktop_core::paths::managed_cli_session_dirs(),
+        cfg!(windows),
+    )
 }
 
 /// Wrap a shell line in the AppleScript that opens it in Terminal. Inside an
@@ -469,15 +654,18 @@ fn launch_codex_workspace_impl(path: String, prompt: Option<String>) -> Result<(
             target.display()
         ));
     }
+    let child_path = managed_cli_child_path(&crate::commands::install_deps::extended_search_path());
     let output = match bundled_codex_bin() {
         Some(bin) => Command::new(bin)
             .args(["app", &target.to_string_lossy()])
+            .env("PATH", &child_path)
             .output(),
         None => {
             let escaped = target.to_string_lossy().replace('\'', "'\\''");
             let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
             Command::new(shell)
                 .args(["-lc", &format!("codex app '{escaped}'")])
+                .env("PATH", &child_path)
                 .output()
         }
     }
@@ -528,7 +716,7 @@ fn launch_codex_workspace_impl(path: String, prompt: Option<String>) -> Result<(
         .args(["/C", "codex", "app", &target.to_string_lossy()])
         .env(
             "PATH",
-            crate::commands::install_deps::extended_search_path(),
+            managed_cli_child_path(&crate::commands::install_deps::extended_search_path()),
         )
         .output()
         .map_err(|e| format!("failed to run codex app: {e}"))?;
@@ -577,7 +765,9 @@ fn claude_args(permission_mode: Option<&str>, prompt: Option<&str>, quote: fn(&s
     let mut args: Vec<String> = Vec::new();
     match permission_mode.map(str::trim).filter(|m| !m.is_empty()) {
         None => {}
-        Some(mode) if CLAUDE_PERMISSION_MODES.contains(&mode) => args.push(format!("--permission-mode {mode}")),
+        Some(mode) if CLAUDE_PERMISSION_MODES.contains(&mode) => {
+            args.push(format!("--permission-mode {mode}"))
+        }
         Some(mode) => return Err(format!("unknown Claude permission mode: {mode}")),
     }
     let line = prompt
@@ -640,13 +830,30 @@ fn spawn_cli_terminal_unix_with_prompt(
     binary: &str,
     prompt: Option<&str>,
 ) -> Result<(), String> {
-    let script = terminal_applescript(&unix_terminal_shell_command(path, binary, prompt));
+    let script_path = terminal_script_path();
+    let launch = unix_terminal_launch(
+        path,
+        binary,
+        prompt,
+        &hq_desktop_core::paths::managed_cli_session_dirs(),
+        &script_path,
+    )?;
+    if let Some(text) = &launch.script {
+        write_terminal_script(&script_path, text)?;
+    }
+    let script = terminal_applescript(&launch.line);
 
     let output = Command::new("osascript")
         .arg("-e")
         .arg(&script)
         .output()
-        .map_err(|e| format!("Failed to spawn osascript: {e}"))?;
+        .map_err(|e| format!("Failed to spawn osascript: {e}"));
+    let failed = !matches!(&output, Ok(out) if out.status.success());
+    if failed && launch.script.is_some() {
+        // Terminal never ran the script, so nothing else will delete it.
+        let _ = std::fs::remove_file(&script_path);
+    }
+    let output = output?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -777,7 +984,7 @@ fn spawn_cli_terminal_windows_command(
     prompt: Option<&str>,
 ) -> Result<(), String> {
     let escaped = powershell_single_quote_escape(path);
-    let search_path = extended_search_path();
+    let search_path = managed_cli_child_path(&extended_search_path());
     find_in_search_path(binary, &search_path)
         .ok_or_else(|| format!("Could not find {binary} on PATH"))?;
     let wt = find_in_search_path("wt.exe", &search_path)
@@ -1277,6 +1484,448 @@ end tell"#
     fn applescript_literal_round_trips_to_the_shell_line() {
         let prompt = sanitize_terminal_prompt(Some(HOSTILE)).unwrap();
         let shell_cmd = unix_terminal_shell_command("/Users/me/HQ", "grok", Some(&prompt));
+        let script = terminal_applescript(&shell_cmd);
+        let literal = script
+            .split("do script ")
+            .nth(1)
+            .unwrap()
+            .split("\nend tell")
+            .next()
+            .unwrap();
+        let out = Command::new("osascript")
+            .arg("-e")
+            .arg(format!("return {literal}"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(out.stdout)
+                .unwrap()
+                .trim_end_matches('\n'),
+            shell_cmd
+        );
+    }
+
+    /// Runs `prefix` then prints PATH in a clean `/bin/sh` with PATH set to
+    /// `path`.
+    #[cfg(unix)]
+    fn sh_path_after(prefix: &str, path: &str) -> String {
+        let out = Command::new("/bin/sh")
+            .env_clear()
+            .env("PATH", path)
+            .arg("-c")
+            .arg(format!("{prefix}printf %s \"$PATH\""))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    #[cfg(unix)]
+    fn managed_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let npm = dir.path().join("it's a toolchain/npm-global/bin");
+        let node = dir.path().join("it's a toolchain/node/bin");
+        (dir, npm, node)
+    }
+
+    /// Login shells Terminal may hand the session line to, with the flags
+    /// that keep each one from reading the user's rc files. Only the ones
+    /// installed here are returned; `/bin/sh` is always among them.
+    #[cfg(unix)]
+    fn login_shells() -> Vec<(&'static str, &'static [&'static str])> {
+        let shells: [(&'static str, &'static [&'static str]); 6] = [
+            ("/bin/sh", &[]),
+            ("/bin/zsh", &["-f"]),
+            ("/bin/bash", &["--norc", "--noprofile"]),
+            ("/bin/tcsh", &["-f"]),
+            ("/bin/csh", &["-f"]),
+            ("/bin/dash", &[]),
+        ];
+        let found: Vec<_> = shells
+            .into_iter()
+            .filter(|(shell, _)| std::path::Path::new(shell).exists())
+            .collect();
+        assert!(found.iter().any(|(shell, _)| *shell == "/bin/sh"));
+        found
+    }
+
+    /// Runs a Terminal session line in `shell` the way Terminal would, after
+    /// the rc files have set PATH to `path`, and returns its stdout.
+    #[cfg(unix)]
+    fn run_session_line(shell: &str, flags: &[&str], line: &str, path: &str) -> String {
+        let out = Command::new(shell)
+            .env_clear()
+            .env("PATH", path)
+            .args(flags)
+            .arg("-c")
+            .arg(line)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{shell}: {}\n{line}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .trim_end_matches('\n')
+            .to_string()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_path_includes_the_managed_cli_dirs_first() {
+        let (_dir, npm, node) = managed_fixture();
+        let prefix = unix_terminal_path_prefix(&[npm.clone(), node.clone()]);
+        assert_eq!(
+            sh_path_after(&prefix, "/usr/bin:/bin"),
+            format!("{}:{}:/usr/bin:/bin", npm.display(), node.display())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_path_keeps_the_existing_path_in_order() {
+        let (_dir, npm, _node) = managed_fixture();
+        let prefix = unix_terminal_path_prefix(std::slice::from_ref(&npm));
+        let existing = "/opt/homebrew/bin:/Users/me/.cargo/bin:/usr/bin:/bin";
+        assert_eq!(
+            sh_path_after(&prefix, existing),
+            format!("{}:{existing}", npm.display())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_path_does_not_add_a_dir_that_is_already_there() {
+        let (_dir, npm, node) = managed_fixture();
+        let prefix = unix_terminal_path_prefix(&[npm.clone(), node.clone()]);
+        let existing = format!("/usr/bin:{}:/bin:{}/", npm.display(), node.display());
+        assert_eq!(sh_path_after(&prefix, &existing), existing);
+
+        // Running the prefix twice (a nested shell) adds nothing the second time.
+        let once = sh_path_after(&prefix, "/usr/bin");
+        assert_eq!(
+            sh_path_after(&format!("{prefix}{prefix}"), "/usr/bin"),
+            once
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_path_without_a_path_has_no_empty_entry() {
+        let (_dir, npm, node) = managed_fixture();
+        let prefix = unix_terminal_path_prefix(&[npm.clone(), node.clone()]);
+        // An empty PATH, not an unset one: sh fills in its own default when PATH is unset.
+        assert_eq!(
+            sh_path_after(&prefix, ""),
+            format!("{}:{}", npm.display(), node.display())
+        );
+    }
+
+    #[test]
+    fn session_path_prefix_skips_dirs_that_cannot_go_on_path() {
+        let managed = [
+            PathBuf::from(""),
+            PathBuf::from("/a:b/bin"),
+            PathBuf::from("/a\nb/bin"),
+            PathBuf::from("/ok/bin"),
+            PathBuf::from("/ok/bin"),
+        ];
+        let prefix = unix_terminal_path_prefix(&managed);
+        assert_eq!(prefix.matches("/ok/bin").count(), 1, "{prefix}");
+        assert!(!prefix.contains("/a"), "{prefix}");
+    }
+
+    #[test]
+    fn session_line_is_unchanged_without_managed_dirs() {
+        assert_eq!(unix_terminal_path_prefix(&[]), "");
+        assert_eq!(
+            unix_terminal_session_command("/Users/me/HQ", "codex", Some("hi"), &[]),
+            unix_terminal_shell_command("/Users/me/HQ", "codex", Some("hi"))
+        );
+        assert_eq!(
+            unix_terminal_session_command("/Users/me/HQ", "codex", None, &[PathBuf::from("/a:b")]),
+            unix_terminal_shell_command("/Users/me/HQ", "codex", None)
+        );
+    }
+
+    /// The session line puts the managed dirs on PATH, keeps the existing
+    /// PATH, changes to the folder and passes the prompt through unchanged in
+    /// every login shell installed here, csh-family shells included.
+    #[cfg(unix)]
+    #[test]
+    fn session_line_puts_the_managed_dirs_on_path_in_every_login_shell() {
+        let (dir, npm, node) = managed_fixture();
+        let folder = dir.path().join("it's my \"HQ\" $HOME");
+        std::fs::create_dir_all(&folder).unwrap();
+        let folder = folder.canonicalize().unwrap();
+        let folder_str = folder.to_str().unwrap();
+        let managed = [npm.clone(), node.clone()];
+        let path_line =
+            unix_terminal_session_command(folder_str, "/usr/bin/printenv", Some("PATH"), &managed);
+        let pwd_line = unix_terminal_session_command(folder_str, "/bin/pwd", None, &managed);
+        let prompt = "it's \\ \"q\" !x $HOME `id`\nline two";
+        let echo_line =
+            unix_terminal_session_command(folder_str, "/bin/echo", Some(prompt), &managed);
+        for (shell, flags) in login_shells() {
+            assert_eq!(
+                run_session_line(shell, flags, &path_line, "/usr/bin:/bin"),
+                format!("{}:{}:/usr/bin:/bin", npm.display(), node.display()),
+                "{shell}"
+            );
+            let already = format!("/usr/bin:{}:{}:/bin", npm.display(), node.display());
+            assert_eq!(
+                run_session_line(shell, flags, &path_line, &already),
+                already,
+                "{shell}"
+            );
+            assert_eq!(
+                run_session_line(shell, flags, &pwd_line, "/usr/bin:/bin"),
+                folder_str,
+                "{shell}"
+            );
+            assert_eq!(
+                run_session_line(shell, flags, &echo_line, "/usr/bin:/bin"),
+                format!("-- {prompt}"),
+                "{shell}"
+            );
+        }
+    }
+
+    /// After the `cd`, the login shell only sees fixed text and base64, so
+    /// fish (which reads `\'` inside single quotes) and csh (which expands
+    /// `!`) parse it the same way sh does.
+    #[test]
+    fn session_line_gives_the_login_shell_only_fixed_text_after_the_cd() {
+        let line = unix_terminal_session_command(
+            "/Users/o'neil/HQ",
+            "claude",
+            Some("it's \\ done!"),
+            &[PathBuf::from("/m/it's/npm-global/bin")],
+        );
+        let (cd, rest) = line.split_once(" && ").unwrap();
+        assert_eq!(cd, "cd '/Users/o'\\''neil/HQ'");
+        let script = rest
+            .strip_prefix("/bin/sh -c 'eval \"$(echo ")
+            .and_then(|rest| rest.strip_suffix(" | /usr/bin/base64 --decode)\"'"))
+            .unwrap_or_else(|| panic!("{line}"));
+        assert!(
+            script
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=')),
+            "{line}"
+        );
+    }
+
+    fn long_home_managed() -> Vec<PathBuf> {
+        let home = format!("/Users/{}", "a".repeat(64));
+        vec![
+            PathBuf::from(format!(
+                "{home}/Library/Application Support/Indigo HQ/toolchain/npm-global/bin"
+            )),
+            PathBuf::from(format!(
+                "{home}/Library/Application Support/Indigo HQ/toolchain/node/bin"
+            )),
+        ]
+    }
+
+    /// The PATH loop names each managed dir once.
+    #[test]
+    fn session_path_prefix_names_each_dir_once() {
+        let managed = long_home_managed();
+        let prefix = unix_terminal_path_prefix(&managed);
+        for dir in &managed {
+            assert_eq!(prefix.matches(dir.to_str().unwrap()).count(), 1, "{prefix}");
+        }
+    }
+
+    /// The typed line stays under macOS's ~1,024-byte typed-ahead limit for
+    /// a long home path, a long folder and prompts up to the 4,000-char cap.
+    #[test]
+    fn typed_line_stays_under_the_bound_for_long_paths_and_prompts() {
+        let managed = long_home_managed();
+        let folder = format!("/Users/{}/HQ/companies/{}", "a".repeat(64), "b".repeat(200));
+        let script_path = PathBuf::from("/var/folders/xy/abc_123/T/hq-terminal-0123.sh");
+        for len in [0usize, 10, 300, 500, 1000, 1500, TERMINAL_PROMPT_MAX_CHARS] {
+            let prompt = "p".repeat(len);
+            let prompt = (len > 0).then_some(prompt.as_str());
+            for binary in ["claude", "codex", "grok"] {
+                for (path, managed) in [
+                    ("/Users/me/HQ", &managed[..]),
+                    (folder.as_str(), &managed[..]),
+                    (folder.as_str(), &[][..]),
+                ] {
+                    let launch =
+                        unix_terminal_launch(path, binary, prompt, managed, &script_path).unwrap();
+                    assert!(
+                        launch.line.len() <= TERMINAL_TYPED_LINE_MAX_BYTES,
+                        "{len}: {}",
+                        launch.line
+                    );
+                    assert!(terminal_applescript(&launch.line).len() < 1024);
+                    assert!(!launch.line.contains('\n'));
+                }
+            }
+        }
+        // A short launch types the session line itself and writes no script.
+        let short =
+            unix_terminal_launch("/Users/me/HQ", "codex", Some("hi"), &managed, &script_path)
+                .unwrap();
+        assert_eq!(short.script, None);
+        assert_eq!(
+            short.line,
+            unix_terminal_session_command("/Users/me/HQ", "codex", Some("hi"), &managed)
+        );
+    }
+
+    /// `launch_claude_code` puts the prompt in the binary string (no length
+    /// cap there), so a long Claude prompt must also go through the script.
+    #[test]
+    fn long_claude_prompt_launch_uses_the_script() {
+        let managed = long_home_managed();
+        let script_path = PathBuf::from("/tmp/hq-terminal-0123.sh");
+        let cmd = claude_command(Some("bypassPermissions"), Some(&"q".repeat(5000))).unwrap();
+        let launch =
+            unix_terminal_launch("/Users/me/HQ", &cmd, None, &managed, &script_path).unwrap();
+        assert_eq!(launch.line, "/bin/sh /tmp/hq-terminal-0123.sh");
+        assert!(launch.script.unwrap().contains(&cmd));
+    }
+
+    #[test]
+    fn script_launch_rejects_a_script_path_that_needs_quoting() {
+        let prompt = "p".repeat(2000);
+        for bad in [
+            "/tmp/it's.sh",
+            "/tmp/a b.sh",
+            "/tmp/$x.sh",
+            "/tmp/!x.sh",
+            "",
+        ] {
+            assert!(
+                unix_terminal_launch(
+                    "/Users/me",
+                    "codex",
+                    Some(&prompt),
+                    &[],
+                    std::path::Path::new(bad)
+                )
+                .is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    /// A long launch runs from the script in every login shell installed
+    /// here: the folder, PATH and the exact prompt (quotes, `$`, backticks,
+    /// `!`) arrive unchanged, nothing in the prompt runs, and the script
+    /// deletes itself.
+    #[cfg(unix)]
+    #[test]
+    fn script_launch_runs_the_tool_with_the_exact_prompt_in_every_login_shell() {
+        let (dir, npm, node) = managed_fixture();
+        let folder = dir.path().join("it's my \"HQ\" $HOME");
+        std::fs::create_dir_all(&folder).unwrap();
+        let folder = folder.canonicalize().unwrap();
+        let folder_str = folder.to_str().unwrap();
+        let managed = [npm.clone(), node.clone()];
+        let marker = dir.path().join("pwned");
+        let prompt = format!(
+            "it's \\ \"q\" !x $HOME `touch {m}` $(touch {m}) ; touch {m} {}",
+            "x".repeat(1200),
+            m = marker.display()
+        );
+        let script_dir = tempfile::tempdir().unwrap();
+        let script_dir = script_dir.path().canonicalize().unwrap();
+        for (i, (shell, flags)) in login_shells().into_iter().enumerate() {
+            let script_path = script_dir.join(format!("hq-terminal-{i}.sh"));
+            if !is_plain_shell_word(script_path.to_str().unwrap()) {
+                return; // temp dir path needs quoting on this host; covered by the rejection test
+            }
+            let echo = unix_terminal_launch(
+                folder_str,
+                "/bin/echo",
+                Some(&prompt),
+                &managed,
+                &script_path,
+            )
+            .unwrap();
+            let text = echo.script.clone().expect("long launch uses a script");
+            assert!(echo.line.len() <= TERMINAL_TYPED_LINE_MAX_BYTES);
+            write_terminal_script(&script_path, &text).unwrap();
+            assert_eq!(
+                run_session_line(shell, flags, &echo.line, "/usr/bin:/bin"),
+                format!("-- {prompt}"),
+                "{shell}"
+            );
+            assert!(!script_path.exists(), "{shell}: script left behind");
+            assert!(!marker.exists(), "{shell}: prompt text ran");
+
+            let long = "y".repeat(1200);
+            let env =
+                unix_terminal_launch(folder_str, "/bin/sh", Some(&long), &managed, &script_path)
+                    .unwrap();
+            // `/bin/sh -- <long>` would try to run a file; check PATH and cwd via the script text instead.
+            let text = env.script.unwrap();
+            let text = text.replace(
+                &format!("exec /bin/sh -- '{long}'"),
+                "/usr/bin/printenv PATH; /bin/pwd",
+            );
+            write_terminal_script(&script_path, &text).unwrap();
+            assert_eq!(
+                run_session_line(shell, flags, &env.line, "/usr/bin:/bin"),
+                format!(
+                    "{}:{}:/usr/bin:/bin\n{folder_str}",
+                    npm.display(),
+                    node.display()
+                ),
+                "{shell}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn script_file_is_new_and_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hq-terminal-x.sh");
+        write_terminal_script(&path, "true\n").unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        // An existing file (or a planted symlink) is never written through.
+        assert!(write_terminal_script(&path, "false\n").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "true\n");
+    }
+
+    /// The full session line survives AppleScript escaping.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn applescript_literal_round_trips_the_session_line() {
+        let managed = [PathBuf::from(
+            "/Users/me/Library/Application Support/Indigo HQ/toolchain/npm-global/bin",
+        )];
+        let shell_cmd = unix_terminal_session_command(
+            "/Users/o'neil/HQ",
+            "codex",
+            Some("say \"hi\""),
+            &managed,
+        );
+        assert!(
+            shell_cmd.starts_with("cd '/Users/o'\\''neil/HQ' && /bin/sh -c '"),
+            "{shell_cmd}"
+        );
         let script = terminal_applescript(&shell_cmd);
         let literal = script
             .split("do script ")
