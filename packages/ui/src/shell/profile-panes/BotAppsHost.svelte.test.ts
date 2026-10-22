@@ -18,7 +18,7 @@ async function setup(flag = true, granted = false, mutationOk = true) {
     install: vi.fn(async () => ({ ok: true, value: {} })),
     startOAuth: vi.fn(), uninstall: vi.fn(),
   };
-  const adapter = { integrations, identity: { hasFeature: vi.fn(async () => ({ ok: true, value: flag })) }, agents: { getProfile: vi.fn(async () => ({ ok: true, value: { agent: { uid: 'agt_a' }, box: {} } })) } };
+  const adapter = { integrations, identity: { hasFeature: vi.fn(async () => ({ ok: true, value: flag })) }, agents: { getProfile: vi.fn(async () => ({ ok: true, value: { agent: { uid: 'agt_a', role: 'member' }, box: {} } })) } };
   component = mount(BotAppsHost, { target, props: { uid: 'agt_a', companyUid: 'cmp_a', name: 'Scout', adapter: adapter as never, onopenurl: vi.fn() } });
   await settle(); return integrations;
 }
@@ -27,12 +27,17 @@ async function click(label: string) {
   expect(button).toBeTruthy(); button!.click(); await settle();
 }
 async function openApp() { target.querySelector<HTMLButtonElement>('[data-testid="bot-app"]')!.click(); await settle(); }
+async function browseCompanyApps() { await click('Browse apps'); expect(document.querySelector('[data-testid="company-app"]')).not.toBeNull(); }
+async function openCompanyApp() { await browseCompanyApps(); document.querySelector<HTMLButtonElement>('[data-testid="company-app"] [aria-label="Linear details"]')!.click(); await settle(); }
 it('reads apps without mutations and grants access only to the selected bot', async () => {
   const api = await setup();
   expect(api.install).not.toHaveBeenCalled(); expect(api.grantConnectionAccess).not.toHaveBeenCalled();
-  await openApp(); await click('Add to bot');
+  expect(target.querySelector('[data-testid="bot-app"]')).toBeNull();
+  expect(target.querySelector('[data-testid="bot-apps-empty"]')?.textContent).toContain('No company apps are connected to this bot.');
+  await browseCompanyApps(); await click('Add to bot');
   expect(api.grantConnectionAccess).toHaveBeenCalledWith({ companyUid: 'cmp_a', connectionId: 'connection_1', granteeUid: 'agt_a' });
-  expect(target.querySelector('[role="dialog"]')?.textContent).toContain('Available to bot');
+  expect(document.querySelector('[data-testid="company-app"]')).toBeNull();
+  expect(target.querySelector('[data-testid="bot-app"]')?.textContent).toContain('Available to bot');
 });
 it('requires confirmation to revoke bot access and never uninstalls company apps', async () => {
   const api = await setup(true, true); await openApp(); await click('Remove bot access');
@@ -42,43 +47,115 @@ it('requires confirmation to revoke bot access and never uninstalls company apps
   expect(api.uninstall).not.toHaveBeenCalled();
 });
 it('honors the per-bot control feature gate', async () => {
-  const api = await setup(false); await openApp();
+  const api = await setup(false); await openCompanyApp();
   expect(target.querySelector('[role="dialog"]')?.textContent).toContain('not enabled');
   expect([...target.querySelectorAll('button')].some(button => button.textContent?.trim() === 'Add to bot')).toBe(false);
   expect(api.grantConnectionAccess).not.toHaveBeenCalled();
 });
 it('retains existing access after a refused mutation', async () => {
-  await setup(true, false, false); await openApp(); await click('Add to bot');
-  expect(target.querySelector('[role="alert"]')?.textContent).toContain('Could not complete');
-  expect(target.querySelector('[role="dialog"]')?.textContent).toContain('Company connection');
+  await setup(true, false, false); await browseCompanyApps(); await click('Add to bot');
+  expect(document.querySelector('[role="dialog"] [role="alert"]')?.textContent).toContain('Could not add this app to the bot');
+  expect(document.querySelector('[data-testid="company-app"]')?.textContent).toContain('Not on this bot');
+  expect(target.querySelector('[data-testid="bot-app"]')).toBeNull();
 });
 it('uses catalog IDs for no-auth setup without silently granting bot access', async () => {
   const api = await setup(); await click('Browse apps');
   expect(api.catalogSearch).toHaveBeenCalledWith('cmp_a', '', 100);
-  target.querySelector<HTMLButtonElement>('[data-testid="catalog-app"]')!.click(); await settle(); await click('Connect app');
+  const docs = { id: 'connection_docs', provider: 'factory:docs', status: 'connected', access: { mode: 'shared' }, installation: { connectionId: 'connection_docs', provider: 'docs', displayName: 'Docs', domain: 'docs.example.com', surface: { kind: 'mcp', url: 'https://docs.example.com/mcp' } } };
+  const first = await api.listConnections();
+  api.install.mockImplementationOnce(async () => { api.listConnections.mockResolvedValue({ ok: true, value: { ...first.value, connections: [...first.value.connections, docs] } } as never); return { ok: true, value: {} }; });
+  target.querySelector<HTMLButtonElement>('[data-testid="catalog-app"] button')!.click(); await settle(); await click('Connect app');
   expect(api.install).toHaveBeenCalledWith({ companyUid: 'cmp_a', catalogEntryId: 'cat_docs' });
   expect(api.grantConnectionAccess).not.toHaveBeenCalled();
+  expect(target.querySelector('[role="dialog"][aria-label="Browse apps"]')).not.toBeNull();
+  expect(target.querySelector('[data-testid="catalog-app"]')).toBeNull();
+  const fresh = target.querySelector('[data-testid="company-app"]')!;
+  expect(fresh.textContent).toContain('Docs');
+  expect(fresh.textContent).toContain('Just connected');
+  expect([...fresh.querySelectorAll('button')].some(button => button.textContent?.trim() === 'Add to bot')).toBe(true);
+});
+
+it('ignores a connect result that finishes after the panel switched to another bot', async () => {
+  target = document.createElement('div'); target.className = 'desktop-shell'; document.body.appendChild(target);
+  const linear = { id: 'connection_1', provider: 'factory:linear', status: 'connected', access: { mode: 'shared' }, installation: { connectionId: 'connection_1', provider: 'linear', displayName: 'Linear', domain: 'linear.app', surface: { kind: 'mcp', url: 'https://mcp.linear.app/mcp' } } };
+  const docs = { id: 'connection_docs', provider: 'factory:docs', status: 'connected', access: { mode: 'shared' }, installation: { connectionId: 'connection_docs', provider: 'docs', displayName: 'Docs', domain: 'docs.example.com', surface: { kind: 'mcp', url: 'https://docs.example.com/mcp' } } };
+  let connections: unknown[] = [linear];
+  let finishInstall!: (value: unknown) => void;
+  const integrations = {
+    listConnections: vi.fn(async () => ({ ok: true, value: { viewer: { canManageIntegrations: true }, connections } })),
+    getConnectionAccess: vi.fn(async () => ({ ok: true, value: { canManage: true, access: { mode: 'shared' }, entries: [] } })),
+    grantConnectionAccess: vi.fn(), revokeConnectionAccess: vi.fn(),
+    catalogSearch: vi.fn(async () => ({ ok: true, value: { entries: [{ entryId: 'cat_docs', domain: 'docs.example.com', name: 'Docs', mcpReady: true, authClass: 'none' }] } })),
+    install: vi.fn(() => new Promise(resolve => { finishInstall = resolve; })),
+    startOAuth: vi.fn(), uninstall: vi.fn(),
+  };
+  const adapter = { integrations, identity: { hasFeature: vi.fn(async () => ({ ok: true, value: true })) }, agents: { getProfile: vi.fn(async (uid: string) => ({ ok: true, value: { agent: { uid, role: 'member' }, box: {} } })) } };
+  const props = $state({ uid: 'agt_a', companyUid: 'cmp_a', name: 'Scout', adapter: adapter as never, onopenurl: vi.fn() });
+  component = mount(BotAppsHost, { target, props: props as never });
+  await settle();
+  await click('Browse apps');
+  document.querySelector<HTMLButtonElement>('[data-testid="catalog-app"] button')!.click(); await settle();
+  await click('Connect app');
+  expect(integrations.install).toHaveBeenCalledTimes(1);
+  connections = [linear, docs];
+  props.uid = 'agt_b';
+  await settle();
+  finishInstall({ ok: true, value: {} });
+  await settle();
+  const cards = [...document.querySelectorAll('[data-testid="company-app"]')].map(card => card.textContent ?? '');
+  expect(cards.find(card => card.includes('Docs'))).toContain('Not on this bot');
+  expect(cards.some(card => card.includes('Just connected'))).toBe(false);
+  expect(document.querySelector('[role="dialog"] [role="alert"]')).toBeNull();
+  expect(integrations.grantConnectionAccess).not.toHaveBeenCalled();
 });
 
 it('opens existing credential settings without changing connection or bot access', async () => {
-  const api = await setup(); await openApp(); await click('Connection settings');
+  const api = await setup(); await openCompanyApp(); await click('Connection settings');
   expect(target.querySelector('[aria-label="Connection settings"]')).not.toBeNull();
   expect(target.querySelector('input[type="password"]')).not.toBeNull();
   expect(api.install).not.toHaveBeenCalled(); expect(api.grantConnectionAccess).not.toHaveBeenCalled();
 });
 
 it('keeps old app cards hidden until connection access has finished refreshing', async () => {
-  const api = await setup();
+  const api = await setup(true, true);
   let finish!: (value: never) => void;
   api.getConnectionAccess.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
   target.querySelector<HTMLButtonElement>('[aria-label="Refresh apps"]')!.click();
   await settle();
   expect(target.querySelector('[data-testid="bot-apps-loading"]')).not.toBeNull();
   expect(target.querySelector('[data-testid="bot-app"]')).toBeNull();
-  finish({ ok: true, value: { canManage: true, access: { mode: 'shared' }, entries: [] } } as never);
+  finish({ ok: true, value: { canManage: true, access: { mode: 'shared' }, entries: [{ granteeType: 'person', granteeId: 'agt_a', permission: 'read' }] } } as never);
   await settle();
   expect(target.querySelector('[data-testid="bot-apps-loading"]')).toBeNull();
   expect(target.querySelector('[data-testid="bot-app"]')).not.toBeNull();
+});
+it('shows an access error instead of the empty line when the access check fails', async () => {
+  target = document.createElement('div'); target.className = 'desktop-shell'; document.body.appendChild(target);
+  const integrations = {
+    listConnections: vi.fn(async () => ({ ok: true, value: { viewer: { canManageIntegrations: false }, connections: [{ id: 'connection_1', provider: 'factory:linear', status: 'connected', access: { mode: 'shared' }, installation: { connectionId: 'connection_1', provider: 'linear', displayName: 'Linear', domain: 'linear.app', surface: { kind: 'mcp', url: 'https://mcp.linear.app/mcp' } } }] } })),
+    getConnectionAccess: vi.fn(async () => ({ ok: false, reason: 'error', status: 503 })),
+    grantConnectionAccess: vi.fn(), revokeConnectionAccess: vi.fn(), catalogSearch: vi.fn(), install: vi.fn(), startOAuth: vi.fn(), uninstall: vi.fn(),
+  };
+  const adapter = { integrations, identity: { hasFeature: vi.fn(async () => ({ ok: true, value: true })) }, agents: { getProfile: vi.fn(async () => ({ ok: true, value: { agent: { uid: 'agt_a' }, box: {} } })) } };
+  component = mount(BotAppsHost, { target, props: { uid: 'agt_a', companyUid: 'cmp_a', name: 'Scout', adapter: adapter as never, onopenurl: vi.fn() } });
+  await settle();
+  expect(target.querySelector('[data-testid="bot-apps-empty"]')).toBeNull();
+  expect(target.querySelector('[data-testid="bot-apps-unverified"]')?.textContent).toContain('Could not check this bot’s access to 1 company app.');
+});
+it('lists a connection the bot is granted even when the viewer cannot manage it', async () => {
+  target = document.createElement('div'); target.className = 'desktop-shell'; document.body.appendChild(target);
+  const integrations = {
+    listConnections: vi.fn(async () => ({ ok: true, value: { viewer: { canManageIntegrations: false }, connections: [{ id: 'connection_1', provider: 'factory:linear', status: 'connected', access: { mode: 'shared' }, installation: { connectionId: 'connection_1', provider: 'linear', displayName: 'Linear', domain: 'linear.app', surface: { kind: 'mcp', url: 'https://mcp.linear.app/mcp' } } }] } })),
+    getConnectionAccess: vi.fn(async () => ({ ok: true, value: { canManage: false, access: { mode: 'shared' }, entries: [{ granteeType: 'person', granteeId: 'agt_a', permission: 'read' }] } })),
+    grantConnectionAccess: vi.fn(), revokeConnectionAccess: vi.fn(), catalogSearch: vi.fn(), install: vi.fn(), startOAuth: vi.fn(), uninstall: vi.fn(),
+  };
+  const adapter = { integrations, identity: { hasFeature: vi.fn(async () => ({ ok: true, value: true })) }, agents: { getProfile: vi.fn(async () => ({ ok: true, value: { agent: { uid: 'agt_a' }, box: {} } })) } };
+  component = mount(BotAppsHost, { target, props: { uid: 'agt_a', companyUid: 'cmp_a', name: 'Scout', adapter: adapter as never, onopenurl: vi.fn() } });
+  await settle();
+  expect(target.querySelector('[data-testid="bot-app"]')?.textContent).toContain('Linear');
+  await openApp();
+  expect(target.querySelector('[role="dialog"]')?.textContent).toContain('Ask the connection owner or a company admin to change its access.');
+  expect([...target.querySelectorAll('button')].some(button => button.textContent?.trim() === 'Remove bot access')).toBe(false);
 });
 async function setupPersonal(listResult: unknown, runtimeKind: 'cloud' | 'local' = 'cloud') {
   target = document.createElement('div'); target.className = 'desktop-shell'; document.body.appendChild(target);
