@@ -334,7 +334,9 @@ jobs:
       # the whole 30-minute job. It normally takes 37-53s. The system deps are
       # now their own step: apt gives up on a stalled connection after 20s,
       # each attempt is capped at 2 minutes, there are 3 attempts, and the step
-      # is capped at 6 minutes, so a bad mirror fails the job fast instead.
+      # is capped at 8 minutes, so a bad mirror fails the job fast instead.
+      # Worst case is 3 x (120s + 10s kill grace) + 2 x 10s sleep = 410s, so
+      # the 8-minute cap leaves room for the explicit ::error below to print.
       - name: Resolve Playwright version
         id: playwright-version
         working-directory: apps/sync
@@ -346,7 +348,7 @@ jobs:
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright-version.outputs.version }}-chromium-webkit
       - name: Install layout regression browser system deps
         working-directory: apps/sync
-        timeout-minutes: 6
+        timeout-minutes: 8
         run: |
           # install-deps shells out to apt-get without a way to pass `-o`, so the
           # same options go in an apt.conf.d drop-in that every apt call reads.
