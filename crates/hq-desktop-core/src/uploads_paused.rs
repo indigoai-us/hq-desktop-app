@@ -18,10 +18,17 @@
 //! carried no notice AND either that pass uploaded a file for it (uploads are
 //! flowing again) or the last notice is older than the runner's retry window
 //! (the runner has re-tried and was not refused).
+//!
+//! Usage pause (US-024). A notice can carry a `usagePause`: the company's
+//! whole cloud sync is paused until Billing is fixed. The entry then records
+//! the pause, and its link is the pause's Billing link. A later notice without
+//! a usage pause is a fresh plan-limit notice and drops the recorded pause.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+
+use crate::plan_limit::UsagePause;
 
 /// Longest gap hq-cloud leaves between re-tries of a plan-paused file
 /// (hq-cloud US-012: "retry when the plan state changes or at most hourly").
@@ -38,6 +45,10 @@ pub struct UploadsPaused {
     pub upgrade_url: Option<String>,
     /// Epoch milliseconds of the most recent runner notice.
     pub last_notice_at_ms: i64,
+    /// Set when the latest notice was a usage pause (US-024). `upgrade_url`
+    /// is then this pause's Billing link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_pause: Option<UsagePause>,
 }
 
 /// What one finished sync pass said about uploads, per company.
@@ -50,11 +61,17 @@ pub struct UploadsPassObservation {
     pub completed: BTreeSet<String>,
     /// Companies that uploaded at least one file this pass.
     pub uploaded: BTreeSet<String>,
+    /// Companies whose latest notice this pass was a usage pause. Every key
+    /// is also in `plan_limited`.
+    pub usage_paused: BTreeMap<String, UsagePause>,
 }
 
 impl UploadsPassObservation {
     pub fn is_empty(&self) -> bool {
-        self.plan_limited.is_empty() && self.completed.is_empty() && self.uploaded.is_empty()
+        self.plan_limited.is_empty()
+            && self.completed.is_empty()
+            && self.uploaded.is_empty()
+            && self.usage_paused.is_empty()
     }
 }
 
@@ -91,27 +108,50 @@ impl UploadsPausedRegistry {
             .and_then(|entry| entry.upgrade_url.clone())
     }
 
-    /// Record a runner `plan-limit` notice. Returns true when what a person
-    /// sees changed (a newly paused company, or a different link).
+    /// Record a runner `plan-limit` notice without a usage pause. Returns
+    /// true when what a person sees changed (a newly paused company, a
+    /// different link, or a usage pause that this notice replaces).
     pub fn record_notice(
         &mut self,
         company: &str,
         upgrade_url: Option<String>,
         now_ms: i64,
     ) -> bool {
+        self.record_notice_with_usage_pause(company, upgrade_url, None, now_ms)
+    }
+
+    /// Record a runner `plan-limit` notice. With a usage pause the entry's
+    /// link becomes the pause's Billing link; without one any recorded pause
+    /// is dropped. Returns true when what a person sees changed.
+    pub fn record_notice_with_usage_pause(
+        &mut self,
+        company: &str,
+        upgrade_url: Option<String>,
+        usage_pause: Option<UsagePause>,
+        now_ms: i64,
+    ) -> bool {
         let company = company.trim();
         if company.is_empty() {
             return false;
         }
+        let upgrade_url = match &usage_pause {
+            Some(pause) => Some(pause.action_url.clone()),
+            None => upgrade_url,
+        };
         match self.entries.get_mut(company) {
             Some(entry) => {
                 entry.last_notice_at_ms = entry.last_notice_at_ms.max(now_ms);
+                let mut changed = false;
+                if entry.usage_pause != usage_pause {
+                    entry.usage_pause = usage_pause;
+                    changed = true;
+                }
                 // Keep a known link when a later notice arrives without one.
                 if upgrade_url.is_some() && entry.upgrade_url != upgrade_url {
                     entry.upgrade_url = upgrade_url;
-                    return true;
+                    changed = true;
                 }
-                false
+                changed
             }
             None => {
                 self.entries.insert(
@@ -120,6 +160,7 @@ impl UploadsPausedRegistry {
                         company: company.to_string(),
                         upgrade_url,
                         last_notice_at_ms: now_ms,
+                        usage_pause,
                     },
                 );
                 true
@@ -132,7 +173,12 @@ impl UploadsPausedRegistry {
     pub fn settle_pass(&mut self, pass: &UploadsPassObservation, now_ms: i64) -> bool {
         let mut changed = false;
         for (company, upgrade_url) in &pass.plan_limited {
-            changed |= self.record_notice(company, upgrade_url.clone(), now_ms);
+            changed |= self.record_notice_with_usage_pause(
+                company,
+                upgrade_url.clone(),
+                pass.usage_paused.get(company).cloned(),
+                now_ms,
+            );
         }
         let resumed: Vec<String> = self
             .entries
@@ -162,16 +208,20 @@ impl UploadsPausedRegistry {
 }
 
 /// "Uploads paused for Acme" / "Uploads paused for Acme and Beta" /
-/// "Uploads paused for 3 companies". `None` when nothing is paused.
+/// "Uploads paused for 3 companies". When every listed company is a usage
+/// pause the lead is "Cloud sync paused for" instead. `None` when nothing is
+/// paused.
 pub fn uploads_paused_summary(snapshot: &[UploadsPaused]) -> Option<String> {
+    let lead = if !snapshot.is_empty() && snapshot.iter().all(|e| e.usage_pause.is_some()) {
+        "Cloud sync paused for"
+    } else {
+        "Uploads paused for"
+    };
     match snapshot {
         [] => None,
-        [one] => Some(format!("Uploads paused for {}", one.company)),
-        [a, b] => Some(format!(
-            "Uploads paused for {} and {}",
-            a.company, b.company
-        )),
-        many => Some(format!("Uploads paused for {} companies", many.len())),
+        [one] => Some(format!("{lead} {}", one.company)),
+        [a, b] => Some(format!("{lead} {} and {}", a.company, b.company)),
+        many => Some(format!("{lead} {} companies", many.len())),
     }
 }
 
@@ -194,6 +244,7 @@ mod tests {
                 .collect(),
             completed: completed.iter().map(|c| c.to_string()).collect(),
             uploaded: uploaded.iter().map(|c| c.to_string()).collect(),
+            usage_paused: BTreeMap::new(),
         }
     }
 
@@ -211,6 +262,7 @@ mod tests {
                 company: "Acme".into(),
                 upgrade_url: Some(URL.into()),
                 last_notice_at_ms: 1_000,
+                usage_pause: None,
             }]
         );
         assert_eq!(registry.upgrade_url_for("Acme").as_deref(), Some(URL));
@@ -297,12 +349,125 @@ mod tests {
         assert!(registry.is_empty());
     }
 
+    const BILLING: &str = "https://hq.computer/companies/acme/billing";
+
+    fn usage_pause(reason: &str) -> UsagePause {
+        UsagePause {
+            code: "usage_paused".into(),
+            reason: reason.into(),
+            message: "Cloud sync is paused. Acme used its $10.00 monthly allowance. Add a card on the Billing page to resume. Files on this computer are not affected.".into(),
+            action_url: BILLING.into(),
+        }
+    }
+
+    #[test]
+    fn a_usage_pause_is_recorded_with_its_billing_link() {
+        let mut registry = UploadsPausedRegistry::default();
+        let mut observed = pass(&[("Acme", Some(URL))], &["Acme"], &[]);
+        observed
+            .usage_paused
+            .insert("Acme".into(), usage_pause("usage_trial_cap"));
+        assert!(registry.settle_pass(&observed, 5));
+        assert_eq!(
+            registry.snapshot(),
+            vec![UploadsPaused {
+                company: "Acme".into(),
+                upgrade_url: Some(BILLING.into()),
+                last_notice_at_ms: 5,
+                usage_pause: Some(usage_pause("usage_trial_cap")),
+            }]
+        );
+        assert_eq!(registry.upgrade_url_for("Acme").as_deref(), Some(BILLING));
+        // The same pause again is not a visible change.
+        assert!(!registry.settle_pass(&observed, 6));
+    }
+
+    #[test]
+    fn a_later_usage_pause_replaces_a_legacy_entry_and_a_legacy_notice_clears_it() {
+        let mut registry = UploadsPausedRegistry::default();
+        assert!(registry.record_notice("Acme", Some(URL.into()), 0));
+        assert!(registry.record_notice_with_usage_pause(
+            "Acme",
+            Some(URL.into()),
+            Some(usage_pause("usage_card_required")),
+            1,
+        ));
+        assert_eq!(registry.upgrade_url_for("Acme").as_deref(), Some(BILLING));
+        // A different reason is a visible change.
+        assert!(registry.record_notice_with_usage_pause(
+            "Acme",
+            None,
+            Some(usage_pause("usage_spend_limit")),
+            2,
+        ));
+        // A fresh legacy notice drops the usage pause.
+        assert!(registry.record_notice("Acme", Some(URL.into()), 3));
+        let entry = &registry.snapshot()[0];
+        assert_eq!(entry.usage_pause, None);
+        assert_eq!(entry.upgrade_url.as_deref(), Some(URL));
+        // A quiet pass leaves the entry as it is.
+        assert!(!registry.settle_pass(&pass(&[], &["Acme"], &[]), 4));
+    }
+
+    #[test]
+    fn a_usage_pause_round_trips_through_the_journal_shape() {
+        let mut registry = UploadsPausedRegistry::default();
+        registry.record_notice_with_usage_pause(
+            "Acme",
+            None,
+            Some(usage_pause("usage_trial_cap")),
+            9,
+        );
+        let json = serde_json::to_value(registry.snapshot()).unwrap();
+        assert_eq!(json[0]["upgradeUrl"], BILLING);
+        assert_eq!(json[0]["usagePause"]["code"], "usage_paused");
+        assert_eq!(json[0]["usagePause"]["reason"], "usage_trial_cap");
+        assert_eq!(json[0]["usagePause"]["actionUrl"], BILLING);
+        let restored: Vec<UploadsPaused> = serde_json::from_value(json).unwrap();
+        assert_eq!(UploadsPausedRegistry::from_snapshot(restored), registry);
+    }
+
+    #[test]
+    fn summary_says_cloud_sync_when_every_company_is_a_usage_pause() {
+        let usage = |company: &str| UploadsPaused {
+            company: company.into(),
+            upgrade_url: Some(BILLING.into()),
+            last_notice_at_ms: 0,
+            usage_pause: Some(usage_pause("usage_trial_cap")),
+        };
+        let legacy = UploadsPaused {
+            usage_pause: None,
+            ..usage("Gamma")
+        };
+        assert_eq!(
+            uploads_paused_summary(&[usage("Acme")]).as_deref(),
+            Some("Cloud sync paused for Acme")
+        );
+        assert_eq!(
+            uploads_paused_summary(&[usage("Acme"), usage("Beta")]).as_deref(),
+            Some("Cloud sync paused for Acme and Beta")
+        );
+        assert_eq!(
+            uploads_paused_summary(&[usage("Acme"), usage("Beta"), usage("Delta")]).as_deref(),
+            Some("Cloud sync paused for 3 companies")
+        );
+        assert_eq!(
+            uploads_paused_summary(&[usage("Acme"), legacy.clone()]).as_deref(),
+            Some("Uploads paused for Acme and Gamma")
+        );
+        assert_eq!(
+            uploads_paused_summary(&[legacy]).as_deref(),
+            Some("Uploads paused for Gamma")
+        );
+    }
+
     #[test]
     fn summary_names_the_companies() {
         let one = UploadsPaused {
             company: "Acme".into(),
             upgrade_url: None,
             last_notice_at_ms: 0,
+            usage_pause: None,
         };
         let two = UploadsPaused {
             company: "Beta".into(),

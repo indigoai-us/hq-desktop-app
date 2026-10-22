@@ -4,23 +4,26 @@
     upgradeUrl: string;
     onUpgrade: (url: string) => void | Promise<void>;
     testId?: string;
+    /** Button text. A usage pause (US-024) passes "Open Billing". */
+    label?: string;
   }
 
   let {
     upgradeUrl,
     onUpgrade,
     testId = 'plan-upgrade-action',
+    label = 'Upgrade',
   }: Props = $props();
 </script>
 
 <button
   type="button"
   class="plan-upgrade-action"
-  aria-label="Upgrade plan"
+  aria-label={label === 'Upgrade' ? 'Upgrade plan' : label}
   data-testid={testId}
   onclick={() => onUpgrade(upgradeUrl)}
 >
-  <RailIcon name="external" />Upgrade
+  <RailIcon name="external" />{label}
 </button>
 
 <style>

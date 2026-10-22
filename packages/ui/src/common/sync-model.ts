@@ -1,5 +1,5 @@
 import { isWorkspaceSyncEnabled, type Workspace } from "../chat/workspaces";
-import { thisComputerNoun } from "@hq/platform";
+import { parseUsagePause, thisComputerNoun } from "@hq/platform";
 import { CORE_SETUP_LABEL, isCorePath } from "./progressLabel";
 
 export type SyncState =
@@ -482,6 +482,37 @@ function cleanRawError(raw: string): string {
   return text;
 }
 
+const USAGE_PAUSE_FALLBACK =
+  "Open Billing to add a card or raise the spend limit. Files on this computer are not affected.";
+
+/**
+ * The readable usage-pause message in a sync error, or null when the error is
+ * not a usage pause. Reads a `usagePause` JSON block when the text carries
+ * one, the server sentence the desktop core passes on ("Cloud sync is
+ * paused. ..."), or a bare reason code.
+ */
+export function usagePauseFromSyncError(raw: string): string | null {
+  const source = (raw ?? "").trim();
+  if (!source) return null;
+  const jsonStart = source.indexOf("{");
+  if (jsonStart >= 0) {
+    try {
+      const body = JSON.parse(source.slice(jsonStart)) as Record<string, unknown>;
+      const pause = parseUsagePause(body?.usagePause);
+      if (pause) return pause.message;
+    } catch {
+      // not a JSON body; fall through to the text checks
+    }
+  }
+  const sentence = source.match(/Cloud sync is paused\b[\s\S]*$/);
+  if (sentence) {
+    const text = sentence[0].trim();
+    return text === "Cloud sync is paused." ? USAGE_PAUSE_FALLBACK : text.replace(/^Cloud sync is paused( for this company)?\.\s*/, "") || USAGE_PAUSE_FALLBACK;
+  }
+  if (/\busage_(paused|card_required|trial_cap|spend_limit)\b/.test(source)) return USAGE_PAUSE_FALLBACK;
+  return null;
+}
+
 export function friendlySyncError(raw: string): FriendlySyncError {
   const source = (raw ?? "").trim();
   if (!source) {
@@ -501,6 +532,17 @@ export function friendlySyncError(raw: string): FriendlySyncError {
       summary:
         "A workspace's sharing scope shrank, so sync paused to avoid removing files outside it.",
       detail,
+    };
+  }
+
+  // US-024: a usage pause (trial cap, card required, spend limit) is a 402
+  // from hq-pro. Show the server's usage message, never the raw runner text
+  // or plan-limit wording.
+  const usage = usagePauseFromSyncError(source);
+  if (usage) {
+    return {
+      summary: "Cloud sync is paused for this company.",
+      detail: usage,
     };
   }
 

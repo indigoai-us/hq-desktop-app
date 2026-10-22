@@ -13,6 +13,7 @@
 
 import {
   DESKTOP_AGENT_CREATION_FLAG,
+  roleCanManageBilling,
   type HqProFetch,
   type IdentityApi,
 } from "@hq/platform";
@@ -25,6 +26,7 @@ import {
   type CreateAvailability,
   type CreateErrorFix,
 } from "@hq/agents";
+import { callerRole } from "../../company/company-roles.svelte.js";
 
 /** Create-attempt attribution for bots made from the desktop New bot flow. */
 export const DESKTOP_NEW_BOT_SURFACE = "desktop_new_bot";
@@ -105,7 +107,7 @@ export async function runDirectCloudCreate(
   client: AgentsClient,
   companyUid: string,
   draft: DirectCloudDraft,
-  context: { companyLabel?: string } = {},
+  context: { companyLabel?: string; role?: string | null } = {},
 ): Promise<DirectCloudCreateResult> {
   const result = await client.createAgent({
     companyUid,
@@ -120,9 +122,14 @@ export async function runDirectCloudCreate(
   if (result.ok) {
     return { ok: true, agentUid: result.value.agent.uid, name: result.value.agent.name || draft.name };
   }
+  // US-024: a usage pause offers the Billing link to owners and admins and
+  // asks a member to contact one. The role comes from the caller, else the
+  // membership roster read the app already made.
+  const role = context.role !== undefined ? context.role : (callerRole(companyUid) ?? null);
   const copy = createErrorCopy(result.error, {
     ...(context.companyLabel ? { companyLabel: context.companyLabel } : {}),
     handle: draft.handle,
+    canManageBilling: roleCanManageBilling(role),
   });
   return {
     ok: false,
@@ -141,7 +148,7 @@ export async function runCompanyDirectCloudCreate(
   seam: Pick<DirectCloudCreate, "isEnabled" | "client">,
   companyUid: string,
   draft: DirectCloudDraft,
-  context: { companyLabel?: string } = {},
+  context: { companyLabel?: string; role?: string | null } = {},
 ): Promise<DirectCloudCreateResult> {
   if (!(await seam.isEnabled(companyUid))) {
     return {

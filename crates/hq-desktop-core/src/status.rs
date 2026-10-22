@@ -922,6 +922,7 @@ mod tests {
             company: "Acme".to_string(),
             upgrade_url: Some("https://hq.computer/companies/acme/billing?upgrade=1".to_string()),
             last_notice_at_ms: 42,
+            usage_pause: None,
         }];
         let mut journal = journal_for_daemon_sync_complete("2026-09-28T12:00:00.000Z", 0);
         journal.uploads_paused = paused.clone();

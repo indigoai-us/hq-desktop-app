@@ -17,7 +17,7 @@
  *   off, or a free account before #5081), the action says it isn't available.
  */
 
-import type { AdapterResult, Json } from "@hq/platform";
+import { isUsageBillingKind, parseBillingState, type AdapterResult, type Json } from "@hq/platform";
 import { isUsageOnlySummary } from "../company/usage-billing.js";
 import { formatCardUsd, usagePricingFromFeed, type UsagePricing } from "../company/usage-pricing.js";
 import {
@@ -46,7 +46,7 @@ export type AccountPlan = "trial" | "usage" | "legacy" | "starter";
 export const PLAN_LABELS: Readonly<Record<Exclude<AccountPlan, "trial">, string>> = {
   usage: "Usage plan",
   legacy: "Legacy plan",
-  starter: "Starter (free)",
+  starter: "Free plan",
 };
 
 export interface AccountMeter {
@@ -179,6 +179,9 @@ const LIVE_SUBSCRIPTION = new Set(["active", "trialing", "past_due", "unpaid"]);
  * plan otherwise.
  */
 export function oldPlanFromSummary(summary: Record<string, unknown>): "legacy" | "starter" {
+  // US-024: the shared plan status wins over the older fields.
+  const state = parseBillingState(summary.billingState);
+  if (state && !isUsageBillingKind(state.kind)) return state.kind === "legacy-free" ? "starter" : "legacy";
   if (summary.plan === "team") return "legacy";
   const status = str(summary.subscriptionStatus);
   return status && LIVE_SUBSCRIPTION.has(status) ? "legacy" : "starter";
@@ -186,6 +189,8 @@ export function oldPlanFromSummary(summary: Record<string, unknown>): "legacy" |
 
 /** Card on file from a company or person summary; null when the summary doesn't say. */
 export function cardOnFileFromSummary(summary: Record<string, unknown>): boolean | null {
+  const stateCard = parseBillingState(summary.billingState)?.cardOnFile;
+  if (typeof stateCard === "boolean") return stateCard;
   const trial = isRecord(summary.usageTrial) ? summary.usageTrial : null;
   const personal = isRecord(summary.personalUsage) ? summary.personalUsage : null;
   const pm = isRecord(summary.defaultPaymentMethod) ? summary.defaultPaymentMethod : null;
@@ -271,6 +276,28 @@ export function withPricing(view: AccountRowView, pricing: UsagePricing | null):
 }
 
 /**
+ * The running trial for a company line. `billingState` wins: kind
+ * `usage-trial` with its dates is a trial, any other kind is not, whatever the
+ * older `usageTrial` record says. Without it, the older record decides.
+ */
+export function accountTrial(summary: Record<string, unknown>, now: Date): RunningTrial | null {
+  const state = parseBillingState(summary.billingState);
+  if (!state) return runningTrialFromSummary(summary, now);
+  if (state.kind !== "usage-trial" || !state.trial?.endsAt) return null;
+  const legacy = runningTrialFromSummary(summary, now);
+  const days = Math.ceil((Date.parse(state.trial.endsAt) - now.getTime()) / 86_400_000);
+  const daysLeft = Number.isFinite(days) ? days : (state.trial.daysLeft ?? 0);
+  if (daysLeft <= 0) return null;
+  return {
+    endsAt: state.trial.endsAt,
+    daysLeft,
+    capCents: state.trial.capCents ?? legacy?.capCents ?? null,
+    usedCents: state.trial.usedCents ?? legacy?.usedCents ?? null,
+    ...(legacy?.unknownMeters ? { unknownMeters: legacy.unknownMeters } : {}),
+  };
+}
+
+/**
  * Read one account's line. Never throws. A company the caller doesn't own is
  * "owner-only" without a request (the reads are owner-gated); a 403 is too.
  * A failed summary is "unavailable", never $0.
@@ -297,7 +324,7 @@ export async function readAccountRow(
       const plan = oldPlanFromSummary(body);
       return { kind: "ready", plan, planLabel: PLAN_LABELS[plan], cardOnFile, trial: null, usage: null, usageUnavailable: false, notice: null };
     }
-    const trial = runningTrialFromSummary(body, now());
+    const trial = accountTrial(body, now());
     const statement = await settle(source.getUsageStatement ? () => source.getUsageStatement!(uid) : null, "usage statement", retry);
     const usage = statement?.ok ? usageFromStatement(statement.value, pricing) : null;
     return {
@@ -316,7 +343,11 @@ export async function readAccountRow(
   if (!summary?.ok || !isRecord(summary.value)) return { kind: "unavailable" };
   const body = summary.value;
   const cardOnFile = cardOnFileFromSummary(body);
-  if (!isRecord(body.personalUsage)) {
+  // US-024: `billingState` wins; a person summary without it falls back to
+  // the presence of the `personalUsage` record.
+  const personalState = parseBillingState(body.billingState);
+  const personalUsagePriced = personalState ? isUsageBillingKind(personalState.kind) : isRecord(body.personalUsage);
+  if (!personalUsagePriced) {
     const plan = oldPlanFromSummary(body);
     return { kind: "ready", plan, planLabel: PLAN_LABELS[plan], cardOnFile, trial: null, usage: null, usageUnavailable: false, notice: null };
   }
@@ -400,7 +431,7 @@ const REFUSAL_TEXT: Readonly<Record<string, string>> = {
   "box-items-on-plan": "Cloud bots are billed on this plan. Contact support to switch.",
   "estimate-incomplete": "Usage isn't fully measured yet, so switching isn't offered yet.",
   "estimate-not-lower": "Usage pricing wouldn't cost less for this account right now.",
-  "on-individual-plan": "Your HQ Individual plan is still active. End it before switching.",
+  "on-individual-plan": "Your personal paid plan is still active. End it before switching.",
   sponsored: "A company pays for your personal plan, so it can't switch here.",
 };
 

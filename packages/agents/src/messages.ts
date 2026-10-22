@@ -28,6 +28,12 @@ export interface CreateErrorContext {
   handle?: string;
   /** Who can unlock it, when the caller knows. */
   adminName?: string;
+  /**
+   * False when the person is a member who cannot manage billing (US-024
+   * usage pause: they are asked to contact an owner instead of getting the
+   * Billing link). Unknown counts as able; the Billing page checks access.
+   */
+  canManageBilling?: boolean;
 }
 
 /** `amountMinor` + `currency` → "$500", or null when either is missing. */
@@ -50,6 +56,20 @@ export function createErrorCopy(
 ): CreateErrorCopy {
   const company = context.companyLabel?.trim() || "this company";
   switch (error.kind) {
+    case "usage_paused": {
+      const message = error.serverMessage ?? `Cloud bots are paused for ${company} until billing is sorted.`;
+      if (context.canManageBilling !== false && error.actionUrl) {
+        return { message, fix: { kind: "checkout", url: error.actionUrl, label: "Open Billing" } };
+      }
+      const ask =
+        error.pauseReason === "usage_spend_limit"
+          ? "Ask a company owner or admin to raise the spend limit."
+          : "Ask a company owner or admin to add a card on the Billing page.";
+      return {
+        message: `${message} ${ask}`,
+        fix: { kind: "ask_admin", ...(context.adminName ? { adminName: context.adminName } : {}) },
+      };
+    }
     case "plan_limit": {
       const price = formatPlanPrice(error.amountMinor, error.currency);
       const message = price

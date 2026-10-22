@@ -63,6 +63,11 @@
     companyLabel?: string;
     /** personUid/agentUid → photo URL, from the app's identity cache. */
     avatarByUid?: Readonly<Record<string, string>>;
+    /**
+     * US-024: the company is on usage pricing (membership `billingState`).
+     * Usage pricing has no seats, so the seat chip is not shown.
+     */
+    usagePriced?: boolean;
   }
 
   let {
@@ -79,6 +84,7 @@
     selfEmail = null,
     companyLabel = "",
     avatarByUid = {},
+    usagePriced = false,
   }: Props = $props();
 
   const emptyView: TeamTelemetryView = {
@@ -380,7 +386,9 @@
     <span class="meta-line" data-meta-line data-testid="team-live-chip">
       <i class="meta-dot dot" class:live={liveMembers > 0}></i>{liveMembers} live
     </span>
-    <span class="meta-line" data-meta-line data-testid="team-seat-chip">{seatLine}</span>
+    {#if !usagePriced}
+      <span class="meta-line" data-meta-line data-testid="team-seat-chip">{seatLine}</span>
+    {/if}
     {/if}
     {#if refreshing}
       <span class="meta-line" data-meta-line aria-live="polite" data-testid="team-refreshing">Refreshing…</span>

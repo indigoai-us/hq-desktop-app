@@ -132,7 +132,9 @@
   import { coalesceScroll } from "./scroll-coalesce";
   import { formatComposerSendError } from "./composer-send-error";
   import { isQueuedSendToken } from "./message-outbox.js";
-  import { uploadErrorUpgradeUrl } from "./upload-chat-attachments";
+  import { uploadErrorUpgradeUrl, uploadErrorUsagePause } from "./upload-chat-attachments";
+  import { callerRole } from "../../company/company-roles.svelte.js";
+  import type { UsagePause } from "@hq/platform";
   import {
     clearDraft,
     loadDraft,
@@ -784,6 +786,8 @@
   // Upgrade link for a plan-limit upload refusal; only shown beside the
   // attach error it came with (hard-stop US-018).
   let attachUpgradeUrl = $state<string | null>(null);
+  /** US-024: the usage pause behind the last refused attachment or send. */
+  let attachUsagePause = $state<UsagePause | null>(null);
   let trayOpen = $state(false);
   let traySelectedId = $state<string | null>(null);
   let composerEmojiOpen = $state(false);
@@ -1689,12 +1693,14 @@
     pendingFiles = next;
     attachError = errors[0] ?? null;
     attachUpgradeUrl = null;
+    attachUsagePause = null;
   }
 
   function removePendingFile(index: number): void {
     pendingFiles = pendingFiles.filter((_, i) => i !== index);
     attachError = null;
     attachUpgradeUrl = null;
+    attachUsagePause = null;
   }
 
   function namePastedFile(file: File): File {
@@ -1812,6 +1818,7 @@
     pendingFiles = [];
     attachError = null;
     attachUpgradeUrl = null;
+    attachUsagePause = null;
     discardDraft();
     try {
       // Hosts that can name the persisted event return its id; that makes the
@@ -1837,6 +1844,9 @@
         mentions.map((mention) => mention.displayName),
       );
       attachUpgradeUrl = uploadErrorUpgradeUrl(err);
+      attachUsagePause = uploadErrorUsagePause(err);
+      // US-024: a usage pause shows the server's own message.
+      if (attachUsagePause) attachError = attachUsagePause.message;
       restoreDraftAfterFailedSend(body);
     }
   }
@@ -2714,6 +2724,8 @@
           files={pendingFiles}
           error={attachError}
           upgradeUrl={attachUpgradeUrl}
+          usagePause={attachUsagePause}
+          billingRole={callerRole(linkCompanyUid) ?? null}
           onupgrade={onopenurl}
           onremove={removePendingFile}
         />

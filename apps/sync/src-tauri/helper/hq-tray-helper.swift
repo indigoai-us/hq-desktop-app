@@ -94,13 +94,15 @@ struct TrayBadgePresentation {
 
 /// Menu-bar copy for companies whose new files are not uploading because the
 /// company is over a plan limit (hard-stop-readiness US-019). The app writes
-/// `{"uploadsPaused":[{"company":"Acme","canUpgrade":true}]}` to
+/// `{"uploadsPaused":[{"company":"Acme","canUpgrade":true,"usagePause":false}]}` to
 /// ~/.hq/.tray-status; the upgrade link itself never leaves the app — the
-/// helper only asks for it by company name.
+/// helper only asks for it by company name. `usagePause` (US-024) marks a
+/// company whose cloud sync is paused for usage; its rows use Billing wording.
 struct TrayUploadsPausedPresentation {
     struct Row: Equatable {
         let company: String
         let canUpgrade: Bool
+        var usagePause: Bool = false
     }
 
     /// Parse the app's snapshot. Missing or malformed → nothing is paused.
@@ -119,20 +121,28 @@ struct TrayUploadsPausedPresentation {
                 !company.contains("\n"),
                 seen.insert(company).inserted
             else { return nil }
-            return Row(company: company, canUpgrade: entry["canUpgrade"] as? Bool ?? false)
+            return Row(
+                company: company,
+                canUpgrade: entry["canUpgrade"] as? Bool ?? false,
+                usagePause: entry["usagePause"] as? Bool ?? false)
         }
     }
 
-    static func statusTitle(for row: Row) -> String { "Uploads paused for \(row.company)" }
-    static func upgradeTitle(for row: Row) -> String { "Upgrade plan for \(row.company)…" }
+    static func statusTitle(for row: Row) -> String {
+        row.usagePause ? "Cloud sync paused for \(row.company)" : "Uploads paused for \(row.company)"
+    }
+    static func upgradeTitle(for row: Row) -> String {
+        row.usagePause ? "Open Billing for \(row.company)…" : "Upgrade plan for \(row.company)…"
+    }
     static func upgradeCommand(for row: Row) -> String { "upgrade \(row.company)" }
 
     /// Tooltip / VoiceOver label: the unread label plus the paused companies.
     static func label(base: String, rows: [Row]) -> String {
+        let lead = rows.allSatisfy(\.usagePause) ? "Cloud sync paused for" : "Uploads paused for"
         switch rows.count {
         case 0: return base
-        case 1: return "\(base) · Uploads paused for \(rows[0].company)"
-        default: return "\(base) · Uploads paused for \(rows.count) companies"
+        case 1: return "\(base) · \(lead) \(rows[0].company)"
+        default: return "\(base) · \(lead) \(rows.count) companies"
         }
     }
 

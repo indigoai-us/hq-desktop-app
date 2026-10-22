@@ -148,3 +148,53 @@ describe("CorePopover uploads paused (US-019)", () => {
     ).toContain("HQ is synced");
   });
 });
+
+describe("CorePopover usage pause (US-024)", () => {
+  const BILLING_URL = "https://hq.computer/companies/acme/billing";
+  const MESSAGE =
+    "Cloud sync is paused. Acme used its $10.00 monthly allowance. Add a card on the Billing page to resume. Files on this computer are not affected.";
+
+  it("reads the journal's usagePause and shows the server message with Open Billing", async () => {
+    const { parseLiveSyncStatus } = await import("../settings/live-sync-status");
+    const live = parseLiveSyncStatus({
+      uploadsPaused: [
+        {
+          company: "Acme",
+          upgradeUrl: UPGRADE_URL,
+          usagePause: { code: "usage_paused", reason: "usage_card_required", message: MESSAGE, actionUrl: BILLING_URL },
+        },
+      ],
+    });
+    expect(live.uploadsPaused).toEqual([
+      { company: "Acme", upgradeUrl: BILLING_URL, usagePause: expect.objectContaining({ message: MESSAGE }) },
+    ]);
+    const onopenurl = vi.fn();
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(CorePopover, {
+      target: host,
+      props: {
+        adapter: makeAdapter(),
+        appVersion: "0.10.352",
+        syncState: "idle",
+        lastSyncLabel: "just now",
+        uploadsPaused: live.uploadsPaused,
+        onopenurl,
+        onclose: vi.fn(),
+      } as never,
+    });
+    flushSync();
+    const row = host.querySelector('[data-testid="core-popover-uploads-paused"]');
+    expect(row?.textContent).toContain("Cloud sync paused for Acme");
+    expect(row?.textContent).toContain(MESSAGE);
+    expect(row?.textContent).not.toMatch(/plan limit|Upgrade|Starter|Workforce|Individual/);
+    const button = host.querySelector('[data-testid="core-popover-uploads-paused-upgrade"]') as HTMLButtonElement;
+    expect(button.textContent?.trim()).toBe("Open Billing");
+    button.click();
+    expect(onopenurl).toHaveBeenCalledWith(BILLING_URL);
+  });
+
+  it("keeps the legacy row and label without a usage pause", () => {
+    expect(buildUploadsPausedRows([{ company: "Acme", upgradeUrl: UPGRADE_URL }])[0].actionLabel).toBe("Upgrade plan");
+  });
+});
