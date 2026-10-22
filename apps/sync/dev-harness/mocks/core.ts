@@ -2137,9 +2137,17 @@ function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; b
     const uid = typeof body?.companyUid === 'string' ? body.companyUid : 'cmp_unknown';
     return { status: 200, body: JSON.stringify({ url: `https://billing.stripe.com/p/session/test_harness_${uid}` }) };
   }
-  // Core menu "Usage this month" (hq-pro owner-gated billing reads).
-  // `?usage=forbidden` previews a non-owner, `?usage=fail` a failed lookup,
-  // `?usage=paid` a company with a card on file.
+  // Settings > Usage for `?persona=usage-owner` (US-018 accordion): one
+  // company on each billing plan, Personal on Starter, and the usage-switch
+  // routes from hq-pro #5081. A switch made here sticks until reload.
+  if (new URLSearchParams(window.location.search).get('persona') === 'usage-owner') {
+    const owner = usageOwnerMock(url, method, body);
+    if (owner) return owner;
+  }
+  // Core menu "Usage this month" and Settings > Usage (hq-pro owner-gated
+  // billing reads, US-018). `?usage=forbidden` previews a non-owner,
+  // `?usage=fail` a failed lookup, `?usage=paid` a company with a card on
+  // file, `?usage=trial` a company 12 days from the end of its trial.
   const usageMode = new URLSearchParams(window.location.search).get('usage');
   // Visual QA with captured hq-pro bodies: a script sets this before load.
   const captured = (window as Window & { __hqHarnessBilling?: { summary?: unknown; usage?: unknown } }).__hqHarnessBilling;
@@ -2148,17 +2156,57 @@ function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; b
   if (url.startsWith('/v1/billing/summary?')) {
     if (usageMode === 'forbidden') return { status: 403, body: JSON.stringify({ error: 'Requires owner role on this company', code: 'FORBIDDEN' }) };
     if (usageMode === 'fail') return { status: 500, body: JSON.stringify({ error: 'Internal Server Error' }) };
+    const trialEndsAt = new Date(Date.now() + 11.5 * 86_400_000).toISOString();
     return {
       status: 200,
       body: JSON.stringify({
         billingConfigured: true,
         pricingPlan: 'usage-only',
         defaultPaymentMethod: { present: usageMode === 'paid', brand: null },
-        usageTrial: { status: 'active', allowanceCents: 1000, cardOnFile: usageMode === 'paid' },
+        usageTrial:
+          usageMode === 'trial'
+            ? { status: 'active', endsAt: trialEndsAt, capCents: 50000, usedCents: 42000, allowanceCents: 1000, cardOnFile: false }
+            : { status: 'ended', allowanceCents: 1000, cardOnFile: usageMode === 'paid' },
       }),
     };
   }
+  // The caller's personal account (US-018, 2026-10-19): person summary,
+  // person month statement and personal spend limit.
+  if (url === '/v1/billing/person/summary') {
+    return {
+      status: 200,
+      body: JSON.stringify({
+        cardOnFile: false,
+        personalUsage: { allowanceCents: 1000, usedCents: 340, usagePeriodStart: '2026-10-01', usageThroughDay: '2026-10-17', cardRequired: false, cardOnFile: false, syncPaused: false },
+      }),
+    };
+  }
+  if (url.startsWith('/v1/billing/usage?') && url.includes('scope=person')) {
+    return {
+      status: 200,
+      body: JSON.stringify({
+        scope: 'person', window: 'month', periodStart: '2026-10-01', periodEnd: '2026-10-31', asOf: '2026-10-17', complete: true,
+        allowanceCents: 1000, usageCents: 340, allowanceLeftCents: 660, billCents: 0, projectedUsageCents: 680, projectedBillCents: 0,
+        lines: [
+          { key: 'member-sync', displayName: 'Sync', unit: 'sync', unitCents: 10, kind: 'counter', status: 'measured', billed: true, interim: false, units: 12, usage: 12, costCents: 120, projectedUnits: 24, projectedCostCents: 240 },
+          { key: 'agent-run', displayName: 'Agent run', unit: 'run', unitCents: 5, kind: 'counter', status: 'measured', billed: true, interim: false, units: 20, usage: 20, costCents: 100, projectedUnits: 40, projectedCostCents: 200 },
+          { key: 'storage', displayName: 'Storage', unit: 'GB-month', unitCents: 200, kind: 'gauge', status: 'measured', billed: true, interim: false, units: 0.6, usage: 0.6, costCents: 120, projectedUnits: 1.2, projectedCostCents: 240 },
+        ],
+        free: [{ key: 'free', text: 'Deploys, DMs and background AI are free.' }],
+      }),
+    };
+  }
+  if (url === '/v1/billing/person/spend-limit') {
+    return { status: 200, body: JSON.stringify({ limitCents: 10000, custom: false, defaultLimitCents: 10000, paused: false, spend: null }) };
+  }
+  if (url === '/v1/billing/checkout/person' && method === 'POST') {
+    return { status: 200, body: JSON.stringify({ url: 'https://checkout.stripe.com/c/pay/cs_test_harness_person' }) };
+  }
   if (url.startsWith('/v1/billing/usage?')) {
+    const line = (key: string, displayName: string, unit: string, unitCents: number, units: number, costCents: number, extra: Record<string, unknown> = {}) => ({
+      key, displayName, unit, unitCents, kind: 'counter', status: 'measured', billed: true, interim: false,
+      units, usage: units, costCents, projectedUnits: units * 2, projectedCostCents: costCents * 2, ...extra,
+    });
     return {
       status: 200,
       body: JSON.stringify({
@@ -2166,20 +2214,53 @@ function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; b
         window: 'month',
         periodStart: '2026-10-01',
         periodEnd: '2026-10-31',
+        asOf: '2026-10-17',
         complete: true,
         allowanceCents: 1000,
         usageCents: 800,
         allowanceLeftCents: 200,
         billCents: 0,
+        projectedUsageCents: 1600,
+        projectedBillCents: 600,
         lines: [
-          { key: 'member-sync', status: 'measured', billed: true, costCents: 60 },
-          { key: 'integration-call', status: 'measured', billed: true, costCents: 200 },
-          { key: 'hq-mcp-call', status: 'measured', billed: true, costCents: 0 },
-          { key: 'agent-run', status: 'measured', billed: true, costCents: 310 },
-          { key: 'storage', status: 'measured', billed: true, costCents: 0 },
-          { key: 'secret', status: 'measured', billed: true, costCents: 40 },
-          { key: 'vault', status: 'measured', billed: true, costCents: 0, waived: true },
+          line('member-sync', 'Sync', 'sync', 10, 19, 190),
+          line('integration-call', 'Gateway call', 'call', 5, 40, 200),
+          line('hq-mcp-call', 'HQ MCP call', 'call', 5, 0, 0),
+          line('agent-run', 'Agent run', 'run', 5, 62, 310),
+          line('storage', 'Storage', 'GB-month', 200, 0.3, 60, { kind: 'gauge' }),
+          line('secret', 'Secret', 'secret-month', 50, 0.8, 40, { kind: 'gauge' }),
+          line('vault', 'Vault', 'vault-month', 500, 0, 0, { kind: 'gauge', waived: true }),
         ],
+        free: [{ key: 'free', text: 'Deploys, DMs and background AI are free.' }],
+      }),
+    };
+  }
+  if (url.startsWith('/v1/billing/spend-limit?')) {
+    return {
+      status: 200,
+      body: JSON.stringify({ limitCents: 10000, custom: false, defaultLimitCents: 10000, paused: false, spend: null }),
+    };
+  }
+  if (url === '/v1/pricing') {
+    return {
+      status: 200,
+      body: JSON.stringify({
+        usage: {
+          version: '2026-10-16',
+          includedUsd: 10,
+          trial: { days: 30, capUsd: 500 },
+          meters: [
+            { id: 'member-sync', label: 'Sync', unit: 'sync', unitUsd: 0.1 },
+            { id: 'integration-call', label: 'Gateway call', unit: 'call', unitUsd: 0.05 },
+            { id: 'hq-mcp-call', label: 'HQ MCP call', unit: 'call', unitUsd: 0.05 },
+            { id: 'agent-run', label: 'Agent run', unit: 'run', unitUsd: 0.05 },
+            { id: 'storage', label: 'Storage', unit: 'GB-month', unitUsd: 2 },
+            { id: 'secret', label: 'Secret', unit: 'secret-month', unitUsd: 0.5 },
+            { id: 'vault', label: 'Vault', unit: 'vault-month', unitUsd: 5, waivedInTrial: true },
+          ],
+          boxes: [{ size: 'small', instanceType: 't3.small', monthlyUsd: 100 }],
+          free: ['deploys', 'dms', 'background-ai'],
+        },
       }),
     };
   }
@@ -2229,6 +2310,59 @@ function scaledAnswer(cmd: string, args?: Record<string, unknown>): unknown {
   return NOT_HANDLED;
 }
 
+// ?creator=1 gives the signed-in person a claimed public profile (@drake) so
+// Settings › Public profile shows its edit step; uploads echo back. It also
+// keeps what Settings › Profile saves (name, About, photo) so each page reads
+// back what the other saved.
+const harnessCreator = {
+  handle: 'drake',
+  displayName: 'drake',
+  bio: '',
+  socialLinks: [] as unknown[],
+  tipUrl: null as string | null,
+  avatarUrl: null as string | null,
+};
+const harnessMember: { displayName?: string; description?: string; avatarUrl?: string } = {};
+function creatorAnswer(cmd: string, args?: Record<string, unknown>): unknown {
+  if (typeof window === 'undefined' || !new URLSearchParams(window.location.search).has('creator')) return NOT_HANDLED;
+  if (cmd === 'hq_pro_fetch' && args?.url === '/v1/profile') {
+    if (args?.method === 'PUT') {
+      try {
+        const sent = JSON.parse(String(args?.body ?? '{}')) as {
+          displayName?: string;
+          description?: string;
+          avatarBase64?: string;
+        };
+        if (typeof sent.displayName === 'string') harnessMember.displayName = sent.displayName;
+        if (typeof sent.description === 'string') harnessMember.description = sent.description;
+        if (sent.avatarBase64) harnessMember.avatarUrl = `data:image/jpeg;base64,${sent.avatarBase64}`;
+      } catch {
+        // keep what was saved before
+      }
+    }
+    return { status: 200, body: JSON.stringify({ profile: { ...harnessMember } }) };
+  }
+  if (cmd === 'get_my_creator') return { ...harnessCreator };
+  if (cmd === 'get_creator_profile') return { creator: { ...harnessCreator }, listings: [] };
+  if (cmd === 'update_creator_profile') {
+    Object.assign(harnessCreator, {
+      bio: typeof args?.bio === 'string' ? args.bio : harnessCreator.bio,
+      tipUrl: typeof args?.tipUrl === 'string' ? args.tipUrl : harnessCreator.tipUrl,
+    });
+    return { ...harnessCreator };
+  }
+  if (cmd === 'hq_pro_fetch' && args?.url === '/v1/creators/me/avatar') {
+    try {
+      const sent = JSON.parse(String(args?.body ?? '{}')) as { contentType?: string; data?: string };
+      if (sent.data) harnessCreator.avatarUrl = `data:${sent.contentType ?? 'image/jpeg'};base64,${sent.data}`;
+    } catch {
+      // keep the old photo
+    }
+    return { status: 200, body: JSON.stringify({ handle: 'drake', avatarUrl: harnessCreator.avatarUrl }) };
+  }
+  return NOT_HANDLED;
+}
+
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const scaled = scaledAnswer(cmd, args);
   if (scaled !== NOT_HANDLED) return scaled as T;
@@ -2239,6 +2373,8 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
   }
   const storage = storageAnswer(cmd);
   if (storage !== NOT_HANDLED) return storage as T;
+  const creator = creatorAnswer(cmd, args);
+  if (creator !== NOT_HANDLED) return creator as T;
   if (companyFlowEnabled()) {
     const answer = await companyFlowAnswer(cmd, args);
     if (answer !== NOT_HANDLED) return answer as T;
@@ -2316,4 +2452,91 @@ export function transformCallback(_cb?: (response: unknown) => void, _once = fal
 
 export function convertFileSrc(filePath: string, _protocol = 'asset'): string {
   return filePath;
+}
+
+/** Companies switched to usage pricing in this page load (`?persona=usage-owner`). */
+const usageOwnerSwitched = new Set<string>();
+
+function usageOwnerStatement(usageCents: number) {
+  const split = (share: number) => Math.round(usageCents * share);
+  const line = (key: string, displayName: string, unit: string, unitCents: number, costCents: number, extra: Record<string, unknown> = {}) => ({
+    key, displayName, unit, unitCents, kind: 'counter', status: 'measured', billed: true, interim: false,
+    units: unitCents ? costCents / unitCents : 0, usage: unitCents ? costCents / unitCents : 0, costCents,
+    projectedUnits: 0, projectedCostCents: costCents * 2, ...extra,
+  });
+  const agent = split(0.4);
+  const gateway = split(0.2);
+  const mcp = split(0.05);
+  const sync = split(0.2);
+  const storage = split(0.1);
+  const secret = usageCents - agent - gateway - mcp - sync - storage;
+  return {
+    scope: 'company', window: 'month', periodStart: '2026-10-01', periodEnd: '2026-10-31', asOf: '2026-10-17', complete: true,
+    allowanceCents: 1000, usageCents, allowanceLeftCents: Math.max(0, 1000 - usageCents), billCents: Math.max(0, usageCents - 1000),
+    projectedUsageCents: usageCents * 2, projectedBillCents: Math.max(0, usageCents * 2 - 1000),
+    lines: [
+      line('agent-run', 'Agent run', 'run', 5, agent),
+      line('integration-call', 'Gateway call', 'call', 5, gateway),
+      line('hq-mcp-call', 'HQ MCP call', 'call', 5, mcp),
+      line('member-sync', 'Sync', 'sync', 10, sync),
+      line('storage', 'Storage', 'GB-month', 200, storage, { kind: 'gauge' }),
+      line('secret', 'Secret', 'secret-month', 50, secret, { kind: 'gauge' }),
+      line('vault', 'Vault', 'vault-month', 500, 0, { kind: 'gauge' }),
+    ],
+    free: [{ key: 'free', text: 'Deploys, DMs and background AI are free.' }],
+  };
+}
+
+function usageOwnerMock(url: string, method: string, body: Record<string, unknown> | null | undefined): { status: number; body: string } | null {
+  const json = (value: unknown, status = 200) => ({ status, body: JSON.stringify(value) });
+  const uidOf = () => new URLSearchParams(url.split('?')[1] ?? '').get('companyUid') ?? '';
+  const trialEndsAt = new Date(Date.now() + 11.5 * 86_400_000).toISOString();
+  const summaries: Record<string, Record<string, unknown>> = {
+    cmp_ux_northwind: { billingConfigured: true, pricingPlan: 'usage-only', defaultPaymentMethod: { present: true, brand: 'visa' }, usageTrial: { status: 'ended', allowanceCents: 1000, cardOnFile: true } },
+    cmp_ux_birch: { billingConfigured: true, pricingPlan: 'usage-only', defaultPaymentMethod: { present: false, brand: null }, usageTrial: { status: 'active', endsAt: trialEndsAt, capCents: 50000, usedCents: 42000, allowanceCents: 1000, cardOnFile: false } },
+    cmp_ux_cedar: { billingConfigured: true, pricingPlan: 'current', plan: 'team', subscriptionStatus: 'active', defaultPaymentMethod: { present: true, brand: 'visa' } },
+    cmp_ux_dogwood: { billingConfigured: true, pricingPlan: 'current', subscriptionStatus: null, defaultPaymentMethod: { present: true, brand: 'visa' } },
+    cmp_ux_elm: { billingConfigured: true, pricingPlan: 'usage-only', defaultPaymentMethod: { present: false, brand: null }, usageTrial: { status: 'ended', allowanceCents: 1000, cardOnFile: false } },
+    cmp_ux_fir: { billingConfigured: false, pricingPlan: 'current', subscriptionStatus: null, defaultPaymentMethod: { present: false, brand: null } },
+    // Past the included usage with no card: cloud sync is paused.
+    cmp_ux_hazel: { billingConfigured: false, pricingPlan: 'usage-only', defaultPaymentMethod: { present: false, brand: null }, usageTrial: { status: 'ended', allowanceCents: 1000, cardOnFile: false, cardRequired: true, syncPaused: true, pauseReason: 'usage_card_required' } },
+  };
+  // Elm Street is near the $10 included with no card (amber); Hazel & Rowe is past it and paused (red).
+  const usageCents: Record<string, number> = { cmp_ux_northwind: 800, cmp_ux_birch: 0, cmp_ux_elm: 880, cmp_ux_dogwood: 0, cmp_ux_hazel: 1060 };
+  if (url.startsWith('/v1/billing/summary?')) {
+    const uid = uidOf();
+    if (usageOwnerSwitched.has(uid)) {
+      return json({ ...summaries[uid], pricingPlan: 'usage-only', usageTrial: { status: 'none', allowanceCents: 1000, cardOnFile: true } });
+    }
+    return summaries[uid] ? json(summaries[uid]) : json({ error: 'Requires owner role on this company', code: 'FORBIDDEN' }, 403);
+  }
+  if (url.startsWith('/v1/billing/usage?') && !url.includes('scope=person')) {
+    return json(usageOwnerStatement(usageCents[uidOf()] ?? 0));
+  }
+  if (url.startsWith('/v1/billing/spend-limit?')) {
+    return uidOf() === 'cmp_ux_northwind'
+      ? json({ limitCents: 25000, custom: true, defaultLimitCents: 10000, paused: false, spend: null })
+      : json({ limitCents: 10000, custom: false, defaultLimitCents: 10000, paused: false, spend: null });
+  }
+  if (url === '/v1/billing/person/summary') return json({ cardOnFile: false, subscriptionStatus: null });
+  if (url.startsWith('/v1/billing/usage-switch?scope=person')) {
+    return json({ personUid: 'prs_riley', enabled: true, phase: 'none', switchedEarlyAt: null, billingStartsAt: null, cardOnFile: false, offer: { eligible: false, reason: 'card-required' } });
+  }
+  if (url.startsWith('/v1/billing/usage-switch?')) {
+    const uid = uidOf();
+    const base = { companyUid: uid, enabled: true, phase: 'none', switchDate: null, previewDays: 30, previewEndsAt: null, billingStartsAt: null, switchedEarlyAt: null, todayMonthlyCents: null, estimateCents: null, estimateComplete: null };
+    if (usageOwnerSwitched.has(uid)) return json({ ...base, phase: 'usage', cardOnFile: true, offer: { eligible: false, reason: 'already-on-usage' } });
+    if (uid === 'cmp_ux_dogwood') return json({ ...base, cardOnFile: true, offer: { eligible: true, freeOptIn: true } });
+    if (uid === 'cmp_ux_fir') return json({ ...base, cardOnFile: false, offer: { eligible: false, reason: 'card-required' } });
+    return json({ ...base, cardOnFile: null, offer: { eligible: false, reason: 'already-on-usage' } });
+  }
+  if (url === '/v1/billing/usage-switch' && method === 'POST') {
+    const uid = typeof body?.companyUid === 'string' ? body.companyUid : '';
+    if (uid !== 'cmp_ux_dogwood') {
+      return json({ error: 'This company cannot switch to usage pricing early', code: 'USAGE_SWITCH_NOT_OFFERED', reason: 'card-required' }, 409);
+    }
+    usageOwnerSwitched.add(uid);
+    return json({ outcome: 'switched', switchedEarlyAt: new Date().toISOString(), flatPlanEnded: false, flatPlanPending: false, prorationCreditCents: null });
+  }
+  return null;
 }

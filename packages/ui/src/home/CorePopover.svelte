@@ -111,6 +111,12 @@
      * fixture mode) hides the panel.
      */
     usageCompany?: import("./core-usage-model.js").UsageCompany | null;
+    /** Accounts the usage panel can switch between (owner/admin companies and personal). */
+    usageAccounts?: readonly import("./core-usage-model.js").UsageAccount[];
+    /** Usage panel "Usage details": opens Settings > Usage. */
+    onopenusage?: () => void;
+    /** Usage panel sync link: opens the Sync section of Settings (falls back to onopenCloudSettings). */
+    onopensync?: () => void;
   }
 
   interface CoreStateWire {
@@ -146,6 +152,9 @@
     uploadsPaused = null,
     onopenurl,
     usageCompany = null,
+    usageAccounts = [],
+    onopenusage,
+    onopensync,
   }: Props = $props();
 
   let packsExpanded = $state(true);
@@ -569,11 +578,11 @@
   {#if usageCompany && !useFixtures && adapter.company}
     <CoreUsagePanel
       source={adapter.company}
-      companyUid={usageCompany.uid}
-      companyName={usageCompany.name}
-      role={usageCompany.role}
+      account={usageCompany}
+      accounts={usageAccounts}
       {onopenurl}
-      onopensync={onopenCloudSettings}
+      {onopenusage}
+      onopensync={onopensync ?? onopenCloudSettings}
     />
   {/if}
 

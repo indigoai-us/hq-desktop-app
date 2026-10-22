@@ -58,6 +58,7 @@ import {
   createScopedFeatureFlagGates,
   type ScopedFeatureFlagGates,
   resolveCompanyFeature,
+  readCompanyFeature,
   type FeatureFlagGate,
 } from "../flags.js";
 
@@ -292,6 +293,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
               ? Promise.resolve(ok(false))
               : this.call("has_feature", { flag }),
           ),
+    readCompanyFeature: (flag, companyUid) =>
+      readCompanyFeature(createHqProFlagFetch(this.invokeFn), flag, companyUid),
     hasCompanyFeature: (flag, companyUid) =>
       resolveCompanyFeature(
         createHqProFlagFetch(this.invokeFn),
@@ -719,6 +722,17 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     getUsageStatement: (companyUid) =>
       this.hqProJson("GET", WEB_PATHS.companyUsageStatement(companyUid)),
     getPricing: () => this.hqProJson("GET", WEB_PATHS.pricing),
+    getSpendLimit: (companyUid) =>
+      this.hqProJson("GET", WEB_PATHS.companySpendLimit(companyUid)),
+    getPersonalBillingSummary: () => this.hqProJson("GET", WEB_PATHS.personalBillingSummary),
+    getPersonalUsageStatement: () => this.hqProJson("GET", WEB_PATHS.personalUsageStatement),
+    getPersonalSpendLimit: () => this.hqProJson("GET", WEB_PATHS.personalSpendLimit),
+    createPersonalBillingCheckoutSession: () => this.hqProJson("POST", WEB_PATHS.personalBillingCheckout, {}),
+    createPersonalBillingPortalSession: () => this.hqProJson("POST", WEB_PATHS.personalBillingPortal, {}),
+    getUsageSwitch: (companyUid) => this.hqProJson("GET", WEB_PATHS.companyUsageSwitch(companyUid)),
+    switchToUsagePricing: (companyUid) => this.hqProJson("POST", WEB_PATHS.usageSwitch, { companyUid }),
+    getPersonalUsageSwitch: () => this.hqProJson("GET", WEB_PATHS.personalUsageSwitch),
+    switchPersonalToUsagePricing: () => this.hqProJson("POST", WEB_PATHS.usageSwitch, { scope: "person" }),
     getFirstWeekReturnNudge: (companyUid) =>
       this.hqProJson("GET", WEB_PATHS.firstWeekReturnNudge(companyUid)),
   };

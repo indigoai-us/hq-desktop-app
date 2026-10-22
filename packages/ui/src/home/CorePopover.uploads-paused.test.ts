@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 //
 // hard-stop-readiness US-019: a sync pass whose uploads a plan limit refused
-// is not "All synced". The Core popover says "Uploads paused", names the
+// is not "HQ is synced". The Core popover says "Uploads paused", names the
 // company, and offers the upgrade link; the title-bar pill goes amber.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -55,7 +55,7 @@ describe("uploads-paused status model", () => {
     const header = buildCoreSyncHeader({ syncState: "idle", uploadsPausedCount: 1 });
     expect(header.stateWord).toBe("Uploads paused");
     expect(header.tone).toBe("warn");
-    expect(buildCoreSyncHeader({ syncState: "idle" }).stateWord).toBe("All synced");
+    expect(buildCoreSyncHeader({ syncState: "idle" }).stateWord).toBe("HQ is synced");
   });
 
   it("a run in flight or an error still wins", () => {
@@ -115,7 +115,7 @@ describe("CorePopover uploads paused (US-019)", () => {
 
     const state = host.querySelector('[data-testid="core-popover-sync-state"]');
     expect(state?.textContent).toContain("Uploads paused");
-    expect(state?.textContent).not.toContain("All synced");
+    expect(state?.textContent).not.toContain("HQ is synced");
     expect(
       host.querySelector('[data-testid="core-popover-sync-status"]')?.getAttribute("data-tone"),
     ).toBe("warn");
@@ -145,6 +145,6 @@ describe("CorePopover uploads paused (US-019)", () => {
     expect(host.querySelector('[data-testid="core-popover-uploads-paused"]')).toBeNull();
     expect(
       host.querySelector('[data-testid="core-popover-sync-state"]')?.textContent,
-    ).toContain("All synced");
+    ).toContain("HQ is synced");
   });
 });

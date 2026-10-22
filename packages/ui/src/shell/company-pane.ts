@@ -31,6 +31,7 @@ export interface CompanyPagePlaceholder {
 }
 
 const PAGE_INFO: Record<string, { story: string; summary: string }> = {
+  office: { story: "US-018", summary: "Office hours and calls with people in this company." },
   atlas: { story: "US-009", summary: "Who is live in this company and what they are working on." },
   projects: { story: "US-023", summary: "The company's projects and their stories." },
   activity: { story: "US-026", summary: "Recent work across the company." },
@@ -174,8 +175,12 @@ export function companyPaneModel(
   pageCounts: Readonly<Record<string, number>> = {},
   /** OWNER-R24: false hides Grants and Billing (owners and admins only). */
   canManage = false,
+  officeVisible = false,
 ): SidepaneListModel {
   const model = companySidepaneModel(company, selectedId);
+  if (!officeVisible) {
+    for (const section of model.sections) section.rows = section.rows.filter((row) => row.id !== "office");
+  }
   if (!canManage) {
     for (const section of model.sections) section.rows = section.rows.filter((row) => !MANAGER_ONLY_ROWS.has(row.id));
   }

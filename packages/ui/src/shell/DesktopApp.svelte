@@ -42,15 +42,17 @@
     type CloudFileEventPayload,
 } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
-  import { resolveUsageCompany } from "../home/core-usage-model.js";
+  import { resolveUsageCompany, usageAccounts } from "../home/core-usage-model.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
   import LazyDoor from "./LazyDoor.svelte";
   import { callerRole, loadCallerRole } from "../company/company-roles.svelte.js";
+  import { domainPricesFromFeed, type DomainPrices } from "../company/files-connect/custom-domain.js";
   import {
     brainPageDoor,
     teamPageDoor,
+    officeDoor,
     vaultExplorerDoor,
     filesConnectDoor,
     meetingCanvasDoor,
@@ -128,6 +130,7 @@
   import Sidepane from "./Sidepane.svelte";
   import { SidepaneScrollMemory, sidepaneModelKey } from "./sidepane-models.js";
   import CompanySidepane from "./CompanySidepane.svelte";
+  import { readOfficeFeature } from "./office-feature.js";
   import { configureCompanyApi } from "../company/company-store.svelte.js";
   import {
     companyPagePlaceholderForPage,
@@ -559,7 +562,7 @@
     type TourEnterAction,
     type TourState,
   } from "../tour/guided-tour.js";
-  import { vaultsFor } from "../files/explorer/vault-model.js";
+  import { folderShareLocation, vaultsFor } from "../files/explorer/vault-model.js";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
   import LocalBotDetailPanel from "../chat/LocalBotDetailPanel.svelte";
@@ -637,6 +640,7 @@
     EMPTY_LIVE_SYNC,
     lastSyncLabelFromLive,
     readLiveSyncStatus,
+    retrySyncFromLive,
     syncStateFromLive,
     type LiveSyncStatus,
   } from "../settings/live-sync-status.js";
@@ -1507,6 +1511,18 @@
    * filters to one company and this one deliberately watches every run.
    */
   let syncStatus = $state<SyncStatusState>(emptySyncStatus());
+
+  async function retrySyncRecovery(): Promise<void> {
+    const before = syncStatus;
+    const retried = await retrySyncFromLive(adapter, liveSync);
+    liveSync = retried.status;
+    if (retried.error) {
+      syncStatus = reduceSyncEvent(syncStatus, "sync:error", { message: retried.error });
+    } else if (!retried.status.recoveryHoldReason && syncStatus === before) {
+      // Do not overwrite a newer native auth/error/progress event while awaiting retry.
+      syncStatus = reduceSyncEvent(emptySyncStatus(), "sync:plan", {});
+    }
+  }
 
   // OWNER-003: one "sync" toast that updates in place while files move and
   // turns into a quiet "Files up to date" when the run ends. Runs that move
@@ -5266,13 +5282,22 @@
     );
   });
   /**
-   * Company for the Core menu's usage panel: the company on screen, else the
-   * branded company. A local-only company shows "No usage", never another
-   * company's spend (resolveUsageCompany).
+   * Account for the Core menu's usage panel (owner decision 2026-10-19): the
+   * company on screen, else the company the rail has active, else the
+   * branded company, else the personal account. Never the first company in
+   * the list. A local-only company shows "No usage", never another
+   * account's spend (resolveUsageCompany).
    */
-  const usageCompany = $derived(
-    resolveUsageCompany(companies, selectedCompanySlug, brandState?.companySlug),
+  const tenantCompanySlug = $derived(
+    tenantCompanyId
+      ? ((companies ?? []).find((c) => (c.cloudUid ?? "").trim() === tenantCompanyId)?.slug ?? "")
+      : "",
   );
+  const usageCompany = $derived(
+    resolveUsageCompany(companies, selectedCompanySlug || tenantCompanySlug, brandState?.companySlug),
+  );
+  /** Every account the usage switcher offers: owner/admin companies, then personal. */
+  const usageAccountList = $derived(usageAccounts(companies, usageCompany));
   const activeCompanyPane = $derived.by(() => {
     if (view !== "conversation" || selectedRow?.kind !== "channel") return null;
     const scope = (selectedRow.channelScope ?? "").trim();
@@ -8586,6 +8611,8 @@
     channelActionError = null;
   });
   let selfAvatarUrl = $state<string | null>(null);
+  /** Counts photo saves so the rail's account button can point at the new photo. */
+  let selfAvatarPulse = $state(0);
   let selfDescription = $state<string | null>(null);
 
   /** personUid → presigned avatar URL, sourced from every loaded channel
@@ -10787,6 +10814,19 @@
       };
     }
     if (destination.kind === "extra") {
+      if (companyRowForPage(destination.page) === "office") {
+        const uid = destination.companyUid;
+        const denied = accessOutcome(destination, uid);
+        if (denied) return denied;
+        const company = railCompanyRoster.find((entry) => entry.uid === uid);
+        return readOfficeFeature(adapter, company, Boolean(self?.uid)).then((allowed) => {
+          if (context.isStale()) return { status: "cancelled" };
+          const granted = allowed === true || (allowed === null && officeGrant === `${self?.uid ?? ""}:${uid}`);
+          return granted && callsHost
+            ? { status: "ready", destination }
+            : { status: "unavailable", destination, reason: "Office is not available for this company on this device." };
+        });
+      }
       if (
         railPlaceholderForPage(destination.page) ||
         accountPlaceholderForPage(destination.page) ||
@@ -12374,14 +12414,39 @@
     items: FileAttachmentModel[] = [],
   ): void {
     const companyUid = attachmentCompanyUid(selectedRow);
-    const stamped = (items.length > 0 ? items : [item]).map((entry) => ({
-      ...entry,
-      companyUid: entry.companyUid || companyUid || "",
-    }));
+    if (item.kind === "folder") {
+      openFolderShare(item, companyUid);
+      return;
+    }
+    // A folder key is a folder marker, not an object the tray can fetch.
+    const stamped = (items.length > 0 ? items : [item])
+      .filter((entry) => entry.kind !== "folder")
+      .map((entry) => ({
+        ...entry,
+        companyUid: entry.companyUid || companyUid || "",
+      }));
     attachTray = {
       selectedId: item.id || item.vaultPath,
       items: stamped,
     };
+  }
+
+  /**
+   * A DM folder share ("Shared a folder with you") opens that folder in Files.
+   * Its trailing-slash key is not an object, so the attachment preview would
+   * fail with "Could not load the file" (feedback 3e124bcd). Without a local
+   * copy of the company, the shared-with-me list is the closest place.
+   */
+  function openFolderShare(item: FileAttachmentModel, companyUid: string | null): void {
+    const location = folderShareLocation(
+      { vaultPath: item.vaultPath, companyUid: item.companyUid || companyUid || "" },
+      effectiveCompanies,
+    );
+    if (location) {
+      void navigate({ kind: "explorer", vault: location.vault, path: location.path });
+      return;
+    }
+    void navigate({ kind: "shared-files" });
   }
 
   async function resolveTrayUrl(
@@ -12708,6 +12773,33 @@
   });
   const railGate = (key: IndigoOnlyGateKey): boolean =>
     isIndigoOnlySurface(key, gateCompany, railGateValues);
+  // Bind each answer to the company and signed-in identity that requested it.
+  let officeGrant = $state<string | null>(null);
+  const officeScope = $derived(`${self?.uid ?? ""}:${gateCompany?.uid ?? ""}`);
+  const officeVisible = $derived(Boolean(callsHost && self?.uid && officeGrant === officeScope));
+  const officeCompanyUid = $derived(gateCompany?.uid ?? null);
+  const officeCompanySlug = $derived(gateCompany?.slug ?? null);
+  const officeAccessible = $derived(Boolean(officeCompanyUid && companyIsAccessible(officeCompanyUid)));
+  $effect(() => {
+    const company = { uid: officeCompanyUid ?? "", slug: officeCompanySlug };
+    const scope = officeScope;
+    const signedIn = Boolean(self?.uid);
+    const host = callsHost;
+    const platform = adapter;
+    officeGrant = null;
+    if (!host || !company.uid || !officeAccessible) return;
+    let live = true;
+    let sequence = 0;
+    const refresh = async () => {
+      const request = ++sequence;
+      const allowed = await readOfficeFeature(platform, company, signedIn);
+      if (live && request === sequence && allowed !== null) officeGrant = allowed ? scope : null;
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), 60_000);
+    window.addEventListener("focus", refresh);
+    return () => { live = false; clearInterval(timer); window.removeEventListener("focus", refresh); };
+  });
   // OWNER-D 3: Telemetry is hidden (rail, palette, deep links) for members
   // without the feature, instead of a "Coming soon" page.
   // The entry belongs to the person: Indigo members keep it on Home and in
@@ -12794,6 +12886,19 @@
   // OWNER-R24: the caller's role in the open company, from the membership
   // roster. Grants and Billing show only to owners and admins.
   const companyPaneRole = $derived(callerRole(companyPaneCompany?.uid));
+  // US-007: the global Deployments page offers the company Custom domain sheet too.
+  async function deployDomainPrices(): Promise<DomainPrices | null> {
+    const read = adapter.company?.getPricing;
+    if (!read) return null;
+    const res = await read();
+    return res.ok ? domainPricesFromFeed(res.value) : null;
+  }
+  async function deployDomainCardEntryUrl(companyUid: string): Promise<string | null> {
+    const mint = adapter.company?.createBillingCheckoutSession;
+    if (!mint) return null;
+    const res = await mint(companyUid);
+    return res.ok && typeof res.value?.url === "string" ? res.value.url : null;
+  }
   // Grants pane: the caller's other companies, grantable where they are an
   // owner or admin (hq-pro enforces the same rule).
   const grantsOpen = $derived(railPlaceholder?.id === "grants");
@@ -13654,6 +13759,10 @@
       return { label: action.label, onselect: () => openExtraPage(id, action.param()) };
     })()}
     syncState={liveSyncState}
+    errorSummary={liveSync.recoveryHoldReason}
+    syncRecoveryReason={liveSync.recoveryHoldReason}
+    errorMessage={liveSync.recoveryHoldReason}
+    onretry={liveSync.recoveryHoldReason ? retrySyncRecovery : undefined}
     {lastSyncLabel}
     uploadsPaused={liveSync.uploadsPaused ?? []}
     cloudPaused={!cloudEnabled}
@@ -13662,13 +13771,17 @@
     {cloudError}
     workspaces={syncWorkspaces}
     {usageCompany}
+    usageAccounts={usageAccountList}
     hqFolderPath={hqFolderPath ?? liveSync.hqFolderPath}
     watchedCount={watched}
     {unreadCount}
-    {syncStatus}
+    syncStatus={liveSync.recoveryHoldReason
+      ? { ...syncStatus, phase: "error", message: liveSync.recoveryHoldReason }
+      : syncStatus}
     brand={brandState}
     {brandCompanyName}
     onopenSync={() => openSettings("sync")}
+    onopenUsage={() => openSettings("usage")}
     {sidebarCollapsed}
     sidebarToggleHidden={pageHasNoSidepane}
     coreUseFixtures={coreFixtures}
@@ -13717,6 +13830,8 @@
       activeId={activeRailId}
       {unreadCount}
       youInitials={resolvedAccountInitials ?? ""}
+      youPhoto={selfAvatarUrl}
+      youPhotoPulse={selfAvatarPulse}
       onselect={selectRailItem}
       onreorderpins={reorderPinnedCompanies}
       onmore={toggleMoreCompanies}
@@ -13958,6 +14073,7 @@
       {#await loadShellSettings() then { default: ShellSettings }}
         <ShellSettings
           onnewbot={openNewBotFromSettings}
+          usageAccounts={usageAccountList}
           profile={resolvedSettingsProfile}
           {companies}
           {adapter}
@@ -13975,6 +14091,10 @@
             void navigate(companyRowDestination("general", uid));
           }}
           onback={closeSettings}
+          onavatarsaved={(src) => {
+            selfAvatarUrl = src;
+            selfAvatarPulse += 1;
+          }}
           onsignout={onsignout ? signOutWithImageCleanup : undefined}
           onopenconsole={onOpenConsole
             ? (url) => onOpenConsole(url ?? HQ_CONSOLE_BASE)
@@ -14043,6 +14163,7 @@
             company={companyPaneCompany}
             canManage={companyPaneRole === "Owner" || companyPaneRole === "Admin"}
             selectedId={companyPaneSelectedId}
+            {officeVisible}
             onselect={selectCompanyPaneRow}
             memory={sidepaneScrollMemory}
             companyApi={adapter.company ?? null}
@@ -14176,6 +14297,18 @@
       {/if}
 
       <main class="desktop-main" aria-label="Channel">
+        {#if officeVisible}
+          {#key officeScope}
+            <LazyDoor door={officeDoor} props={{
+              adapter,
+              callsHost,
+              companyUid: officeCompanyUid,
+              companyLabel: companyPaneCompany?.label ?? "This company",
+              visible: railPlaceholder?.id === "office",
+              displayName: (uid: string) => atlasRosterNames.get(uid) ?? uid,
+            }} />
+          {/key}
+        {/if}
         <div
           class="notifications-layer"
           class:is-active={view === "notifications"}
@@ -14249,6 +14382,10 @@
               messagePersonByUid(personUid, { companyUid: companyPaneCompany?.uid });
             }}
           />
+        {:else if railPlaceholder?.id === "office" && companyPaneCompany}
+          {#if !officeVisible}
+            <section class="rail-placeholder" role="status"><h1>Office</h1><p>Office is not available for this company on this device.</p></section>
+          {/if}
         {:else if railPlaceholder?.id === "team" && companyPaneCompany}
           <LazyDoor
             door={teamPageDoor}
@@ -14389,6 +14526,9 @@
             deployAppPreview={adapter.company?.deployAppPreview}
             deployAppSnapshot={adapter.company?.deployAppSnapshot}
             companies={memberCompanies(companies)}
+            deployDomainRequest={adapter.company?.deployDomainRequest ?? null}
+            loadDomainPrices={deployDomainPrices}
+            domainCardEntryUrl={deployDomainCardEntryUrl}
             openExternal={onopenurl}
             actions={railGate(RAIL_DEPLOYMENTS_ACTIONS_FLAG)}
           />
@@ -14405,6 +14545,7 @@
               listDeployApps: adapter.company?.listDeployApps,
               adapter,
               companyUid: companyPaneCompany.uid ?? null,
+              companyRole: companyPaneRole ?? null,
               deployActions: railGate(RAIL_DEPLOYMENTS_ACTIONS_FLAG),
               companyLabel: companyPaneCompany.label,
               vaultCloudRead: (key: string) => vaultCloudRead(companyPaneCompany?.uid ?? null, key),
