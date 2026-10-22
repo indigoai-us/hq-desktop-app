@@ -25,7 +25,7 @@ test('names a company, shows the usage card, signs up free, and finishes', async
   await expect(card).toContainText('30-day trial, usage capped at $500');
   await expect(page.locator('.plan-card')).toHaveCount(1);
   await expect(page.getByText('Workforce')).toHaveCount(0);
-  await expect(page.getByTestId('onboarding-plan-enterprise')).toHaveText('Request an enterprise demo');
+  await expect(page.getByTestId('onboarding-plan-enterprise')).toHaveText('Book a setup call');
   await expect(page.getByTestId('onboarding-plan-self-hosted')).toHaveText('Use HQ free, self-hosted or on-prem');
 
   await page.getByTestId('onboarding-plan-choose-free').click();
