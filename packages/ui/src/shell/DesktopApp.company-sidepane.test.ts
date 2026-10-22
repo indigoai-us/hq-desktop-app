@@ -149,7 +149,8 @@ describe("DesktopApp company sidepane (console-rail US-007)", () => {
       "knowledge", "policies", "skills", "workers",
       "vault", "integrations", "secrets", "deployments",
       // Grants and Billing are hidden: the member role is not owner or admin.
-      "general", "brand",
+      // Outposts stays visible. Members see it read-only.
+      "general", "brand", "outposts",
       // US-014: the tile lands on Atlas and this company has no teammates yet.
       "invite-teammate",
     ]);

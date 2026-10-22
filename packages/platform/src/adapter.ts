@@ -52,9 +52,11 @@ export interface AdapterFailure {
    */
   instanceId?: string;
   /**
-   * The HTTP status of the refused request. Set only by the two Slack channel
+   * The HTTP status of the refused request. Set by the two Slack channel
    * calls (`AgentsApi.attachSlack`, `AgentsApi.submitSlackAppToken`), whose
-   * callers tell a 403 or 404 from a refusal that carries a server code.
+   * callers tell a 403 or 404 from a refusal that carries a server code, and
+   * by the Company Outpost detail, provision, and provision-poll calls, whose
+   * callers keep checking on a 5xx or an expired sign-in.
    * Absent on every other failure, and on a request that never got an answer.
    */
   status?: number;
@@ -1597,6 +1599,32 @@ export const OUTPOST_PATHS = {
 } as const;
 
 /**
+ * Company Outpost routes. No new paths: list and detail are GET /outpost/status,
+ * provision is POST /outpost/provision, remove is POST /outpost/destroy.
+ * Every call sends ownerKind "company".
+ */
+export const COMPANY_OUTPOST_PATHS = {
+  status: "/outpost/status",
+  provision: "/outpost/provision",
+  destroy: "/outpost/destroy",
+  jobs: "/outpost/company/jobs",
+  jobsStatus: "/outpost/company/jobs/status",
+} as const;
+
+export function companyOutpostListPath(companyUid: string): string {
+  return `${COMPANY_OUTPOST_PATHS.status}?companyUid=${encodeURIComponent(companyUid)}&list=true`;
+}
+
+export function companyOutpostDetailPath(companyUid: string, outpostId?: string): string {
+  const id = outpostId ? `&outpostId=${encodeURIComponent(outpostId)}` : "";
+  return `${COMPANY_OUTPOST_PATHS.status}?companyUid=${encodeURIComponent(companyUid)}&ownerKind=company${id}`;
+}
+
+export function companyOutpostJobsStatusPath(companyUid: string, outpostId: string): string {
+  return `${COMPANY_OUTPOST_PATHS.jobsStatus}?companyUid=${encodeURIComponent(companyUid)}&outpostId=${encodeURIComponent(outpostId)}`;
+}
+
+/**
  * POST /v1/agents/{uid}/runtime/actions body. Routine changes use the
  * `cron.pause|resume|trigger|delete|create|update` actions; `params.jobId`
  * names the routine and `body` carries the create/update fields.
@@ -1874,6 +1902,22 @@ export interface AgentsApi {
   getMyOutpostStatus?(): AdapterPromise<Json>;
   /** GET /outpost/jobs/status — the caller's scheduled-job status rows. */
   listMyOutpostJobs?(): AdapterPromise<Json>;
+  /** GET /outpost/status?companyUid&list=true — company Outpost rows. */
+  listCompanyOutposts?(companyUid: string): AdapterPromise<Json>;
+  /** GET /outpost/status?companyUid&ownerKind=company&outpostId — one company Outpost. */
+  getCompanyOutpost?(companyUid: string, outpostId: string): AdapterPromise<Json>;
+  /** POST /outpost/company/jobs action list. */
+  listCompanyOutpostJobs?(companyUid: string, outpostId: string): AdapterPromise<Json>;
+  /** GET /outpost/company/jobs/status — job health for one company Outpost. */
+  getCompanyOutpostJobHealth?(companyUid: string, outpostId: string): AdapterPromise<Json>;
+  /** POST /outpost/provision with ownerKind company. */
+  provisionCompanyOutpost?(companyUid: string): AdapterPromise<Json>;
+  /** POST /outpost/status action rename. The server action is not shipped yet. */
+  renameCompanyOutpost?(companyUid: string, outpostId: string, name: string): AdapterPromise<Json>;
+  /** POST /outpost/destroy action delete. */
+  removeCompanyOutpost?(companyUid: string, outpostId: string): AdapterPromise<Json>;
+  /** Re-reads company Outpost detail. attemptId is the outpost id from provision. */
+  pollCompanyOutpostProvision?(companyUid: string, attemptId: string): AdapterPromise<Json>;
   /** GET /v1/google/accounts — the caller's connected Google accounts. */
   listMyGoogleAccounts?(): AdapterPromise<Json>;
   /** GET /v1/slack/personal/accounts — the caller's personal Slack accounts. */

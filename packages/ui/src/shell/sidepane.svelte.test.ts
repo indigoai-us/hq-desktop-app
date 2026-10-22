@@ -59,7 +59,7 @@ describe("sidepane models (console-rail US-006)", () => {
       "Settings",
     ]);
     expect(model.sections[0].rows.map((r) => r.id)).toEqual(["atlas", "projects", "activity"]);
-    expect(model.sections.at(-1)!.rows.map((r) => r.id)).toEqual(["general", "brand", "billing"]);
+    expect(model.sections.at(-1)!.rows.map((r) => r.id)).toEqual(["general", "brand", "outposts", "billing"]);
     expect(model.footerRow).toBeNull();
     const ids = model.sections.flatMap((s) => s.rows.map((r) => r.id));
     expect(ids).not.toContain(COMPANY_SETTINGS_ROW.id);

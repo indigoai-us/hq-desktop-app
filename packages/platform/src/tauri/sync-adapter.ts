@@ -25,6 +25,10 @@ import {
   type VersionInfo,
   AGENT_PATHS,
   OUTPOST_PATHS,
+  COMPANY_OUTPOST_PATHS,
+  companyOutpostDetailPath,
+  companyOutpostJobsStatusPath,
+  companyOutpostListPath,
   PERSONAL_INTEGRATION_PATHS,
   COMPANY_INTEGRATION_PATHS,
   REDACTION_PATHS,
@@ -573,6 +577,23 @@ export function createSyncPlatformAdapter(
   ): AdapterPromise<T> {
     const attempted = await hqProAttemptWithRetries<T>(method, path, body);
     // A reply that was not JSON is not the server refusing: it keeps no status.
+    if (!attempted.result.ok && attempted.result.code === 'network') {
+      return attempted.result;
+    }
+    return withHttpStatus(attempted.result, attempted.status);
+  }
+
+  /**
+   * One request with no retry, with the HTTP status on a failure. For a
+   * create that is not safe to repeat: a 503 may come after the server
+   * already started the work, so the caller reads status instead.
+   */
+  async function hqProOnceWithStatus<T>(
+    method: 'POST',
+    path: string,
+    body?: unknown,
+  ): AdapterPromise<T> {
+    const attempted = await hqProAttempt<T>(method, path, body);
     if (!attempted.result.ok && attempted.result.code === 'network') {
       return attempted.result;
     }
@@ -1355,6 +1376,21 @@ export function createSyncPlatformAdapter(
         call('list_local_sessions', { from: range.from, to: range.to, offset: page?.offset ?? 0, limit: page?.limit ?? 50 }),
       getMyOutpostStatus: () => hqProJson('POST', OUTPOST_PATHS.status, {}),
       listMyOutpostJobs: () => hqProJson('GET', OUTPOST_PATHS.jobsStatus),
+      listCompanyOutposts: (companyUid) => hqProJson('GET', companyOutpostListPath(companyUid)),
+      getCompanyOutpost: (companyUid, outpostId) => hqProRequestWithStatus('GET', companyOutpostDetailPath(companyUid, outpostId)),
+      listCompanyOutpostJobs: (companyUid, outpostId) =>
+        hqProJson('POST', COMPANY_OUTPOST_PATHS.jobs, { companyUid, ownerKind: 'company', action: 'list', outpostId }),
+      getCompanyOutpostJobHealth: (companyUid, outpostId) =>
+        hqProJson('GET', companyOutpostJobsStatusPath(companyUid, outpostId)),
+      // Provision is never retried: the client reads status after a 503.
+      provisionCompanyOutpost: (companyUid) =>
+        hqProOnceWithStatus('POST', COMPANY_OUTPOST_PATHS.provision, { companyUid, ownerKind: 'company', action: 'create' }),
+      renameCompanyOutpost: (companyUid, outpostId, name) =>
+        hqProJson('POST', COMPANY_OUTPOST_PATHS.status, { companyUid, ownerKind: 'company', action: 'rename', outpostId, name }),
+      removeCompanyOutpost: (companyUid, outpostId) =>
+        hqProJson('POST', COMPANY_OUTPOST_PATHS.destroy, { companyUid, ownerKind: 'company', action: 'delete', outpostId }),
+      pollCompanyOutpostProvision: (companyUid, attemptId) =>
+        hqProRequestWithStatus('GET', companyOutpostDetailPath(companyUid, attemptId)),
       listMyGoogleAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.googleAccounts),
       listMySlackAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.slackAccounts),
     },

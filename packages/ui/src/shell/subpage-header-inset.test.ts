@@ -29,10 +29,15 @@ const PAGE_BACK_TESTIDS = [
   "dm-requests-back",
 ] as const;
 
-/** In-app history Back lives in the title bar / unavailable view, not PageHeader. */
+/**
+ * Back that is not a full-window PageHeader.
+ * Company Outpost is an in-rail pane. Its Back control is the confirm-step
+ * action from the prototype, next to Add Outpost, not title-bar chrome.
+ */
 const NON_PAGE_HEADER_BACK = [
   "home/V4TitleBar.svelte",
   "shell/DesktopApp.svelte",
+  "company-outpost/CompanyOutpostPage.svelte",
 ] as const;
 
 function svelteFiles(dir: string, out: string[] = []): string[] {

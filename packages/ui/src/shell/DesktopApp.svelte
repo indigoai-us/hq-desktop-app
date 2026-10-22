@@ -91,6 +91,7 @@
   import DeploymentsRailHost from "./DeploymentsRailHost.svelte";
   import PersonalRailHost from "./PersonalRailHost.svelte";
   import OutpostRailHost from "./OutpostRailHost.svelte";
+  import CompanyOutpostRailHost from "./CompanyOutpostRailHost.svelte";
   import AtlasLandingHost from "./AtlasLandingHost.svelte";
   import type { AtlasLocalSource, AtlasVaultSource } from "./atlas-landing.js";
   import ActivityRailHost from "./ActivityRailHost.svelte";
@@ -618,6 +619,7 @@
     type NavigationMode,
     type NavigationResolveOutcome,
   } from "./navigation-controller.js";
+  import { openWhenResolvable } from "./open-when-resolvable.js";
   import { consumeNavigationShortcut } from "./navigation-shortcuts.js";
   import {
     onDestroy,
@@ -11157,6 +11159,19 @@
     return navigation.navigate(destination, mode);
   }
 
+  // Company Outpost job links. The shell resolver is the single check: once a
+  // page registers outpost-jobs there, the link navigates. Until then the page
+  // keeps its own stub, so an unknown route never shows a nav error.
+  async function openOutpostJobs(
+    destination: NavigationDestination,
+  ): Promise<boolean> {
+    if (destination.kind !== "extra") return false;
+    return openWhenResolvable(destination, {
+      resolve: (next) => resolveDestination(next),
+      navigate: (next) => navigate(next),
+    });
+  }
+
   function resolveDestination(
     destination: NavigationDestination,
     generation?: number,
@@ -14590,6 +14605,14 @@
           />
         {:else if railPlaceholder?.id === "outpost"}
           <OutpostRailHost api={adapter.agents ?? null} openExternal={onopenurl} full={railGate(RAIL_OUTPOST_FLAG)} />
+        {:else if railPlaceholder?.id === "outposts" && companyPaneCompany}
+          <CompanyOutpostRailHost
+            companyUid={companyPaneCompany.uid}
+            role={companyPaneRole === "Owner" ? "owner" : companyPaneRole === "Admin" ? "admin" : companyPaneRole === "Guest" ? "guest" : "member"}
+            api={adapter.agents ?? null}
+            onOpenJob={openOutpostJobs}
+            onsignin={onsignin ? startReauth : undefined}
+          />
         {:else if railPlaceholder}
           <section
             class="rail-placeholder"

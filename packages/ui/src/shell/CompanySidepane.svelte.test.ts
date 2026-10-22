@@ -32,8 +32,8 @@ describe("CompanySidepane (console-rail US-007)", () => {
     expect(header?.textContent).toContain("Indigo");
     expect(target.querySelector("[data-testid='company-sidepane-live']")?.textContent?.trim()).toBe("0");
     const rows = target.querySelectorAll("[data-testid='sidepane-body'] [data-testid='sidepane-row']");
-    // 13 earlier rows + Groups, General, Brand (Grants and Billing hidden: no manager role).
-    expect(rows).toHaveLength(16);
+    // 13 earlier rows + Groups, General, Brand, Outposts (Grants and Billing hidden: no manager role).
+    expect(rows).toHaveLength(17);
     expect(target.querySelector("[data-testid='company-sidepane-settings']")).toBeNull();
     const settings = target.querySelector("[data-row-id='general']");
     expect(
@@ -63,12 +63,12 @@ describe("CompanySidepane (console-rail US-007)", () => {
     flushSync();
     const rowCount = () =>
       target.querySelectorAll("[data-testid='sidepane-body'] [data-testid='sidepane-row']").length;
-    expect(rowCount()).toBe(16);
+    expect(rowCount()).toBe(17);
     expect(target.querySelector("[data-testid='company-sidepane-roster-loading']")).toBeNull();
 
     props.rosterLoading = false;
     flushSync();
-    expect(rowCount()).toBe(16);
+    expect(rowCount()).toBe(17);
     expect(target.textContent).not.toContain("Live now");
     expect(target.textContent).not.toContain("Idle");
     expect(target.querySelector("[data-row-id^='person:']")).toBeNull();
