@@ -42,7 +42,7 @@
     type CloudFileEventPayload,
 } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
-  import { resolveUsageCompany, setPreferredUsageAccount, usageAccounts } from "../home/core-usage-model.js";
+  import { PERSONAL_ACCOUNT_KEY, resolveUsageCompany, setPreferredUsageAccount, usageAccounts } from "../home/core-usage-model.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
@@ -107,7 +107,7 @@
     shouldShowLaunch,
   } from "../badges/badge-launch.js";
   import { installBadgeLoader } from "../badges/badge-loader.svelte.js";
-  import { setUsageLevelOpener, setUsageLevelViewer } from "../home/usage-levels.svelte.js";
+  import { setUsageLevelHistoryLoader, setUsageLevelOpener, setUsageLevelViewer } from "../home/usage-levels.svelte.js";
   import { topBadge } from "../badges/badge-tier.js";
   import { resolveEarned, type ResolvedBadge } from "../badges/badge-catalog.js";
   import CompanySettingsHost from "./CompanySettingsHost.svelte";
@@ -12975,6 +12975,20 @@
       openSettings("usage");
     });
     return () => setUsageLevelOpener(null);
+  });
+  // Levels follow the highest month ever: the owner usage history
+  // (GET /v1/billing/usage/history, hq-pro #5087), read once per account.
+  $effect(() => {
+    const company = adapter.company;
+    setUsageLevelHistoryLoader(
+      company
+        ? (accountKey) =>
+            accountKey === PERSONAL_ACCOUNT_KEY
+              ? (company.getPersonalUsageHistory?.() ?? null)
+              : (company.getUsageHistory?.(accountKey) ?? null)
+        : null,
+    );
+    return () => setUsageLevelHistoryLoader(null);
   });
 
   /**

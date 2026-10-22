@@ -7,14 +7,15 @@
  *
  * A level, once reached, stays: the record keeps the best month seen and the
  * highest level unlocked, and only ever moves up. The accomplishment card for
- * a level fires once per person per account per device: `announced` records
- * the highest level a card was shown for.
+ * a level fires once per person per account: `announced` records the highest
+ * level a card was shown for.
  *
- * Data source: hq-pro has no owner-facing monthly history yet (only this
- * month's statement, `GET /v1/billing/usage?window=month`, and the staff-only
- * `GET /v1/admin/usage/month`). So the best month is the larger of the stored
- * best and this month's statement, recomputed on every read. The rollup
- * started 2026-10-11, so this month is every account's whole history today.
+ * Data sources: the owner usage history, `GET /v1/billing/usage/history`
+ * (hq-pro #5087: the last 12 months, `complete: true` for closed months), and
+ * this month's statement, `GET /v1/billing/usage?window=month`, which is
+ * fresher than the history's open current month. The best month is the
+ * largest of the stored best, every closed month in the history and this
+ * month, so a new device shows the level an earlier month reached.
  *
  * Pure. Nothing here touches the DOM; storage is passed in.
  */
@@ -145,6 +146,53 @@ export function observeMonth(prev: LevelRecord | null | undefined, obs: MonthObs
     record: { bestCents, bestMonth, level, announced: announce ?? base.announced },
     announce,
   };
+}
+
+/**
+ * The closed months in a `GET /v1/billing/usage/history` body
+ * (`{ months: [{ month, usageCents, complete }] }`). Only `complete: true`
+ * months count: the server marks the open current month and any month with a
+ * missing meter as incomplete, and a month with no data as `usageCents: 0,
+ * complete: false`, so neither is a reliable figure. An unreadable body is [].
+ */
+export function closedMonthsFromHistory(body: unknown): MonthObservation[] {
+  if (typeof body !== "object" || body === null) return [];
+  const months = (body as Record<string, unknown>).months;
+  if (!Array.isArray(months)) return [];
+  const out: MonthObservation[] = [];
+  for (const m of months) {
+    if (typeof m !== "object" || m === null) continue;
+    const row = m as Record<string, unknown>;
+    if (row.complete !== true || typeof row.month !== "string" || !/^\d{4}-\d{2}$/.test(row.month)) continue;
+    const cents = nonNeg(row.usageCents);
+    if (cents === null) continue;
+    out.push({ month: row.month, cents });
+  }
+  return out;
+}
+
+/**
+ * Fold the server's closed months into the record. The best month and level
+ * rise as with any month, but nothing is marked announced here: the caller
+ * folds this month next and that fold announces the highest new level once.
+ * With `quiet`, the levels the closed months reach count as announced
+ * instead. That is for a device with no record of its own for this person and
+ * account: the person most likely saw those cards on another device, so a
+ * fresh device shows the level without repeating them. A higher level this
+ * month reaches is not covered and still gets its card.
+ */
+export function observeHistory(
+  prev: LevelRecord | null | undefined,
+  months: readonly MonthObservation[],
+  opts: { quiet: boolean },
+): LevelRecord {
+  let record = prev ?? EMPTY_LEVEL_RECORD;
+  let historyLevel = 0;
+  for (const m of months) {
+    record = { ...observeMonth(record, m).record, announced: record.announced };
+    historyLevel = Math.max(historyLevel, levelForCents(m.cents));
+  }
+  return opts.quiet ? { ...record, announced: Math.max(record.announced, historyLevel) } : record;
 }
 
 export type LevelStorage = Pick<Storage, "getItem" | "setItem">;

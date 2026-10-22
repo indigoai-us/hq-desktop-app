@@ -479,6 +479,28 @@ describe("CoreUsagePanel", () => {
       };
     }
 
+    it("each account's level coin in the list is named for screen readers (US-019 review)", async () => {
+      const { __resetUsageLevelsForTests } = await import("./usage-levels.svelte");
+      __resetUsageLevelsForTests();
+      try {
+        const src = multiSource({
+          getBillingSummary: vi.fn(async () => ok({ pricingPlan: "usage-only", usageTrial: { status: "ended", allowanceCents: 1000, cardOnFile: true } })),
+          getUsageStatement: vi.fn(async () => ok({ ...STATEMENT, usageCents: 6_000 })),
+        });
+        await render(src, vi.fn(), { account: ACCOUNTS[1], accounts: ACCOUNTS });
+        for (let i = 0; i < 3; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          flushSync();
+        }
+        const mark = host.querySelector('[data-testid="core-usage-account"][data-key="cmp_northwind"] [data-testid="core-usage-account-level"]');
+        expect(mark?.getAttribute("role")).toBe("img");
+        expect(mark?.getAttribute("aria-label")).toBe("Level 2 · Prototype");
+        expect(mark?.getAttribute("aria-hidden")).toBeNull();
+      } finally {
+        __resetUsageLevelsForTests();
+      }
+    });
+
     it("a read in flight across sign-out is never painted (review, 2026-10-20)", async () => {
       // Person A's personal read is still in flight when they sign out.
       let release: (() => void) | null = null;

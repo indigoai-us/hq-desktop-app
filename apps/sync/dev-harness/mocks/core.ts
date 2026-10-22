@@ -2528,6 +2528,12 @@ function usageOwnerMock(url: string, method: string, body: Record<string, unknow
       return json({ limitCents: null, noLimit: true, custom: true, defaultLimitCents: 10000, paused: false, spend: null });
     }
   }
+  // US-019: the owner usage history (hq-pro #5087). Last month closed at
+  // half of this month's total, so every level still comes from this month.
+  if (url.startsWith('/v1/billing/usage/history?')) {
+    const cents = url.includes('scope=person') ? (usageLevelsDemo() ? LEVELS_DEMO_CENTS.personal : 340) : (usageCents[uidOf()] ?? 0);
+    return json({ months: [{ month: '2026-09', usageCents: Math.round(cents / 2), complete: true }, { month: '2026-10', usageCents: cents, complete: false }] });
+  }
   if (url.startsWith('/v1/billing/summary?')) {
     const uid = uidOf();
     if (usageOwnerSwitched.has(uid)) {

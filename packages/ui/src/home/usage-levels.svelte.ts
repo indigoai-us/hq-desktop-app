@@ -8,17 +8,29 @@
  * account, and the level is kept here so every surface paints the same one.
  * A card fires only when the record could be stored: a card that cannot
  * remember it was shown would come back on every read.
+ *
+ * The first read of an account in a session also reads its usage history
+ * (`GET /v1/billing/usage/history`, hq-pro #5087) once, through the loader
+ * the shell sets. Until that answers, reads update the level but hold the
+ * card; then the closed months are folded in and the held read is folded
+ * again, so a card names the highest new level once and never a level an
+ * earlier month already reached on a new device. A failed or refused history
+ * read (403 for admins and members, 404 on a server without the route) falls
+ * back to this month alone.
  */
 
 import { registerAccountCache } from "../common/account-caches.js";
 import {
+  closedMonthsFromHistory,
   countsFromLines,
   loadLevelRecord,
   monthOf,
+  observeHistory,
   observeMonth,
   saveLevelRecord,
   type LevelRecord,
   type LevelStorage,
+  type MonthObservation,
 } from "./usage-levels.js";
 import { announceUsageLevel } from "./usage-level-announce.js";
 import { dismissToast, toastItems } from "../shell/toast-stack.svelte.js";
@@ -41,6 +53,40 @@ let viewer = $state<string | null>(null);
 let states = $state<Record<string, UsageLevelState>>({});
 let opener: ((accountKey: string) => void) | null = null;
 
+/**
+ * Reads an account's usage history: a company uid, or the personal key. An
+ * `{ ok, value }` result like the adapter's; null when this host has none.
+ */
+export type UsageHistoryLoader = (
+  accountKey: string,
+) => Promise<{ ok: boolean; value?: unknown }> | null | undefined;
+
+let historyLoader: UsageHistoryLoader | null = null;
+
+/** A held read: folded again, with its card, once the history has answered. */
+interface HeldRead {
+  accountName: string;
+  input: UsageMonthInput;
+  opts: { announce?: boolean; storage?: LevelStorage | null };
+}
+
+/** One history read per account per signed-in person per session. */
+interface HistoryRead {
+  viewer: string;
+  done: boolean;
+  /** This device had no record for the person and account when the read began. */
+  fresh: boolean;
+  held: HeldRead | null;
+}
+
+const historyReads = new Map<string, HistoryRead>();
+
+/** Where the history comes from (the shell sets it; null turns history off). */
+export function setUsageLevelHistoryLoader(fn: UsageHistoryLoader | null): void {
+  historyLoader = fn;
+  historyReads.clear();
+}
+
 function defaultStorage(): LevelStorage | null {
   try {
     return typeof localStorage === "undefined" ? null : localStorage;
@@ -60,6 +106,7 @@ export function setUsageLevelViewer(uid: string | null | undefined): void {
   // A change of person forgets the last person's levels and cards.
   if (previous !== null) {
     states = {};
+    historyReads.clear();
     dismissLevelCards();
   }
 }
@@ -102,6 +149,15 @@ export function observeUsageLevel(
   if (!month || !Number.isFinite(input.cents)) return null;
   const who = viewer;
   const storage = opts.storage === undefined ? defaultStorage() : opts.storage;
+  if (who && historyLoader && opts.announce !== false) {
+    let read = historyReads.get(accountKey);
+    if (!read || read.viewer !== who) read = startHistoryRead(accountKey, who, storage);
+    if (!read.done) {
+      // Hold the card until the history answers; the level still updates now.
+      read.held = { accountName, input, opts };
+      return observeUsageLevel(accountKey, accountName, input, { ...opts, announce: false });
+    }
+  }
   const stored: LevelRecord | null = who ? loadLevelRecord(storage, who, accountKey) : null;
   const prior = states[accountKey];
   // The in-memory state can be ahead of storage (storage refused a write),
@@ -134,16 +190,60 @@ export function observeUsageLevel(
     states = { ...states, [accountKey]: next };
   }
   if (willAnnounce) {
+    // The level was reached by the best month, which can be an earlier month
+    // from the history; this read's counts describe this month only.
+    const cardMonth = record.bestMonth ?? month;
     announceUsageLevel({
       accountKey,
       accountName,
       level: announce,
-      month,
-      counts: input.counts ?? null,
+      month: cardMonth,
+      counts: cardMonth === month ? (input.counts ?? null) : null,
       onOpen: opener ? () => opener?.(accountKey) : null,
     });
   }
   return next;
+}
+
+function startHistoryRead(accountKey: string, who: string, storage: LevelStorage | null): HistoryRead {
+  const read: HistoryRead = { viewer: who, done: false, fresh: loadLevelRecord(storage, who, accountKey) === null, held: null };
+  historyReads.set(accountKey, read);
+  let pending: ReturnType<UsageHistoryLoader> = null;
+  try {
+    pending = historyLoader?.(accountKey) ?? null;
+  } catch {
+    pending = null;
+  }
+  void Promise.resolve(pending)
+    .then((res) => (res && res.ok ? closedMonthsFromHistory(res.value) : []))
+    .catch(() => [] as MonthObservation[])
+    .then((months) => finishHistoryRead(accountKey, read, months, storage));
+  return read;
+}
+
+function finishHistoryRead(accountKey: string, read: HistoryRead, months: readonly MonthObservation[], storage: LevelStorage | null): void {
+  // Sign-out or a change of person while the read was out: it is not theirs.
+  if (historyReads.get(accountKey) !== read || viewer !== read.viewer) return;
+  read.done = true;
+  if (months.length > 0) {
+    const who = read.viewer;
+    const prior = states[accountKey];
+    const ownPrior = prior && prior.viewer === who ? prior : null;
+    const base: LevelRecord | null =
+      loadLevelRecord(storage, who, accountKey) ??
+      (ownPrior ? { bestCents: ownPrior.bestCents, bestMonth: ownPrior.bestMonth, level: ownPrior.level, announced: ownPrior.level } : null);
+    const record = observeHistory(base, months, { quiet: read.fresh });
+    saveLevelRecord(storage, who, accountKey, record);
+    if (!prior || prior.level !== record.level || prior.bestCents !== record.bestCents || prior.bestMonth !== record.bestMonth || prior.viewer !== who) {
+      states = {
+        ...states,
+        [accountKey]: { level: record.level, bestCents: record.bestCents, bestMonth: record.bestMonth, freshAt: prior?.freshAt ?? null, viewer: who },
+      };
+    }
+  }
+  const held = read.held;
+  read.held = null;
+  if (held) observeUsageLevel(accountKey, held.accountName, held.input, held.opts);
 }
 
 /**
@@ -184,9 +284,12 @@ export function __resetUsageLevelsForTests(): void {
   viewer = null;
   states = {};
   opener = null;
+  historyLoader = null;
+  historyReads.clear();
 }
 
 registerAccountCache(() => {
   states = {};
+  historyReads.clear();
   dismissLevelCards();
 });

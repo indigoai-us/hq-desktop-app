@@ -402,7 +402,7 @@
             data-key={key}
             onclick={() => pick(acct)}
           >
-            <span class="core-usage-account-name">{#if rowLevel}<UsageLevelMark level={rowLevel.level} size={14} data-testid="core-usage-account-level" />{/if}{acct.name}</span>
+            <span class="core-usage-account-name">{#if rowLevel}<UsageLevelMark level={rowLevel.level} size={14} labelled={rowLevel.level > 0} data-testid="core-usage-account-level" />{/if}{acct.name}</span>
             <span class="core-usage-account-role">{acct.kind === "personal" ? "Your account" : billingRole(acct.role) === "admin" ? "Admin" : billingRole(acct.role) === "owner" ? "Owner" : billingRole(acct.role) === "member" ? "Member" : ""}</span>
             <span class="core-usage-account-total" data-testid="core-usage-account-total">{accountTotalText(rowViews[key])}</span>
           </button>

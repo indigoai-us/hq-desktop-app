@@ -9,6 +9,7 @@ import {
   observeAccountRow,
   observeCoreView,
   observeUsageLevel,
+  setUsageLevelHistoryLoader,
   setUsageLevelOpener,
   setUsageLevelViewer,
   usageLevelState,
@@ -204,5 +205,109 @@ describe("usageLevelCardText", () => {
       title: "Ridge reached Level 7: Landmark",
       detail: "October 2026 passed $10k.",
     });
+  });
+});
+
+describe("levels from the usage history (hq-pro #5087)", () => {
+  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+  const history = (months: { month: string; usageCents: number; complete: boolean }[]) => ({ ok: true, value: { months } });
+
+  it("a fresh device shows the level an earlier month reached, without repeating its card", async () => {
+    const storage = memory();
+    setUsageLevelViewer("prs_owner");
+    const loader = vi.fn(async () =>
+      history([
+        { month: "2026-09", usageCents: 61_000, complete: true },
+        { month: "2026-10", usageCents: 2_000, complete: false },
+      ]),
+    );
+    setUsageLevelHistoryLoader(loader);
+    observeUsageLevel("cmp_ridge", "Ridge", { periodStart: "2026-10-01", cents: 2_000 }, { storage });
+    // The card is held until the history answers.
+    expect(levelToasts()).toHaveLength(0);
+    await flush();
+    expect(loader).toHaveBeenCalledWith("cmp_ridge");
+    expect(usageLevelState("cmp_ridge")).toMatchObject({ level: 4, bestCents: 61_000, bestMonth: "2026-09" });
+    expect(levelToasts()).toHaveLength(0);
+
+    // Later reads in the session do not read the history again, or fire a card.
+    observeUsageLevel("cmp_ridge", "Ridge", { periodStart: "2026-10-01", cents: 3_000 }, { storage });
+    expect(loader).toHaveBeenCalledTimes(1);
+    expect(levelToasts()).toHaveLength(0);
+  });
+
+  it("a fresh device still gets the card for a higher level this month reached", async () => {
+    const storage = memory();
+    setUsageLevelViewer("prs_owner");
+    setUsageLevelHistoryLoader(async () => history([{ month: "2026-09", usageCents: 6_000, complete: true }]));
+    const counts = { "agent-run": 1240, "member-sync": 3100 };
+    observeUsageLevel("cmp_ridge", "Ridge", { periodStart: "2026-10-01", cents: 61_000, counts }, { storage });
+    expect(usageLevelState("cmp_ridge")?.level).toBe(4);
+    expect(levelToasts()).toHaveLength(0);
+    await flush();
+    expect(levelToasts()).toHaveLength(1);
+    expect(levelToasts()[0].title).toBe("Ridge reached Level 4: Scale");
+    expect(levelToasts()[0].detail).toBe("October 2026 passed $500. The team did 1,240 agent runs and 3,100 syncs.");
+  });
+
+  it("a device with its own record gets one card for a level a missed month reached, naming that month", async () => {
+    const storage = memory();
+    setUsageLevelViewer("prs_owner");
+    observeUsageLevel("cmp_ridge", "Ridge", { periodStart: "2026-08-01", cents: 1_500 }, { storage });
+    expect(levelToasts()).toHaveLength(1);
+    dismissToast(levelToasts()[0].id);
+
+    __resetUsageLevelsForTests();
+    setUsageLevelViewer("prs_owner");
+    setUsageLevelHistoryLoader(async () =>
+      history([
+        { month: "2026-08", usageCents: 1_500, complete: true },
+        { month: "2026-09", usageCents: 61_000, complete: true },
+      ]),
+    );
+    observeUsageLevel("cmp_ridge", "Ridge", { periodStart: "2026-10-01", cents: 2_000, counts: { "agent-run": 9 } }, { storage });
+    await flush();
+    expect(levelToasts()).toHaveLength(1);
+    expect(levelToasts()[0].title).toBe("Ridge reached Level 4: Scale");
+    // This month's counts are not September's, so the card leaves them out.
+    expect(levelToasts()[0].detail).toBe("September 2026 passed $500.");
+  });
+
+  it("a refused or failed history read falls back to this month", async () => {
+    const storage = memory();
+    setUsageLevelViewer("prs_owner");
+    setUsageLevelHistoryLoader((key) =>
+      key === "cmp_ridge" ? Promise.resolve({ ok: false }) : Promise.reject(new Error("offline")),
+    );
+    observeUsageLevel("cmp_ridge", "Ridge", { periodStart: "2026-10-01", cents: 1_500 }, { storage });
+    observeUsageLevel("cmp_elm", "Elm", { periodStart: "2026-10-01", cents: 6_000 }, { storage });
+    await flush();
+    expect(levelToasts().map((t) => t.title).sort()).toEqual(["Elm reached Level 2: Prototype", "Ridge reached Level 1: Sketch"]);
+  });
+
+  it("the personal account reads its own history", async () => {
+    const storage = memory();
+    setUsageLevelViewer("prs_owner");
+    const loader = vi.fn(async () => history([{ month: "2026-09", usageCents: 12_000, complete: true }]));
+    setUsageLevelHistoryLoader(loader);
+    observeUsageLevel("personal", "Personal", { periodStart: "2026-10-01", cents: 500 }, { storage });
+    await flush();
+    expect(loader).toHaveBeenCalledWith("personal");
+    expect(usageLevelState("personal")).toMatchObject({ level: 3, bestMonth: "2026-09" });
+  });
+
+  it("a history read still out at sign-out is dropped and fires nothing", async () => {
+    const storage = memory();
+    setUsageLevelViewer("prs_owner");
+    type Answer = { ok: boolean; value?: unknown };
+    let answer: (v: Answer) => void = () => {};
+    setUsageLevelHistoryLoader(() => new Promise<Answer>((resolve) => (answer = resolve)));
+    observeUsageLevel("cmp_ridge", "Ridge", { periodStart: "2026-10-01", cents: 61_000 }, { storage });
+    clearAccountCaches();
+    setUsageLevelViewer("prs_other");
+    answer(history([{ month: "2026-09", usageCents: 1_000_000, complete: true }]));
+    await flush();
+    expect(levelToasts()).toHaveLength(0);
+    expect(usageLevelState("cmp_ridge")).toBeNull();
   });
 });

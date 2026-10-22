@@ -6,6 +6,7 @@ import {
   EMPTY_LEVEL_RECORD,
   MAX_LEVEL,
   USAGE_LEVELS,
+  closedMonthsFromHistory,
   countsFromLines,
   levelForCents,
   levelLabel,
@@ -16,6 +17,7 @@ import {
   monthOf,
   nextLevel,
   nextLevelLine,
+  observeHistory,
   observeMonth,
   saveLevelRecord,
   teamDoneLine,
@@ -188,5 +190,56 @@ describe("what the team got done", () => {
         "junk",
       ]),
     ).toEqual({ "agent-run": 12 });
+  });
+});
+
+describe("usage history (GET /v1/billing/usage/history)", () => {
+  it("keeps only complete months with a readable figure", () => {
+    expect(
+      closedMonthsFromHistory({
+        months: [
+          { month: "2026-08", usageCents: 0, complete: false },
+          { month: "2026-09", usageCents: 61_000, complete: true },
+          { month: "2026-10", usageCents: 2_000_000, complete: false },
+          { month: "2026-07", usageCents: -5, complete: true },
+          { month: "2026-7", usageCents: 100, complete: true },
+          { month: "2026-06", usageCents: "100", complete: true },
+          null,
+        ],
+      }),
+    ).toEqual([{ month: "2026-09", cents: 61_000 }]);
+    expect(closedMonthsFromHistory(null)).toEqual([]);
+    expect(closedMonthsFromHistory({ months: "nope" })).toEqual([]);
+    expect(closedMonthsFromHistory({})).toEqual([]);
+  });
+
+  it("raises the best month and level without marking a card shown", () => {
+    const record = observeHistory(
+      { bestCents: 2_000, bestMonth: "2026-10", level: 1, announced: 1 },
+      [
+        { month: "2026-08", cents: 6_000 },
+        { month: "2026-09", cents: 61_000 },
+      ],
+      { quiet: false },
+    );
+    expect(record).toEqual({ bestCents: 61_000, bestMonth: "2026-09", level: 4, announced: 1 });
+    // The next fold of this month announces the highest new level, once.
+    expect(observeMonth(record, { month: "2026-10", cents: 2_000 }).announce).toBe(4);
+  });
+
+  it("quiet: levels the closed months reach count as shown, a higher level this month does not", () => {
+    // A fresh device that already folded this month (Level 4) before the history answered.
+    const held = { bestCents: 61_000, bestMonth: "2026-10", level: 4, announced: 0 };
+    const record = observeHistory(held, [{ month: "2026-09", cents: 6_000 }], { quiet: true });
+    expect(record).toEqual({ bestCents: 61_000, bestMonth: "2026-10", level: 4, announced: 2 });
+    expect(observeMonth(record, { month: "2026-10", cents: 61_000 }).announce).toBe(4);
+
+    const past = observeHistory(null, [{ month: "2026-09", cents: 61_000 }], { quiet: true });
+    expect(past).toEqual({ bestCents: 61_000, bestMonth: "2026-09", level: 4, announced: 4 });
+    expect(observeMonth(past, { month: "2026-10", cents: 2_000 }).announce).toBeNull();
+  });
+
+  it("an empty history changes nothing", () => {
+    expect(observeHistory(null, [], { quiet: true })).toEqual(EMPTY_LEVEL_RECORD);
   });
 });
