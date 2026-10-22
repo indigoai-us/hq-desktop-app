@@ -810,9 +810,11 @@
     scrollbar-color: var(--v4-control-border, var(--border-strong)) transparent;
   }
 
+  /* Short cells stay on one line; a long cell stops growing at 40ch and
+     wraps between words. A table wider than the pane scrolls in its box. */
   .markdown-body :global(table) {
-    width: 100%;
-    min-width: max-content;
+    width: max-content;
+    min-width: 100%;
     border-spacing: 0;
     border-collapse: collapse;
     color: var(--v4-text-2, var(--muted));
@@ -822,6 +824,9 @@
 
   .markdown-body :global(th),
   .markdown-body :global(td) {
+    max-width: 40ch;
+    overflow-wrap: normal;
+    word-break: normal;
     padding: var(--space-2, 6px) var(--space-3, 10px);
     border-right: 1px solid var(--v4-hairline, var(--border));
     border-bottom: 1px solid var(--v4-hairline, var(--border));

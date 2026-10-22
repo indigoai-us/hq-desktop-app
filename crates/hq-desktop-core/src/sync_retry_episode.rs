@@ -320,8 +320,28 @@ mod tests {
         assert_eq!(fs::read(dir.path().join(FILE)).unwrap(), oversized);
     }
 
+    /// Runs the named lock-owning scenario after exec, outside the shared test
+    /// process, so concurrent fork-based tests cannot inherit its lock files.
+    /// Returns true in the parent once the child passed; false in the child.
+    fn run_isolated(name: &str) -> bool {
+        const CHILD: &str = "HQ_SYNC_RETRY_EPISODE_ISOLATED_TEST";
+        if std::env::var_os(CHILD).is_some_and(|value| value == name) {
+            return false;
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &format!("sync_retry_episode::tests::{name}")])
+            .env(CHILD, name)
+            .status()
+            .unwrap();
+        assert!(status.success(), "isolated {name} failed: {status}");
+        true
+    }
+
     #[test]
     fn permanent_npm_failure_stops_the_next_attempt_and_survives_reopening() {
+        if run_isolated("permanent_npm_failure_stops_the_next_attempt_and_survives_reopening") {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         assert!(allow_start(dir.path(), "v1", false).unwrap());
         assert!(record_failure(dir.path(), "v1", "npm error code ETARGET\nlog path").unwrap());
@@ -358,19 +378,7 @@ mod tests {
 
     #[test]
     fn one_permanent_failure_cannot_spawn_487_npm_attempts() {
-        // Run the lock-owning scenario after exec, outside the shared test
-        // process. Concurrent fork-based tests cannot inherit its lock files.
-        const CHILD: &str = "HQ_SYNC_RETRY_EPISODE_ISOLATED_TEST";
-        if std::env::var_os(CHILD).is_none() {
-            let status = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "sync_retry_episode::tests::one_permanent_failure_cannot_spawn_487_npm_attempts",
-                ])
-                .env(CHILD, "1")
-                .status()
-                .unwrap();
-            assert!(status.success(), "isolated retry episode failed: {status}");
+        if run_isolated("one_permanent_failure_cannot_spawn_487_npm_attempts") {
             return;
         }
 

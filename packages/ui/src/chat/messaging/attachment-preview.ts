@@ -3,7 +3,16 @@
  */
 
 export type AttachmentPreviewKind =
-  "image" | "text" | "markdown" | "pdf" | "sheet" | "file";
+  "image" | "text" | "markdown" | "pdf" | "sheet" | "file" | "folder";
+
+/**
+ * True for a folder share key: a trailing "/" folder marker or a "/*" or
+ * "/**" glob (`hq files share projects/x/*`). Neither is an object the
+ * preview can fetch (feedback 3e124bcd, ae977608).
+ */
+export function isFolderShareKey(vaultPath: string | null | undefined): boolean {
+  return /\/(?:\*{1,2})?$/.test((vaultPath ?? "").trim());
+}
 
 // 25 MiB needs about 210 s at 1 Mbit/s; 300 s leaves transfer and response slack.
 const ATTACHMENT_PREVIEW_TIMEOUT_MS = 300_000;
@@ -20,7 +29,9 @@ export function attachmentPreviewKind(input: {
   name: string;
   contentType: string;
   kind?: string | null;
+  vaultPath?: string | null;
 }): AttachmentPreviewKind {
+  if (input.kind === "folder" || isFolderShareKey(input.vaultPath)) return "folder";
   const name = input.name.trim().toLowerCase();
   const ct = input.contentType.trim().toLowerCase();
   if (
