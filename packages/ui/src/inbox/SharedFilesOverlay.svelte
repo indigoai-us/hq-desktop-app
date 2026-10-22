@@ -6,14 +6,47 @@
    * granted share metadata. It never guesses a company, a local path, or a
    * presigned URL; file preview remains in a company-scoped project channel.
    */
-  import type { PlatformAdapter } from "@hq/platform";
+  import { API_ERROR_COPY, classifyApiError, type PlatformAdapter } from "@hq/platform";
   import PageHeader from "../shell/PageHeader.svelte";
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import { parseListPage } from "../shell/vault-list-page.js";
   import { sharedFolderEntries, type SharedFolderEntry } from "../files/explorer/vault-model.js";
   import type { SharedFolderFocus } from "../shell/navigation-history.js";
 
   /** Pages of `GET /v1/files/list` read for one shared folder before the list stops. */
   const SHARED_FOLDER_MAX_PAGES = 10;
+  /**
+   * A whole-company share (`prefix === ""`) lists from the vault root, where
+   * each page can hold thousands of keys and the view only needs the
+   * top-level names. Every page is one request against the hourly files
+   * rate limit, so the root listing stops sooner.
+   */
+  const SHARED_ROOT_MAX_PAGES = 3;
+
+  /** Why a folder listing could not be shown; `retry` says whether trying again can help. */
+  type FolderListError = { message: string; retry: boolean };
+  const FOLDER_LIST_DENIED: FolderListError = { message: API_ERROR_COPY.forbidden, retry: false };
+  const FOLDER_LIST_RATE_LIMITED: FolderListError = {
+    message: "You've opened a lot of folders in a short time. Wait a few minutes and open it again.",
+    retry: false,
+  };
+  const FOLDER_LIST_FAILED: FolderListError = {
+    message: "Couldn't list this folder. Check your connection and try again.",
+    retry: true,
+  };
+  const FOLDER_LIST_UNSUPPORTED: FolderListError = { message: "This folder can't be listed from here.", retry: false };
+  const RATE_LIMITED = /rate.?limit|too many/i;
+  const DENIED = /denied|forbidden|membership|unauthori[sz]ed|not a member/i;
+
+  /** Map a failed listing result to product copy. The code and reason never reach the DOM. */
+  function classifyFolderListFailure(res: { code?: string | null; reason?: string | null; message?: string | null }): FolderListError {
+    const code = res.code ?? "";
+    const text = [code, res.reason ?? "", res.message ?? ""].join(" ");
+    if (code === "http-429" || RATE_LIMITED.test(text)) return FOLDER_LIST_RATE_LIMITED;
+    const kind = classifyApiError({ code, message: res.message ?? null });
+    if (kind === "forbidden" || kind === "signedOut" || DENIED.test(text)) return FOLDER_LIST_DENIED;
+    return FOLDER_LIST_FAILED;
+  }
 
   interface ShareEvent {
     id: string;
@@ -40,7 +73,7 @@
   let { adapter, folder = null, onback }: Props = $props();
   let folderLoading = $state(false);
   let folderEntries = $state<SharedFolderEntry[]>([]);
-  let folderError = $state<string | null>(null);
+  let folderError = $state<FolderListError | null>(null);
   let folderTruncated = $state(false);
 
   const folderName = $derived.by(() => {
@@ -61,20 +94,24 @@
     folderEntries = [];
     if (!list) {
       folderLoading = false;
-      folderError = "This folder can't be listed from here.";
+      folderError = FOLDER_LIST_UNSUPPORTED;
       return;
     }
+    const maxPages = focus.prefix === "" ? SHARED_ROOT_MAX_PAGES : SHARED_FOLDER_MAX_PAGES;
     try {
       const keys: string[] = [];
       let cursor: string | undefined;
       let truncated = false;
       for (let page = 0; ; page += 1) {
-        if (page >= SHARED_FOLDER_MAX_PAGES) {
+        if (page >= maxPages) {
           truncated = true;
           break;
         }
         const res = await list(focus.companyUid, focus.prefix, cursor);
-        if (!res.ok) throw new Error(res.code ?? res.reason);
+        if (!res.ok) {
+          if (focus === folder) folderError = classifyFolderListFailure(res);
+          return;
+        }
         const parsed = parseListPage(res.value);
         for (const obj of parsed.objects) keys.push(obj.key);
         if (!parsed.cursor) break;
@@ -85,7 +122,7 @@
       folderTruncated = truncated;
     } catch {
       if (focus !== folder) return;
-      folderError = "Couldn't list this folder. Check your connection and try again.";
+      folderError = FOLDER_LIST_FAILED;
     } finally {
       if (focus === folder) folderLoading = false;
     }
@@ -197,13 +234,16 @@
   {#if folder}
     <PageHeader
       title={folderName}
-      subtitle={`Shared from ${folder.companyLabel} · ${folderPath}`}
       titleTestId="shared-folder-title"
-      subtitleTestId="shared-folder-scope"
       backTestId="shared-files-back"
       onback={() => onback?.()}
       variant="embedded"
-    />
+    >
+      <span class="shared-folder-scope" data-testid="shared-folder-scope"
+        >Shared from <CompanyLabel name={folder.companyLabel} companyUid={folder.companyUid} /> · <span
+          class="shared-folder-path">{folderPath}</span></span
+      >
+    </PageHeader>
     <p class="shared-files-status shared-folder-note" data-testid="shared-folder-sync-note" role="note">
       {folderSyncNote}
     </p>
@@ -211,8 +251,8 @@
       <p class="shared-files-status" data-testid="shared-folder-loading" role="status">Listing folder…</p>
     {:else if folderError}
       <div class="shared-files-status" data-testid="shared-folder-error" role="alert">
-        <p>{folderError}</p>
-        {#if adapter.files?.listVaultPrefix}
+        <p>{folderError.message}</p>
+        {#if folderError.retry}
           <button type="button" data-testid="shared-folder-retry" onclick={() => { if (folder) void loadFolder(folder); }}><RailIcon name="refresh" />Retry</button>
         {/if}
       </div>
@@ -305,5 +345,7 @@
   .shared-files-list li { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); }
   .shared-file-name { color: var(--t1); font-family: var(--font-mono, ui-monospace, monospace); }
   .shared-folder-note { margin-bottom: 0; }
+  .shared-folder-scope { display: inline-flex; align-items: center; gap: 4px; min-width: 0; color: var(--t2); font-size: 12px; white-space: nowrap; }
+  .shared-folder-path { overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono, ui-monospace, monospace); }
   .shared-folder-list li { display: flex; align-items: center; gap: 8px; }
 </style>
