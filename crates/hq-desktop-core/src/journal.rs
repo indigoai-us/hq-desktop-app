@@ -148,8 +148,13 @@ pub fn state_dir_for_children() -> PathBuf {
 /// directory and stops reading the person session from the macOS Keychain.
 /// With an override set for the app, children get its canonical absolute
 /// form, so a relative or symlinked value resolves to one key everywhere.
+///
+/// An empty or blank value counts as unset, matching hq-cloud's Keychain
+/// check (`env.HQ_STATE_DIR?.trim()`), so it never turns Keychain reads off.
 pub fn state_dir_override_for_children() -> Option<PathBuf> {
-    std::env::var_os("HQ_STATE_DIR").map(|_| state_dir_for_children())
+    std::env::var_os("HQ_STATE_DIR")
+        .filter(|value| !value.to_string_lossy().trim().is_empty())
+        .map(|_| state_dir_for_children())
 }
 
 /// Pass the app's state directory override to a child explicitly, in its
@@ -431,6 +436,30 @@ mod tests {
         }
         assert_eq!(override_value, None);
         assert!(command.get_envs().all(|(key, _)| key != "HQ_STATE_DIR"));
+    }
+
+    /// Review #10: an empty override is treated as unset.
+    #[test]
+    fn an_empty_override_is_not_passed_to_children() {
+        let _guard = crate::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var_os("HQ_STATE_DIR");
+        let mut results = Vec::new();
+        for blank in ["", "   "] {
+            std::env::set_var("HQ_STATE_DIR", blank);
+            let mut command = std::process::Command::new("true");
+            apply_state_dir_env(&mut command);
+            results.push((
+                state_dir_override_for_children(),
+                command.get_envs().any(|(key, _)| key == "HQ_STATE_DIR"),
+            ));
+        }
+        match previous {
+            Some(value) => std::env::set_var("HQ_STATE_DIR", value),
+            None => std::env::remove_var("HQ_STATE_DIR"),
+        }
+        assert_eq!(results, vec![(None, false), (None, false)]);
     }
 
     #[test]

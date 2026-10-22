@@ -158,7 +158,9 @@ fn read_probe_output(mut file: std::fs::File) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-struct VersionProbeContainment {
+/// An owned process tree: the child's process group on Unix, a kill-on-close
+/// job object on Windows. Also used by the personal-projection runner.
+pub(crate) struct VersionProbeContainment {
     #[cfg(unix)]
     process_group: Option<i32>,
     #[cfg(target_os = "windows")]
@@ -166,7 +168,7 @@ struct VersionProbeContainment {
 }
 
 impl VersionProbeContainment {
-    fn prepare(cmd: &mut std::process::Command) {
+    pub(crate) fn prepare(cmd: &mut std::process::Command) {
         #[cfg(unix)]
         cmd.process_group(0);
         #[cfg(target_os = "windows")]
@@ -175,7 +177,7 @@ impl VersionProbeContainment {
         let _ = cmd;
     }
 
-    fn establish(child: &std::process::Child) -> std::io::Result<Self> {
+    pub(crate) fn establish(child: &std::process::Child) -> std::io::Result<Self> {
         #[cfg(unix)]
         return Ok(Self {
             process_group: Some(child.id() as i32),
@@ -215,7 +217,7 @@ impl VersionProbeContainment {
         }
     }
 
-    fn terminate(&mut self) {
+    pub(crate) fn terminate(&mut self) {
         #[cfg(unix)]
         if let Some(process_group) = self.process_group.take() {
             unsafe {
@@ -274,6 +276,9 @@ fn resume_windows_process(process_id: u32) -> std::io::Result<()> {
         "suspended version probe thread was not found",
     ))
 }
+
+/// Name used outside the version probe.
+pub(crate) type OwnedProcessTree = VersionProbeContainment;
 
 impl Drop for VersionProbeContainment {
     fn drop(&mut self) {

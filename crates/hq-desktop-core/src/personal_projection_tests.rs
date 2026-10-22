@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 
 const ROOT: &str = "/tmp/h8-root/hq";
 const DIGEST: &str = "sha256:plan-digest";
+const STATE: &str = "/tmp/h8-state";
 
 struct FakeRunner {
     replies: RefCell<VecDeque<RunOutput>>,
@@ -340,7 +341,7 @@ fn the_plan_round_trips_byte_identical_through_all_four_phases() {
         ),
     ]);
     let client = PersonalProjectionClient::new(&fake);
-    let Outcome::Done(plan) = client.plan_adoption(ROOT) else {
+    let Outcome::Done(plan) = client.plan_adoption(ROOT, STATE) else {
         panic!("plan-adoption should succeed");
     };
     assert_eq!(plan.raw_json(), plan_json());
@@ -392,7 +393,7 @@ fn the_plan_round_trips_byte_identical_through_all_four_phases() {
 fn approvals_for_another_phase_or_digest_are_refused_without_spawning() {
     let fake = FakeRunner::new(vec![new_root(), plan_reply()]);
     let client = PersonalProjectionClient::new(&fake);
-    let Outcome::Done(plan) = client.plan_adoption(ROOT) else {
+    let Outcome::Done(plan) = client.plan_adoption(ROOT, STATE) else {
         panic!("plan-adoption should succeed");
     };
     assert_eq!(
@@ -422,7 +423,7 @@ fn a_plan_that_breaks_the_fixed_permissions_is_unsupported() {
     ]);
     let client = PersonalProjectionClient::new(&fake);
     assert!(matches!(
-        client.plan_adoption(ROOT),
+        client.plan_adoption(ROOT, STATE),
         Outcome::Paused(Pause::Local(LocalPause::UnsupportedCli))
     ));
 }
@@ -438,7 +439,7 @@ fn resume_that_claims_it_started_a_runner_is_unsupported() {
         ),
     ]);
     let client = PersonalProjectionClient::new(&fake);
-    let Outcome::Done(plan) = client.plan_adoption(ROOT) else {
+    let Outcome::Done(plan) = client.plan_adoption(ROOT, STATE) else {
         panic!("plan-adoption should succeed");
     };
     let baseline: BaselineReady = serde_json::from_str(
@@ -474,6 +475,31 @@ fn a_persisted_plan_keeps_its_exact_bytes() {
     assert!(ReviewedPlan::from_persisted("{}").is_none());
 }
 
+#[test]
+fn a_plan_for_another_state_directory_is_unsupported() {
+    let fake = FakeRunner::new(vec![new_root(), plan_reply()]);
+    let client = PersonalProjectionClient::new(&fake);
+    assert_eq!(
+        client
+            .plan_adoption(ROOT, "/Users/someone/.hq")
+            .map_done(|_| ()),
+        Outcome::Paused(Pause::Local(LocalPause::UnsupportedCli))
+    );
+}
+
+trait MapDone<T> {
+    fn map_done<U>(self, f: impl FnOnce(T) -> U) -> Outcome<U>;
+}
+
+impl<T> MapDone<T> for Outcome<T> {
+    fn map_done<U>(self, f: impl FnOnce(T) -> U) -> Outcome<U> {
+        match self {
+            Outcome::Done(value) => Outcome::Done(f(value)),
+            Outcome::Paused(pause) => Outcome::Paused(pause),
+        }
+    }
+}
+
 #[cfg(unix)]
 mod process {
     use super::super::*;
@@ -484,6 +510,11 @@ mod process {
         let mut command = std::process::Command::new("/bin/sh");
         command.arg("-c").arg(script);
         command
+    }
+
+    fn alive(pid: i32) -> bool {
+        // SAFETY: signal 0 only checks for existence.
+        unsafe { libc::kill(pid, 0) == 0 }
     }
 
     #[test]
@@ -503,6 +534,57 @@ mod process {
         );
     }
 
+    /// Review C1: the leader exits but a descendant keeps stdout open. The
+    /// call must return promptly, and the descendant must be killed.
+    #[test]
+    fn a_descendant_holding_stdout_cannot_hang_the_drain() {
+        let started = Instant::now();
+        let out = run_bounded(
+            sh("sleep 30 & echo \"$!\"; exit 0"),
+            b"",
+            Duration::from_secs(60),
+            None,
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "returned after {:?}",
+            started.elapsed()
+        );
+        let RunOutput::Exited { code, stdout } = out else {
+            panic!("expected Exited, got {out:?}");
+        };
+        assert_eq!(code, Some(0));
+        let pid: i32 = String::from_utf8(stdout).unwrap().trim().parse().unwrap();
+        // The owned tree was killed: the background sleep is gone (allow a
+        // moment for the kernel to deliver SIGKILL and the reaper to run).
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while alive(pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!alive(pid), "descendant {pid} still running");
+    }
+
+    /// The same during a cancel: the cancel returns promptly even though a
+    /// descendant holds stdout, and the tree is killed.
+    #[test]
+    fn a_cancel_with_a_descendant_holding_stdout_returns_promptly() {
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let setter = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            setter.store(true, std::sync::atomic::Ordering::Release);
+        });
+        let started = Instant::now();
+        let out = run_bounded(
+            sh("sleep 30 & sleep 30"),
+            b"",
+            Duration::from_secs(60),
+            Some(&cancel),
+        );
+        assert_eq!(out, RunOutput::Cancelled);
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
     #[test]
     fn a_hung_child_is_killed_at_the_timeout() {
         let started = Instant::now();
@@ -511,11 +593,38 @@ mod process {
         assert!(started.elapsed() < Duration::from_secs(10));
     }
 
+    /// Review #9: the cancel lands after the child already exited
+    /// successfully. The success must still be discarded.
     #[test]
     fn a_late_success_after_cancel_is_discarded() {
-        let cancel = AtomicBool::new(true);
-        let out = run_bounded(sh("echo '{}'"), b"", Duration::from_secs(10), Some(&cancel));
+        let cancel = AtomicBool::new(false);
+        let out = run_bounded_with_hook(
+            sh("echo '{}'; exit 0"),
+            b"",
+            Duration::from_secs(10),
+            Some(&cancel),
+            &|| cancel.store(true, std::sync::atomic::Ordering::Release),
+        );
         assert_eq!(out, RunOutput::Cancelled);
+    }
+
+    /// Review #8: a child that overflows stdout is stopped at once and
+    /// reported as too large, not left to run until the timeout.
+    #[test]
+    fn oversized_output_is_stopped_promptly() {
+        let started = Instant::now();
+        let out = run_bounded(
+            sh("yes 0123456789012345678901234567890123456789; sleep 30"),
+            b"",
+            Duration::from_secs(120),
+            None,
+        );
+        assert_eq!(out, RunOutput::ResponseTooLarge);
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "took {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
@@ -530,14 +639,14 @@ mod process {
     }
 
     #[test]
-    fn npx_args_name_the_hq_cloud_bin_and_the_action() {
-        let runner = NpxProjectionRunner::for_pin(super::test_pin("9.9.9"));
+    fn node_args_run_the_verified_bin_with_the_action() {
+        let bin = std::path::Path::new(
+            "/cache/entry/node_modules/@indigoai-us/hq-cloud/dist/bin/sync-mutation.js",
+        );
         assert_eq!(
-            runner.npx_args(Action::PlanAdoption),
+            PinnedProjectionRunner::node_args(bin, Action::PlanAdoption),
             [
-                "-y",
-                "--package=@indigoai-us/hq-cloud@9.9.9",
-                "hq-cloud",
+                "/cache/entry/node_modules/@indigoai-us/hq-cloud/dist/bin/sync-mutation.js",
                 "personal-projection",
                 "plan-adoption",
                 "--stdin-json"
@@ -553,7 +662,7 @@ fn test_pin(version: &'static str) -> ArtifactPin {
             "sha512-",
             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
         ),
-        closure_sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+        installed_tree_sha256: "0000000000000000000000000000000000000000000000000000000000000000",
     }
 }
 
@@ -578,9 +687,9 @@ mod pin {
         let mut short = test_pin("6.19.0");
         short.integrity = "sha512-abc";
         assert!(!pin_is_well_formed(&short));
-        let mut closure = test_pin("6.19.0");
-        closure.closure_sha256 = "not-hex";
-        assert!(!pin_is_well_formed(&closure));
+        let mut tree = test_pin("6.19.0");
+        tree.installed_tree_sha256 = "not-hex";
+        assert!(!pin_is_well_formed(&tree));
     }
 
     #[test]
@@ -589,66 +698,106 @@ mod pin {
         assert!(!supported_with(Some(test_pin("6.19.0")), "~6.19.0"));
         assert!(!supported_with(Some(test_pin("6.19.0")), "6.19.1"));
         assert!(!supported_with(None, "6.19.0"));
-        // Today's runner spec is a tilde range, so no pin could enable it.
         assert!(!supported_with(
             Some(test_pin("6.18.80")),
             crate::hq_cloud::HQ_CLOUD_VERSION
         ));
     }
 
-    fn write_entry(dir: &std::path::Path, version: &str, integrity: &str, extra_dep: &str) {
+    fn write_entry(dir: &std::path::Path, version: &str, integrity: &str) {
         let lock = serde_json::json!({
             "name": "npx-entry",
             "lockfileVersion": 3,
             "packages": {
                 "": {"dependencies": {"@indigoai-us/hq-cloud": version}},
                 "node_modules/@indigoai-us/hq-cloud": {"version": version, "integrity": integrity},
-                "node_modules/left-pad": {"version": extra_dep, "integrity": "sha512-left"},
+                "node_modules/left-pad": {"version": "1.0.0", "integrity": "sha512-left"},
             }
         });
-        std::fs::create_dir_all(dir.join("node_modules")).unwrap();
+        let package = dir.join("node_modules/@indigoai-us/hq-cloud");
+        std::fs::create_dir_all(package.join("dist/bin")).unwrap();
+        std::fs::create_dir_all(dir.join("node_modules/left-pad")).unwrap();
         std::fs::write(
             dir.join("node_modules/.package-lock.json"),
             serde_json::to_vec(&lock).unwrap(),
         )
         .unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            format!(
+                r#"{{"version":"{version}","bin":{{"hq-cloud":"dist/bin/sync-mutation.js"}}}}"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            package.join("dist/bin/sync-mutation.js"),
+            "#!/usr/bin/env node\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("node_modules/left-pad/index.js"),
+            "module.exports = 1;\n",
+        )
+        .unwrap();
     }
 
     fn pin_for(dir: &std::path::Path, version: &'static str) -> ArtifactPin {
-        let lock: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(dir.join("node_modules/.package-lock.json")).unwrap(),
-        )
-        .unwrap();
-        let closure = Box::leak(dependency_closure_digest(&lock).unwrap().into_boxed_str());
+        let tree = installed_tree_digest(&dir.join("node_modules")).unwrap();
         ArtifactPin {
             version,
             integrity: test_pin(version).integrity,
-            closure_sha256: closure,
+            installed_tree_sha256: Box::leak(tree.into_boxed_str()),
         }
     }
 
+    /// Review: verification binds the installed bytes, not lock metadata. One
+    /// changed byte in any dependency file is refused, even with a matching
+    /// lockfile.
     #[test]
-    fn verification_accepts_only_the_pinned_build_and_closure() {
+    fn verification_binds_the_installed_bytes_of_the_whole_tree() {
         let tmp = tempfile::tempdir().unwrap();
         let entry = tmp.path().join("entry");
-        write_entry(&entry, "6.19.0", test_pin("6.19.0").integrity, "1.0.0");
+        write_entry(&entry, "6.19.0", test_pin("6.19.0").integrity);
         let pin = pin_for(&entry, "6.19.0");
-        assert_eq!(verify_artifact_entry(&entry, &pin), Ok(()));
+        let bin = verify_artifact_entry(&entry, &pin).expect("pinned build verifies");
+        assert!(bin.ends_with("dist/bin/sync-mutation.js"));
 
-        // Same package, different dependency closure.
-        write_entry(&entry, "6.19.0", test_pin("6.19.0").integrity, "1.0.1");
+        // Same lockfile, one dependency byte changed.
+        std::fs::write(
+            entry.join("node_modules/left-pad/index.js"),
+            "module.exports = 2;\n",
+        )
+        .unwrap();
         assert!(verify_artifact_entry(&entry, &pin).is_err());
 
-        // Different integrity.
-        write_entry(&entry, "6.19.0", "sha512-other", "1.0.0");
+        // A file added to the tree.
+        write_entry(&entry, "6.19.0", test_pin("6.19.0").integrity);
+        assert_eq!(verify_artifact_entry(&entry, &pin).map(|_| ()), Ok(()));
+        std::fs::write(entry.join("node_modules/left-pad/extra.js"), "").unwrap();
         assert!(verify_artifact_entry(&entry, &pin).is_err());
 
-        // Different version.
-        write_entry(&entry, "6.19.1", test_pin("6.19.0").integrity, "1.0.0");
-        assert!(verify_artifact_entry(&entry, &pin).is_err());
+        // Lock metadata mismatches.
+        let entry2 = tmp.path().join("entry2");
+        write_entry(&entry2, "6.19.0", "sha512-other");
+        assert!(verify_artifact_entry(&entry2, &pin_for(&entry2, "6.19.0")).is_err());
 
         // Not installed at all.
         assert!(verify_artifact_entry(&tmp.path().join("absent"), &pin).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_bin_that_points_outside_the_package_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = tmp.path().join("entry");
+        write_entry(&entry, "6.19.0", test_pin("6.19.0").integrity);
+        std::fs::write(
+            entry.join("node_modules/@indigoai-us/hq-cloud/package.json"),
+            r#"{"version":"6.19.0","bin":{"hq-cloud":"../../left-pad/index.js"}}"#,
+        )
+        .unwrap();
+        let pin = pin_for(&entry, "6.19.0");
+        assert!(verify_artifact_entry(&entry, &pin).is_err());
     }
 
     #[test]

@@ -577,7 +577,10 @@ impl<R: ProjectionRunner> PersonalProjectionClient<R> {
         })
     }
 
-    pub fn plan_adoption(&self, root_path: &str) -> Outcome<ReviewedPlan> {
+    /// Ask for the adoption plan. `state_dir` is the Desktop's own canonical
+    /// state directory; a plan naming any other state directory is refused as
+    /// unsupported, so the wrapper and the app are proven to share one key.
+    pub fn plan_adoption(&self, root_path: &str, state_dir: &str) -> Outcome<ReviewedPlan> {
         if let Some(pause) = self.require_probe(root_path) {
             return Outcome::Paused(pause);
         }
@@ -590,10 +593,13 @@ impl<R: ProjectionRunner> PersonalProjectionClient<R> {
                 return None;
             }
             let plan: AdoptionPlan = serde_json::from_str(body.plan.get()).ok()?;
-            (plan.is_contract_shaped() && plan.root_path == root_path).then_some(ReviewedPlan {
-                raw: body.plan,
-                plan,
-            })
+            (plan.is_contract_shaped()
+                && plan.root_path == root_path
+                && plan.state_directory == state_dir)
+                .then_some(ReviewedPlan {
+                    raw: body.plan,
+                    plan,
+                })
         })
     }
 
@@ -863,18 +869,42 @@ fn classify_inspect(code: Option<i32>, stdout: &[u8]) -> Outcome<InspectReport> 
     })
 }
 
+/// How long `run_bounded` waits for stdout to close after the owned process
+/// tree has been killed. A process outside the tree that still holds the pipe
+/// cannot hold the caller longer than this.
+pub const DRAIN_GRACE: Duration = Duration::from_secs(2);
+
 /// Spawn one wrapper invocation with bounded stdin, stdout, and wall clock.
 ///
 /// The program and argv stay structured (no shell). stdin carries the whole
-/// request. stderr is discarded so no raw diagnostics are kept. A set `cancel`
-/// flag kills the child, and a cancel observed after the child exits still
-/// discards its result as [`RunOutput::Cancelled`].
+/// request. stderr is discarded so no raw diagnostics are kept.
+///
+/// The child runs in an owned process tree (its own process group on Unix, a
+/// kill-on-close job object on Windows). When the leader exits, is cancelled,
+/// times out, or overflows stdout, the whole tree is killed, and the stdout
+/// drain is bounded by [`DRAIN_GRACE`], so a descendant holding stdio cannot
+/// hang the caller. A cancel observed at any point, including after the child
+/// exited successfully, discards the result as [`RunOutput::Cancelled`].
 pub fn run_bounded(
-    mut command: std::process::Command,
+    command: std::process::Command,
     stdin: &[u8],
     timeout: Duration,
     cancel: Option<&AtomicBool>,
 ) -> RunOutput {
+    run_bounded_with_hook(command, stdin, timeout, cancel, &|| {})
+}
+
+/// [`run_bounded`] with a hook that runs after the leader exited and before
+/// the cancel re-check, so tests can land a cancel in that window.
+pub(crate) fn run_bounded_with_hook(
+    mut command: std::process::Command,
+    stdin: &[u8],
+    timeout: Duration,
+    cancel: Option<&AtomicBool>,
+    after_exit: &dyn Fn(),
+) -> RunOutput {
+    use std::sync::mpsc;
+
     let is_cancelled = || cancel.is_some_and(|flag| flag.load(Ordering::Acquire));
     if is_cancelled() {
         return RunOutput::Cancelled;
@@ -883,106 +913,154 @@ pub fn run_bounded(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
+    crate::hq_cli_update::OwnedProcessTree::prepare(&mut command);
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(_) => return RunOutput::SpawnFailed,
     };
-
-    let request = stdin.to_vec();
-    let child_stdin = child.stdin.take();
-    let writer = std::thread::spawn(move || {
-        if let Some(mut pipe) = child_stdin {
-            let _ = pipe.write_all(&request);
+    let mut tree = match crate::hq_cli_update::OwnedProcessTree::establish(&child) {
+        Ok(tree) => tree,
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return RunOutput::SpawnFailed;
         }
-    });
+    };
 
-    let child_stdout = child.stdout.take();
-    let reader = std::thread::spawn(move || -> (Vec<u8>, bool) {
-        let mut out = Vec::new();
-        let Some(pipe) = child_stdout else {
-            return (out, false);
-        };
-        let mut limited = pipe.take(MAX_RESULT_BYTES as u64 + 1);
-        let _ = limited.read_to_end(&mut out);
-        let too_large = out.len() > MAX_RESULT_BYTES;
-        (out, too_large)
-    });
+    // Detached: the writer only holds the stdin pipe. Once the tree is dead
+    // the pipe errors and the thread ends; nothing waits on it.
+    let request = stdin.to_vec();
+    if let Some(mut pipe) = child.stdin.take() {
+        std::thread::spawn(move || {
+            let _ = pipe.write_all(&request);
+        });
+    }
+
+    let too_large = Arc::new(AtomicBool::new(false));
+    let (stdout_tx, stdout_rx) = mpsc::channel::<Vec<u8>>();
+    if let Some(pipe) = child.stdout.take() {
+        let too_large = too_large.clone();
+        std::thread::spawn(move || {
+            let mut out = Vec::new();
+            let mut limited = pipe.take(MAX_RESULT_BYTES as u64 + 1);
+            let _ = limited.read_to_end(&mut out);
+            if out.len() > MAX_RESULT_BYTES {
+                too_large.store(true, Ordering::Release);
+                out.clear();
+            }
+            let _ = stdout_tx.send(out);
+        });
+    } else {
+        let _ = stdout_tx.send(Vec::new());
+    }
 
     let started = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) => {}
-            Err(_) => break None,
+    loop {
+        match leader_exited(&mut child) {
+            Ok(true) => break,
+            Ok(false) => {}
+            Err(_) => {
+                tree.terminate();
+                let _ = child.wait();
+                return RunOutput::SpawnFailed;
+            }
         }
         let stop = if is_cancelled() {
             Some(RunOutput::Cancelled)
+        } else if too_large.load(Ordering::Acquire) {
+            Some(RunOutput::ResponseTooLarge)
         } else if started.elapsed() >= timeout {
             Some(RunOutput::Timeout)
-        } else if reader.is_finished() {
-            // The reader only returns early when stdout closed or hit the cap.
-            // A capped child is killed now instead of waiting for its timeout.
-            None
         } else {
             None
         };
         if let Some(stop) = stop {
-            kill_tree(&mut child);
-            let _ = writer.join();
-            let _ = reader.join();
+            tree.terminate();
+            let _ = child.wait();
+            // Bounded: the result is already decided; do not wait on stdio.
+            let _ = stdout_rx.recv_timeout(DRAIN_GRACE);
             return stop;
         }
         std::thread::sleep(Duration::from_millis(20));
-    };
-    let _ = writer.join();
-    let (stdout, too_large) = reader.join().unwrap_or_default();
+    }
+
+    // The leader exited. Kill whatever else is left in its tree (it may hold
+    // stdout), then reap the leader.
+    tree.terminate();
+    let status = child.wait();
+    after_exit();
+    let stdout = stdout_rx.recv_timeout(DRAIN_GRACE);
     if is_cancelled() {
         return RunOutput::Cancelled;
     }
-    if too_large {
+    if too_large.load(Ordering::Acquire) {
         return RunOutput::ResponseTooLarge;
     }
-    let Some(status) = status else {
-        return RunOutput::SpawnFailed;
+    let Ok(stdout) = stdout else {
+        // stdout is still held by something outside the owned tree.
+        return RunOutput::Timeout;
     };
-    RunOutput::Exited {
-        code: status.code(),
-        stdout,
+    match status {
+        Ok(status) => RunOutput::Exited {
+            code: status.code(),
+            stdout,
+        },
+        Err(_) => RunOutput::SpawnFailed,
     }
 }
 
-fn kill_tree(child: &mut std::process::Child) {
+/// True once the leader has exited. On macOS and Linux the leader is left
+/// unreaped (`WNOWAIT`), so its process-group id cannot be reused before the
+/// group is killed.
+fn leader_exited(child: &mut std::process::Child) -> std::io::Result<bool> {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
-        // The child leads its own process group, so this also reaches the node
-        // process npx starts.
-        if let Ok(pid) = i32::try_from(child.id()) {
-            // SAFETY: plain signal delivery to a process group this call created.
-            unsafe {
-                libc::kill(-pid, libc::SIGKILL);
-            }
+        let pid: libc::id_t = child.id();
+        // SAFETY: zeroed siginfo_t is a valid out-parameter for waitid.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: waits on our own child only; WNOWAIT leaves it reapable.
+        let rc = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
         }
+        Ok(siginfo_pid(&info) != 0)
     }
-    let _ = child.kill();
-    let _ = child.wait();
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        child.try_wait().map(|status| status.is_some())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn siginfo_pid(info: &libc::siginfo_t) -> libc::pid_t {
+    // SAFETY: waitid filled the SIGCHLD fields or left the struct zeroed.
+    unsafe { info.si_pid() }
+}
+
+#[cfg(target_os = "macos")]
+fn siginfo_pid(info: &libc::siginfo_t) -> libc::pid_t {
+    info.si_pid
 }
 
 /// The exact reviewed hq-cloud build the wrapper must come from.
 ///
 /// `version` is an exact semver (never a range). `integrity` is npm's
-/// `sha512-…` tarball integrity for `@indigoai-us/hq-cloud`. `closure_sha256`
-/// is [`dependency_closure_digest`] over the installed tree, so a matching
-/// package that later resolved different dependencies is still refused.
+/// `sha512-…` tarball integrity for `@indigoai-us/hq-cloud`.
+/// `installed_tree_sha256` is [`installed_tree_digest`] over the installed
+/// `node_modules` tree, so the bytes that actually execute (the package and
+/// its whole dependency closure) are bound, not just lockfile metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArtifactPin {
     pub version: &'static str,
     pub integrity: &'static str,
-    pub closure_sha256: &'static str,
+    pub installed_tree_sha256: &'static str,
 }
 
 /// The published, reviewed build for the paired personal-projection API.
@@ -999,9 +1077,12 @@ pub fn pin_is_well_formed(pin: &ArtifactPin) -> bool {
         .integrity
         .strip_prefix("sha512-")
         .is_some_and(|rest| rest.len() >= 80);
-    let closure =
-        pin.closure_sha256.len() == 64 && pin.closure_sha256.bytes().all(|b| b.is_ascii_hexdigit());
-    exact && integrity && closure
+    let tree = pin.installed_tree_sha256.len() == 64
+        && pin
+            .installed_tree_sha256
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit());
+    exact && integrity && tree
 }
 
 /// The paired client may run only when the pin is well formed and the sync
@@ -1020,47 +1101,78 @@ pub fn personal_projection_supported() -> bool {
 }
 
 /// The production client, or `None` while the build is not pinned.
-pub fn production_client() -> Option<PersonalProjectionClient<NpxProjectionRunner>> {
+pub fn production_client() -> Option<PersonalProjectionClient<PinnedProjectionRunner>> {
     let pin = HQ_CLOUD_PERSONAL_PROJECTION_ARTIFACT?;
     personal_projection_supported()
-        .then(|| PersonalProjectionClient::new(NpxProjectionRunner::for_pin(pin)))
+        .then(|| PersonalProjectionClient::new(PinnedProjectionRunner::for_pin(pin)))
 }
 
 const HQ_CLOUD_LOCK_KEY: &str = "node_modules/@indigoai-us/hq-cloud";
 
-/// sha256 over every installed package in an npm lockfile, as sorted
-/// `path NUL version NUL integrity` lines. Any added, removed, or changed
-/// dependency changes the digest.
-pub fn dependency_closure_digest(lock: &serde_json::Value) -> Option<String> {
+/// sha256 over every file, symlink, and folder under `node_modules`, in
+/// sorted path order: `F path NUL sha256(bytes)`, `L path NUL target`, `D path`.
+/// Any changed, added, or removed byte in the package or any dependency
+/// changes the digest. Symlinks are recorded, never followed.
+pub fn installed_tree_digest(node_modules: &std::path::Path) -> std::io::Result<String> {
     use sha2::{Digest, Sha256};
-    let packages = lock.get("packages")?.as_object()?;
-    let mut lines: Vec<String> = packages
-        .iter()
-        .filter(|(path, _)| !path.is_empty())
-        .map(|(path, entry)| {
-            let field = |name: &str| entry.get(name).and_then(|v| v.as_str()).unwrap_or("");
-            format!("{path}\0{}\0{}\n", field("version"), field("integrity"))
-        })
-        .collect();
+    let mut lines: Vec<Vec<u8>> = Vec::new();
+    for entry in walkdir::WalkDir::new(node_modules)
+        .follow_links(false)
+        .min_depth(1)
+        .sort_by_file_name()
+    {
+        let entry = entry.map_err(std::io::Error::other)?;
+        let relative = entry
+            .path()
+            .strip_prefix(node_modules)
+            .map_err(std::io::Error::other)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let kind = entry.file_type();
+        let mut line = Vec::new();
+        if kind.is_symlink() {
+            let target = std::fs::read_link(entry.path())?;
+            line.extend_from_slice(b"L\0");
+            line.extend_from_slice(relative.as_bytes());
+            line.push(0);
+            line.extend_from_slice(target.to_string_lossy().as_bytes());
+        } else if kind.is_dir() {
+            line.extend_from_slice(b"D\0");
+            line.extend_from_slice(relative.as_bytes());
+        } else {
+            let bytes = std::fs::read(entry.path())?;
+            let file_digest = Sha256::digest(&bytes);
+            line.extend_from_slice(b"F\0");
+            line.extend_from_slice(relative.as_bytes());
+            line.push(0);
+            for byte in file_digest {
+                line.extend_from_slice(format!("{byte:02x}").as_bytes());
+            }
+        }
+        line.push(b'\n');
+        lines.push(line);
+    }
     lines.sort();
     let mut hasher = Sha256::new();
     for line in &lines {
-        hasher.update(line.as_bytes());
+        hasher.update(line);
     }
-    Some(
-        hasher
-            .finalize()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect(),
-    )
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
-/// Check that an npx cache entry holds exactly the pinned build and closure.
-/// Reads npm's hidden lockfile first, then the entry's `package-lock.json`.
-pub fn verify_artifact_entry(entry: &std::path::Path, pin: &ArtifactPin) -> Result<(), String> {
+/// Check that an npx cache entry holds exactly the pinned build, byte for
+/// byte, and return the absolute path of its `hq-cloud` bin script.
+pub fn verify_artifact_entry(
+    entry: &std::path::Path,
+    pin: &ArtifactPin,
+) -> Result<std::path::PathBuf, String> {
+    let node_modules = entry.join("node_modules");
     let candidates = [
-        entry.join("node_modules").join(".package-lock.json"),
+        node_modules.join(".package-lock.json"),
         entry.join("package-lock.json"),
     ];
     let raw = candidates
@@ -1080,23 +1192,43 @@ pub fn verify_artifact_entry(entry: &std::path::Path, pin: &ArtifactPin) -> Resu
     if field("integrity") != Some(pin.integrity) {
         return Err("installed hq-cloud integrity is not the pinned build".to_string());
     }
-    if dependency_closure_digest(&lock).as_deref() != Some(pin.closure_sha256) {
-        return Err("installed hq-cloud dependencies are not the pinned closure".to_string());
+    let digest = installed_tree_digest(&node_modules)
+        .map_err(|_| "installed hq-cloud files could not be read".to_string())?;
+    if digest != pin.installed_tree_sha256 {
+        return Err("installed hq-cloud files are not the pinned build".to_string());
     }
-    Ok(())
+    let package_dir = node_modules.join("@indigoai-us").join("hq-cloud");
+    let manifest: serde_json::Value = std::fs::read(package_dir.join("package.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .ok_or_else(|| "hq-cloud package manifest is unreadable".to_string())?;
+    let relative = manifest
+        .get("bin")
+        .and_then(|bin| bin.get(PROJECTION_BIN))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "hq-cloud package has no hq-cloud bin".to_string())?;
+    let bin = package_dir.join(relative);
+    let canonical_package =
+        std::fs::canonicalize(&package_dir).map_err(|_| "hq-cloud package is missing")?;
+    let canonical_bin = std::fs::canonicalize(&bin).map_err(|_| "hq-cloud bin is missing")?;
+    if !canonical_bin.starts_with(&canonical_package) {
+        return Err("hq-cloud bin points outside the package".to_string());
+    }
+    Ok(canonical_bin)
 }
 
-/// Production runner: `npx -y --package=@indigoai-us/hq-cloud@<exact> hq-cloud
-/// personal-projection ACTION --stdin-json`, through the same npx program and
-/// child PATH the sync runner uses. Before every spawn it checks that npx's
-/// cache entry for the exact spec is the pinned build; otherwise nothing runs.
-pub struct NpxProjectionRunner {
+/// Production runner. Before every spawn it verifies npx's cache entry for
+/// the exact pinned spec byte for byte, then runs THAT entry's `hq-cloud` bin
+/// with node directly (`node <bin> personal-projection ACTION --stdin-json`).
+/// npx is never asked to resolve the package again, so what runs is what was
+/// checked. Anything that fails verification runs nothing.
+pub struct PinnedProjectionRunner {
     pin: ArtifactPin,
     package_spec: String,
     cancel: Arc<AtomicBool>,
 }
 
-impl NpxProjectionRunner {
+impl PinnedProjectionRunner {
     pub(crate) fn for_pin(pin: ArtifactPin) -> Self {
         Self {
             package_spec: format!("{}@{}", crate::hq_cloud::HQ_CLOUD_PACKAGE, pin.version),
@@ -1110,37 +1242,31 @@ impl NpxProjectionRunner {
         self.cancel.clone()
     }
 
-    /// The argv after the `npx` program for one action.
-    pub fn npx_args(&self, action: Action) -> Vec<String> {
-        let mut args = vec![
-            "-y".to_string(),
-            format!("--package={}", self.package_spec),
-            PROJECTION_BIN.to_string(),
-        ];
+    /// The argv after the `node` program for one action.
+    pub fn node_args(bin: &std::path::Path, action: Action) -> Vec<String> {
+        let mut args = vec![bin.to_string_lossy().into_owned()];
         args.extend(action.argv().iter().map(|arg| arg.to_string()));
         args
     }
 
-    fn verify_installed(&self) -> bool {
-        let Some(cache) = crate::runner_target::npx_cache_dir() else {
-            return false;
-        };
+    fn verified_bin(&self) -> Option<std::path::PathBuf> {
+        let cache = crate::runner_target::npx_cache_dir()?;
         let entry = cache.join(crate::runner_target::npx_cache_entry_hash(
             &self.package_spec,
         ));
-        verify_artifact_entry(&entry, &self.pin).is_ok()
+        verify_artifact_entry(&entry, &self.pin).ok()
     }
 }
 
-impl ProjectionRunner for NpxProjectionRunner {
+impl ProjectionRunner for PinnedProjectionRunner {
     fn run(&self, action: Action, stdin: &[u8]) -> RunOutput {
-        if !self.verify_installed() {
+        let Some(bin) = self.verified_bin() else {
             return RunOutput::ArtifactUnverified;
-        }
-        let npx = crate::paths::resolve_bin("npx");
-        let args = self.npx_args(action);
+        };
+        let node = crate::paths::resolve_bin("node");
+        let args = Self::node_args(&bin, action);
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        let mut command = crate::paths::spawn_command(&npx, &arg_refs);
+        let mut command = crate::paths::spawn_command(&node, &arg_refs);
         command.env("PATH", crate::paths::child_path());
         run_bounded(command, stdin, action.timeout(), Some(&self.cancel))
     }
