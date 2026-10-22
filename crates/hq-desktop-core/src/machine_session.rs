@@ -491,10 +491,13 @@ pub(crate) mod test_support {
     /// Test home with a readable machine credentials file. The file holds a
     /// placeholder, never real credentials.
     pub struct MachineHome {
-        pub dir: tempfile::TempDir,
-        _home: crate::cognito::test_support::TestHome,
+        // Fields drop in declaration order. `_home` holds the lock that
+        // serialises these tests, so it must drop last: restoring the
+        // environment after releasing it would clobber the next test's values.
         _creds: EnvGuard,
         _enabled: EnvGuard,
+        pub dir: tempfile::TempDir,
+        _home: crate::cognito::test_support::TestHome,
     }
 
     impl MachineHome {
@@ -509,10 +512,10 @@ pub(crate) mod test_support {
             );
             let enabled = EnvGuard::set(MACHINE_IDENTITY_ENV, None);
             Self {
-                dir,
-                _home: home,
                 _creds: creds,
                 _enabled: enabled,
+                dir,
+                _home: home,
             }
         }
 
