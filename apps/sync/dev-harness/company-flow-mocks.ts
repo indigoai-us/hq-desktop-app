@@ -1,3 +1,5 @@
+import { emit } from './mocks/event';
+
 /**
  * `?view=onboarding&company=create`: answers for the first-run company step
  * inside the full welcome flow (the real OnboardingWizard wrapper), so the
@@ -8,6 +10,15 @@
  * `&connectors=ok|fail` finds two Claude Desktop connectors, so the connector
  * import is offered once a company is made (never after Skip for now), and
  * the import succeeds (ok) or fails (fail) to show the Try again screen.
+ *
+ * `?view=onboarding&account=returning` answers as a returning person on a new
+ * Mac (US-023): two active memberships, Acme (owned, free) and Globex (member,
+ * paid), so Next, Next from step 2 reaches the "Bringing your companies to
+ * this Mac" pull on the ready screen. Each scoped `start_sync` reports
+ * `sync:all-complete` after a short delay and is recorded on
+ * `window.__hqStartSyncSlugs`. `&pullFail=<slug>` makes that company's first
+ * pull report an error, so Try again can be previewed. A company's folder is
+ * present (`company_folder_present`) once one of its pulls has succeeded.
  */
 const CREATE_COMPANY_CARD = {
   v: 1,
@@ -36,10 +47,58 @@ const CREATE_COMPANY_CARD = {
 export function companyFlowEnabled(): boolean {
   if (typeof window === 'undefined') return false;
   const params = new URLSearchParams(window.location.search);
-  return params.get('view') === 'onboarding' && params.get('company') === 'create';
+  return params.get('view') === 'onboarding' && (params.get('company') === 'create' || returningAccount());
+}
+
+function returningAccount(): boolean {
+  return new URLSearchParams(window.location.search).get('account') === 'returning';
+}
+
+const RETURNING_MEMBERSHIPS = [
+  { companyUid: 'cmp_acme', companySlug: 'acme', companyName: 'Acme', personUid: 'prs_preview', status: 'active', role: 'owner', bucketName: 'hq-vault-acme' },
+  { companyUid: 'cmp_globex', companySlug: 'globex', companyName: 'Globex', personUid: 'prs_preview', status: 'active', role: 'member', planTier: 'team', bucketName: 'hq-vault-globex' },
+];
+
+const pullFailures = new Set<string>();
+const pulledFolders = new Set<string>();
+
+/** A scoped pull: report `sync:all-complete` for it a moment later, as the runner does. */
+function answerStartSync(args?: Record<string, unknown>): null {
+  const slug = typeof args?.companySlug === 'string' ? args.companySlug : null;
+  ((window as Window & { __hqStartSyncSlugs?: Array<string | null> }).__hqStartSyncSlugs ??= []).push(slug);
+  const failSlug = new URLSearchParams(window.location.search).get('pullFail');
+  const fails = slug !== null && slug === failSlug && !pullFailures.has(slug);
+  if (fails) pullFailures.add(slug);
+  setTimeout(() => {
+    if (slug !== null && !fails) pulledFolders.add(slug);
+    void emit('sync:all-complete', {
+      errors: fails ? [{ company: slug, message: 'network unreachable' }] : [],
+    });
+  }, 400);
+  return null;
 }
 
 const NOT_HANDLED = Symbol('not-handled');
+
+/**
+ * Any onboarding preview signs in as a brand-new account unless
+ * `?account=returning` says otherwise: memberships and company history both
+ * empty. Without an answer the account lookup fails, which the wizard shows
+ * as an error rather than a new account (US-023).
+ */
+export function onboardingMembershipMeAnswer(cmd: string, args?: Record<string, unknown>): unknown {
+  if (typeof window === 'undefined' || cmd !== 'hq_pro_fetch') return NOT_HANDLED;
+  if (new URLSearchParams(window.location.search).get('view') !== 'onboarding') return NOT_HANDLED;
+  const url = typeof args?.url === 'string' ? args.url : '';
+  if (url !== '/membership/me' && !url.startsWith('/membership/me?')) return NOT_HANDLED;
+  return {
+    status: 200,
+    body: JSON.stringify({
+      memberships: returningAccount() ? RETURNING_MEMBERSHIPS : [],
+      historicalCompanyIdentities: {},
+    }),
+  };
+}
 
 function connectorSwitch(): 'ok' | 'fail' | null {
   const value = new URLSearchParams(window.location.search).get('connectors');
@@ -57,6 +116,12 @@ export async function companyFlowAnswer(cmd: string, args?: Record<string, unkno
     await new Promise((resolve) => setTimeout(resolve, cardDelayMs()));
   }
   switch (cmd) {
+    case 'start_sync':
+      if (!returningAccount()) return NOT_HANDLED;
+      return answerStartSync(args);
+    case 'company_folder_present':
+      if (!returningAccount()) return NOT_HANDLED;
+      return typeof args?.slug === 'string' && pulledFolders.has(args.slug);
     case 'detect_claude_desktop_connectors':
       if (!connectorSwitch()) return NOT_HANDLED;
       return { present: true, count: 2, outcome: 'servers_detected', inspectedSources: 'claude_desktop_config' };
@@ -91,9 +156,8 @@ export async function companyFlowAnswer(cmd: string, args?: Record<string, unkno
       return { state: 'done' };
     case 'hq_pro_fetch': {
       const url = typeof args?.url === 'string' ? args.url : '';
-      if (url === '/membership/me' || url.startsWith('/membership/me?')) {
-        return { status: 200, body: JSON.stringify({ memberships: [] }) };
-      }
+      const membershipMe = onboardingMembershipMeAnswer(cmd, args);
+      if (membershipMe !== NOT_HANDLED) return membershipMe;
       if (url === '/membership/pending-by-email') return { status: 200, body: JSON.stringify({ invites: [] }) };
       if (url.startsWith('/entity/')) {
         return { status: 200, body: JSON.stringify({ entity: { status: 'active', bucketName: 'hq-vault-preview' } }) };

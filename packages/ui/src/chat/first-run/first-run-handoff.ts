@@ -11,8 +11,10 @@
  * Wire shape: `first-run-handoff:` followed by JSON
  * `{"route":null,"flags":{"desktop.visual-first-run":bool|null,
  * "desktop.first-run-found-apps-v1":bool|null},"welcomeSetupOwed":bool,
- * "welcomeTourShown":bool}`. A `null` flag is unknown and the shell reads it
- * itself, as it did before the hint existed.
+ * "welcomeTourShown":bool,"accountKind":"returning"|"new"|null}`. A `null`
+ * flag is unknown and the shell reads it itself, as it did before the hint
+ * existed. `accountKind` is the kind setup recorded at sign-in (US-023); a
+ * missing or unknown value is null.
  */
 
 /** Pending-route prefix that marks a handoff hint. Matches the Rust constant. */
@@ -29,6 +31,15 @@ export interface FirstRunHandoffHint {
   };
   welcomeSetupOwed: boolean;
   welcomeTourShown: boolean;
+  /** The account kind setup recorded at sign-in, or null when none was recorded. */
+  accountKind?: HandoffAccountKind | null;
+}
+
+export type HandoffAccountKind = "returning" | "new";
+
+/** The recorded account kind, or null for anything setup does not write. */
+export function handoffAccountKind(value: unknown): HandoffAccountKind | null {
+  return value === "returning" || value === "new" ? value : null;
 }
 
 function boolOrNull(value: unknown): boolean | null {
@@ -73,6 +84,7 @@ export function parseFirstRunHandoffHint(pending: unknown): {
       },
       welcomeSetupOwed: record.welcomeSetupOwed,
       welcomeTourShown: record.welcomeTourShown,
+      accountKind: handoffAccountKind(record.accountKind),
     },
   };
 }

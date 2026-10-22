@@ -24,12 +24,14 @@ import {
 import { pendingInviteWorkspaces, type WorkspacesResult } from './workspaces';
 import {
   activeMembershipCompanies,
+  decideAccountKind,
   decideCompanyRoute,
   inviteOffers,
   otherIdentityFromLookup,
   priorPlanFromPayload,
   provisioningStateFromEntity,
   summarizeRoute,
+  type AccountKind,
   type CompanyRoute,
   type CompanyRouteSummary,
   type OtherIdentityCompany,
@@ -222,6 +224,61 @@ export async function resolveFirstRunCompanyRoute(deps: {
   }
   const route = decideCompanyRoute({ companies, invites, signedInEmail, otherIdentity });
   return { route, summary: summarizeRoute(route, companies, invites), priorPlan };
+}
+
+/** `/membership/me` with the account's company history (active and revoked). */
+export const MEMBERSHIP_ME_WITH_HISTORY_URL = '/membership/me?includeHistoricalCompanyIdentities=true';
+export const ACCOUNT_KIND_LOOKUP_ATTEMPTS = 3;
+export const ACCOUNT_KIND_LOOKUP_RETRY_DELAY_MS = 500;
+
+/**
+ * New or returning (US-023). Reads `/membership/me` with company history up to
+ * three times; an unreadable answer is retried like a failed request. After
+ * the last failure the answer is `lookup_failed`: the wizard shows Try again
+ * and never falls back to the new-account steps.
+ */
+export async function resolveAccountKind(deps: {
+  /** Reads `MEMBERSHIP_ME_WITH_HISTORY_URL`, shared with the company step. */
+  readMembershipMe: () => Promise<Record<string, unknown>>;
+  /** Drop a cached read before the next attempt. */
+  invalidateMembershipMeRead?: () => void;
+  /** Called before each retry, so the caller can say the answer is not in yet. */
+  onRetry?: () => void;
+  sleep?: CompanyRouteRetrySleep;
+  attempts?: number;
+}): Promise<AccountKind> {
+  const attempts = Math.max(1, deps.attempts ?? ACCOUNT_KIND_LOOKUP_ATTEMPTS);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (attempt > 0) {
+      deps.invalidateMembershipMeRead?.();
+      deps.onRetry?.();
+      await (deps.sleep ?? waitForCompanyRouteRetry)(ACCOUNT_KIND_LOOKUP_RETRY_DELAY_MS * attempt);
+    }
+    try {
+      const decision = decideAccountKind(await deps.readMembershipMe());
+      if (decision.kind !== 'lookup_failed') return decision;
+      console.warn('onboarding: account kind lookup returned an unreadable payload');
+    } catch (error) {
+      console.warn('onboarding: account kind lookup failed', error);
+      // Asking again cannot help an expired sign-in; the person signs in again.
+      if (isSignedOutError(error)) {
+        deps.invalidateMembershipMeRead?.();
+        return { kind: 'lookup_failed', signedOut: true };
+      }
+    }
+  }
+  deps.invalidateMembershipMeRead?.();
+  return { kind: 'lookup_failed' };
+}
+
+/**
+ * A request refused for the sign-in: hq-pro answered 401, or the desktop had
+ * no usable token to send (`hq_pro_fetch` rejects with "Not signed in: …").
+ */
+export function isSignedOutError(error: unknown): boolean {
+  if (isRecord(error) && error.status === 401) return true;
+  const message = typeof error === 'string' ? error : error instanceof Error ? error.message : '';
+  return message.startsWith('Not signed in');
 }
 
 /** Back-compat wrapper: just the route. */

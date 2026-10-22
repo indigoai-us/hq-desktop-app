@@ -292,13 +292,15 @@ const FIRST_RUN_HINT_FLAG_TIMEOUT: std::time::Duration = std::time::Duration::fr
 /// The handoff hint queued as the desktop window's pending route, so the shell
 /// knows on its first frame whether it owes the first-run takeover instead of
 /// waiting up to 2 s for its own setup-status and flag reads. `None` flags are
-/// unknown (sent as `null`).
+/// unknown (sent as `null`). `account_kind` is the kind setup recorded at
+/// sign-in (US-023), `null` when none was recorded.
 #[cfg_attr(target_os = "windows", allow(dead_code))]
 pub fn first_run_handoff_hint(
     visual_first_run: Option<bool>,
     found_apps: Option<bool>,
     welcome_setup_owed: bool,
     welcome_tour_shown: bool,
+    account_kind: Option<&str>,
 ) -> String {
     let payload = serde_json::json!({
         "route": Value::Null,
@@ -308,6 +310,7 @@ pub fn first_run_handoff_hint(
         },
         "welcomeSetupOwed": welcome_setup_owed,
         "welcomeTourShown": welcome_tour_shown,
+        "accountKind": account_kind,
     });
     format!("{FIRST_RUN_HANDOFF_PREFIX}{payload}")
 }
@@ -320,13 +323,15 @@ fn handoff_flag_value(read: Result<Option<bool>, ()>) -> Option<bool> {
 #[cfg(not(target_os = "windows"))]
 async fn first_run_handoff_hint_now() -> String {
     async fn bounded(flag: &str) -> Option<bool> {
-        tokio::time::timeout(
+        // A timeout here skips `feature_flag_read`'s demo default, so apply
+        // it to the timed-out read too (a no-op outside demo builds).
+        let read = tokio::time::timeout(
             FIRST_RUN_HINT_FLAG_TIMEOUT,
             crate::commands::hq_pro::feature_flag_read(flag),
         )
         .await
-        .ok()
-        .and_then(handoff_flag_value)
+        .unwrap_or_else(|_| crate::demo_build::flag_default(flag, Err(())));
+        handoff_flag_value(read)
     }
     let (visual, found_apps) = tokio::join!(
         bounded(FIRST_RUN_HINT_FLAGS[0]),
@@ -338,6 +343,7 @@ async fn first_run_handoff_hint_now() -> String {
         found_apps,
         status.welcome_setup_owed,
         status.welcome_tour_shown,
+        status.account_kind,
     )
 }
 
@@ -634,6 +640,127 @@ pub fn mark_auto_sync_notice_shown() -> Result<(), String> {
             ("firstRunCompleted", Value::Bool(true)),
         ],
     )
+}
+
+/// Remember whether the signed-in account was new or returning when setup
+/// looked it up (US-023). Only `new` and `returning` are stored, with the time;
+/// the email is never written. `sign_out` forgets it.
+#[tauri::command]
+pub fn set_account_kind(kind: String) -> Result<(), String> {
+    let path = paths::menubar_json_path()?;
+    hq_desktop_core::first_run::write_account_kind(&path, &kind, &chrono::Utc::now().to_rfc3339())
+}
+
+/// The remembered account kind (`new` or `returning`), or None.
+#[tauri::command]
+pub fn get_account_kind() -> Option<String> {
+    let path = paths::menubar_json_path().ok()?;
+    hq_desktop_core::first_run::read_account_kind(&path).map(str::to_string)
+}
+
+/// Forget the remembered account kind. Best effort: sign-out must not fail on it.
+pub fn forget_account_kind() {
+    let Ok(path) = paths::menubar_json_path() else {
+        return;
+    };
+    if let Err(error) = hq_desktop_core::first_run::clear_account_kind(&path) {
+        log("first-run", &format!("account kind could not be cleared: {error}"));
+    }
+}
+
+/// Whether `companies/<slug>` is a folder under `root`. A slug that could leave
+/// the companies folder is never present.
+fn company_folder_present_in(root: &std::path::Path, slug: &str) -> bool {
+    if slug.is_empty()
+        || slug == "."
+        || slug.contains('/')
+        || slug.contains('\\')
+        || slug.contains("..")
+        || slug.contains(':')
+    {
+        return false;
+    }
+    root.join("companies").join(slug).is_dir()
+}
+
+/// Whether the returning-account pull has brought down a company (US-023): its
+/// folder exists in the HQ folder. `sync:all-complete` names no company, so
+/// setup checks this before it marks the company done.
+#[tauri::command]
+pub fn company_folder_present(slug: String) -> bool {
+    match hq_desktop_core::workspaces::resolve_hq_folder_path() {
+        Ok(root) => company_folder_present_in(&root, &slug),
+        Err(_) => false,
+    }
+}
+
+/// Whether the HQ folder the setup hold protects is in place: install is
+/// complete, or the `content` step, which lays down the HQ folder where the
+/// person chose, is recorded done. The background phase (tools, the vault
+/// upload, indexing) is not needed for a scoped company pull.
+fn hq_folder_ready_for_company_pull(
+    manifest: &crate::commands::install_manifest::InstallManifest,
+) -> bool {
+    manifest.completed_at.is_some()
+        || matches!(
+            manifest.steps.get("content").map(|step| &step.status),
+            Some(crate::commands::install_manifest::ItemStatus::Ok)
+        )
+}
+
+/// Read the install manifest and release the setup hold for the returning
+/// pull when the HQ folder is ready. Returns true when this call released it.
+fn release_sync_hold_for_company_pull_from_manifest() -> Result<bool, String> {
+    let manifest = crate::commands::install_manifest::read_install_manifest()?;
+    Ok(
+        crate::commands::lifecycle::release_sync_setup_hold_for_company_pull(
+            hq_folder_ready_for_company_pull(&manifest),
+        ),
+    )
+}
+
+/// Release the setup hold on sync so a returning account can pull its
+/// companies at Ready, while the background phase still runs (US-023). Only
+/// the returning-account pull calls this; a new person's sync stays held
+/// until setup finishes. The lifecycle verdict is left alone; finishing setup
+/// still advances it.
+#[tauri::command]
+pub async fn release_sync_hold_after_install(app: AppHandle) -> Result<bool, String> {
+    let released = release_sync_hold_for_company_pull_from_manifest()?;
+    if released {
+        log(
+            "first-run",
+            "HQ folder ready; starting sync for the returning account pull",
+        );
+        crate::commands::hq_daemon_host::start_sync_services_after_setup(app);
+    }
+    Ok(released)
+}
+
+#[cfg(test)]
+mod company_folder_present_tests {
+    use super::company_folder_present_in;
+
+    #[test]
+    fn a_company_counts_only_when_its_folder_exists() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(!company_folder_present_in(root.path(), "acme"));
+        std::fs::create_dir_all(root.path().join("companies").join("acme")).unwrap();
+        assert!(company_folder_present_in(root.path(), "acme"));
+        assert!(!company_folder_present_in(root.path(), "other"));
+        std::fs::write(root.path().join("companies").join("file-co"), "").unwrap();
+        assert!(!company_folder_present_in(root.path(), "file-co"));
+    }
+
+    #[test]
+    fn a_slug_that_leaves_the_companies_folder_is_never_present() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("companies")).unwrap();
+        std::fs::create_dir_all(root.path().join("outside")).unwrap();
+        for slug in ["", ".", "..", "../outside", "a/b", "a\\b", "C:", "C:outside"] {
+            assert!(!company_folder_present_in(root.path(), slug), "{slug:?}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1017,11 +1144,30 @@ mod first_run_handoff_hint_tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn failed_flag_read_stays_unknown_in_the_handoff_payload() {
-        let hint = first_run_handoff_hint(handoff_flag_value(Err(())), Some(false), true, false);
+        let hint = first_run_handoff_hint(handoff_flag_value(Err(())), Some(false), true, false, None);
         assert_eq!(payload(&hint)["flags"][FIRST_RUN_HINT_FLAGS[0]], Value::Null);
         assert_eq!(handoff_flag_value(Ok(Some(false))), Some(false));
         assert_eq!(handoff_flag_value(Ok(Some(true))), Some(true));
         assert_eq!(handoff_flag_value(Ok(None)), None);
+    }
+
+    /// Both hint flags are demo defaults, so a demo build sends them as on
+    /// whether `feature_flag_read` answers (it applies the default) or times
+    /// out (`bounded` applies it to `Err(())`). Without the switch a timed-out
+    /// read stays unknown.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn demo_build_hint_reads_both_flags_on_even_after_a_timeout() {
+        for flag in FIRST_RUN_HINT_FLAGS {
+            assert!(
+                crate::demo_build::DEMO_FLAG_DEFAULTS_ON.contains(&flag),
+                "{flag}"
+            );
+            let on = crate::demo_build::apply_flag_default(true, flag, Err(()));
+            assert_eq!(handoff_flag_value(on), Some(true), "{flag}");
+            let off = crate::demo_build::apply_flag_default(false, flag, Err(()));
+            assert_eq!(handoff_flag_value(off), None, "{flag}");
+        }
     }
 
     fn payload(hint: &str) -> Value {
@@ -1033,7 +1179,7 @@ mod first_run_handoff_hint_tests {
 
     #[test]
     fn hint_carries_route_flags_and_setup_status() {
-        let hint = first_run_handoff_hint(Some(true), Some(false), true, false);
+        let hint = first_run_handoff_hint(Some(true), Some(false), true, false, Some("returning"));
         assert_eq!(
             payload(&hint),
             serde_json::json!({
@@ -1044,18 +1190,20 @@ mod first_run_handoff_hint_tests {
                 },
                 "welcomeSetupOwed": true,
                 "welcomeTourShown": false,
+                "accountKind": "returning",
             })
         );
     }
 
     #[test]
     fn unanswered_flags_go_out_as_null() {
-        let hint = first_run_handoff_hint(None, None, false, true);
+        let hint = first_run_handoff_hint(None, None, false, true, None);
         let value = payload(&hint);
         assert_eq!(value["flags"]["desktop.visual-first-run"], Value::Null);
         assert_eq!(value["flags"]["desktop.first-run-found-apps-v1"], Value::Null);
         assert_eq!(value["welcomeSetupOwed"], Value::Bool(false));
         assert_eq!(value["welcomeTourShown"], Value::Bool(true));
+        assert_eq!(value["accountKind"], Value::Null);
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -1063,5 +1211,85 @@ mod first_run_handoff_hint_tests {
     fn hint_flag_reads_are_bounded_below_the_shells_status_wait() {
         // The shell's own status wait is WELCOME_OWED_TIMEOUT_MS (2000).
         assert!(FIRST_RUN_HINT_FLAG_TIMEOUT < std::time::Duration::from_millis(2000));
+    }
+}
+
+#[cfg(test)]
+mod company_pull_hold_tests {
+    use super::release_sync_hold_for_company_pull_from_manifest;
+    use crate::commands::daemon::ensure_setup_allows_sync;
+    use crate::commands::install_manifest::{record_install_complete, record_step_ok};
+    use crate::commands::lifecycle::{
+        publish_sync_setup_gate, sync_held_for_setup, SYNC_HELD_FOR_SETUP_MESSAGE,
+    };
+    use crate::util::test_support::ENV_MUTEX;
+    use hq_desktop_core::lifecycle::LifecycleState;
+
+    fn with_home<F: FnOnce()>(f: F) {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let previous_home = std::env::var_os("HOME");
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        std::env::set_var("HOME", tmp.path());
+        f();
+        if let Some(home) = previous_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+    }
+
+    /// M5: a returning account's pull starts at Ready, once the HQ folder is
+    /// laid down, while the background phase is still running.
+    #[test]
+    fn the_returning_pull_starts_at_ready_before_the_background_phase() {
+        with_home(|| {
+            publish_sync_setup_gate(LifecycleState::NeedsInstall);
+            for step in ["content", "git-init", "personalize"] {
+                record_step_ok(step.to_string()).unwrap();
+            }
+            assert!(release_sync_hold_for_company_pull_from_manifest().unwrap());
+            assert!(!sync_held_for_setup());
+            assert!(ensure_setup_allows_sync().is_ok());
+            publish_sync_setup_gate(LifecycleState::NeedsInstall);
+        });
+    }
+
+    /// M5: a new person's sync stays refused until setup finishes. Their
+    /// path never calls the release, and the release refuses an install
+    /// that has not laid down the HQ folder.
+    #[test]
+    fn a_new_person_sync_before_setup_finishes_is_still_refused() {
+        with_home(|| {
+            publish_sync_setup_gate(LifecycleState::NeedsInstall);
+            for step in ["content", "git-init", "personalize"] {
+                record_step_ok(step.to_string()).unwrap();
+            }
+            assert_eq!(
+                ensure_setup_allows_sync().unwrap_err(),
+                SYNC_HELD_FOR_SETUP_MESSAGE
+            );
+        });
+        with_home(|| {
+            publish_sync_setup_gate(LifecycleState::NeedsInstall);
+            record_step_ok("git-init".to_string()).unwrap();
+            assert!(!release_sync_hold_for_company_pull_from_manifest().unwrap());
+            assert!(sync_held_for_setup());
+            assert_eq!(
+                ensure_setup_allows_sync().unwrap_err(),
+                SYNC_HELD_FOR_SETUP_MESSAGE
+            );
+        });
+    }
+
+    #[test]
+    fn a_finished_install_releases_the_hold() {
+        with_home(|| {
+            publish_sync_setup_gate(LifecycleState::NeedsInstall);
+            record_install_complete().unwrap();
+            assert!(release_sync_hold_for_company_pull_from_manifest().unwrap());
+            assert!(ensure_setup_allows_sync().is_ok());
+            publish_sync_setup_gate(LifecycleState::NeedsInstall);
+        });
     }
 }

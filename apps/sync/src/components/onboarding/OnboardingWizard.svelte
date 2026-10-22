@@ -179,15 +179,29 @@
   import ConnectorImportStep from './ConnectorImportStep.svelte';
   import {
     companyUidFromMissingBucket,
+    decideCompanyRoute,
     isMissingBucketMessage,
+    summarizeRoute,
     type CompanyRouteSummary,
   } from '../../lib/onboarding-company-route';
   import {
+    MEMBERSHIP_ME_WITH_HISTORY_URL,
     requestCompanyProvisioning,
+    resolveAccountKind,
     resolveFirstRunCompanyRoute,
     waitForProvisioning,
     type FirstRunCompanyPath,
   } from '../../lib/first-run-company';
+  import type { AccountKind } from '../../lib/onboarding-company-route';
+  import {
+    initialPullRows,
+    pullFailures,
+    pullSettled,
+    pullSucceeded,
+    runCompanyPull,
+    type CompanyPullRow,
+    type CompanyPullRunResult,
+  } from '../../lib/company-pull';
   import {
     createSyncPlatformAdapter,
     getHqAnywherePersonSetting,
@@ -1124,16 +1138,37 @@
         });
     }
 
-    subscribeTauriEvent<{ errors?: unknown }>(
-      'sync:all-complete',
-      handleFirstFolderSyncComplete,
-    );
+    subscribeTauriEvent<{ errors?: unknown }>('sync:all-complete', (payload) => {
+      void handleCompanyPullAllComplete(payload);
+      handleFirstFolderSyncComplete(payload);
+    });
     subscribeTauriEvent<{ aborted?: unknown }>('sync:complete', (payload) => {
+      if (companyPullWaiter && payload.aborted === true) companyPullWaiter.aborted = true;
       if (firstFolderSyncAwaitingCompletion && payload.aborted === true) {
         firstFolderSyncObservedFailure = true;
       }
     });
-    subscribeTauriEvent<{ message?: unknown }>('sync:error', (payload) => {
+    subscribeTauriEvent<{ company?: unknown; path?: unknown; message?: unknown }>('sync:error', (payload) => {
+      // A sync process that could not be spawned never runs, so no pull can
+      // progress: fail this one now (and, through spawnFailed, every company
+      // still waiting) instead of waiting out the timeout.
+      if (companyPullWaiter && payload?.path === '(spawn)' && !payload.company) {
+        companyPullWaiter.finish({
+          errors: [{ message: typeof payload.message === 'string' ? payload.message : 'sync error' }],
+          aborted: false,
+          spawnFailed: true,
+        });
+      }
+      // Otherwise only an error naming this pull's company is this pull's.
+      // Another company's, or one with no company while a sync is running (a
+      // personal push), is not.
+      else if (
+        companyPullWaiter &&
+        typeof payload?.message === 'string' &&
+        payload.company === companyPullWaiter.slug
+      ) {
+        companyPullWaiter.errors.push({ company: companyPullWaiter.slug, message: payload.message });
+      }
       if (!firstFolderSyncAwaitingCompletion) return;
       const uid = companyUidFromMissingBucket(payload?.message);
       if (uid) firstFolderMissingBucketUids.add(uid);
@@ -1576,6 +1611,13 @@
     void resolveInstallerPersonUid();
     await refocusWindow();
     if (!isCurrentSignInCall(call)) return;
+    if (readyReauth) {
+      // Signed in again from Ready (US-023): stay there and look again.
+      readyReauth = false;
+      accountLookupSignedOut = false;
+      void retryAccountLookup();
+      return;
+    }
     // The consent question is asked later as its own step after setup.
     // Operational setup telemetry is emitted independently; skill usage
     // remains governed by that choice.
@@ -1710,7 +1752,10 @@
   let membershipMeRead: Promise<Record<string, unknown>> | null = null;
   function readMembershipMe(): Promise<Record<string, unknown>> {
     if (!membershipMeRead) {
-      membershipMeRead = onboardingHqProJson('GET', '/membership/me');
+      // US-023: the history flag adds the account's past companies, which is
+      // how a returning account with no active company is told apart from a
+      // brand-new one. The membership list is the same either way.
+      membershipMeRead = onboardingHqProJson('GET', MEMBERSHIP_ME_WITH_HISTORY_URL);
       // A failed read is not cached; the next caller asks again.
       membershipMeRead.catch(() => (membershipMeRead = null));
     }
@@ -1874,6 +1919,7 @@
     connectorImportCompany = null;
     // The cached membership read belongs to the previous account as well.
     membershipMeRead = null;
+    resetAccountKind();
     await selectCompany(null, true);
     existingSessionEmail = null;
     existingSessionOutpost = null;
@@ -1890,7 +1936,9 @@
     url: string,
     body?: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    if (method === 'GET' && url === '/membership/me') return readMembershipMe();
+    if (method === 'GET' && (url === '/membership/me' || url === MEMBERSHIP_ME_WITH_HISTORY_URL)) {
+      return readMembershipMe();
+    }
     return onboardingHqProJson(method, url, body);
   }
 
@@ -3241,6 +3289,318 @@
     }
   }
 
+  /**
+   * US-023: whether the signed-in account is new or returning, read once from
+   * `/membership/me` (with company history) after sign-in. A returning
+   * account skips the new-person steps and has its companies pulled onto
+   * this Mac before Ready. A lookup that keeps failing after the person
+   * entity exists shows an error with Try again on the Ready screen; it never
+   * falls back to the new-person steps.
+   */
+  let accountKind = $state<AccountKind | null>(null);
+  let accountLookupFailed = $state(false);
+  /** The lookup failed because the sign-in expired: Ready offers sign-in, not Try again. */
+  let accountLookupSignedOut = $state(false);
+  /** A sign-in started from that Ready note returns to Ready and looks again. */
+  let readyReauth = false;
+  let accountKindRememberWarned = false;
+  let accountLookupRetrying = $state(false);
+  /** The lookup's first read failed and it is retrying; Ready must not read as done yet. */
+  let accountLookupRetryPending = $state(false);
+  /** A lookup is in flight: nothing finishes until it says new or returning. */
+  let accountLookupPending = $state(false);
+  /**
+   * A retry only holds Ready once the person entity exists. Before that the
+   * lookup is provisional: a failure there just looks again after setup.
+   */
+  const accountLookupFinalRetryPending = $derived(accountLookupRetryPending && (blockingPhaseDone || setupCompleted));
+  /** US-023: Ready is up but the lookup has not answered; it must not read as done. */
+  const accountLookupReadyPending = $derived(accountLookupPending && (blockingPhaseDone || setupCompleted));
+  let accountKindResolution: Promise<AccountKind> | null = null;
+  let accountKindGeneration = 0;
+  let accountKindRecorded = false;
+  const returningAccount = $derived(accountKind?.kind === 'returning');
+  const returningCompanyNames = $derived(
+    accountKind?.kind === 'returning' ? listCompanyNames(accountKind.companies.map((company) => company.name)) : '',
+  );
+
+  /** The Ready heading for a returning account, or null for the usual one. */
+  const returningReadyHeading = $derived.by(() => {
+    if (accountKind?.kind !== 'returning' || accountLookupFailed) return null;
+    const pulling = companyPullRows.length > 0 && !companyPullClear;
+    if (pulling && returningCompanyNames) return `Welcome back. Bringing ${returningCompanyNames} to this Mac.`;
+    const here = companyPullRows.filter((row) => row.status === 'done').map((row) => row.name);
+    if (here.length === 0) return 'Welcome back. HQ is ready.';
+    return `Welcome back. ${listCompanyNames(here)} ${here.length === 1 ? 'is' : 'are'} on this Mac.`;
+  });
+
+  function companyPullRowLabel(row: CompanyPullRow): string {
+    if (row.status === 'queued') return 'Waiting';
+    if (row.status === 'pulling') return 'Pulling';
+    if (row.status === 'done') return 'Ready';
+    return `Couldn't pull ${row.name}`;
+  }
+
+  /** "Acme", "Acme and Globex", "Acme, Globex and Initech". */
+  function listCompanyNames(names: readonly string[]): string {
+    const clean = names.map((name) => name.trim()).filter(Boolean);
+    if (clean.length <= 1) return clean[0] ?? '';
+    return `${clean.slice(0, -1).join(', ')} and ${clean[clean.length - 1]}`;
+  }
+
+  function resetAccountKind(): void {
+    accountKindGeneration += 1;
+    accountKind = null;
+    accountLookupFailed = false;
+    accountLookupSignedOut = false;
+    readyReauth = false;
+    accountLookupRetrying = false;
+    accountLookupRetryPending = false;
+    accountLookupPending = false;
+    accountKindResolution = null;
+    accountKindRecorded = false;
+    companyPullGeneration += 1;
+    companyPullRows = [];
+    companyPullStarted = false;
+    companyPullRunning = false;
+    companyPullContinued = false;
+  }
+
+  /** One shared account-kind lookup; a failed one is forgotten so the next caller asks again. */
+  function ensureAccountKind(): Promise<AccountKind> {
+    if (accountKindResolution) return accountKindResolution;
+    const generation = accountKindGeneration;
+    const resolution = resolveAccountKind({
+      readMembershipMe,
+      invalidateMembershipMeRead: () => {
+        membershipMeRead = null;
+      },
+      onRetry: () => {
+        if (generation === accountKindGeneration) accountLookupRetryPending = true;
+      },
+    }).then(async (result) => {
+      if (generation !== accountKindGeneration) return result;
+      accountLookupRetryPending = false;
+      accountLookupPending = false;
+      if (result.kind === 'lookup_failed') {
+        if (accountKindResolution === resolution) accountKindResolution = null;
+        return result;
+      }
+      accountKind = result;
+      accountLookupFailed = false;
+      accountLookupSignedOut = false;
+      if (!accountKindRecorded) {
+        accountKindRecorded = true;
+        recordStep(SETUP_STEP_INDEX, 'started', {
+          accountKind: result.kind,
+          ...(result.kind === 'returning' ? { accountSignal: result.signal } : {}),
+        });
+      }
+      // A failed write keeps the kind in memory for this run; warn only once.
+      try {
+        await invokeCommand('set_account_kind', { kind: result.kind });
+      } catch (error) {
+        if (!accountKindRememberWarned) {
+          accountKindRememberWarned = true;
+          console.warn('onboarding: account kind could not be remembered', error);
+        }
+      }
+      return result;
+    });
+    accountKindResolution = resolution;
+    accountLookupPending = true;
+    return resolution;
+  }
+
+  /** Sign in again from Ready after the lookup found the sign-in expired. */
+  function signInAgainFromReady(provider: SignInProvider): void {
+    if (provider === 'Microsoft' && microsoftEmail.trim() === '' && signedInEmail) microsoftEmail = signedInEmail;
+    readyReauth = true;
+    void handleSignIn(provider);
+  }
+
+  /** Try again on the lookup error: ask the server again, then route as usual. */
+  async function retryAccountLookup(): Promise<void> {
+    if (accountLookupRetrying) return;
+    accountLookupRetrying = true;
+    membershipMeRead = null;
+    accountKindResolution = null;
+    resetCompanyRoute();
+    try {
+      await resolveCompanyStep();
+      if (returningAccount) startReturningCompanyPull();
+    } finally {
+      accountLookupRetrying = false;
+    }
+  }
+
+  /** The returning account's companies, being pulled onto this Mac. */
+  let companyPullRows = $state<CompanyPullRow[]>([]);
+  let companyPullRunning = $state(false);
+  /** The person chose Continue past a failed pull; setup finishes without that company. */
+  let companyPullContinued = $state(false);
+  let companyPullStarted = false;
+  let companyPullGeneration = 0;
+  /** About the native runner's own 10-minute hard timeout, plus a margin. */
+  const COMPANY_PULL_SYNC_TIMEOUT_MS = 11 * 60_000;
+  let companyPullWaiter: {
+    slug: string;
+    aborted: boolean;
+    errors: Array<{ company?: string; message: string }>;
+    finish: (result: CompanyPullRunResult) => void;
+  } | null = null;
+  const companyPullFailedRows = $derived(pullFailures(companyPullRows));
+  const companyPullSettled = $derived(pullSettled(companyPullRows) && !companyPullRunning);
+  /** Ready may finish: every company is here, or the person chose Continue after a failure. */
+  const companyPullClear = $derived(
+    accountKind?.kind !== 'returning' ||
+      (companyPullRows.length === 0 && !accountKind.companies.some((company) => company.slug)) ||
+      (companyPullRows.length > 0 &&
+        companyPullSettled && (pullSucceeded(companyPullRows) || companyPullContinued)),
+  );
+  /** US-023: Ready may not finish yet (lookup in flight or failed, or companies still coming). */
+  const finishHeld = $derived(accountLookupFailed || accountLookupPending || !companyPullClear);
+
+  function syncErrorEntries(errors: unknown): Array<{ company?: string; message: string }> {
+    if (!Array.isArray(errors)) return [];
+    return errors.map((entry) => {
+      if (isRecord(entry)) {
+        return {
+          ...(typeof entry.company === 'string' ? { company: entry.company } : {}),
+          message: typeof entry.message === 'string' ? entry.message : 'sync error',
+        };
+      }
+      return { message: typeof entry === 'string' ? entry : 'sync error' };
+    });
+  }
+
+  /**
+   * Start one scoped sync and resolve with what it reported. The waiter is in
+   * place before the sync starts, so a fast `sync:all-complete` is not missed.
+   */
+  function runCompanyPullSync(slug: string): Promise<CompanyPullRunResult> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const timer = window.setTimeout(() => finish({ errors: [], aborted: false, timedOut: true }), COMPANY_PULL_SYNC_TIMEOUT_MS);
+      const waiter = {
+        slug,
+        aborted: false,
+        errors: [] as Array<{ company?: string; message: string }>,
+        finish: (result: CompanyPullRunResult) => finish(result),
+      };
+      function release(): void {
+        settled = true;
+        window.clearTimeout(timer);
+        if (companyPullWaiter === waiter) companyPullWaiter = null;
+      }
+      function finish(result: CompanyPullRunResult): void {
+        if (settled) return;
+        release();
+        resolve(result);
+      }
+      function fail(error: unknown): void {
+        if (settled) return;
+        release();
+        reject(error);
+      }
+      companyPullWaiter = waiter;
+      onboardingFeatureFlags.sync.startSync(slug).then(
+        (started) => {
+          if (!started.ok) fail(new Error(started.message));
+        },
+        fail,
+      );
+    });
+  }
+
+  /**
+   * A `sync:all-complete` does not name the company it finished, and a watch
+   * pass for other companies sends one too. Errors naming another company are
+   * dropped. With no error of its own, the pull counts as done only once the
+   * company's folder is on disk; otherwise it waits for the next pass (or the
+   * timeout).
+   */
+  async function handleCompanyPullAllComplete(payload: unknown): Promise<void> {
+    const waiter = companyPullWaiter;
+    if (!waiter) return;
+    const result = payload as { errors?: unknown } | null;
+    const errors = [...waiter.errors, ...syncErrorEntries(result?.errors)].filter(
+      (entry) => !entry.company || entry.company === waiter.slug,
+    );
+    if (errors.length > 0 || waiter.aborted) {
+      waiter.finish({ errors, aborted: waiter.aborted });
+      return;
+    }
+    const present = await invokeCommand<boolean>('company_folder_present', { slug: waiter.slug }).catch((error) => {
+      console.warn('onboarding: company folder check failed', error);
+      return false;
+    });
+    if (present === true && companyPullWaiter === waiter) waiter.finish({ errors: [], aborted: false });
+  }
+
+  /** Pull the returning account's companies (all of them, or only the ones named on Try again). */
+  async function runReturningCompanyPull(only?: string[]): Promise<void> {
+    if (companyPullRunning) return;
+    const generation = companyPullGeneration;
+    const current = () => mounted && generation === companyPullGeneration;
+    companyPullRunning = true;
+    if (only) companyPullContinued = false;
+    try {
+      // Setup still holds sync until the wizard finishes. The HQ folder is in
+      // place by Ready, so lift the hold for this pull (the background phase
+      // may still be running) or every start below would be refused.
+      await invokeCommand<boolean>('release_sync_hold_after_install').catch((error) => {
+        console.warn('onboarding: sync hold release failed', error);
+      });
+      await runCompanyPull({
+        rows: companyPullRows,
+        only,
+        deps: {
+          runSync: runCompanyPullSync,
+          provision: async (companyUid) => {
+            const state = await requestCompanyProvisioning(invokeCommand, companyUid);
+            if (state.status !== 'pending') return state;
+            return waitForProvisioning({
+              invoke: invokeCommand,
+              companyUid,
+              timeoutMs: firstFolderSelfHealTimeoutMs,
+              intervalMs: firstFolderSelfHealIntervalMs,
+              cancelled: () => !current(),
+            });
+          },
+          cancelled: () => !current(),
+        },
+        onRows: (rows) => {
+          if (current()) companyPullRows = rows;
+        },
+        onOutcome: (outcome) => {
+          if (!current()) return;
+          recordStep(FIRST_FOLDER_SYNC_STEP_INDEX, outcome.outcome === 'done' ? 'completed' : 'failed', {
+            companyUid: outcome.companyUid,
+            companyPull: outcome.outcome,
+            attemptCount: outcome.attempt,
+            ...(outcome.errorKind ? { companyPullError: outcome.errorKind } : {}),
+            ...(outcome.selfHealed ? { selfHeal: outcome.outcome === 'done' ? 'succeeded' : 'failed' } : {}),
+          });
+        },
+      });
+    } finally {
+      if (current()) companyPullRunning = false;
+    }
+  }
+
+  /** Start the pull once, after the person entity exists and the account is known to be returning. */
+  function startReturningCompanyPull(): void {
+    if (companyPullStarted || accountKind?.kind !== 'returning' || !blockingPhaseDone) return;
+    companyPullStarted = true;
+    companyPullRows = initialPullRows(
+      accountKind.companies
+        .filter((company) => company.slug)
+        .map((company) => ({ companyUid: company.companyUid, slug: company.slug!, name: company.name })),
+    );
+    void runReturningCompanyPull();
+  }
+
   /** Forget the company lookup (account switch): the next call looks again. */
   function resetCompanyRoute(): void {
     companyRouteGeneration += 1;
@@ -3279,6 +3639,66 @@
       showInviteTeammateStep = false;
       connectorImportCompany = active;
       companyRouteResolved = true;
+      return;
+    }
+    const account = await ensureAccountKind();
+    if (!stillCurrent()) return;
+    if (account.kind === 'lookup_failed') {
+      // Never fall back to the new-person steps, and never offer the
+      // create-company recovery, on a lookup that failed.
+      companyPath = null;
+      inviteTeammateContext = null;
+      showInviteTeammateStep = false;
+      if (afterPersonEntity) {
+        accountLookupFailed = true;
+        accountLookupSignedOut = account.signedOut === true;
+        recordCompanyRouteLookupFailed(true);
+        companyRouteResolved = true;
+      } else {
+        // Too early (before the person entity); the post-setup lookup looks again.
+        companyRouteResolution = null;
+      }
+      return;
+    }
+    if (account.kind === 'returning') {
+      // A returning account is not asked to create or join a company: its
+      // primary company becomes the app's active one, and the Ready screen
+      // pulls every company onto this Mac. The teammate invite stays for the
+      // owner of a one-member company (an owner who already has company
+      // members never sees it), and so does the connector import.
+      companyPath = null;
+      if (account.primary) {
+        // Record the route the new-person flow would have taken, as skipped,
+        // so company-route telemetry stays comparable across both kinds.
+        const route = decideCompanyRoute({ companies: account.companies, invites: [], signedInEmail: null });
+        const summary = summarizeRoute(route, account.companies, []);
+        recordStep(SETUP_STEP_INDEX, 'skipped', {
+          outcome: `route_${route.decision}`,
+          decision: route.decision,
+          existingCompanies: summary.existingCompanies,
+          paidCompany: summary.paidCompany,
+          pendingInvites: summary.pendingInvites,
+          companyUid: account.primary.companyUid,
+        });
+        companyStepCompanyUid = account.primary.companyUid;
+        recordWorkspaceSelected(account.primary.companyUid);
+        await selectCompany(account.primary.slug);
+        if (!stillCurrent()) return;
+      }
+      const inviteResolution = account.primary ? await resolveInviteTeammateContext() : null;
+      if (!stillCurrent()) return;
+      inviteTeammateContext = inviteResolution?.context ?? null;
+      showInviteTeammateStep = inviteTeammateContext !== null;
+      if (inviteResolution && inviteResolution.context === null && !inviteStepHiddenTelemetryRecorded) {
+        inviteStepHiddenTelemetryRecorded = true;
+        recordStep(INVITE_TEAMMATE_STEP_INDEX, 'skipped', {
+          outcome: inviteResolution.hiddenReason,
+          companyUid: account.primary!.companyUid,
+        });
+      }
+      connectorImportCompany = account.primary ? (account.primary.slug ?? account.primary.companyUid) : null;
+      companyRouteResolved = true;
+      startReturningCompanyPull();
       return;
     }
     const retryCompanyLookup = resolveCompanyRouteLookupRetryFlag();
@@ -3371,8 +3791,12 @@
       }),
     ]);
     if (!stillCurrent()) return;
-    showFirstFolderSyncStep = firstFolderEnabled;
+    // A returning account with companies gets the company pull in place of
+    // the first folder sync: it brings every company folder, not just one.
+    const pullingCompanies = accountKind?.kind === 'returning' && accountKind.companies.some((company) => company.slug);
+    showFirstFolderSyncStep = firstFolderEnabled && !pullingCompanies;
     postSetupStepsResolved = true;
+    startReturningCompanyPull();
   }
 
   /**
@@ -3640,6 +4064,9 @@
       await finishWithRecovery();
       return;
     }
+    // US-023: the same hold as every other finish. The button is disabled
+    // while it holds; leave the consent note as it is.
+    if (finishHeld) return;
     // Ready screen: the answer is cached with provenance and the consent
     // repair sends it on the next connection. Finish without posting again and
     // without calling it a confirmed write.
@@ -3764,6 +4191,10 @@
 
   async function finishWithRecovery(): Promise<boolean> {
     if (finishing || finishInProgress) return false;
+    // US-023: nothing finishes while the account lookup is in flight or
+    // failed, or a returning account's companies are still coming (or one
+    // failed without Continue).
+    if (finishHeld) return false;
     finishing = true;
     finishInProgress = true;
     finishError = false;
@@ -4317,6 +4748,9 @@
       connectorImportVisited = true;
       return;
     }
+    // US-023: a returning account imports into a company only once its
+    // pull is over (or the person chose Continue), so the folder exists.
+    if (!companyPullClear) return;
     advanceTo(CONNECTOR_IMPORT_STEP_INDEX, null);
   });
 
@@ -4355,6 +4789,10 @@
       if (showFirstFolderSyncStep && !firstFolderSyncVisited) return;
       if (showInviteTeammateStep && inviteTeammateContext && !inviteTeammateVisited) return;
       if (!connectorImportVisited && connectorImportCompany) return;
+      // US-023: hold Ready while the account lookup is in flight or failed,
+      // and while a returning account's companies are still coming (or one
+      // failed and the person has not chosen Continue).
+      if (finishHeld) return;
     }
     autoFinishAttempted = true;
     void finishWithRecovery().then((finished) => {
@@ -4390,10 +4828,11 @@
   }
 
   /** A failed lookup keeps the existing #setup create-company recovery in place. */
-  function recordCompanyRouteLookupFailed(): void {
+  function recordCompanyRouteLookupFailed(accountKindLookup = false): void {
     recordStep(SETUP_STEP_INDEX, 'started', {
       outcome: 'route_lookup_failed',
       decision: 'lookup_failed',
+      ...(accountKindLookup ? { accountKind: 'lookup_failed' as const } : {}),
     });
   }
 
@@ -5055,8 +5494,10 @@
       <div class="copy" bind:this={refs.readyCopy}>
         <h2 class="h h-lg" id="onboarding-title-ready" tabindex="-1" data-scene-heading>
           {installPending || blockingRetryRunning
-            ? 'Almost ready.'
-            : requiredFailureHeading ?? 'HQ is ready.'}
+            ? returningAccount && returningCompanyNames
+              ? `Welcome back. Bringing ${returningCompanyNames} to this Mac.`
+              : 'Almost ready.'
+            : requiredFailureHeading ?? (accountLookupFailed || accountLookupFinalRetryPending || accountLookupReadyPending ? 'Almost ready.' : returningReadyHeading ?? 'HQ is ready.')}
         </h2>
         <!-- The menu-bar sentence says setup is done, so it waits for Try again. -->
         {#if !requiredFailureHeading}
@@ -5115,7 +5556,111 @@
           </div>
         {/if}
         <div class="ready-notes">
-          {#if (finishError || readyWatchdogFired) && !blockingRetryRunning}
+          {#if accountLookupFailed && accountLookupSignedOut}
+            <div class="note account-lookup-error" role="alert" data-testid="account-lookup-signed-out">
+              <p>Your sign-in has expired. Sign in again to finish setting up.</p>
+              <div class="note-actions">
+                <button
+                  class="btn btn-secondary"
+                  type="button"
+                  data-testid="account-lookup-sign-in-google"
+                  disabled={loadingProvider !== null}
+                  aria-busy={loadingProvider === 'Google'}
+                  onclick={() => signInAgainFromReady('Google')}
+                >Sign in with Google</button>
+                <button
+                  class="btn btn-secondary"
+                  type="button"
+                  data-testid="account-lookup-sign-in-microsoft"
+                  disabled={loadingProvider !== null}
+                  aria-busy={loadingProvider === 'Microsoft'}
+                  onclick={() => signInAgainFromReady('Microsoft')}
+                >Sign in with Microsoft</button>
+              </div>
+              {#if microsoftEmailPrompt}
+                <form
+                  class="microsoft-email"
+                  data-testid="account-lookup-microsoft-email-form"
+                  onsubmit={(event) => {
+                    event.preventDefault();
+                    signInAgainFromReady('Microsoft');
+                  }}
+                >
+                  <label for="onboarding-ready-microsoft-email">Enter the Microsoft email you use with HQ</label>
+                  <input
+                    id="onboarding-ready-microsoft-email"
+                    type="email"
+                    autocomplete="username"
+                    autocapitalize="none"
+                    spellcheck="false"
+                    bind:value={microsoftEmail}
+                    disabled={loadingProvider !== null}
+                  />
+                  <button
+                    class="btn btn-secondary"
+                    type="submit"
+                    disabled={loadingProvider !== null || microsoftEmail.trim() === ''}
+                  >Continue</button>
+                </form>
+              {/if}
+              {#if signInError}
+                <p class="status" data-testid="account-lookup-sign-in-error">{signInError}</p>
+              {/if}
+            </div>
+          {:else if accountLookupFailed}
+            <div class="note account-lookup-error" role="alert" data-testid="account-lookup-error">
+              <p>We couldn't check your account. Check your connection and try again.</p>
+              <div class="note-actions">
+                <button
+                  class="btn btn-secondary"
+                  type="button"
+                  data-testid="account-lookup-retry"
+                  disabled={accountLookupRetrying}
+                  aria-busy={accountLookupRetrying}
+                  onclick={() => void retryAccountLookup()}
+                >Try again</button>
+              </div>
+            </div>
+          {/if}
+          {#if returningAccount && companyPullRows.length > 0}
+            <div class="note company-pull" role="status" aria-live="polite" data-testid="company-pull">
+              <p class="company-pull-label">Bringing your companies to this Mac</p>
+              <ul class="company-pull-rows">
+                {#each companyPullRows as row (row.companyUid)}
+                  <li class="company-pull-row" data-testid="company-pull-row" data-company={row.slug} data-status={row.status}>
+                    {#if row.status === 'failed'}
+                      {#if companyPullContinued}
+                        <span>Couldn't bring {row.name} to this Mac.</span>
+                      {:else}
+                        <span>{companyPullRowLabel(row)}</span>
+                        <button
+                          class="btn btn-secondary"
+                          type="button"
+                          data-testid="company-pull-retry"
+                          disabled={companyPullRunning}
+                          onclick={() => void runReturningCompanyPull([row.companyUid])}
+                        >Try again</button>
+                      {/if}
+                    {:else}
+                      <span class="company-pull-name">{row.name}</span>
+                      <span class="company-pull-state">{companyPullRowLabel(row)}</span>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+              {#if companyPullSettled && companyPullFailedRows.length > 0 && !companyPullContinued}
+                <div class="note-actions">
+                  <button
+                    class="btn btn-secondary"
+                    type="button"
+                    data-testid="company-pull-continue"
+                    onclick={() => (companyPullContinued = true)}
+                  >Continue</button>
+                </div>
+              {/if}
+            </div>
+          {/if}
+          {#if (finishError || readyWatchdogFired) && !blockingRetryRunning && !finishHeld}
             <div class="note finish-action" role="status" data-testid="launcher-finish-error">
               <p>Finish HQ setup here when you’re ready.</p>
               <div class="note-actions">
@@ -5224,7 +5769,7 @@
                 class="btn btn-secondary"
                 type="button"
                 data-testid="consent-retry"
-                disabled={consentSubmitting || finishing}
+                disabled={consentSubmitting || finishing || finishHeld}
                 onclick={() => void handleFinish()}
               >{consentSubmitting ? 'Retrying…' : 'Retry'}</button>
               {#if consentFailure.kind === 'offline'}
@@ -5232,7 +5777,7 @@
                   class="btn btn-secondary"
                   type="button"
                   data-testid="consent-finish-offline"
-                  disabled={consentSubmitting || finishing}
+                  disabled={consentSubmitting || finishing || finishHeld}
                   onclick={() => void finishOffline()}
                 ><RailIcon name="check" />Finish setup, send later</button>
               {/if}
