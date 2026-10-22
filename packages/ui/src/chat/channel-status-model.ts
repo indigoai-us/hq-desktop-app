@@ -273,6 +273,127 @@ export interface ChannelStatusModel {
   companyIconUrl?: string | null;
 }
 
+// ── Add-member candidates (members popover "+ Add") ─────────────────────────
+
+/** One company contact row (GET /v1/notify/contacts), loosely typed. */
+export interface AddMemberContactInput {
+  personUid?: string | null;
+  participantUid?: string | null;
+  displayName?: string | null;
+  name?: string | null;
+  email?: string | null;
+  avatarUrl?: string | null;
+  /** Owning company when the payload carries one; rows without it are kept. */
+  companyUid?: string | null;
+}
+
+/** One bot the signed-in person owns (local `hq bot list` or the remote listing). */
+export interface AddMemberBotInput {
+  agentUid: string;
+  /** Owner principal; only bots owned by `selfUid` are offered. */
+  ownerUid?: string | null;
+  /** The handle (folder name / mention). */
+  name?: string | null;
+  displayName?: string | null;
+}
+
+export interface AddMemberCandidate {
+  personUid: string;
+  displayName: string;
+  kind: "person" | "bot";
+  /** Bot handle, when the row is a bot with one. */
+  handle?: string;
+  avatarUrl?: string;
+}
+
+export interface AddMemberCandidatesInput {
+  contacts?: ReadonlyArray<AddMemberContactInput> | null;
+  bots?: ReadonlyArray<AddMemberBotInput> | null;
+  /** Current channel roster (people and bots); all are excluded. */
+  members?: ReadonlyArray<{ personUid: string }> | null;
+  selfUid?: string | null;
+  /** The channel's company; contacts stamped with another company are dropped. */
+  companyUid?: string | null;
+}
+
+/**
+ * Who the members popover can offer to add: teammates from the channel's
+ * company roster plus the caller's own bots, minus everyone already in the
+ * channel and the caller. Bots first, then people, each by name. Pure.
+ */
+export function addMemberCandidates(
+  input: AddMemberCandidatesInput,
+): AddMemberCandidate[] {
+  const selfUid = (input.selfUid ?? "").trim();
+  const companyUid = (input.companyUid ?? "").trim();
+  const excluded = new Set<string>();
+  if (selfUid) excluded.add(selfUid);
+  for (const m of input.members ?? []) {
+    const uid = (m.personUid ?? "").trim();
+    if (uid) excluded.add(uid);
+  }
+  const byUid = new Map<string, AddMemberCandidate>();
+
+  for (const bot of input.bots ?? []) {
+    const uid = (bot.agentUid ?? "").trim();
+    if (!uid || excluded.has(uid) || byUid.has(uid)) continue;
+    const owner = (bot.ownerUid ?? "").trim();
+    if (!selfUid || owner !== selfUid) continue;
+    const handle = (bot.name ?? "").trim();
+    const displayName = (bot.displayName ?? "").trim() || handle || uid;
+    byUid.set(uid, {
+      personUid: uid,
+      displayName,
+      kind: "bot",
+      ...(handle ? { handle } : {}),
+    });
+  }
+
+  for (const contact of input.contacts ?? []) {
+    const uid = (contact.personUid ?? contact.participantUid ?? "").trim();
+    if (!uid || excluded.has(uid) || byUid.has(uid)) continue;
+    const contactCompany = (contact.companyUid ?? "").trim();
+    if (companyUid && contactCompany && contactCompany !== companyUid) continue;
+    const displayName = (
+      contact.displayName ??
+      contact.name ??
+      contact.email ??
+      ""
+    ).trim();
+    if (!displayName) continue;
+    const avatarUrl = (contact.avatarUrl ?? "").trim();
+    byUid.set(uid, {
+      personUid: uid,
+      displayName,
+      kind: uid.startsWith("agt_") ? "bot" : "person",
+      ...(avatarUrl ? { avatarUrl } : {}),
+    });
+  }
+
+  const rows = [...byUid.values()];
+  const byName = (a: AddMemberCandidate, b: AddMemberCandidate) =>
+    a.displayName.localeCompare(b.displayName, undefined, {
+      sensitivity: "base",
+    }) || a.personUid.localeCompare(b.personUid);
+  const bots = rows.filter((r) => r.kind === "bot").sort(byName);
+  const people = rows.filter((r) => r.kind === "person").sort(byName);
+  return [...bots, ...people];
+}
+
+/** Case-insensitive name/handle/uid filter for the add-member list. */
+export function filterAddMemberCandidates(
+  rows: ReadonlyArray<AddMemberCandidate>,
+  query: string,
+): AddMemberCandidate[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [...rows];
+  return rows.filter((r) =>
+    `${r.displayName} ${r.handle ?? ""} ${r.personUid}`
+      .toLowerCase()
+      .includes(q),
+  );
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 const STORY_ID_RE = /\b(US[-_]?\d+[a-z]?)\b/i;

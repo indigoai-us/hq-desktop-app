@@ -1831,12 +1831,15 @@ This final paragraph verifies spacing after a thematic break.
   peek_pending_pack_target: () => null,
   take_pending_pack_target: () => null,
   pack_deep_link_catalog_name: () => null,
-  list_company_members: () => ({
-    members: [
+  // The real command proxies GET /v1/notify/contacts?companyUid=, whose
+  // envelope is `contacts`; `members` stays for older harness readers.
+  list_company_members: () => {
+    const rows = [
       { personUid: 'prs_grace', email: 'grace@getindigo.ai', displayName: 'Grace Hopper', companyUid: 'cmp_indigo', companyName: 'Indigo' },
       { personUid: 'prs_katherine', email: 'katherine@getindigo.ai', displayName: 'Katherine Johnson', companyUid: 'cmp_indigo', companyName: 'Indigo' },
-    ],
-  }),
+    ];
+    return { contacts: rows, members: rows };
+  },
   fetch_dm_thread: (args) => {
     if (hoverMenuProbeEnabled()) {
       return { messages: hoverMenuProbeMessages(), nextCursor: null };

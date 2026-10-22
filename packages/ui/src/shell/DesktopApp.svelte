@@ -653,6 +653,8 @@
   import {
     type ChannelStatusModel,
     type StatusPersonRow,
+    addMemberCandidates,
+    type AddMemberCandidate,
   } from "../chat/channel-status-model.js";
   import { liveInputsForCompanyProject, liveReadFor } from "../chat/live-read-store.svelte.js";
   import {
@@ -8592,6 +8594,50 @@
       : null,
   );
   let removingMemberUid = $state<string | null>(null);
+  /** personUid mid-add from the members popover "+ Add" row; one at a time. */
+  let addingMemberUid = $state<string | null>(null);
+  /** Plain sentence under the add list when the last add failed; null otherwise. */
+  let addMemberError = $state<string | null>(null);
+  /**
+   * Who the members popover can offer to add: the tenant-scoped contact roster
+   * already fetched for the selected channel's company (`liveMentionTargets`)
+   * plus the caller's own bots. The remote listing is the account's own bots,
+   * so every row there is owned by the caller; local rows carry `ownerUid`.
+   * Current members and the caller are left out by the pure model.
+   */
+  const addMemberRows = $derived.by((): AddMemberCandidate[] => {
+    const row = selectedRow;
+    const channelId = row?.channelId?.trim() ?? "";
+    if (row?.kind !== "channel" || !channelId.startsWith("chn_")) return [];
+    const selfUid = self?.uid?.trim() ?? "";
+    if (!selfUid) return [];
+    return addMemberCandidates({
+      selfUid,
+      companyUid: row.companyUid ?? null,
+      members: channelRosterById[channelId] ?? [],
+      contacts: liveMentionTargets.map((t) => ({
+        personUid: t.participantUid,
+        displayName: t.displayName,
+        email: t.email ?? null,
+        companyUid: t.companyUid ?? null,
+        avatarUrl: contactAvatarByUid[t.participantUid] ?? null,
+      })),
+      bots: [
+        ...(remoteBotListing.rows ?? []).map((b) => ({
+          agentUid: b.agentUid,
+          ownerUid: selfUid,
+          name: b.name,
+          displayName: b.displayName,
+        })),
+        ...localBots.map((b) => ({
+          agentUid: b.agentUid,
+          ownerUid: b.ownerUid,
+          name: b.name,
+          displayName: b.displayName,
+        })),
+      ],
+    });
+  });
   /**
    * Owner-only "Delete channel" (members popover → trash). The shell owns the
    * confirm + the call: the popover closes on outside mousedown and would eat
@@ -9032,6 +9078,86 @@
 
   const OWNER_CANNOT_LEAVE_MESSAGE =
     "Channel owners can't leave their own channel. Delete it or ask another owner to transfer ownership.";
+
+  async function addMember(row: AddMemberCandidate): Promise<void> {
+    const channelId = selectedRow?.channelId?.trim() ?? "";
+    if (!channelId.startsWith("chn_") || addingMemberUid) return;
+    const selfUid = self?.uid?.trim() ?? "";
+    addingMemberUid = row.personUid;
+    addMemberError = null;
+    try {
+      let res = await adapter.messaging.addChannelMember(
+        channelId,
+        row.personUid,
+      );
+      // Browsing a company channel without having joined it: the server
+      // answers 403 CHANNEL_NOT_MEMBER. Join (own uid) first, then add once more.
+      if (!res.ok && isChannelNotMember(res.code, res.message) && selfUid) {
+        const joined = await adapter.messaging.addChannelMember(
+          channelId,
+          selfUid,
+        );
+        if (joined.ok) {
+          res = await adapter.messaging.addChannelMember(
+            channelId,
+            row.personUid,
+          );
+        }
+      }
+      if (res.ok) {
+        // Popover stays open: the roster reload moves the row under MEMBERS /
+        // BOTS and drops it from the add list.
+        await loadChannelRoster(channelId);
+        return;
+      }
+      // raw-error-ok: logged for support; the screen gets a plain sentence
+      console.warn("[channel] add member failed", res.code, res.message);
+      addMemberError = addMemberFailureMessage(row, res.code, res.message);
+    } catch (err) {
+      console.warn("[channel] add member failed", err);
+      addMemberError = addMemberFailureMessage(row, undefined, undefined);
+    } finally {
+      addingMemberUid = null;
+    }
+  }
+
+  function isChannelNotMember(code?: string, message?: string): boolean {
+    return (
+      code === "CHANNEL_NOT_MEMBER" ||
+      message?.includes("CHANNEL_NOT_MEMBER") === true
+    );
+  }
+
+  /**
+   * The sentence shown under the add list. The server's own `error` text is
+   * used when it reads as a sentence; machine codes, HTTP status fallbacks and
+   * transport dumps are never shown — those get fixed copy instead.
+   */
+  function addMemberFailureMessage(
+    row: AddMemberCandidate,
+    code: string | undefined,
+    message: string | undefined,
+  ): string {
+    const text = (message ?? "").trim();
+    const looksPlain =
+      text.length > 0 &&
+      text.length <= 200 &&
+      !/^[A-Z0-9_-]+$/.test(text) &&
+      !/^http-/i.test(text) &&
+      !/\bHTTP \d{3}\b/.test(text) &&
+      !text.includes("{") &&
+      !text.includes("[invoke]") &&
+      !text.startsWith("<") &&
+      /[a-z]/.test(text);
+    if (looksPlain) return /[.!?]$/.test(text) ? text : `${text}.`;
+    if (code === "INVITEE_NOT_FOUND") {
+      return `Couldn't find ${row.displayName} in HQ.`;
+    }
+    if (isChannelNotMember(code, message)) {
+      return "Join the channel before adding members.";
+    }
+    return `Couldn't add ${row.displayName}. Try again.`;
+  }
 
   function isOwnerCannotLeave(code?: string, message?: string): boolean {
     return (
@@ -15043,7 +15169,10 @@
                         )}
                       {self}
                       {localBots}
-                      onclose={() => (membersOpen = false)}
+                      onclose={() => {
+                        membersOpen = false;
+                        addMemberError = null;
+                      }}
                       {onopenurl}
                       onopenprofile={(row) => {
                         membersOpen = false;
@@ -15051,6 +15180,10 @@
                       }}
                       onremovemember={(row) => void removeMember(row)}
                       removingUid={removingMemberUid}
+                      onaddmember={(row) => void addMember(row)}
+                      addCandidates={addMemberRows}
+                      addingUid={addingMemberUid}
+                      addError={addMemberError}
                       ondeletechannel={() => {
                         membersOpen = false;
                         deleteChannelConfirmOpen = true;

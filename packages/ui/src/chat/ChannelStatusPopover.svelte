@@ -14,6 +14,8 @@
    */
   import {
     canOfferMembershipActions,
+    filterAddMemberCandidates,
+    type AddMemberCandidate,
     type ChannelStatusModel,
     type StatusPersonRow,
   } from "./channel-status-model.js";
@@ -58,6 +60,19 @@
     migratingSessionId?: string | null;
     /** The user's local bots — tells the Cloud / Local chip which is which. */
     localBots?: ReadonlyArray<LocalBotRow> | null;
+    /**
+     * Add a teammate or one of the caller's bots to the channel. The "+ Add"
+     * row under MEMBERS appears only when this and `addCandidates` are given.
+     * The popover raises the intent; the shell owns the call and the roster
+     * reload, and keeps the popover open so the new row shows in place.
+     */
+    onaddmember?: (row: AddMemberCandidate) => void;
+    /** Who can be offered: company teammates + own bots not yet in the channel. */
+    addCandidates?: ReadonlyArray<AddMemberCandidate> | null;
+    /** personUid currently being added — shows "…" on its row, blocks a second click. */
+    addingUid?: string | null;
+    /** Plain sentence shown inline under the add list when the last add failed. */
+    addError?: string | null;
   }
 
   let {
@@ -73,7 +88,32 @@
     onmigratesession,
     migratingSessionId = null,
     localBots = null,
+    onaddmember,
+    addCandidates = null,
+    addingUid = null,
+    addError = null,
   }: Props = $props();
+
+  /** "+ Add" inline state: the candidate list is folded until asked for. */
+  let addOpen = $state(false);
+  let addQuery = $state("");
+  const canAdd = $derived(
+    !!onaddmember && (addCandidates?.length ?? 0) > 0,
+  );
+  const addRows = $derived(
+    filterAddMemberCandidates(addCandidates ?? [], addQuery),
+  );
+
+  function toggleAdd(): void {
+    addOpen = !addOpen;
+    if (!addOpen) addQuery = "";
+  }
+
+  function pickCandidate(row: AddMemberCandidate): void {
+    // One add in flight at a time: a second click while "…" shows is ignored.
+    if (addingUid) return;
+    onaddmember?.(row);
+  }
 
   /** The signed-in member's role in this channel — gates removing others. */
   const selfIsOwner = $derived(
@@ -209,6 +249,20 @@
     };
   });
 </script>
+
+{#snippet botGlyph()}
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    width="11"
+    height="11"
+    fill="currentColor"
+    viewBox="0 0 256 256"
+  >
+    <path
+      d="M230.92,212c-15.23-26.33-38.7-45.21-66.09-54.16a72,72,0,1,0-73.66,0C63.78,166.78,40.31,185.66,25.08,212a8,8,0,1,0,13.85,8c18.84-32.56,52.14-52,89.07-52s70.23,19.44,89.07,52a8,8,0,1,0,13.85-8ZM72,96a56,56,0,1,1,56,56A56.06,56.06,0,0,1,72,96Z"
+    ></path>
+  </svg>
+{/snippet}
 
 {#snippet kindChip(uid: string)}
   {@const kind = botKindFor(uid, localBots)}
@@ -493,6 +547,79 @@
         {/if}
       </div>
     {/each}
+    {#if canAdd}
+      <button
+        type="button"
+        class="p-item member-row member-add"
+        data-testid="status-member-add"
+        aria-expanded={addOpen}
+        aria-controls="status-add-list"
+        onclick={toggleAdd}
+      >
+        <span class="m-ava add-ava" aria-hidden="true">+</span>
+        <span class="m-name">{addOpen ? "Done" : "Add"}</span>
+      </button>
+      {#if addOpen}
+        <div class="add-list" id="status-add-list" data-testid="status-add-list">
+          <input
+            class="add-filter"
+            type="text"
+            placeholder="Find a teammate or bot"
+            aria-label="Find a teammate or bot"
+            autocomplete="off"
+            spellcheck="false"
+            data-testid="status-add-filter"
+            bind:value={addQuery}
+          />
+          {#if addError}
+            <div class="add-error" role="alert" data-testid="status-add-error">
+              {addError}
+            </div>
+          {/if}
+          {#each addRows as c (c.personUid)}
+            <button
+              type="button"
+              class="p-item member-row add-candidate"
+              data-testid="status-add-candidate"
+              data-uid={c.personUid}
+              data-kind={c.kind}
+              title={`Add ${c.displayName} to this channel`}
+              aria-busy={addingUid === c.personUid}
+              disabled={addingUid !== null}
+              onclick={() => pickCandidate(c)}
+            >
+              {#if c.kind === "bot"}
+                <span class="m-ava ai" aria-hidden="true">
+                  {@render botGlyph()}
+                </span>
+              {:else}
+                <span class="m-ava" aria-hidden="true">
+                  {#if c.avatarUrl}
+                    <img class="m-ava-img" src={c.avatarUrl} alt="" loading="lazy" />
+                  {:else}
+                    {initialOf(c.displayName)}
+                  {/if}
+                </span>
+              {/if}
+              <span class="m-id">
+                <span class="m-name">{c.displayName}</span>
+                {#if c.handle}
+                  <span class="m-email">@{c.handle}</span>
+                {/if}
+              </span>
+              {#if c.kind === "bot"}
+                {@render kindChip(c.personUid)}
+              {/if}
+              <span class="add-mark" aria-hidden="true">
+                {addingUid === c.personUid ? "…" : "+"}
+              </span>
+            </button>
+          {:else}
+            <div class="add-empty" data-testid="status-add-empty">No one matches</div>
+          {/each}
+        </div>
+      {/if}
+    {/if}
   </section>
 
   {#if model.agents.length > 0}
@@ -936,6 +1063,98 @@
     font-size: 10px;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* "+ Add" row and its inline candidate list (members popover). */
+  .member-add {
+    color: var(--t2);
+  }
+
+  .member-add:hover {
+    color: var(--t1);
+  }
+
+  .add-ava {
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1;
+  }
+
+  .add-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 0 4px 4px;
+    padding: 4px;
+    border: 1px solid var(--overlay-border);
+    border-radius: 8px;
+    background: var(--raised);
+  }
+
+  .add-filter {
+    box-sizing: border-box;
+    width: 100%;
+    margin-bottom: 2px;
+    padding: 4px 6px;
+    border: 1px solid var(--overlay-border);
+    border-radius: 6px;
+    background: var(--overlay-field-bg);
+    color: var(--t1);
+    font: inherit;
+    font-size: 11px;
+  }
+
+  .add-filter::placeholder {
+    color: var(--t3);
+  }
+
+  .add-filter:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--t1));
+    outline-offset: 1px;
+  }
+
+  .add-candidate {
+    padding: 4px 6px;
+  }
+
+  .add-candidate:disabled {
+    cursor: default;
+    opacity: 0.7;
+  }
+
+  .add-candidate:disabled:hover {
+    background: transparent;
+  }
+
+  .add-candidate[aria-busy="true"] {
+    opacity: 1;
+  }
+
+  .add-mark {
+    flex: 0 0 auto;
+    margin-left: auto;
+    color: var(--t3);
+    font-size: 13px;
+    line-height: 1;
+  }
+
+  .add-candidate:not(:disabled):hover .add-mark {
+    color: var(--t1);
+  }
+
+  .add-error {
+    padding: 4px 6px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--warn-ink, #d9584a) 12%, transparent);
+    color: var(--warn-ink, #d9584a);
+    font-size: 11px;
+    line-height: 1.35;
+  }
+
+  .add-empty {
+    padding: 6px;
+    color: var(--t3);
+    font-size: 11px;
   }
 
   .m-remove {
