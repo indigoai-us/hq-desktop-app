@@ -1371,24 +1371,31 @@
                 </button>
               {/if}
             </div>
-            {#if replyCount > 0 || visibleReplies.length > 0}
+          </div>
+          <!-- Mobile's replies divider (owner, 2026-10-22): the caption, then
+               a hairline to the content's edge, not the panel's. One caption
+               for an empty thread too; "0 REPLIES" over "No replies yet" said
+               the same thing twice. -->
+          {#if replyCount > 0 || visibleReplies.length > 0}
+            <div class="reply-divider" data-testid="reply-divider">
               <span class="reply-root-label">
                 {replyCount}
                 {replyCount === 1 ? "reply" : "replies"}
               </span>
-            {:else if !loading && !loadError}
-              <!-- One line for an empty thread, where the count's divider
-                   would be. "0 REPLIES" over "No replies yet" said the same
-                   thing twice (owner, 2026-10-22). -->
-              <p
-                class="reply-root-empty"
+              <span class="reply-divider-line" aria-hidden="true"></span>
+            </div>
+          {:else if !loading && !loadError}
+            <div class="reply-divider" data-testid="reply-divider">
+              <span
+                class="reply-root-label"
                 data-testid="reply-panel-empty"
                 role="status"
               >
-                No replies yet. Reply below to start the thread.
-              </p>
-            {/if}
-          </div>
+                No replies yet
+              </span>
+              <span class="reply-divider-line" aria-hidden="true"></span>
+            </div>
+          {/if}
         {:else if loading}
           <p class="reply-status" role="status">Loading replies…</p>
         {:else if loadError}
@@ -1850,8 +1857,7 @@
     margin: -8px -12px 8px;
     /* Reserved gutter so the root toolbar sits above the text. The list
        clips anything that sticks out past this row. */
-    padding: 40px 16px 16px;
-    border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+    padding: 40px 16px 8px;
   }
 
   .reply-root:hover .reply-quick-react-root,
@@ -1978,25 +1984,30 @@
     color: inherit;
   }
 
-  .reply-root-label {
+  /* Mobile's replies divider: the caption, then a hairline to the content's
+     right edge. Spans both grid columns, so it runs from the avatar's edge to
+     the text's, inside the root's padding rather than across the panel. */
+  .reply-divider {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 12px;
     margin-top: 8px;
-    padding-top: 8px;
-    border-top: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+  }
+
+  .reply-divider-line {
+    flex: 1 1 auto;
+    height: 1px;
+    background: var(--line, rgba(255, 255, 255, 0.12));
+  }
+
+  .reply-root-label {
+    flex: none;
     font-size: 11px;
     font-weight: 500;
     letter-spacing: 0.04em;
     color: var(--t3);
     text-transform: uppercase;
-  }
-
-  /* Sits on the count's divider line, in the UI font: it is a sentence, not
-     a label. */
-  .reply-root-empty {
-    margin: 8px 0 0;
-    padding-top: 8px;
-    border-top: 1px solid var(--line, rgba(255, 255, 255, 0.12));
-    color: var(--t3);
-    font: 400 13px/1.4 var(--font-ui);
   }
 
   .reply-status {

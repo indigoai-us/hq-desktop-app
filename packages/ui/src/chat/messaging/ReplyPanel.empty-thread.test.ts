@@ -59,9 +59,10 @@ describe("ReplyPanel empty thread", () => {
     await vi.waitFor(() => {
       expect(host!.querySelectorAll('[data-testid="reply-panel-empty"]')).toHaveLength(1);
     });
-    expect(host!.querySelector(".reply-root-label")).toBeNull();
+    // One caption in the divider (mobile's style), never a zero count.
+    expect(host!.querySelectorAll(".reply-root-label")).toHaveLength(1);
+    expect(host!.querySelector(".reply-root-label")?.textContent?.trim()).toBe("No replies yet");
     expect(host!.textContent).not.toMatch(/0\s+replies/i);
-    expect(host!.textContent).toContain("No replies yet");
   });
 
   it("shows the count once there are replies", async () => {
@@ -73,5 +74,11 @@ describe("ReplyPanel empty thread", () => {
       expect(host!.querySelector(".reply-root-label")?.textContent).toMatch(/1\s+reply/);
     });
     expect(host!.querySelector('[data-testid="reply-panel-empty"]')).toBeNull();
+    // Caption first, then the hairline, inside the root block (owner,
+    // 2026-10-22: the divider runs the content's length, not the panel's).
+    const divider = host!.querySelector('[data-testid="reply-divider"]');
+    expect(divider?.firstElementChild?.classList.contains("reply-root-label")).toBe(true);
+    expect(divider?.lastElementChild?.classList.contains("reply-divider-line")).toBe(true);
+    expect(divider?.closest(".reply-root")).not.toBeNull();
   });
 });
