@@ -88,7 +88,6 @@ const CLOUD_PROVISION_OPTIONS: AgentProvisionOptionsView = {
 
 const BASE_PROPS = {
   seedDirectory,
-  loadClaudeProviderFlag: async () => ok(false),
   loadCloudProvisionOptions: async () => ok(CLOUD_PROVISION_OPTIONS),
 };
 

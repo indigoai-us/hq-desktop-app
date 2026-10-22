@@ -15,7 +15,6 @@ import desktopAppSource from "../../ui/src/shell/DesktopApp.svelte?raw";
 const FALLBACK_ONLY_FLAGS: ReadonlySet<string> = new Set<string>([]);
 
 const DESKTOP_REGISTRY_FLAGS = [
-  "CLAUDE_PROVIDER_FLAG",
   "DESKTOP_AGENT_CREATION_FLAG",
   "FIRST_RUN_FOUND_APPS_FLAG",
   "HUMAN_ONLY_CONVERSATIONS_FLAG",

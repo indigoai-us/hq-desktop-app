@@ -26,7 +26,6 @@
    * adapter + api seams and the ChatWakeBus.
    */
   import {
-    CLAUDE_PROVIDER_FLAG,
     DESKTOP_AGENT_CREATION_FLAG,
     HUMAN_ONLY_CONVERSATIONS_FLAG,
     READY_FIRST_ACTION_FLAG,
@@ -14261,7 +14260,6 @@
             if (onopenurl) onopenurl(url);
             else window.open(url, "_blank", "noopener,noreferrer");
           }}
-          loadClaudeProviderFlag={() => adapter.identity.hasFeature(CLAUDE_PROVIDER_FLAG)}
           humanOnly={humanOnlyConversations}
           loadCloudProvisionOptions={(companyUid) => adapter.agents.getProvisionOptions(companyUid)}
           directCloud={directCloudCreate}
