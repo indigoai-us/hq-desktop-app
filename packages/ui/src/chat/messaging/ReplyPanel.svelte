@@ -21,7 +21,7 @@
   import type { ChatArtifact } from "./artifact-model.js";
   import ReactionBar from "./ReactionBar.svelte";
   import { buildMessageLink } from "./message-link";
-  import { hoverMenuClippedAbove } from "./hover-menu-placement";
+  import { hoverMenuClippedBelow } from "./hover-menu-placement";
   import EmojiPicker from "./EmojiPicker.svelte";
   import {
     readThreadComposerDraft,
@@ -285,15 +285,18 @@
     const menu = row.querySelector<HTMLElement>(
       ":scope > .reply-col > .reply-quick-react",
     );
-    if (!menu) return;
-    const rowRect = row.getBoundingClientRect();
-    if (pointerY !== null && pointerY < rowRect.top) return;
+    const anchor = menu?.offsetParent;
+    if (!menu || !(anchor instanceof HTMLElement)) return;
+    const anchorRect = anchor.getBoundingClientRect();
+    // The pointer is already in the part of the menu that hangs below.
+    // Flipping would pull that menu out from under it.
+    if (pointerY !== null && pointerY > anchorRect.bottom) return;
     setReplyMenuFlip(
       id,
-      hoverMenuClippedAbove(
-        rowRect.top,
+      hoverMenuClippedBelow(
+        anchorRect.bottom,
         menu.offsetHeight,
-        replyScroller.getBoundingClientRect().top,
+        replyScroller.getBoundingClientRect().bottom,
       ),
     );
   }
@@ -1333,7 +1336,7 @@
                   onclick={() =>
                     (reactPickerFor = reactPickerFor === rootId ? null : rootId)}
                 >
-                  +
+                  <RailIcon name="plus" size={12} />
                 </button>
                 {#if reactPickerFor === rootId}
                   <EmojiPicker
@@ -1394,6 +1397,7 @@
           {@const replyForwardNote = replyForwarded ? forwardNoteText(msg.forwardNote) : ""}
           <div
             class="reply-row"
+            class:reply-row-tail={msg.eventId === visibleReplies[visibleReplies.length - 1]?.eventId}
             data-testid="reply-panel-message"
             data-event-id={msg.eventId}
             data-send-status={msg.sendStatus ?? ""}
@@ -1480,7 +1484,7 @@
                         (reactPickerFor =
                           reactPickerFor === msg.eventId ? null : msg.eventId)}
                     >
-                      +
+                      <RailIcon name="plus" size={12} />
                     </button>
                     {#if reactPickerFor === msg.eventId}
                       <EmojiPicker
@@ -2023,14 +2027,15 @@
     background: color-mix(in srgb, var(--t1) 4%, transparent);
   }
 
-  /* Hover quick-react toolbar — matches the main-chat .dm-quick-react: an
-     opaque floating bar (quick emojis + picker) that takes no layout space, so
-     rows stay tight and the affordance only appears on hover/focus. */
+  /* Hover quick-react toolbar, placed like the main chat's .dm-quick-react
+     (owner, #772): an opaque bar that takes no layout space and opens 4px
+     under the reply's right edge. */
   .reply-quick-react {
     position: absolute;
-    top: auto;
-    bottom: calc(100% - 3px);
+    top: 100%;
+    bottom: auto;
     right: 8px;
+    margin-top: 4px;
     z-index: 2;
     display: flex;
     gap: 2px;
@@ -2053,13 +2058,27 @@
     pointer-events: auto;
   }
 
-  .reply-row[data-menu-flip] {
-    padding-top: 40px;
+  /* Bridges the 4px gap so the pointer reaches the bar without leaving the
+     reply. */
+  .reply-quick-react::before {
+    content: "";
+    position: absolute;
+    inset: -6px -4px -4px;
+    z-index: -1;
   }
 
+  /* Opens above the reply instead when hanging below would clip: the last
+     reply, and any the scrollport cuts off at the bottom (placeReplyMenu). */
+  .reply-row-tail > .reply-col > .reply-quick-react,
   .reply-row[data-menu-flip] > .reply-col > .reply-quick-react {
-    top: 0;
-    bottom: auto;
+    top: auto;
+    bottom: 100%;
+    margin: 0 0 4px;
+  }
+
+  .reply-row-tail > .reply-col > .reply-quick-react::before,
+  .reply-row[data-menu-flip] > .reply-col > .reply-quick-react::before {
+    inset: -4px -4px -6px;
   }
 
   /* Root toolbar stays in the row gutter. Higher specificity than the shared
@@ -2068,18 +2087,23 @@
     top: 4px;
     bottom: auto;
     right: 16px;
+    margin: 0;
   }
 
+  /* Touch: no hover state, so the bar sits in the flow under the reply,
+     right-aligned, where it never covers the next one. */
   @media (hover: none) {
-    .reply-row {
-      padding-top: 40px;
-    }
-
     .reply-quick-react {
-      top: 0;
-      bottom: auto;
+      position: static;
+      width: fit-content;
+      margin: 4px 0 0 auto;
       opacity: 1;
       pointer-events: auto;
+    }
+
+    .reply-row-tail > .reply-col > .reply-quick-react,
+    .reply-row[data-menu-flip] > .reply-col > .reply-quick-react {
+      margin: 4px 0 0 auto;
     }
   }
 

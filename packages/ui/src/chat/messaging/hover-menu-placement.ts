@@ -1,19 +1,20 @@
 /**
- * The hover menu overlaps its message row by this many pixels so the pointer
- * can move from the row into the menu without crossing another row.
- * The overlap sits in the row's padding, not on the text.
+ * The message hover menu opens this many pixels under the message it
+ * belongs to (owner, #772: the bar hangs below the message, right-aligned,
+ * on the line its reactions use).
  */
-export const HOVER_MENU_OVERLAP_PX = 3;
+export const HOVER_MENU_GAP_PX = 4;
 
 /**
- * True when a menu anchored above the row, overlapping it by `overlapPx`,
- * would start above the scrollport and be clipped.
+ * True when a menu hung `gapPx` under its message would run past the bottom
+ * of the scrollport and be clipped. The menu then opens above the message
+ * instead.
  */
-export function hoverMenuClippedAbove(
-  rowTop: number,
+export function hoverMenuClippedBelow(
+  anchorBottom: number,
   menuHeight: number,
-  scrollportTop: number,
-  overlapPx: number = HOVER_MENU_OVERLAP_PX,
+  scrollportBottom: number,
+  gapPx: number = HOVER_MENU_GAP_PX,
 ): boolean {
-  return rowTop - (menuHeight - overlapPx) < scrollportTop - 0.5;
+  return anchorBottom + gapPx + menuHeight > scrollportBottom + 0.5;
 }
