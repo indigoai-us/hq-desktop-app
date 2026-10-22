@@ -94,6 +94,9 @@ pub use hq_desktop_core::recall_sdk::{
     RecallSdkEvent, SdkUploadTokenResponse, BRIDGE_EXIT_CMD, BRIDGE_EXIT_ERROR_MESSAGE,
     EVENT_RECORDING_RECONCILED, FORCE_ENV, LOG_TAG, SDK_BIN,
 };
+use hq_desktop_core::recall_sdk::{
+    store_meeting_detect_eligibility, SdkSupervisor, SdkSupervisorStep, SDK_SUPERVISOR_INTERVAL,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -220,11 +223,12 @@ fn mark_recording_inactive(window_id: &str) {
 /// regardless of the signed-in email. Lets a tester exercise the SDK on a
 /// machine signed in as someone outside the allowlist without flipping the
 /// allowlist itself.
-/// Cached per-session decision so we don't re-decode the id_token on every
-/// callsite (start_recall_sdk + main.rs setup + Tauri command from the
-/// renderer). The token is rotated on refresh but the email claim is stable
-/// across rotations, so a process-lifetime cache is safe. Same pattern as
-/// `meetings::CACHED_FLAG`.
+/// Cached per-session positive decision so we don't re-decode the id_token on
+/// every callsite (start_recall_sdk + main.rs setup + the SDK supervisor + the
+/// Tauri command from the renderer). The token is rotated on refresh but the
+/// email claim is stable across rotations. A negative result is not cached:
+/// it usually means the tokens were not readable yet, and caching it kept
+/// meeting detection off until the app restarted.
 static CACHED_ELIGIBLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 /// Returns true iff this user/process should run meeting detection.
@@ -241,7 +245,9 @@ pub async fn meeting_detect_eligible() -> bool {
         return *v;
     }
     let enabled = compute_meeting_detect_eligible().await;
-    let _ = CACHED_ELIGIBLE.set(enabled);
+    // Only `true` is cached; a `false` from missing/unreadable tokens is
+    // re-checked on the next call (see `store_meeting_detect_eligibility`).
+    store_meeting_detect_eligibility(&CACHED_ELIGIBLE, enabled);
     enabled
 }
 
@@ -671,6 +677,79 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
     });
 
     Ok(())
+}
+
+/// True when the launch-time start gates for the SDK are open: a signed-in
+/// user and, on macOS, every required meeting permission already granted
+/// (a prompt-less TCC status read, same check as the launch path in main.rs).
+async fn recall_sdk_start_gates_open() -> bool {
+    if !meeting_detect_eligible().await {
+        return false;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        matches!(
+            crate::commands::permissions::meetings_permissions_state(),
+            Ok(state) if state.all_required_granted
+        )
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+/// Keep the Recall SDK sidecar running for the life of the app.
+///
+/// The launch path in main.rs starts the SDK once. Without this loop, a
+/// launch that skipped the SDK (not signed in yet, permissions not readable)
+/// or a bridge process that exited later left meeting detection off until the
+/// app restarted: no `meeting:detected`, no Record banner, no notify-ledger
+/// entry. Every `SDK_SUPERVISOR_INTERVAL` this checks the sidecar handle and,
+/// when it is not running and the gates are open, starts it again. Repeated
+/// short runs back off (see `SdkSupervisor`).
+pub fn setup_recall_sdk_supervisor(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut supervisor = SdkSupervisor::new();
+        let mut interval = tokio::time::interval(SDK_SUPERVISOR_INTERVAL);
+        // The first tick fires immediately; skip it so the launch path owns
+        // the initial start.
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let running = crate::commands::process::is_registered(SDK_HANDLE);
+            let gates_open = if running {
+                true
+            } else {
+                recall_sdk_start_gates_open().await
+            };
+            let now = std::time::Instant::now();
+            // Re-read the quit flag after the gate await: quit can land while
+            // the gates are being checked, and a start then would spawn a
+            // bridge the quit path is not draining.
+            let exit_requested = crate::commands::process::app_exit_requested();
+            match supervisor.step(now, exit_requested, running, gates_open) {
+                SdkSupervisorStep::Exit => {
+                    log(LOG_TAG, "supervisor: app is quitting — stopping");
+                    return;
+                }
+                SdkSupervisorStep::Wait => {}
+                SdkSupervisorStep::Start => {
+                    log(
+                        LOG_TAG,
+                        &format!(
+                            "supervisor: SDK not running — starting (consecutive_short_runs={})",
+                            supervisor.consecutive_short_runs()
+                        ),
+                    );
+                    supervisor.record_start(now);
+                    if let Err(e) = start_recall_sdk(app.clone()).await {
+                        log(LOG_TAG, &format!("supervisor: start_recall_sdk error: {e}"));
+                    }
+                }
+            }
+        }
+    });
 }
 
 /// Send SIGTERM (then SIGKILL after grace) to the running SDK process.
