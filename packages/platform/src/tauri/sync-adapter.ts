@@ -6,6 +6,7 @@
  * must not grow a second fetch stack.
  */
 
+import { creatorAvatarBody } from '../creator-avatar-body.js';
 import { createPersonalAppsBridge, personalAppsBridgeUrl } from "../personal-apps-bridge.js";
 import { createPersonalAppsApi, type PersonalAppLocalCallback } from "../personal-apps.js";
 import {
@@ -13,6 +14,9 @@ import {
   type AdapterPromise,
   type AgentProvisionOptionsView,
   type ChannelSummary,
+  type CloudSwitchOutcome,
+  type VaultSwitchOutcome,
+  type VaultSyncSwitches,
   type Json,
   type NotifyPrefsResponse,
   type PlatformAdapter,
@@ -69,6 +73,7 @@ import {
   createHqProRestFetch,
   createScopedFeatureFlagGates,
   resolveCompanyFeature,
+  readCompanyFeature,
   MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
   type FeatureFlagGateOptions,
 } from '../flags.js';
@@ -208,6 +213,9 @@ function asChannelSummary(row: Json): ChannelSummary {
     ...(typeof unread === 'number' ? { unreadCount: unread } : {}),
   };
 }
+
+/** Server cap on a creator avatar upload (POST /v1/creators/me/avatar). */
+export { imageContentType } from '../creator-avatar-body.js';
 
 function invokeError(err: unknown): ReturnType<typeof failure> {
   return failure(
@@ -711,6 +719,8 @@ export function createSyncPlatformAdapter(
           ? // Pinned per release; the registry cannot turn it off.
             Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT))
           : flagsFor(scope?.companyUid).resolve(flag, () => hasFeatureLegacy(flag)),
+      readCompanyFeature: (flag, companyUid) =>
+        readCompanyFeature(createHqProFlagFetch(invokeFn), flag, companyUid),
       hasCompanyFeature: (flag, companyUid) =>
         resolveCompanyFeature(createHqProFlagFetch(invokeFn), flag, companyUid),
       subscribeFeature: (flag, onChange) =>
@@ -1225,15 +1235,13 @@ export function createSyncPlatformAdapter(
           tipUrl: typeof profile.tipUrl === 'string' ? profile.tipUrl : null,
         });
       },
-      uploadCreatorAvatar: (filePath) =>
-        typeof filePath === 'string'
-          ? call('upload_creator_avatar', { filePath })
-          : Promise.resolve(
-              failure(
-                'invalid-argument',
-                'Sync avatar uploads require a file path.',
-              ),
-            ),
+      uploadCreatorAvatar: (data) => {
+        if (typeof data === 'string') return call('upload_creator_avatar', { filePath: data });
+        // Cropped photos arrive as bytes; same route and body the native command posts.
+        const avatar = creatorAvatarBody(data);
+        if (!avatar.ok) return Promise.resolve(failure('invalid-argument', avatar.message));
+        return hqProJson('POST', WEB_PATHS.creatorAvatar, avatar.body);
+      },
       requestCreatorAccess: (payload) => {
         const request = asRecord(payload) ?? {};
         return call('request_creator_access', {
@@ -1422,6 +1430,8 @@ export function createSyncPlatformAdapter(
         }),
       deployAccessRequest: (scope, method, path, body) =>
         call('deploy_access_request', { scope, method, path, body: body ?? null }),
+      deployDomainRequest: (scope, method, path, body) =>
+        call('deploy_domain_request', { scope, method, path, body: body ?? null }),
       getSecrets: (slug) => call('get_company_secrets', { slug }),
       listMembers: (slug) =>
         call('list_company_members', { companyUid: slug }),
@@ -1466,6 +1476,19 @@ export function createSyncPlatformAdapter(
       getUsageStatement: (companyUid) =>
         hqProJson('GET', WEB_PATHS.companyUsageStatement(companyUid)),
       getPricing: () => hqProJson('GET', WEB_PATHS.pricing),
+      getSpendLimit: (companyUid) =>
+        hqProJson('GET', WEB_PATHS.companySpendLimit(companyUid)),
+      getPersonalBillingSummary: () => hqProJson('GET', WEB_PATHS.personalBillingSummary),
+      getPersonalUsageStatement: () => hqProJson('GET', WEB_PATHS.personalUsageStatement),
+      getPersonalSpendLimit: () => hqProJson('GET', WEB_PATHS.personalSpendLimit),
+      createPersonalBillingCheckoutSession: () =>
+        hqProJson<{ url: string }>('POST', WEB_PATHS.personalBillingCheckout, {}),
+      createPersonalBillingPortalSession: () =>
+        hqProJson<{ url: string }>('POST', WEB_PATHS.personalBillingPortal, {}),
+      getUsageSwitch: (companyUid) => hqProJson('GET', WEB_PATHS.companyUsageSwitch(companyUid)),
+      switchToUsagePricing: (companyUid) => hqProJson('POST', WEB_PATHS.usageSwitch, { companyUid }),
+      getPersonalUsageSwitch: () => hqProJson('GET', WEB_PATHS.personalUsageSwitch),
+      switchPersonalToUsagePricing: () => hqProJson('POST', WEB_PATHS.usageSwitch, { scope: 'person' }),
       ensureHomeChannel: async (companyUid) => {
         const res = await call<string>('ensure_company_home_channel', {
           companyUid,
@@ -1643,6 +1666,13 @@ export function createSyncPlatformAdapter(
         return result;
       },
       cancelSync: () => call('cancel_sync'),
+      getCloudEnabled: () => call<boolean>('get_cloud_enabled'),
+      setCloudEnabled: (enabled) =>
+        call<CloudSwitchOutcome>('set_cloud_enabled', { enabled }),
+      getVaultSyncSwitches: () =>
+        call<VaultSyncSwitches>('get_vault_sync_switches'),
+      setVaultSyncEnabled: (vault, enabled) =>
+        call<VaultSwitchOutcome>('set_vault_sync_enabled', { vault, enabled }),
       getSyncStatus: () => call('get_sync_status'),
       getActivityLog: () => call('get_activity_log'),
       resolveConflict: (path, strategy) =>
