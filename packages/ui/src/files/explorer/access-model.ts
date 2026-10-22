@@ -84,11 +84,18 @@ function asLevel(v: unknown): AccessLevel | null {
 /** HQ top-level folders in the personal vault that never sync. */
 const LOCAL_ONLY_TOP = new Set([".claude", ".agents", ".codex", ".obsidian", "core", "workspace", "repos", "docs", "sync-manifests"]);
 
-/** Company-relative ACL prefix for a vault path; folders end in "/". */
+/**
+ * Company-relative ACL prefix for a vault path. Folders use the canonical
+ * glob `<folder>/*`, the form hq-pro stores grants under. The acl/tree read
+ * compares the asked prefix to stored rows as-is, so asking for `<folder>/`
+ * never matched the folder's own row: its direct grants were missed and the
+ * folder was reported as inheriting access from itself (feedback 227937a0).
+ */
 export function accessPrefix(vault: Vault, path: string, isDir: boolean): string {
   const rel = vault.kind === "company" && path.startsWith(`${vault.root}/`) ? path.slice(vault.root.length + 1) : path;
-  const clean = rel.replace(/\/+$/, "");
-  return isDir ? `${clean}/` : clean;
+  const clean = rel.replace(/\/\*$/, "").replace(/\/+$/, "");
+  if (!isDir) return clean;
+  return clean ? `${clean}/*` : "*";
 }
 
 /**
