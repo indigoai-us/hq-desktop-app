@@ -284,21 +284,12 @@ pub fn read_manifest(hq_root: &Path) -> ManifestLoad {
             return ManifestLoad::Failed(format!("parse {}: {e}", manifest_path.display()));
         }
     };
-    let removed = drop_duplicate_cloud_uid_entries(&mut value);
-    if !removed.is_empty() {
-        for (uid, slug, path) in &removed {
-            log(
-                "manifest",
-                &format!(
-                    "info: removed duplicate manifest entry '{slug}' (path {path}) for company {uid}; kept the newer entry"
-                ),
-            );
-        }
-        if let Err(e) = write_manifest_value(&manifest_path, &value) {
-            log(
-                "manifest",
-                &format!("warn: could not save deduplicated manifest: {e}"),
-            );
+    // Clean manifests take no lock and are never rewritten. Only when the
+    // unlocked read finds a duplicate is the read-modify-write repeated
+    // under the manifest lock.
+    if !drop_duplicate_cloud_uid_entries(&mut value).is_empty() {
+        if let Some(fresh) = dedupe_manifest_on_disk(&manifest_path) {
+            value = fresh;
         }
     }
     let parsed: CompaniesManifest = match serde_yaml::from_value(value) {
@@ -330,11 +321,16 @@ pub fn read_manifest(hq_root: &Path) -> ManifestLoad {
 }
 
 /// Remove duplicate manifest entries that share one company `cloud_uid`
-/// (`cmp_...`), keeping the newer entry. Manifest entries carry no timestamp
-/// field, so "newer" means the entry that appears later in the file (the
-/// reconcile path appends new entries at the end). Entries without a
-/// `cloud_uid`, and every entry whose `cloud_uid` is unique, are untouched; a
-/// company's only entry is never removed.
+/// (`cmp_...`). For each set of entries with the same uid, one entry stays:
+///
+/// - the entry whose name is not a company uid (the real company folder), or
+/// - when every entry or no entry is uid-named, the one later in the file.
+///
+/// An entry is uid-named when its slug key, or the last component of its
+/// `path`, looks like a company uid. Entries without a `cloud_uid`, and every
+/// entry whose `cloud_uid` is unique, are untouched; a company's only entry
+/// is never removed. Removal uses `shift_remove`, so the remaining entries
+/// keep their order.
 ///
 /// Returns `(cloud_uid, removed_slug, removed_path)` for each removed entry.
 pub fn drop_duplicate_cloud_uid_entries(
@@ -354,11 +350,35 @@ pub fn drop_duplicate_cloud_uid_entries(
             .filter(|uid| looks_like_company_uid(uid))
             .map(|uid| uid.to_ascii_lowercase())
     };
-    // The last position of each uid is the entry that stays.
-    let mut newest: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for (i, (_, entry)) in companies.iter().enumerate() {
-        if let Some(uid) = uid_of(entry) {
-            newest.insert(uid, i);
+    let path_of = |slug: &str, entry: &serde_yaml::Value| -> String {
+        entry
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("companies/{slug}"))
+    };
+    let is_uid_named = |slug: &str, path: &str| -> bool {
+        let folder = path
+            .trim_end_matches(['/', '\\'])
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or_default();
+        looks_like_company_uid(slug) || looks_like_company_uid(folder)
+    };
+    // Per uid: the index of the entry that stays, and whether it is the
+    // named (non-uid-named) kind. A later entry replaces the current keeper
+    // unless the keeper is named and the later entry is uid-named.
+    let mut keeper: std::collections::HashMap<String, (usize, bool)> =
+        std::collections::HashMap::new();
+    for (i, (key, entry)) in companies.iter().enumerate() {
+        let Some(uid) = uid_of(entry) else { continue };
+        let slug = key.as_str().unwrap_or_default();
+        let named = !is_uid_named(slug, &path_of(slug, entry));
+        match keeper.get(&uid) {
+            Some(&(_, true)) if !named => {}
+            _ => {
+                keeper.insert(uid, (i, named));
+            }
         }
     }
     let doomed: Vec<(serde_yaml::Value, String, String, String)> = companies
@@ -366,15 +386,11 @@ pub fn drop_duplicate_cloud_uid_entries(
         .enumerate()
         .filter_map(|(i, (key, entry))| {
             let uid = uid_of(entry)?;
-            if newest.get(&uid) == Some(&i) {
+            if keeper.get(&uid).map(|k| k.0) == Some(i) {
                 return None;
             }
             let slug = key.as_str().unwrap_or_default().to_string();
-            let path = entry
-                .get("path")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("companies/{}", slug));
+            let path = path_of(&slug, entry);
             let original_uid = entry
                 .get("cloud_uid")
                 .and_then(|v| v.as_str())
@@ -386,19 +402,102 @@ pub fn drop_duplicate_cloud_uid_entries(
     doomed
         .into_iter()
         .map(|(key, uid, slug, path)| {
-            companies.remove(&key);
+            // Not `remove`: in serde_yaml 0.9 that is `swap_remove`, which
+            // moves the last entry into the gap and reorders the file.
+            companies.shift_remove(&key);
             (uid, slug, path)
         })
         .collect()
 }
 
-fn write_manifest_value(manifest_path: &Path, value: &serde_yaml::Value) -> Result<(), String> {
-    let serialized =
-        serde_yaml::to_string(value).map_err(|e| format!("serialize manifest: {e}"))?;
-    let tmp = manifest_path.with_extension("yaml.tmp");
-    std::fs::write(&tmp, &serialized).map_err(|e| format!("write tmp manifest: {e}"))?;
-    std::fs::rename(&tmp, manifest_path).map_err(|e| format!("rename manifest: {e}"))?;
-    Ok(())
+/// Under the manifest lock, re-read the manifest, drop duplicate cloud-uid
+/// entries and save it. Re-reading under the lock means an entry another
+/// writer added between the unlocked read and now is kept. Returns the
+/// deduplicated value, or `None` when the file could not be re-read.
+fn dedupe_manifest_on_disk(manifest_path: &Path) -> Option<serde_yaml::Value> {
+    let _lock = match lock_manifest(manifest_path) {
+        Ok(lock) => lock,
+        Err(e) => {
+            log(
+                "manifest",
+                &format!("warn: could not lock manifest for dedupe: {e}"),
+            );
+            return None;
+        }
+    };
+    let bytes = std::fs::read(manifest_path).ok()?;
+    let mut value: serde_yaml::Value = serde_yaml::from_slice(&bytes).ok()?;
+    let removed = drop_duplicate_cloud_uid_entries(&mut value);
+    if removed.is_empty() {
+        return Some(value);
+    }
+    for (uid, slug, path) in &removed {
+        log(
+            "manifest",
+            &format!(
+                "info: removed duplicate manifest entry '{slug}' (path {path}) for company {uid}"
+            ),
+        );
+    }
+    let saved = serde_yaml::to_string(&value)
+        .map_err(|e| format!("serialize manifest: {e}"))
+        .and_then(|serialized| write_manifest_atomic(manifest_path, &serialized));
+    if let Err(e) = saved {
+        log(
+            "manifest",
+            &format!("warn: could not save deduplicated manifest: {e}"),
+        );
+    }
+    Some(value)
+}
+
+/// Advisory lock around a manifest read-modify-write, shared by every writer
+/// in this module. It lives in a sibling `manifest.yaml.lock` file (a file,
+/// so the company-folder scan ignores it). The OS releases `flock` locks on
+/// process exit, so the lock cannot go stale after a crash.
+struct ManifestLock {
+    file: std::fs::File,
+}
+
+impl Drop for ManifestLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.file);
+    }
+}
+
+fn lock_manifest(manifest_path: &Path) -> Result<ManifestLock, String> {
+    let lock_path = manifest_path.with_extension("yaml.lock");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|e| format!("open manifest lock {}: {e}", lock_path.display()))?;
+    fs2::FileExt::lock_exclusive(&file).map_err(|e| format!("lock manifest: {e}"))?;
+    Ok(ManifestLock { file })
+}
+
+/// Write `serialized` to the manifest atomically: a temp file unique to this
+/// writer (pid, time, counter), then rename over the manifest. A failed
+/// rename removes the temp file and leaves the original intact.
+fn write_manifest_atomic(manifest_path: &Path, serialized: &str) -> Result<(), String> {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or_default();
+    let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp =
+        manifest_path.with_extension(format!("yaml.tmp.{}.{nanos}.{seq}", std::process::id()));
+    std::fs::write(&tmp, serialized).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("write tmp manifest: {e}")
+    })?;
+    std::fs::rename(&tmp, manifest_path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("rename manifest: {e}")
+    })
 }
 
 /// Discover local companies. Manifest is canonical when present + parseable;
@@ -697,6 +796,7 @@ pub fn patch_manifest_with_cloud_info(
     cloud_uid: &str,
     bucket_name: &str,
 ) -> Result<(), String> {
+    let _lock = lock_manifest(manifest_path)?;
     let bytes = std::fs::read(manifest_path).map_err(|e| format!("read manifest: {e}"))?;
     let mut value: serde_yaml::Value =
         serde_yaml::from_slice(&bytes).map_err(|e| format!("parse manifest: {e}"))?;
@@ -729,9 +829,7 @@ pub fn patch_manifest_with_cloud_info(
         serde_yaml::to_string(&value).map_err(|e| format!("serialize manifest: {e}"))?;
 
     // Atomic write: tmp → rename. Any failure leaves the original intact.
-    let tmp = manifest_path.with_extension("yaml.tmp");
-    std::fs::write(&tmp, &serialized).map_err(|e| format!("write tmp manifest: {e}"))?;
-    std::fs::rename(&tmp, manifest_path).map_err(|e| format!("rename manifest: {e}"))?;
+    write_manifest_atomic(manifest_path, &serialized)?;
 
     Ok(())
 }
@@ -768,6 +866,7 @@ pub fn add_manifest_entry_for_synced_company(
     cloud_uid: Option<&str>,
     bucket_name: Option<&str>,
 ) -> Result<(), String> {
+    let _lock = lock_manifest(manifest_path)?;
     let bytes = std::fs::read(manifest_path).map_err(|e| format!("read manifest: {e}"))?;
     let mut value: serde_yaml::Value =
         serde_yaml::from_slice(&bytes).map_err(|e| format!("parse manifest: {e}"))?;
@@ -802,9 +901,7 @@ pub fn add_manifest_entry_for_synced_company(
     let serialized =
         serde_yaml::to_string(&value).map_err(|e| format!("serialize manifest: {e}"))?;
 
-    let tmp = manifest_path.with_extension("yaml.tmp");
-    std::fs::write(&tmp, &serialized).map_err(|e| format!("write tmp manifest: {e}"))?;
-    std::fs::rename(&tmp, manifest_path).map_err(|e| format!("rename manifest: {e}"))?;
+    write_manifest_atomic(manifest_path, &serialized)?;
 
     Ok(())
 }
@@ -818,6 +915,7 @@ pub fn add_manifest_entry_for_synced_company(
 /// Idempotent: missing slug entries or already-clean entries are a no-op. No
 /// write is performed if neither key was present.
 pub fn strip_manifest_cloud_info(manifest_path: &Path, slug: &str) -> Result<(), String> {
+    let _lock = lock_manifest(manifest_path)?;
     let bytes = std::fs::read(manifest_path).map_err(|e| format!("read manifest: {e}"))?;
     let mut value: serde_yaml::Value =
         serde_yaml::from_slice(&bytes).map_err(|e| format!("parse manifest: {e}"))?;
@@ -854,9 +952,7 @@ pub fn strip_manifest_cloud_info(manifest_path: &Path, slug: &str) -> Result<(),
     let serialized =
         serde_yaml::to_string(&value).map_err(|e| format!("serialize manifest: {e}"))?;
 
-    let tmp = manifest_path.with_extension("yaml.tmp");
-    std::fs::write(&tmp, &serialized).map_err(|e| format!("write tmp manifest: {e}"))?;
-    std::fs::rename(&tmp, manifest_path).map_err(|e| format!("rename manifest: {e}"))?;
+    write_manifest_atomic(manifest_path, &serialized)?;
 
     Ok(())
 }
@@ -1524,40 +1620,103 @@ companies:\n\
         assert_eq!(std::fs::read_to_string(&manifest_path).unwrap(), original);
     }
 
-    /// Owner decision: a manifest with two entries for one cloud UID keeps
-    /// only the newer (later) entry, and the file is rewritten without the
-    /// older one.
+    fn load_slugs(root: &Path) -> Vec<String> {
+        match read_manifest(root) {
+            ManifestLoad::Present(entries) => entries.into_iter().map(|e| e.slug).collect(),
+            _ => panic!("expected the manifest to load"),
+        }
+    }
+
+    fn on_disk_keys(root: &Path) -> Vec<String> {
+        let text = std::fs::read_to_string(root.join("companies").join("manifest.yaml")).unwrap();
+        let value: serde_yaml::Value = serde_yaml::from_str(&text).unwrap();
+        value["companies"]
+            .as_mapping()
+            .unwrap()
+            .keys()
+            .map(|k| k.as_str().unwrap().to_string())
+            .collect()
+    }
+
+    const ACME_ENTRY: &str = "  acme:\n    name: Acme\n    path: companies/acme\n    cloud_uid: cmp_01KT9FG6G8NXKJEJ372TZ42M00\n";
+    const UID_ENTRY: &str = "  cmp_01kt9fg6g8nxkjej372tz42m00:\n    name: Cmp_01KT9FG6G8NXKJEJ372TZ42M00\n    path: companies/cmp_01kt9fg6g8nxkjej372tz42m00\n    cloud_uid: cmp_01KT9FG6G8NXKJEJ372TZ42M00\n";
+
+    /// The real duplicate: the company's named entry plus an entry for the
+    /// folder named after its cloud UID. The named entry wins whichever comes
+    /// first, and the file is rewritten without the UID-named entry.
     #[test]
-    fn read_manifest_drops_duplicate_cloud_uid_entry_keeping_newer() {
+    fn read_manifest_keeps_named_entry_over_uid_named_duplicate_in_either_order() {
+        for (first, second) in [(ACME_ENTRY, UID_ENTRY), (UID_ENTRY, ACME_ENTRY)] {
+            let tmp = TempDir::new().unwrap();
+            write_manifest(
+                tmp.path(),
+                &format!("companies:\n{first}  beta-co:\n    name: Beta\n{second}"),
+            );
+            let mut slugs = load_slugs(tmp.path());
+            slugs.sort();
+            assert_eq!(slugs, vec!["acme", "beta-co"]);
+            let mut keys = on_disk_keys(tmp.path());
+            keys.sort();
+            assert_eq!(keys, vec!["acme", "beta-co"]);
+        }
+    }
+
+    /// Both entries are UID-named: the later one is kept.
+    #[test]
+    fn read_manifest_keeps_later_entry_when_both_are_uid_named() {
         let tmp = TempDir::new().unwrap();
         write_manifest(
             tmp.path(),
-            r#"
-companies:
-  acme:
-    name: Acme
-    path: companies/acme
-    cloud_uid: cmp_01KT9FG6G8NXKJEJ372TZ42M00
-  beta-co:
-    name: Beta
-    path: companies/beta-co/
-  cmp_01kt9fg6g8nxkjej372tz42m00:
-    name: Cmp_01KT9FG6G8NXKJEJ372TZ42M00
-    path: companies/cmp_01kt9fg6g8nxkjej372tz42m00
-    cloud_uid: cmp_01KT9FG6G8NXKJEJ372TZ42M00
-"#,
+            "companies:\n  CMP_01KT9FG6G8NXKJEJ372TZ42M00:\n    name: Upper\n    cloud_uid: cmp_01KT9FG6G8NXKJEJ372TZ42M00\n  cmp_01kt9fg6g8nxkjej372tz42m00:\n    name: Lower\n    cloud_uid: cmp_01kt9fg6g8nxkjej372tz42m00\n",
         );
-        let entries = match read_manifest(tmp.path()) {
-            ManifestLoad::Present(entries) => entries,
-            _ => panic!("expected the manifest to load"),
-        };
-        let mut slugs: Vec<&str> = entries.iter().map(|e| e.slug.as_str()).collect();
+        assert_eq!(
+            load_slugs(tmp.path()),
+            vec!["cmp_01kt9fg6g8nxkjej372tz42m00"]
+        );
+        assert_eq!(
+            on_disk_keys(tmp.path()),
+            vec!["cmp_01kt9fg6g8nxkjej372tz42m00"]
+        );
+    }
+
+    /// Neither entry is UID-named but both carry the same cloud UID: the
+    /// later one is kept.
+    #[test]
+    fn read_manifest_keeps_later_entry_when_neither_is_uid_named() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            "companies:\n  acme:\n    name: Acme\n    cloud_uid: cmp_01KT9FG6G8NXKJEJ372TZ42M00\n  acme-2:\n    name: Acme 2\n    cloud_uid: cmp_01KT9FG6G8NXKJEJ372TZ42M00\n",
+        );
+        assert_eq!(load_slugs(tmp.path()), vec!["acme-2"]);
+        assert_eq!(on_disk_keys(tmp.path()), vec!["acme-2"]);
+    }
+
+    /// Removing an entry from the middle keeps every other entry in place
+    /// (no swap of the last entry into the gap), and leaves no temp file.
+    #[test]
+    fn read_manifest_dedupe_preserves_order_of_remaining_entries() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            &format!(
+                "companies:\n  alpha:\n    name: Alpha\n{UID_ENTRY}  beta:\n    name: Beta\n  gamma:\n    name: Gamma\n{ACME_ENTRY}"
+            ),
+        );
+        let mut slugs = load_slugs(tmp.path());
         slugs.sort();
-        assert_eq!(slugs, vec!["beta-co", "cmp_01kt9fg6g8nxkjej372tz42m00"]);
-        let on_disk =
-            std::fs::read_to_string(tmp.path().join("companies").join("manifest.yaml")).unwrap();
-        assert!(!on_disk.contains("acme"), "{on_disk}");
-        assert!(on_disk.contains("beta-co"), "{on_disk}");
+        assert_eq!(slugs, vec!["acme", "alpha", "beta", "gamma"]);
+        assert_eq!(
+            on_disk_keys(tmp.path()),
+            vec!["alpha", "beta", "gamma", "acme"]
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(tmp.path().join("companies"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     #[test]
