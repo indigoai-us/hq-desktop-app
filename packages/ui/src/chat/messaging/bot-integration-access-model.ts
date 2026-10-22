@@ -119,6 +119,12 @@ export function botConnectionAccessState(
   input: BotConnectionAccessInput,
 ): BotConnectionAccessState {
   if (!input.access.canManage) return "read-only";
+  return botConnectionGrantState(input);
+}
+
+export function botConnectionGrantState(
+  input: BotConnectionAccessInput,
+): Exclude<BotConnectionAccessState, "read-only"> {
   const role = input.botRole.toLowerCase();
   if (role === "owner" || role === "admin") return "on-admin";
   if (input.mode === "everyone" || input.mode === "legacy-open") {
