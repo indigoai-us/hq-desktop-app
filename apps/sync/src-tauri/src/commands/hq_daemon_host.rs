@@ -465,6 +465,23 @@ fn daemon_env_change_action(
     }
 }
 
+/// Whether the personal-target hold reaches the runner that is syncing.
+/// The legacy watcher and an hq daemon this app hosts take it from the app's
+/// environment; an hq daemon started elsewhere does not.
+pub(crate) fn personal_hold_reaches(phase: HostPhase, hosted_child: bool) -> bool {
+    phase != HostPhase::Daemon || hosted_child
+}
+
+pub(crate) fn personal_hold_reaches_runner() -> bool {
+    personal_hold_reaches(
+        current_phase(),
+        CHILD_ENV
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some(),
+    )
+}
+
 fn add_daemon_instant_sync_env(
     env: &mut HashMap<String, String>,
     cli_supports_setting: bool,
@@ -1918,6 +1935,13 @@ mod tests {
         assert_eq!(mode.membership_id, "prs_x#cmp_a");
         assert_eq!(mode.sync_mode, "shared");
         assert!(!mode.is_default);
+    }
+
+    #[test]
+    fn personal_hold_does_not_reach_a_daemon_this_app_did_not_start() {
+        assert!(personal_hold_reaches(HostPhase::Legacy, false));
+        assert!(personal_hold_reaches(HostPhase::Daemon, true));
+        assert!(!personal_hold_reaches(HostPhase::Daemon, false));
     }
 
     #[test]

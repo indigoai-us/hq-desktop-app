@@ -1656,8 +1656,48 @@ fn extract_tarball_with_progress(
         progress,
         cancel,
         failure_scope,
+        true,
         || is_content_cancelled(cancel),
     )
+}
+
+/// H8 seed extraction: never creates the root, and runs `fence` before every
+/// entry (and between chunks of large files). A failed fence stops the
+/// extraction with its own error; nothing further is written.
+fn extract_tarball_fenced(
+    compressed: &[u8],
+    target_dir: &Path,
+    progress: Option<&ContentProgressEmitter>,
+    cancel: Option<&AtomicBool>,
+    failure_scope: Option<&OnboardingFailureScope>,
+    fence: &dyn Fn() -> Result<(), String>,
+) -> Result<(), String> {
+    fence()?;
+    let fence_error = std::cell::RefCell::new(None::<String>);
+    let result = extract_tarball_with_progress_and_cancel_check(
+        compressed,
+        target_dir,
+        progress,
+        cancel,
+        failure_scope,
+        false,
+        || {
+            if is_content_cancelled(cancel) {
+                return true;
+            }
+            match fence() {
+                Ok(()) => false,
+                Err(error) => {
+                    *fence_error.borrow_mut() = Some(error);
+                    true
+                }
+            }
+        },
+    );
+    if let Some(error) = fence_error.into_inner() {
+        return Err(error);
+    }
+    result
 }
 
 fn extract_tarball_with_progress_and_cancel_check<C>(
@@ -1666,15 +1706,20 @@ fn extract_tarball_with_progress_and_cancel_check<C>(
     progress: Option<&ContentProgressEmitter>,
     cancel: Option<&AtomicBool>,
     failure_scope: Option<&OnboardingFailureScope>,
+    create_root: bool,
     mut is_cancelled: C,
 ) -> Result<(), String>
 where
     C: FnMut() -> bool,
 {
-    std::fs::create_dir_all(target_dir).map_err(|e| {
-        record_content_io_failure(failure_scope, &e);
-        format!("failed to create HQ root {target_dir:?}: {e}")
-    })?;
+    if create_root {
+        std::fs::create_dir_all(target_dir).map_err(|e| {
+            record_content_io_failure(failure_scope, &e);
+            format!("failed to create HQ root {target_dir:?}: {e}")
+        })?;
+    } else if !target_dir.is_dir() {
+        return Err(format!("HQ root {target_dir:?} is missing"));
+    }
 
     if is_cancelled() {
         return Err(content_cancelled_error(failure_scope));
@@ -1999,11 +2044,20 @@ pub async fn fetch_and_extract_template(
             install_template_into(app, handle, hq_root, failure_scope).await
         }
         crate::commands::personal_root::SeedDecision::Seed => {
-            let result = install_template_into(app, handle, hq_root.clone(), failure_scope).await;
+            let Some(state_dir) = &state_dir else {
+                return Err("HQ could not find its state folder.".to_string());
+            };
+            let fence = crate::commands::personal_root::SeedFence::for_root(state_dir, &hq_root)?;
+            let result = install_template_into_fenced(
+                app,
+                handle,
+                hq_root.clone(),
+                failure_scope,
+                Some(fence),
+            )
+            .await;
             if result.is_ok() {
-                if let Some(state_dir) = &state_dir {
-                    crate::commands::personal_root::mark_seeded(state_dir, &hq_root);
-                }
+                crate::commands::personal_root::mark_seeded(state_dir, &hq_root);
             }
             result
         }
@@ -2020,6 +2074,20 @@ pub(crate) async fn install_template_into(
     handle: Option<String>,
     hq_root: String,
     failure_scope: Option<OnboardingFailureScope>,
+) -> Result<String, String> {
+    install_template_into_fenced(app, handle, hq_root, failure_scope, None).await
+}
+
+/// [`install_template_into`] with an optional H8 write fence. With a fence,
+/// the root is never created, the wrapper re-confirms ownership after the
+/// download and immediately before the first write, and every write checks
+/// that the root is still the folder `initialize` created.
+async fn install_template_into_fenced(
+    app: AppHandle,
+    handle: Option<String>,
+    hq_root: String,
+    failure_scope: Option<OnboardingFailureScope>,
+    fence: Option<crate::commands::personal_root::SeedFence>,
 ) -> Result<String, String> {
     let source = template_source_for_staging_source(staging_source_enabled());
     let token = if matches!(source.channel, TemplateChannel::StagingMain) {
@@ -2095,13 +2163,26 @@ pub(crate) async fn install_template_into(
         failure_scope.as_ref(),
     )
     .await?;
-    extract_tarball_with_progress(
-        &compressed,
-        Path::new(&hq_root),
-        Some(&progress),
-        Some(cancel_flag.as_ref()),
-        failure_scope.as_ref(),
-    )?;
+    match &fence {
+        Some(fence) => {
+            fence.revalidate().await?;
+            extract_tarball_fenced(
+                &compressed,
+                Path::new(&hq_root),
+                Some(&progress),
+                Some(cancel_flag.as_ref()),
+                failure_scope.as_ref(),
+                &|| fence.check(),
+            )?;
+        }
+        None => extract_tarball_with_progress(
+            &compressed,
+            Path::new(&hq_root),
+            Some(&progress),
+            Some(cancel_flag.as_ref()),
+            failure_scope.as_ref(),
+        )?,
+    }
 
     // Refresh core/core.yaml checksums right after the template lands, so the
     // integrity block reflects the freshly-installed content before git-init +
@@ -2452,6 +2533,38 @@ mod tests {
     }
 
     #[test]
+    fn fenced_extraction_writes_nothing_into_a_swapped_root() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("hq");
+        std::fs::create_dir(&root).unwrap();
+        let archive = build_test_tarball(&[(
+            "indigoai-us-hq-core-deadbeef/core.yaml",
+            file_header(20, 0o644),
+            Some(b"name: defaults here\n".to_vec()),
+        )]);
+
+        // The fence stands in for SeedFence::check after a swap.
+        let result = extract_tarball_fenced(&archive, &root, None, None, None, &|| {
+            Err("This folder was moved or replaced after HQ prepared it.".to_string())
+        });
+        assert_eq!(
+            result,
+            Err("This folder was moved or replaced after HQ prepared it.".to_string())
+        );
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+
+        // A removed root is never recreated by a fenced extraction.
+        std::fs::remove_dir(&root).unwrap();
+        assert!(extract_tarball_fenced(&archive, &root, None, None, None, &|| Ok(())).is_err());
+        assert!(!root.exists());
+
+        // An intact root extracts normally.
+        std::fs::create_dir(&root).unwrap();
+        extract_tarball_fenced(&archive, &root, None, None, None, &|| Ok(())).unwrap();
+        assert!(root.join("core.yaml").is_file());
+    }
+
+    #[test]
     fn extract_removes_partial_file_on_cancel_and_retry_preserves_user_file() {
         let dir = tempdir().unwrap();
         let existing = dir.path().join("core.yaml");
@@ -2480,6 +2593,7 @@ mod tests {
             None,
             None,
             None,
+            true,
             || {
                 cancellation_checks += 1;
                 cancellation_checks == 5

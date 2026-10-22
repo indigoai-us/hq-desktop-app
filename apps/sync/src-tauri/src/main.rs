@@ -874,6 +874,7 @@ fn main() {
             commands::personal_root::prepare_personal_root,
             commands::personal_root::personal_root_plan_adoption,
             commands::personal_root::personal_root_approve_phase,
+            commands::personal_root::personal_root_recheck,
             commands::content::fetch_and_extract_template,
             commands::content::cancel_content_download,
             commands::content::get_staging_source,

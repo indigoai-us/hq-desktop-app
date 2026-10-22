@@ -188,7 +188,11 @@ pub fn resolve_existing_hq_path() -> Result<String, String> {
 pub mod command {
     #[tauri::command]
     pub fn resolve_hq_path(create: Option<bool>) -> Result<String, String> {
-        super::resolve_hq_path_with(create.unwrap_or(false))
+        // H8 (gated): with the paired root flow on, no caller may create the
+        // root through this command; only the wrapper's initialize does.
+        let create =
+            create.unwrap_or(false) && !crate::commands::personal_root::paired_root_gate_enabled();
+        super::resolve_hq_path_with(create)
     }
 }
 
@@ -690,6 +694,7 @@ mod tests {
 
         assert!(resolve_hq_path().is_err());
         assert!(resolve_existing_hq_path().is_err());
+        command::resolve_hq_path(Some(true)).unwrap();
         assert!(create_directory(
             home.path().join("Work").to_string_lossy().into_owned(),
             "hq".to_string()

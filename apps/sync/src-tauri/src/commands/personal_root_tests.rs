@@ -28,10 +28,19 @@ impl FakeWrapper {
 impl ProjectionRunner for &FakeWrapper {
     fn run(&self, action: Action, stdin: &[u8]) -> RunOutput {
         self.calls.borrow_mut().push((action, stdin.to_vec()));
-        self.replies
+        let reply = self
+            .replies
             .borrow_mut()
             .pop_front()
-            .unwrap_or_else(|| panic!("unexpected wrapper call: {action:?}"))
+            .unwrap_or_else(|| panic!("unexpected wrapper call: {action:?}"));
+        // Like the real wrapper, a successful initialize creates the root.
+        if action == Action::Initialize {
+            if let RunOutput::Exited { code: Some(0), .. } = &reply {
+                let request: serde_json::Value = serde_json::from_slice(stdin).unwrap();
+                std::fs::create_dir(request["rootPath"].as_str().unwrap()).unwrap();
+            }
+        }
+        reply
     }
 }
 
@@ -122,12 +131,14 @@ fn a_new_root_is_initialized_before_anything_creates_it() {
     assert_eq!(record.phase, RootPhase::Initialized);
     assert_eq!(record.projection_id.as_deref(), Some("p1"));
     assert_eq!(fake.actions(), [Action::Inspect, Action::Initialize]);
-    // The Desktop prepared only the parent; the leaf is the wrapper's to make.
+    // The Desktop prepared only the parent; the wrapper created the empty leaf.
     assert!(root.parent().unwrap().is_dir());
-    assert!(!root.exists());
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+    let saved = read_record(&fx.state).unwrap();
+    assert_eq!(saved.phase, RootPhase::Initialized);
     assert_eq!(
-        read_record(&fx.state).unwrap().phase,
-        RootPhase::Initialized
+        saved.root_device.zip(saved.root_inode),
+        root_identity(&root)
     );
 }
 
@@ -222,7 +233,7 @@ fn seeding_follows_the_record_and_never_repeats() {
     let fake = FakeWrapper::new(vec![inspect("new_root"), initialized(&s(&root))]);
     prepare_with(&PersonalProjectionClient::new(&fake), &s(&root), &fx.state);
     // Stand in for the wrapper creating the leaf.
-    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir_all(&root).unwrap();
     assert_eq!(
         seed_decision_with(true, &s(&root), &fx.state),
         Ok(SeedDecision::Seed)
@@ -252,7 +263,7 @@ fn owner_observed_keeps_files_and_a_changed_projection_is_recovery() {
     let root = fx.root("hq");
     let fake = FakeWrapper::new(vec![inspect("new_root"), initialized(&s(&root))]);
     prepare_with(&PersonalProjectionClient::new(&fake), &s(&root), &fx.state);
-    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir_all(&root).unwrap();
     let fake = FakeWrapper::new(vec![inspect_owner("p-other")]);
     let record = prepare_with(&PersonalProjectionClient::new(&fake), &s(&root), &fx.state);
     assert_eq!(record.reason.as_deref(), Some("state_changed"));
@@ -455,7 +466,7 @@ fn launch_holds_personal_sync_until_the_owner_is_confirmed() {
     let root = fx.root("hq");
     let fake = FakeWrapper::new(vec![inspect("new_root"), initialized(&s(&root))]);
     prepare_with(&PersonalProjectionClient::new(&fake), &s(&root), &fx.state);
-    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir_all(&root).unwrap();
     mark_seeded(&fx.state, &s(&root));
     let fake = FakeWrapper::new(vec![inspect_owner("p1")]);
     assert!(launch_check_with(
@@ -490,7 +501,7 @@ fn a_timeout_is_recovery_and_the_next_run_reinspects() {
 
     // The killed initialize left a partial root; the next run classifies it
     // instead of treating the folder as new.
-    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir_all(&root).unwrap();
     let fake = FakeWrapper::new(vec![inspect("adoption_required")]);
     let record = prepare_with(&PersonalProjectionClient::new(&fake), &s(&root), &fx.state);
     assert_eq!(record.phase, RootPhase::AdoptionReview);
@@ -513,6 +524,202 @@ fn the_gate_is_off_in_shipped_builds() {
     assert!(!hq_desktop_core::personal_projection::personal_projection_supported());
     assert!(!paired_root_gate_enabled());
     assert_eq!(personal_root_state(), PersonalRootView::legacy());
+}
+
+// ── Review regressions ──────────────────────────────────────────────────────
+
+fn initialized_fixture() -> (Fixture, PathBuf) {
+    let fx = Fixture::new();
+    let root = fx.root("hq");
+    let fake = FakeWrapper::new(vec![inspect("new_root"), initialized(&s(&root))]);
+    let record = prepare_with(&PersonalProjectionClient::new(&fake), &s(&root), &fx.state);
+    assert_eq!(record.phase, RootPhase::Initialized);
+    (fx, root)
+}
+
+/// Review #1: offline, busy, timeout, and cancel never overwrite the saved
+/// record of an initialized root. The projection id survives, and so does
+/// the one-root guard.
+#[test]
+fn a_transient_pause_never_overwrites_an_initialized_root() {
+    let (fx, root) = initialized_fixture();
+    for reply in [
+        paused("authority_unavailable", true, "retry_authority"),
+        paused("busy", true, "retry_when_idle"),
+        RunOutput::Timeout,
+        RunOutput::Cancelled,
+    ] {
+        let fake = FakeWrapper::new(vec![reply]);
+        let view = prepare_with(&PersonalProjectionClient::new(&fake), &s(&root), &fx.state);
+        assert!(view.reason.is_some());
+        assert!(!personal_sync_permitted(Some(&view), &root));
+        let saved = read_record(&fx.state).unwrap();
+        assert_eq!(saved.phase, RootPhase::Initialized);
+        assert_eq!(saved.projection_id.as_deref(), Some("p1"));
+        assert_eq!(saved.reason, None);
+    }
+    let other = fx.root("hq-two");
+    let fake = FakeWrapper::new(vec![]);
+    let view = prepare_with(&PersonalProjectionClient::new(&fake), &s(&other), &fx.state);
+    assert_eq!(view.reason.as_deref(), Some("state_in_use_by_other_root"));
+}
+
+/// Review #2: initialize committed but its result was lost to a timeout.
+/// The saved intent lets the next run recognize its own empty root and seed
+/// it; a root that is not empty is recovery and is never seeded.
+#[test]
+fn a_lost_initialize_result_is_recovered_without_a_permanent_empty_root() {
+    let fx = Fixture::new();
+    let root = fx.root("hq");
+    let fake = FakeWrapper::new(vec![inspect("new_root"), RunOutput::Timeout]);
+    let view = prepare_with(&PersonalProjectionClient::new(&fake), &s(&root), &fx.state);
+    assert_eq!(view.reason.as_deref(), Some("timeout"));
+    assert_eq!(
+        read_record(&fx.state).unwrap().phase,
+        RootPhase::InitializePending
+    );
+
+    // hq-cloud did commit: the root exists, empty, owned by this account.
+    std::fs::create_dir(&root).unwrap();
+    let fake = FakeWrapper::new(vec![inspect_owner("p7")]);
+    let record = prepare_with(&PersonalProjectionClient::new(&fake), &s(&root), &fx.state);
+    assert_eq!(record.phase, RootPhase::Initialized);
+    assert_eq!(record.projection_id.as_deref(), Some("p7"));
+    assert_eq!(
+        seed_decision_with(true, &s(&root), &fx.state),
+        Ok(SeedDecision::Seed)
+    );
+
+    // Same lost result, but the root already holds files: recovery.
+    let fx = Fixture::new();
+    let root = fx.root("hq");
+    let fake = FakeWrapper::new(vec![inspect("new_root"), RunOutput::Cancelled]);
+    prepare_with(&PersonalProjectionClient::new(&fake), &s(&root), &fx.state);
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("stray.md"), "x").unwrap();
+    let fake = FakeWrapper::new(vec![inspect_owner("p7")]);
+    let view = prepare_with(&PersonalProjectionClient::new(&fake), &s(&root), &fx.state);
+    assert_eq!(view.reason.as_deref(), Some("state_changed"));
+    assert!(seed_decision_with(true, &s(&root), &fx.state).is_err());
+}
+
+/// Review #3: a non-retryable stop during a phase hides the step, also after
+/// a reload, until the folder is checked again.
+#[test]
+fn a_non_retryable_phase_stop_hides_the_step_until_checked_again() {
+    let (fx, root) = adoption_fixture();
+    let fake = FakeWrapper::new(vec![
+        inspect("adoption_required"),
+        plan_reply(&root, &fx.state),
+    ]);
+    plan_adoption_with(&PersonalProjectionClient::new(&fake), &fx.state).unwrap();
+    for reason in [
+        "authority_changed",
+        "state_changed",
+        "root_replaced",
+        "lease_released",
+    ] {
+        let fake = FakeWrapper::new(vec![
+            inspect("adoption_required"),
+            paused(reason, false, "review_recovery"),
+        ]);
+        let result = approve_with(
+            &PersonalProjectionClient::new(&fake),
+            &fx.state,
+            &approval(Phase::Preserve),
+        )
+        .unwrap();
+        assert_eq!(
+            PersonalRootView::from_record(&result.record).next_phase,
+            None,
+            "{reason}"
+        );
+        let saved = read_record(&fx.state).unwrap();
+        assert_eq!(
+            PersonalRootView::from_record(&saved).next_phase,
+            None,
+            "{reason}"
+        );
+        assert!(saved.plan.is_some(), "the reviewed plan is kept");
+
+        // Checking the folder again clears the stop and shows the step.
+        let fake = FakeWrapper::new(vec![inspect("adoption_required")]);
+        let record = prepare_with(&PersonalProjectionClient::new(&fake), &s(&root), &fx.state);
+        assert_eq!(
+            PersonalRootView::from_record(&record).next_phase.as_deref(),
+            Some("preserve")
+        );
+    }
+    // A retryable pause keeps the step for the user to try again.
+    let fake = FakeWrapper::new(vec![
+        inspect("adoption_required"),
+        paused("busy", true, "retry_when_idle"),
+    ]);
+    let result = approve_with(
+        &PersonalProjectionClient::new(&fake),
+        &fx.state,
+        &approval(Phase::Preserve),
+    )
+    .unwrap();
+    assert_eq!(
+        PersonalRootView::from_record(&result.record)
+            .next_phase
+            .as_deref(),
+        Some("preserve")
+    );
+}
+
+/// Review C3: the seed write boundary refuses a root that was swapped or an
+/// account that changed after initialize, right before writing.
+#[test]
+fn the_seed_fence_refuses_a_swapped_root_or_a_changed_account() {
+    // Matching root and owner: allowed.
+    let (fx, root) = initialized_fixture();
+    let fence = SeedFence::for_root(&fx.state, &s(&root)).unwrap();
+    let fake = FakeWrapper::new(vec![inspect_owner("p1")]);
+    assert_eq!(
+        fence.revalidate_with(&PersonalProjectionClient::new(&fake)),
+        Ok(())
+    );
+
+    // The account changed: inspect pauses.
+    let fake = FakeWrapper::new(vec![paused("authority_changed", false, "review_recovery")]);
+    assert!(fence
+        .revalidate_with(&PersonalProjectionClient::new(&fake))
+        .is_err());
+
+    // Another projection owns the path now.
+    let fake = FakeWrapper::new(vec![inspect_owner("p-other")]);
+    assert!(fence
+        .revalidate_with(&PersonalProjectionClient::new(&fake))
+        .is_err());
+
+    // The root is swapped for a new folder at the same path.
+    std::fs::remove_dir(&root).unwrap();
+    std::fs::create_dir(&root).unwrap();
+    assert!(fence.check().is_err());
+    let fake = FakeWrapper::new(vec![]);
+    assert!(fence
+        .revalidate_with(&PersonalProjectionClient::new(&fake))
+        .is_err());
+    assert!(
+        fake.actions().is_empty(),
+        "identity fails before any wrapper call"
+    );
+    assert!(seed_decision_with(true, &s(&root), &fx.state).is_err());
+}
+
+/// Review #4: resume never starts sync during setup and never stops the
+/// running watcher (which would interrupt company sync).
+#[test]
+fn resume_does_not_start_sync_during_setup_or_stop_the_watcher() {
+    let source = include_str!("personal_root.rs");
+    let start = source.find("fn start_owned_runner_after_resume(").unwrap();
+    let end = start + source[start..].find("\n}\n").unwrap();
+    let body = &source[start..end];
+    assert!(!body.contains("stop_watch_runner"));
+    assert!(!body.contains("start_sync_services_after_setup"));
+    assert!(body.contains("sync_held_for_setup()"));
 }
 
 /// Opt-in run against a real local hq-cloud build (ignored by default).

@@ -86,6 +86,9 @@ fn local_setting_on() -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum RootPhase {
+    /// Saved before `initialize` is spawned, so a commit whose result was lost
+    /// (cancel, timeout, crash) is recognized on the next run.
+    InitializePending,
     /// `initialize` created the root; the first seed may run.
     Initialized,
     /// The first seed finished. Later runs never re-extract the template.
@@ -120,7 +123,8 @@ impl RootPhase {
     fn holds_root(self) -> bool {
         matches!(
             self,
-            RootPhase::Initialized
+            RootPhase::InitializePending
+                | RootPhase::Initialized
                 | RootPhase::Seeded
                 | RootPhase::OwnerObserved
                 | RootPhase::ResumeAuthorized
@@ -159,6 +163,12 @@ pub(crate) struct RootRecord {
     pub plan: Option<Box<RawValue>>,
     #[serde(default)]
     pub receipt_digest: Option<String>,
+    /// Identity of the root `initialize` created (device, inode on Unix).
+    /// The seed write boundary refuses a root that no longer matches.
+    #[serde(default)]
+    pub root_device: Option<u64>,
+    #[serde(default)]
+    pub root_inode: Option<u64>,
 }
 
 impl RootRecord {
@@ -172,6 +182,8 @@ impl RootRecord {
             retryable: false,
             plan: None,
             receipt_digest: None,
+            root_device: None,
+            root_inode: None,
         }
     }
 
@@ -278,8 +290,12 @@ fn prepare_parent(root: &Path, state_dir: &Path) -> Result<(), &'static str> {
 }
 
 /// Inspect, then (for a new root) initialize. Authority is resolved by the
-/// caller first. Returns the record to show; persists it unless the result is
-/// a transient pause over an in-progress adoption.
+/// caller first. Returns the record to show.
+///
+/// A saved record that holds a root (initialize pending, initialized, seeded,
+/// owned, or mid-adoption) is never overwritten by a pause: the pause is shown
+/// on a copy, so the projection id, root identity, and the one-root guard
+/// survive an offline launch, a busy wrapper, a timeout, or a cancel.
 pub(crate) fn prepare_with<R: ProjectionRunner>(
     client: &PersonalProjectionClient<R>,
     root_input: &str,
@@ -293,47 +309,58 @@ pub(crate) fn prepare_with<R: ProjectionRunner>(
     };
     let root_str = root.to_string_lossy().into_owned();
     let existing = read_record(state_dir);
-    if let Some(existing) = existing.as_ref().filter(|r| r.phase.holds_root()) {
+    if let Some(existing) = existing
+        .as_ref()
+        .filter(|r| r.phase.holds_root() || r.phase.in_adoption())
+    {
         // One personal root per state directory.
         if existing.root_path != root_str {
             return RootRecord::paused(&root, "state_in_use_by_other_root", false);
         }
     }
     let existing = existing.filter(|r| r.root_path == root_str);
+    let protected = existing
+        .as_ref()
+        .filter(|r| r.phase.holds_root() || r.phase.in_adoption());
 
-    let next = match client.inspect(&root_str) {
+    match client.inspect(&root_str) {
         Outcome::Done(report) => match report.status {
-            InspectStatus::NewRoot => {
-                if existing.as_ref().is_some_and(|r| r.phase.holds_root()) {
-                    // We recorded this root before and it is gone now.
-                    RootRecord::paused(&root, "root_replaced", false)
-                } else if let Err(reason) = prepare_parent(&root, state_dir) {
-                    RootRecord::paused(&root, reason, false)
-                } else {
-                    initialize_into_record(client, &root, &root_str)
+            InspectStatus::NewRoot => match protected {
+                // Our earlier initialize never committed (the root is still
+                // absent): initialize again. Exclusive creation makes this safe.
+                Some(record) if record.phase == RootPhase::InitializePending => {
+                    initialize_new_root(client, &root, &root_str, state_dir)
                 }
-            }
+                // We recorded this root before and it is gone now.
+                Some(record) => with_reason(record, "root_replaced", false),
+                None => initialize_new_root(client, &root, &root_str, state_dir),
+            },
             InspectStatus::OwnerObserved => {
-                owner_observed_record(&root, existing.as_ref(), report.projection_id)
+                owner_observed(&root, protected, report.projection_id, state_dir)
             }
-            InspectStatus::AdoptionRequired => adoption_record(&root, existing.as_ref()),
+            InspectStatus::AdoptionRequired => {
+                persist(state_dir, adoption_record(&root, existing.as_ref()))
+            }
         },
         Outcome::Paused(pause) if pause.requires_adoption() => {
-            adoption_record(&root, existing.as_ref())
+            persist(state_dir, adoption_record(&root, existing.as_ref()))
         }
-        Outcome::Paused(pause) => {
-            let paused = RootRecord::paused(&root, &pause_name(&pause), pause.retryable());
-            if let Some(existing) = existing.as_ref().filter(|r| r.phase.in_adoption()) {
-                // Keep the reviewed plan; show the pause without saving it.
-                let mut view = existing.clone();
-                view.reason = paused.reason;
-                view.retryable = paused.retryable;
-                return view;
-            }
-            paused
-        }
-    };
-    persist(state_dir, next)
+        Outcome::Paused(pause) => match protected {
+            Some(record) => with_reason(record, &pause_name(&pause), pause.retryable()),
+            None => persist(
+                state_dir,
+                RootRecord::paused(&root, &pause_name(&pause), pause.retryable()),
+            ),
+        },
+    }
+}
+
+/// A copy of `record` showing `reason`, without saving it.
+fn with_reason(record: &RootRecord, reason: &str, retryable: bool) -> RootRecord {
+    let mut view = record.clone();
+    view.reason = Some(reason.to_string());
+    view.retryable = retryable;
+    view
 }
 
 fn persist(state_dir: &Path, record: RootRecord) -> RootRecord {
@@ -341,56 +368,109 @@ fn persist(state_dir: &Path, record: RootRecord) -> RootRecord {
         Ok(()) => record,
         Err(error) => {
             log("personal-root", &error);
-            RootRecord::paused(Path::new(&record.root_path), "state_unreadable", false)
+            with_reason(&record, "state_unreadable", false)
         }
     }
 }
 
-fn initialize_into_record<R: ProjectionRunner>(
+/// Device and inode of `path` itself (never through a symlink).
+pub(crate) fn root_identity(path: &Path) -> Option<(u64, u64)> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.is_dir() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some((meta.dev(), meta.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        Some((0, 0))
+    }
+}
+
+fn initialized_record(root: &Path, projection_id: String) -> RootRecord {
+    let mut record = RootRecord::new(root, RootPhase::Initialized);
+    record.projection_id = Some(projection_id);
+    if let Some((device, inode)) = root_identity(root) {
+        record.root_device = Some(device);
+        record.root_inode = Some(inode);
+    }
+    record
+}
+
+fn initialize_new_root<R: ProjectionRunner>(
     client: &PersonalProjectionClient<R>,
     root: &Path,
     root_str: &str,
+    state_dir: &Path,
 ) -> RootRecord {
+    if let Err(reason) = prepare_parent(root, state_dir) {
+        return RootRecord::paused(root, reason, false);
+    }
+    // Record the intent before spawning, so a lost result is recoverable.
+    let pending = RootRecord::new(root, RootPhase::InitializePending);
+    if let Err(error) = write_record(state_dir, &pending) {
+        log("personal-root", &error);
+        return RootRecord::paused(root, "state_unreadable", false);
+    }
     match client.initialize(root_str) {
-        Outcome::Done(initialized) => {
-            let mut record = RootRecord::new(root, RootPhase::Initialized);
-            record.projection_id = Some(initialized.projection_id);
-            record
-        }
+        Outcome::Done(initialized) => persist(
+            state_dir,
+            initialized_record(root, initialized.projection_id),
+        ),
         Outcome::Paused(pause) if pause.requires_adoption() => {
-            RootRecord::new(root, RootPhase::AdoptionReview)
+            persist(state_dir, RootRecord::new(root, RootPhase::AdoptionReview))
         }
-        Outcome::Paused(pause) => RootRecord::paused(root, &pause_name(&pause), pause.retryable()),
+        // Keep the pending intent saved; the next run re-inspects.
+        Outcome::Paused(pause) => with_reason(&pending, &pause_name(&pause), pause.retryable()),
     }
 }
 
-fn owner_observed_record(
+fn root_is_empty(root: &Path) -> bool {
+    std::fs::read_dir(root).is_ok_and(|mut entries| entries.next().is_none())
+}
+
+fn owner_observed(
     root: &Path,
-    existing: Option<&RootRecord>,
+    protected: Option<&RootRecord>,
     projection_id: Option<String>,
+    state_dir: &Path,
 ) -> RootRecord {
-    match existing {
-        // Our own initialize, seeded or not yet seeded. A different projection
-        // than the one we recorded is recovery, never a silent reseed.
+    match protected {
+        // Our initialize committed but its result was lost. An empty root is
+        // exactly what initialize leaves, so the first seed may still run.
+        // Anything else in it is recovery, never a silent seed.
+        Some(record) if record.phase == RootPhase::InitializePending => match projection_id {
+            Some(id) if root_is_empty(root) => persist(state_dir, initialized_record(root, id)),
+            _ => with_reason(record, "state_changed", false),
+        },
+        // Our own root. A different projection than the recorded one is
+        // recovery, never a silent reseed.
         Some(record)
             if matches!(
                 record.phase,
-                RootPhase::Initialized | RootPhase::Seeded | RootPhase::ResumeAuthorized
+                RootPhase::Initialized
+                    | RootPhase::Seeded
+                    | RootPhase::OwnerObserved
+                    | RootPhase::ResumeAuthorized
             ) =>
         {
             if projection_id.is_some()
                 && record.projection_id.is_some()
                 && projection_id != record.projection_id
             {
-                RootRecord::paused(root, "state_changed", false)
+                with_reason(record, "state_changed", false)
             } else {
                 record.clone()
             }
         }
-        _ => {
+        Some(record) => with_reason(record, "state_changed", false),
+        None => {
             let mut record = RootRecord::new(root, RootPhase::OwnerObserved);
             record.projection_id = projection_id;
-            record
+            persist(state_dir, record)
         }
     }
 }
@@ -416,7 +496,8 @@ pub(crate) fn plan_adoption_with<R: ProjectionRunner>(
     if record.phase != RootPhase::AdoptionReview {
         return Err("This folder is not waiting for a review.".to_string());
     }
-    let next = match client.plan_adoption(&record.root_path) {
+    let state_str = state_dir.to_string_lossy().into_owned();
+    let next = match client.plan_adoption(&record.root_path, &state_str) {
         Outcome::Done(plan) => {
             let mut next = record.clone();
             next.plan = RawValue::from_string(plan.raw_json().to_string()).ok();
@@ -513,12 +594,18 @@ pub(crate) fn approve_with<R: ProjectionRunner>(
         }
     };
     if let Some(pause) = pause {
-        // The record stays at its phase; nothing retries on its own.
-        let mut view = record;
-        view.reason = Some(pause_name(&pause));
-        view.retryable = pause.retryable();
+        // The record keeps its phase and plan; nothing retries on its own. A
+        // typed stop that is not retryable is saved with the record so the
+        // step stays hidden until the folder is checked again.
+        let view = with_reason(&record, &pause_name(&pause), pause.retryable());
+        let stopped = matches!(&pause, Pause::Wire(w) if !w.retryable);
+        let record = if stopped {
+            persist(state_dir, view)
+        } else {
+            view
+        };
         return Ok(ApprovalResult {
-            record: view,
+            record,
             start_runner: false,
         });
     }
@@ -570,22 +657,101 @@ pub(crate) fn seed_decision_with(
     if !gate {
         return Ok(SeedDecision::Legacy);
     }
-    let refused = || {
-        "HQ has not finished preparing this folder. Go back to the folder step and try again."
-            .to_string()
-    };
-    let root = canonical_paths(root_input, state_dir).map_err(|_| refused())?;
-    let record = read_record(state_dir).ok_or_else(refused)?;
+    let root = canonical_paths(root_input, state_dir).map_err(|_| seed_refused())?;
+    let record = read_record(state_dir).ok_or_else(seed_refused)?;
     if record.root_path != root.to_string_lossy() || !root.is_dir() {
-        return Err(refused());
+        return Err(seed_refused());
     }
     match record.phase {
-        RootPhase::Initialized => Ok(SeedDecision::Seed),
+        RootPhase::Initialized => {
+            check_recorded_identity(&record, &root)?;
+            Ok(SeedDecision::Seed)
+        }
         RootPhase::Seeded | RootPhase::OwnerObserved | RootPhase::ResumeAuthorized => {
             Ok(SeedDecision::KeepExisting)
         }
-        _ => Err(refused()),
+        _ => Err(seed_refused()),
     }
+}
+
+fn seed_refused() -> String {
+    "HQ has not finished preparing this folder. Go back to the folder step and try again."
+        .to_string()
+}
+
+fn root_replaced_error() -> String {
+    "This folder was moved or replaced after HQ prepared it. HQ wrote nothing into it.".to_string()
+}
+
+fn check_recorded_identity(record: &RootRecord, root: &Path) -> Result<(), String> {
+    let expected = record.root_device.zip(record.root_inode);
+    match (expected, root_identity(root)) {
+        (Some(expected), Some(actual)) if expected == actual => Ok(()),
+        _ => Err(root_replaced_error()),
+    }
+}
+
+/// The write boundary for the first seed. `check` runs before every template
+/// write and refuses a root whose identity changed; `revalidate_with` asks the
+/// wrapper, right before the first write, that the current account still owns
+/// exactly the root this Desktop initialized.
+pub(crate) struct SeedFence {
+    root: PathBuf,
+    record: RootRecord,
+}
+
+impl SeedFence {
+    pub(crate) fn for_root(state_dir: &Path, root_input: &str) -> Result<Self, String> {
+        let root = canonical_paths(root_input, state_dir).map_err(|_| seed_refused())?;
+        let record = read_record(state_dir).ok_or_else(seed_refused)?;
+        if record.phase != RootPhase::Initialized || record.root_path != root.to_string_lossy() {
+            return Err(seed_refused());
+        }
+        Ok(Self { root, record })
+    }
+
+    /// Cheap per-write check: same folder (device and inode), not a symlink.
+    pub(crate) fn check(&self) -> Result<(), String> {
+        check_recorded_identity(&self.record, &self.root)
+    }
+
+    /// Before the first write: identity, then the wrapper's `inspect` must
+    /// report the recorded projection as owned by the current account.
+    pub(crate) fn revalidate_with<R: ProjectionRunner>(
+        &self,
+        client: &PersonalProjectionClient<R>,
+    ) -> Result<(), String> {
+        self.check()?;
+        match client.inspect(&self.record.root_path) {
+            Outcome::Done(report)
+                if report.status == InspectStatus::OwnerObserved
+                    && report.projection_id == self.record.projection_id =>
+            {
+                self.check()
+            }
+            Outcome::Done(_) => Err(root_replaced_error()),
+            Outcome::Paused(pause) => Err(format!(
+                "HQ stopped before writing into this folder ({}).",
+                pause_name(&pause)
+            )),
+        }
+    }
+
+    /// Production revalidation through the pinned wrapper.
+    pub(crate) async fn revalidate(&self) -> Result<(), String> {
+        let fence = SeedFence {
+            root: self.root.clone(),
+            record: self.record.clone(),
+        };
+        match with_client(move |client| fence.revalidate_with(client)).await? {
+            Some(result) => result,
+            None => Err(personal_root_reason_message("unsupported_cli")),
+        }
+    }
+}
+
+fn personal_root_reason_message(reason: &str) -> String {
+    format!("HQ stopped before writing into this folder ({reason}).")
 }
 
 /// Record that the first seed finished, so no later run re-extracts.
@@ -604,7 +770,8 @@ pub(crate) fn mark_seeded(state_dir: &Path, root: &str) {
 /// held here. With the gate off this is always true.
 pub(crate) fn personal_sync_permitted(record: Option<&RootRecord>, root: &Path) -> bool {
     record.is_some_and(|record| {
-        record.root_path == root.to_string_lossy()
+        record.reason.is_none()
+            && record.root_path == root.to_string_lossy()
             && matches!(
                 record.phase,
                 RootPhase::Initialized
@@ -626,7 +793,28 @@ pub struct PlanEntryView {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct UploadEntryView {
+    pub key: String,
+    pub kind: String,
+    pub size: u64,
+    pub wire_size: u64,
+    pub local_hash: String,
+    pub wire_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct PlanView {
+    pub transaction_id: String,
+    pub state_directory: String,
+    pub authority_digest: String,
+    pub inventory_digest: String,
+    pub max_upload_rows: u64,
+    pub max_upload_bytes: u64,
+    pub max_duration_ms: u64,
+    /// Every upload the baseline phase may make. Capped for display; the
+    /// total is in `upload_count`.
+    pub upload_entries: Vec<UploadEntryView>,
     pub approved_plan_digest: String,
     pub file_count: u64,
     pub byte_count: u64,
@@ -653,9 +841,13 @@ pub struct PersonalRootView {
     /// `preserve`, `adopt`, `baseline`, or `resume` when a user approval is next.
     pub next_phase: Option<String>,
     pub plan: Option<PlanView>,
+    /// Personal sync is held, but an hq daemon this app did not start is
+    /// running sync and cannot be told to leave personal out.
+    pub hold_unenforced: bool,
 }
 
 const PRESERVED_ONLY_PREVIEW: usize = 200;
+const UPLOAD_ENTRIES_PREVIEW: usize = 2_000;
 
 impl PersonalRootView {
     pub(crate) fn legacy() -> Self {
@@ -666,6 +858,7 @@ impl PersonalRootView {
             retryable: false,
             next_phase: None,
             plan: None,
+            hold_unenforced: false,
         }
     }
 
@@ -677,6 +870,7 @@ impl PersonalRootView {
             retryable: false,
             next_phase: None,
             plan: None,
+            hold_unenforced: false,
         }
     }
 
@@ -684,6 +878,29 @@ impl PersonalRootView {
         let plan = record.reviewed_plan().map(|reviewed| {
             let plan = reviewed.plan();
             PlanView {
+                transaction_id: plan.transaction_id.clone(),
+                state_directory: plan.state_directory.clone(),
+                authority_digest: plan.authority_digest.clone(),
+                inventory_digest: plan.inventory_digest.clone(),
+                max_upload_rows: plan.max_upload_rows,
+                max_upload_bytes: plan.max_upload_bytes,
+                max_duration_ms: plan.max_duration_ms,
+                upload_entries: plan
+                    .upload_entries
+                    .iter()
+                    .take(UPLOAD_ENTRIES_PREVIEW)
+                    .map(|e| UploadEntryView {
+                        key: e.key.clone(),
+                        kind: match e.kind {
+                            pp::UploadKind::File => "file".to_string(),
+                            pp::UploadKind::Symlink => "symlink".to_string(),
+                        },
+                        size: e.size,
+                        wire_size: e.wire_size,
+                        local_hash: e.local_hash.clone(),
+                        wire_hash: e.wire_hash.clone(),
+                    })
+                    .collect(),
                 approved_plan_digest: plan.approved_plan_digest.clone(),
                 file_count: plan.file_count,
                 byte_count: plan.byte_count,
@@ -718,8 +935,10 @@ impl PersonalRootView {
             next_phase: record
                 .phase
                 .next_approval(record.plan.is_some())
+                .filter(|_| record.reason.is_none() || record.retryable)
                 .map(|p| phase_name(p).to_string()),
             plan,
+            hold_unenforced: false,
         }
     }
 }
@@ -753,7 +972,7 @@ fn state_dir() -> Result<PathBuf, String> {
 /// Run `body` with a fresh production client on a blocking thread. `None`
 /// means the paired build is not available, which is reported as unsupported.
 async fn with_client<T: Send + 'static>(
-    body: impl FnOnce(&PersonalProjectionClient<pp::NpxProjectionRunner>) -> T + Send + 'static,
+    body: impl FnOnce(&PersonalProjectionClient<pp::PinnedProjectionRunner>) -> T + Send + 'static,
 ) -> Result<Option<T>, String> {
     // Sign-out and quit close this latch, signal the wrapper child, and wait
     // for it to exit before tokens or paths change.
@@ -782,10 +1001,37 @@ pub fn personal_root_state() -> PersonalRootView {
     if !paired_root_gate_enabled() {
         return PersonalRootView::legacy();
     }
-    match state_dir().ok().and_then(|dir| read_record(&dir)) {
+    let mut view = match state_dir().ok().and_then(|dir| read_record(&dir)) {
         Some(record) => PersonalRootView::from_record(&record),
         None => PersonalRootView::legacy(),
+    };
+    view.hold_unenforced = hq_desktop_core::daemon::personal_projection_held()
+        && !crate::commands::hq_daemon_host::personal_hold_reaches_runner();
+    view
+}
+
+/// "Try again" / "Check this folder again": run inspect (and initialize for a
+/// genuinely new root) for the recorded folder. Never retries a phase.
+#[tauri::command]
+pub async fn personal_root_recheck(app: tauri::AppHandle) -> Result<PersonalRootView, String> {
+    if !paired_root_gate_enabled() {
+        return Ok(PersonalRootView::legacy());
     }
+    let state = state_dir()?;
+    let root = read_record(&state)
+        .map(|record| record.root_path)
+        .ok_or("There is no folder to check.")?;
+    let view = prepare_personal_root(app.clone(), root).await?;
+    if view.phase != "paused" && view.reason.is_none() {
+        // A confirmed owner lifts the launch hold.
+        if let (Ok(state), Some(root)) = (state_dir(), view.root_path.as_deref()) {
+            if personal_sync_permitted(read_record(&state).as_ref(), Path::new(root)) {
+                hq_desktop_core::daemon::set_personal_projection_hold(false);
+            }
+        }
+    }
+    emit_changed(&app);
+    Ok(view)
 }
 
 /// Directory step: authority first, then inspect, then (for a new root)
@@ -858,19 +1104,37 @@ pub async fn personal_root_approve_phase(
     Ok(PersonalRootView::from_record(&result.record))
 }
 
-/// After `resume_authorized`: lift the personal hold and start the Desktop's
-/// own runner once. The wrapper never starts it.
+/// After `resume_authorized`: lift the personal hold so the Desktop's own
+/// runner includes personal. The wrapper never starts a runner.
+///
+/// - During onboarding nothing starts here: finishing setup starts the sync
+///   services, now with personal included.
+/// - A running watcher is never stopped (that would interrupt company sync).
+///   The hosted hq daemon picks the change up through its settings watcher;
+///   the legacy watcher gets one ordinary sync pass now, and includes
+///   personal from its next generation.
 fn start_owned_runner_after_resume(app: &tauri::AppHandle) {
     hq_desktop_core::daemon::set_personal_projection_hold(false);
-    if crate::commands::hq_daemon_host::current_phase()
-        == crate::commands::hq_daemon_host::HostPhase::Legacy
+    if !crate::commands::lifecycle::sync_held_for_setup()
+        && crate::commands::hq_daemon_host::current_phase()
+            == crate::commands::hq_daemon_host::HostPhase::Legacy
     {
-        // The running watcher was started without the personal target. Stop
-        // only that app-owned watcher; the supervisor starts the next one with
-        // personal included.
-        let _ = crate::commands::daemon::stop_watch_runner();
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = crate::commands::sync::start_sync_with_trigger(
+                app,
+                None,
+                crate::commands::cdp_mirror::SyncTrigger::Auto,
+            )
+            .await
+            {
+                log(
+                    "personal-root",
+                    &format!("first personal pass after resume did not start: {error}"),
+                );
+            }
+        });
     }
-    crate::commands::hq_daemon_host::start_sync_services_after_setup(app.clone());
     emit_changed(app);
 }
 
@@ -913,6 +1177,14 @@ pub(crate) fn on_launch(app: &tauri::AppHandle) {
                 "personal-root",
                 "personal sync held at launch: the folder needs review or recovery",
             );
+            if !crate::commands::hq_daemon_host::personal_hold_reaches_runner() {
+                // Contract gap: an hq daemon this app did not start keeps its
+                // own settings. Shown in the review; activation stays held.
+                log(
+                    "personal-root",
+                    "personal hold cannot reach the running hq daemon (not started by this app)",
+                );
+            }
         }
         emit_changed(&app);
     });
