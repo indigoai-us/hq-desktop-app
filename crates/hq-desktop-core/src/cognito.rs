@@ -3578,6 +3578,8 @@ mod tests {
         let keychain = TestKeychain::install();
         let tokens = keychain_tokens("fallback");
         set_tokens(&tokens).await.expect("store tokens");
+        // Mirror writes are queued; the fallback reads the store directly.
+        crate::token_keychain::flush_for_tests();
 
         let path = home.path().join(".hq").join("cognito-tokens.json");
         std::fs::write(&path, "{ half-written").unwrap();
@@ -3598,6 +3600,8 @@ mod tests {
         let _keychain = TestKeychain::install();
         let tokens = keychain_tokens("rejected");
         set_tokens(&tokens).await.expect("store tokens");
+        // Mirror writes are queued; the fallback reads the store directly.
+        crate::token_keychain::flush_for_tests();
         invalidate_tokens(&tokens).await.expect("mark rejected");
 
         let path = home.path().join(".hq").join("cognito-tokens.json");

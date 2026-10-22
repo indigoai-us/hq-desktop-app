@@ -70,22 +70,44 @@ pub fn terminal_npm_code(message: &str) -> Option<&str> {
     })
 }
 
+/// Exclusive hold on `.hq-sync-retry.lock`, released explicitly on drop.
+///
+/// flock(2) locks belong to the open file description, and a child forked by
+/// any thread of this process shares that description until it execs. Closing
+/// our descriptor alone would leave the lock held for as long as such a child
+/// lives between fork and exec, so the next update would be refused as busy.
+/// Unlocking releases the lock for every descriptor that shares it.
+struct StateLock(fs::File);
+
+impl StateLock {
+    fn acquire(root: &Path) -> Result<Self, String> {
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(root.join(".hq-sync-retry.lock"))
+            .map_err(|e| e.to_string())?;
+        // Contention is a bounded refusal, not an unbounded event-loop wait.
+        file.try_lock_exclusive()
+            .map_err(|e| format!("Sync recovery state is busy: {e}"))?;
+        Ok(Self(file))
+    }
+}
+
+impl Drop for StateLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.0);
+    }
+}
+
 fn update<T>(
     root: &Path,
     version: &str,
     manual_repair: bool,
     action: impl FnOnce(&mut Episode) -> T,
 ) -> Result<T, String> {
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(root.join(".hq-sync-retry.lock"))
-        .map_err(|e| e.to_string())?;
-    // Contention is a bounded refusal, not an unbounded event-loop wait.
-    lock.try_lock_exclusive()
-        .map_err(|e| format!("Sync recovery state is busy: {e}"))?;
+    let _lock = StateLock::acquire(root)?;
     let file = root.join(FILE);
     let mut episode = match fs::File::open(&file) {
         Ok(source) => {
@@ -441,5 +463,17 @@ mod tests {
             .unwrap();
         lock.try_lock_exclusive().unwrap();
         assert!(allow_start(dir.path(), "v1", false).is_err());
+    }
+
+    #[test]
+    fn lock_is_released_even_when_a_child_shares_its_descriptor() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = StateLock::acquire(dir.path()).unwrap();
+        // A child forked while the lock is held shares the open file
+        // description until it execs; a duplicated descriptor is the same.
+        let inherited = lock.0.try_clone().unwrap();
+        drop(lock);
+        assert!(allow_start(dir.path(), "v1", false).unwrap());
+        drop(inherited);
     }
 }
