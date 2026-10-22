@@ -161,7 +161,6 @@ export const RAIL_OUTPOST_FLAG = "desktop.rail-outpost-v1";
 export const RAIL_DEPLOYMENTS_ACTIONS_FLAG =
   "desktop.rail-deployments-actions-v1";
 export const RAIL_SHORTCUT_EDITING_FLAG = "desktop.rail-shortcut-editing-v1";
-export const RAIL_WORKFORCE_LIMITS_FLAG = "desktop.rail-workforce-limits-v1";
 export const RAIL_ATLAS_FLAG = "desktop.rail-atlas-v1";
 /**
  * Daily Brief rail entry and page (owner hold 2026-10-14): Indigo members
@@ -180,7 +179,6 @@ export const RAIL_GATE_EVERYONE_DEFAULT: Readonly<Record<string, boolean>> = {
   [RAIL_OUTPOST_FLAG]: false,
   [RAIL_DEPLOYMENTS_ACTIONS_FLAG]: false,
   [RAIL_SHORTCUT_EDITING_FLAG]: false,
-  [RAIL_WORKFORCE_LIMITS_FLAG]: false,
   [RAIL_ATLAS_FLAG]: true,
   [RAIL_BRIEF_FLAG]: false,
 };
@@ -213,7 +211,6 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   [RAIL_OUTPOST_FLAG]: RAIL_OUTPOST_FLAG,
   [RAIL_DEPLOYMENTS_ACTIONS_FLAG]: RAIL_DEPLOYMENTS_ACTIONS_FLAG,
   [RAIL_SHORTCUT_EDITING_FLAG]: RAIL_SHORTCUT_EDITING_FLAG,
-  [RAIL_WORKFORCE_LIMITS_FLAG]: RAIL_WORKFORCE_LIMITS_FLAG,
   [RAIL_ATLAS_FLAG]: RAIL_ATLAS_FLAG,
   [RAIL_BRIEF_FLAG]: RAIL_BRIEF_FLAG,
 };
