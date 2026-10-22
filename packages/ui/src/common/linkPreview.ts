@@ -356,7 +356,7 @@ function parseGithub(url: URL): LinkPreview | null {
 
 // ------------------------------------------------------------------ deploy
 
-const HQ_DEPLOY_ROOTS = ['hq.computer', 'indigo-hq.com'];
+const HQ_DEPLOY_ROOTS = ['hq.computer', 'hq.work', 'indigo-hq.com'];
 
 function parseDeploy(url: URL): LinkPreview | null {
   const host = bareHost(url);

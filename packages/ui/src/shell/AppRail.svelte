@@ -10,7 +10,9 @@
   import CompanyIcon from "../company/CompanyIcon.svelte";
   import RailYouCard from "./RailYouCard.svelte";
   import TierMark from "../badges/TierMark.svelte";
+  import HqGlow from "../settings/HqGlow.svelte";
   import { topBadge } from "../badges/badge-tier.js";
+  import { paintableAvatarSrc } from "../avatars/csp-image-src.js";
   import type { EarnedBadge, ResolvedBadge } from "../badges/badge-catalog.js";
   import { railInitials, railShortcutItems, railTooltip, type RailItem, type RailItemId } from "./app-rail.js";
 
@@ -19,6 +21,10 @@
     activeId: RailItemId | null;
     unreadCount?: number;
     youInitials?: string;
+    /** Your profile photo; initials show when it is missing or fails to load. */
+    youPhoto?: string | null;
+    /** Goes up each time your photo is saved; plays the HQ glow and a pointing arrow once. */
+    youPhotoPulse?: number;
     onselect: (item: RailItem) => void;
     /** Drag reorder of pinned company tiles. Ids stay out of the DOM. */
     onreorderpins?: (fromUid: string, toUid: string) => void;
@@ -45,6 +51,8 @@
     activeId,
     unreadCount = 0,
     youInitials = "",
+    youPhoto = null,
+    youPhotoPulse = 0,
     onselect,
     onreorderpins,
     onmore,
@@ -64,6 +72,11 @@
   const you = $derived(items.find((item) => item.kind === "you") ?? null);
   /** Your tier mark on the You picture; the hover card names your badges. */
   const youTop = $derived(topBadge(youBadges));
+  let failedYouPhoto = $state<string | null>(null);
+  const youPhotoSrc = $derived.by(() => {
+    const src = paintableAvatarSrc(youPhoto);
+    return src && src !== failedYouPhoto ? src : null;
+  });
 
   const initials = railInitials;
 
@@ -211,7 +224,15 @@
         {:else if item.id === "outpost"}
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="6" rx="1.5" /><rect x="3" y="13" width="18" height="6" rx="1.5" /><path d="M7 8h.01M7 16h.01" /></svg>
         {:else if item.kind === "you"}
-          <span class="avatar" aria-hidden="true">{youInitials || initials(item.label)}{#if youTop}<TierMark tier={youTop.tier} avatar={26} badge={youTop} card={false} anySize />{/if}</span>
+          <span class="avatar" aria-hidden="true">{#if youPhotoSrc}<img class="avatar-photo" src={youPhotoSrc} alt="" data-testid="rail-you-photo" onerror={() => (failedYouPhoto = youPhotoSrc)} />{:else}{youInitials || initials(item.label)}{/if}{#if youTop}<TierMark tier={youTop.tier} avatar={26} badge={youTop} card={false} anySize />{/if}</span>
+          {#key youPhotoPulse}
+            {#if youPhotoPulse > 0}
+              <span class="you-glow"><HqGlow testid="rail-you-glow" /></span>
+              <span class="you-arrow" data-testid="rail-you-arrow" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6" /></svg>
+              </span>
+            {/if}
+          {/key}
           {#if youLive}
             <span class="live you-live" class:with-tier={Boolean(youTop)} data-testid="rail-you-live" aria-hidden="true"></span>
           {/if}
@@ -355,6 +376,14 @@
     font-size: 10px;
   }
 
+  .avatar-photo {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    object-fit: cover;
+    display: block;
+  }
+
   .rail-btn[aria-current="page"] .co-tile {
     background: var(--v4-primary-bg);
     color: var(--v4-primary-fg);
@@ -416,9 +445,62 @@
     100% { opacity: 1; }
   }
 
+  /* After a photo save: the HQ glow around the photo, and an arrow beside the
+     rail pointing at it. Opacity and transform only; gone after 3 seconds. */
+  .you-glow {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 26px;
+    height: 26px;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+  }
+
+  .you-arrow {
+    position: absolute;
+    left: calc(100% + 6px);
+    top: 50%;
+    width: 18px;
+    height: 18px;
+    margin-top: -9px;
+    color: var(--v4-text-1, #fafafa);
+    pointer-events: none;
+    opacity: 0;
+    animation: you-arrow 3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  }
+
+  .rail-btn .you-arrow svg {
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  @keyframes you-arrow {
+    0% { opacity: 0; transform: translateX(12px); }
+    12% { opacity: 1; transform: translateX(0); }
+    26% { transform: translateX(5px); }
+    40% { transform: translateX(0); }
+    54% { transform: translateX(5px); }
+    68% { opacity: 1; transform: translateX(0); }
+    100% { opacity: 0; transform: translateX(0); }
+  }
+
+  @keyframes you-arrow-still {
+    0%, 100% { opacity: 0; }
+    15%, 70% { opacity: 1; }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .live {
       animation: none;
+    }
+    .you-arrow {
+      animation-name: you-arrow-still;
     }
   }
 </style>

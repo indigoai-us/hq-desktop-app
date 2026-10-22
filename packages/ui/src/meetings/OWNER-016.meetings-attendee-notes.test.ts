@@ -14,6 +14,7 @@ import { pastNotesState } from "./meeting-states-model";
 import type { MeetingEvent, ScheduledBot } from "./meetings-model";
 import {
   loadRecordedSignals,
+  mergeRecordedMeetings,
   ownRecordedMeetings,
   parseRecordedDetail,
   parseRecordedMeetings,
@@ -36,6 +37,61 @@ const myBots: Pick<ScheduledBot, "botId">[] = [{ botId: "bot-mine" }];
 const myCalendar: MeetingEvent[] = [
   { id: "cal-1", summary: "Pricing call", status: "confirmed", start: { dateTime: "2026-10-01T15:00:00.000Z" }, end: { dateTime: "2026-10-01T15:30:00.000Z" } },
 ];
+
+// feedback_bc59026e-5dad-4e0a-a567-303a20618dab: a saved desktop SDK
+// recording has no bot id and no calendar event, and its recording id leaves
+// activeMeetings once it stops, so the rail hid it and the recording looked
+// lost. hq-pro now marks the caller's own recordings `recordedByCaller`.
+describe("own desktop recordings (recordedByCaller)", () => {
+  const sdkWire = {
+    meetings: [
+      { meetingId: "sdk-mine", title: "Desktop recording", startTime: "2026-10-01T20:00:00.000Z", hasSignals: false, companyId: "cmp_indigo", attributed: true, recordedByCaller: true },
+      { meetingId: "sdk-teammate", title: "Teammate recording", startTime: "2026-10-01T21:00:00.000Z", hasSignals: false, companyId: "cmp_indigo", attributed: true, recordedByCaller: false },
+      { meetingId: "sdk-old-server", title: "No flag", startTime: "2026-10-01T22:00:00.000Z", hasSignals: false, companyId: "cmp_indigo", attributed: true },
+      { meetingId: "sdk-truthy-string", title: "Bad flag", startTime: "2026-10-01T23:00:00.000Z", hasSignals: false, companyId: "cmp_indigo", attributed: true, recordedByCaller: "true" },
+    ],
+  };
+  const rows = parseRecordedMeetings(sdkWire);
+  const noSignals = { botIds: [], calendarEvents: [], localRecordingIds: [] };
+
+  it("keeps a saved recording the caller made with no bot, calendar or active-recording match", () => {
+    expect(ownRecordedMeetings(rows, noSignals).map((m) => m.meetingId)).toEqual(["sdk-mine"]);
+  });
+
+  it("still hides a teammate's recording, a row without the flag, and a non-boolean flag", () => {
+    const ids = ownRecordedMeetings(rows, noSignals).map((m) => m.meetingId);
+    expect(ids).not.toContain("sdk-teammate");
+    expect(ids).not.toContain("sdk-old-server");
+    expect(ids).not.toContain("sdk-truthy-string");
+  });
+
+  it("keeps the flag through the parsed-row cache", () => {
+    const cached = parseRecordedMeetings(JSON.parse(JSON.stringify(rows)));
+    expect(cached).toEqual(rows);
+    expect(ownRecordedMeetings(cached, noSignals).map((m) => m.meetingId)).toEqual(["sdk-mine"]);
+  });
+
+  it("keeps the flag when the same meeting arrives from two scopes", () => {
+    const flagged = rows.find((m) => m.meetingId === "sdk-mine")!;
+    const unattributed = { ...flagged, companyUid: null, recordedByCaller: false };
+    for (const lists of [[[unattributed], [flagged]], [[flagged], [{ ...unattributed, recordedByCaller: false }]]]) {
+      const merged = mergeRecordedMeetings(lists);
+      expect(merged).toHaveLength(1);
+      expect(merged[0]).toMatchObject({ companyUid: "cmp_indigo", recordedByCaller: true });
+    }
+  });
+
+  it("lists the saved recording in the Meetings rail", () => {
+    const sections = meetingsRailSections({
+      events: withRecordedEvents([], ownRecordedMeetings(rows, noSignals)),
+      botsByEventId: new Map(),
+      companyNamesByUid: new Map([["cmp_indigo", "Indigo"]]),
+      filter: EMPTY_MEETINGS_FILTER,
+      now: new Date("2026-10-02T20:00:00Z"),
+    });
+    expect(sections.flatMap((s) => s.rows.map((r) => r.title))).toEqual(["Desktop recording"]);
+  });
+});
 
 describe("attendee filter", () => {
   const rows = parseRecordedMeetings(listWire);
