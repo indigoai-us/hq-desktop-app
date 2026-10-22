@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Workspace } from "../../chat/workspaces.js";
 import {
   shareTarget,
+  folderShareLocation,
   PERSONAL_VAULT,
   breadcrumbs,
   isSensitiveName,
@@ -147,5 +148,46 @@ describe("shareTarget (QA-005)", () => {
     const target = shareTarget(PERSONAL_VAULT, "personal/knowledge/idea-bank.md");
     expect(target).toMatchObject({ path: "personal/knowledge/idea-bank.md", company: null, available: false });
     expect(target.reason).toContain("company vault");
+  });
+});
+
+describe("folderShareLocation (feedback 3e124bcd)", () => {
+  const roster = [ws({ slug: "acme", cloudUid: "cmp_1" }), ws({ slug: "remote", cloudUid: "cmp_2", hasLocalFolder: false })];
+
+  it("maps a company-relative folder share to that company's vault folder", () => {
+    expect(folderShareLocation({ vaultPath: "knowledge/clients/frank/", companyUid: "cmp_1" }, roster)).toEqual({
+      vault: "company:acme",
+      path: "companies/acme/knowledge/clients/frank/",
+    });
+  });
+
+  it("accepts a share path already rooted at companies/<slug>/", () => {
+    expect(folderShareLocation({ vaultPath: "companies/acme/workspaces/team/", companyUid: "acme" }, roster)).toEqual({
+      vault: "company:acme",
+      path: "companies/acme/workspaces/team/",
+    });
+  });
+
+  it("opens the company vault home for a whole-company share", () => {
+    expect(folderShareLocation({ vaultPath: "/", companyUid: "cmp_1" }, roster)).toEqual({ vault: "company:acme", path: null });
+  });
+
+  it("returns null for an unknown company, a company without a local folder, or a parent segment", () => {
+    expect(folderShareLocation({ vaultPath: "knowledge/", companyUid: "cmp_unknown" }, roster)).toBeNull();
+    expect(folderShareLocation({ vaultPath: "knowledge/", companyUid: "cmp_2" }, roster)).toBeNull();
+    expect(folderShareLocation({ vaultPath: "knowledge/../../secret/", companyUid: "cmp_1" }, roster)).toBeNull();
+    expect(folderShareLocation({ vaultPath: "knowledge/", companyUid: "" }, roster)).toBeNull();
+  });
+
+  it("maps a glob folder share to the folder it covers (feedback ae977608)", () => {
+    expect(folderShareLocation({ vaultPath: "projects/ops-workflow-design/*", companyUid: "cmp_1" }, roster)).toEqual({
+      vault: "company:acme",
+      path: "companies/acme/projects/ops-workflow-design/",
+    });
+  });
+
+  it("never opens a folder Files hides", () => {
+    expect(folderShareLocation({ vaultPath: "settings/", companyUid: "cmp_1" }, roster)).toBeNull();
+    expect(folderShareLocation({ vaultPath: "knowledge/.git/", companyUid: "cmp_1" }, roster)).toBeNull();
   });
 });

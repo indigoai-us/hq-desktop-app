@@ -164,3 +164,30 @@ it("shows the cached thumbnail immediately but downloads only the full original"
   expect(host.querySelector("img")?.getAttribute("src")).toBe("blob:original");
   expect(host.querySelector<HTMLButtonElement>("[data-testid=attachment-download]")?.disabled).toBe(false);
 });
+
+describe("AttachmentPreview folder shares", () => {
+  it("never resolves, fetches or offers download for a folder share (feedback 3e124bcd)", async () => {
+    const resolveUrl = vi.fn(async () => "https://signed.example/folder");
+    mountPreview({
+      item: item({ vaultPath: "knowledge/clients/frank/", name: "frank", contentType: "", kind: "folder" }),
+      resolveUrl,
+    });
+    await settle();
+    expect(resolveUrl).not.toHaveBeenCalled();
+    expect(host.querySelector("[data-testid=attachment-download]")).toBeNull();
+    expect(host.querySelector("[data-testid=attachment-folder-note]")).not.toBeNull();
+    expect(host.textContent).not.toContain("Could not load the file");
+  });
+
+  it("treats a glob share key as a folder even when the card says file (feedback ae977608)", async () => {
+    const resolveUrl = vi.fn(async () => null);
+    mountPreview({
+      item: item({ vaultPath: "projects/ops-workflow-design/*", name: "ops-workflow-design", contentType: "", kind: "file" }),
+      resolveUrl,
+    });
+    await settle();
+    expect(resolveUrl).not.toHaveBeenCalled();
+    expect(host.querySelector("[data-testid=attachment-download]")).toBeNull();
+    expect(host.textContent).not.toContain("Could not load the file");
+  });
+});

@@ -1063,6 +1063,17 @@ export function createReadyEngine(refs: ReadyRefs, options: { reveal: () => void
     return { l: Math.min(a.left, p.left, b.left), r: Math.max(a.right, p.right, b.right), b: b.bottom };
   }
   const sky = createSkyline(refs.canvas, keepOut, 0.5);
+  // The nav grows after the screen is shown (the "Checking for AI tools" row
+  // comes and goes with each probe), so its height is watched, not read once.
+  let observer: ResizeObserver | null = null;
+  let active = false;
+  function watch() {
+    if (observer || !refs.nav || typeof ResizeObserver === 'undefined') return;
+    observer = new ResizeObserver(() => {
+      if (active) layout();
+    });
+    observer.observe(refs.nav);
+  }
   // the whole stack (title, body, progress, button, alt line) is one block,
   // centred in the window; the skyline caps itself under it
   function layout() {
@@ -1094,6 +1105,8 @@ export function createReadyEngine(refs: ReadyRefs, options: { reveal: () => void
     },
     enter(now) {
       t0 = now;
+      active = true;
+      watch();
       refs.prog.classList.remove('on');
       sky.reset();
       layout();
@@ -1108,6 +1121,13 @@ export function createReadyEngine(refs: ReadyRefs, options: { reveal: () => void
       const t = (now - t0) / 1000;
       runBeats(beats, t);
       sky.draw(t);
+    },
+    exit() {
+      active = false;
+    },
+    destroy() {
+      observer?.disconnect();
+      observer = null;
     },
   };
 }

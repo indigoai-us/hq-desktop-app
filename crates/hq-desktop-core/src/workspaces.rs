@@ -130,8 +130,85 @@ pub struct LocalCompanyEntry {
 /// scripts that may grow new top-level keys).
 #[derive(Debug, Deserialize)]
 pub struct CompaniesManifest {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_companies")]
     pub companies: BTreeMap<String, CompanyManifestEntry>,
+}
+
+/// Accept every "no companies yet" spelling of `companies` as an empty map:
+/// a bare `companies:` (the hq-core template ships it with only comments
+/// under it), `companies: ~`, `companies: null`, and `companies: []`.
+/// A non-empty list or a scalar is still an error.
+fn deserialize_companies<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, CompanyManifestEntry>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let value = serde_yaml::Value::deserialize(deserializer)?;
+    if is_empty_companies_value(&value) {
+        return Ok(BTreeMap::new());
+    }
+    if !value.is_mapping() {
+        return Err(D::Error::custom(describe_non_mapping_companies(&value)));
+    }
+    serde_yaml::from_value(value).map_err(D::Error::custom)
+}
+
+/// True for the `companies` values that mean "no companies": null (bare key,
+/// `~`, `null`) and an empty list. An empty mapping is handled as a mapping.
+fn is_empty_companies_value(value: &serde_yaml::Value) -> bool {
+    match value {
+        serde_yaml::Value::Null => true,
+        serde_yaml::Value::Sequence(seq) => seq.is_empty(),
+        _ => false,
+    }
+}
+
+fn describe_non_mapping_companies(value: &serde_yaml::Value) -> String {
+    let found = match value {
+        serde_yaml::Value::Sequence(seq) => format!("a list with {} entries", seq.len()),
+        serde_yaml::Value::String(_) => "a string".to_string(),
+        serde_yaml::Value::Number(_) => "a number".to_string(),
+        serde_yaml::Value::Bool(_) => "a boolean".to_string(),
+        serde_yaml::Value::Tagged(_) => "a tagged value".to_string(),
+        serde_yaml::Value::Null | serde_yaml::Value::Mapping(_) => "an empty value".to_string(),
+    };
+    format!("manifest `companies` key is not a mapping (found {found})")
+}
+
+/// Return the `companies` mapping of a parsed manifest, ready for inserts.
+///
+/// Repairs the shapes that carry no data: an empty manifest file (null root),
+/// a missing `companies` key, a null `companies` value (bare `companies:` as
+/// shipped by the hq-core template, `~`, `null`), and `companies: []`. Each
+/// becomes an empty mapping; other top-level keys are kept.
+///
+/// Refuses anything that does hold data in a shape we cannot read, such as a
+/// non-empty list or a scalar. Guessing a conversion could drop or misfile
+/// entries, so the caller leaves the file unchanged and surfaces the error.
+fn companies_mapping_for_insert(
+    value: &mut serde_yaml::Value,
+) -> Result<&mut serde_yaml::Mapping, String> {
+    if value.is_null() {
+        *value = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+    }
+    let mapping = value
+        .as_mapping_mut()
+        .ok_or_else(|| "manifest root is not a mapping".to_string())?;
+    let companies_key = serde_yaml::Value::String("companies".to_string());
+    let companies = mapping
+        .entry(companies_key)
+        .or_insert(serde_yaml::Value::Null);
+    if is_empty_companies_value(companies) {
+        *companies = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+    }
+    if !companies.is_mapping() {
+        return Err(describe_non_mapping_companies(companies));
+    }
+    Ok(companies
+        .as_mapping_mut()
+        .expect("companies checked to be a mapping"))
 }
 
 #[derive(Debug, Deserialize)]
@@ -201,7 +278,21 @@ pub fn read_manifest(hq_root: &Path) -> ManifestLoad {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return ManifestLoad::Absent,
         Err(e) => return ManifestLoad::Failed(format!("read {}: {e}", manifest_path.display())),
     };
-    let parsed: CompaniesManifest = match serde_yaml::from_slice(&bytes) {
+    let mut value: serde_yaml::Value = match serde_yaml::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            return ManifestLoad::Failed(format!("parse {}: {e}", manifest_path.display()));
+        }
+    };
+    // Clean manifests take no lock and are never rewritten. Only when the
+    // unlocked read finds a duplicate is the read-modify-write repeated
+    // under the manifest lock.
+    if !drop_duplicate_cloud_uid_entries(&mut value).is_empty() {
+        if let Some(fresh) = dedupe_manifest_on_disk(&manifest_path) {
+            value = fresh;
+        }
+    }
+    let parsed: CompaniesManifest = match serde_yaml::from_value(value) {
         Ok(p) => p,
         Err(e) => {
             return ManifestLoad::Failed(format!("parse {}: {e}", manifest_path.display()));
@@ -229,6 +320,209 @@ pub fn read_manifest(hq_root: &Path) -> ManifestLoad {
     ManifestLoad::Present(entries)
 }
 
+/// Remove duplicate manifest entries that share one company `cloud_uid`
+/// (`cmp_...`). For each set of entries with the same uid, one entry stays:
+///
+/// - the entry whose name is not a company uid (the real company folder), or
+/// - when every entry or no entry is uid-named, the one later in the file.
+///
+/// An entry is uid-named when its slug key, or the last component of its
+/// `path`, equals its own `cloud_uid` (case-insensitive). A real company slug
+/// that merely starts with `cmp_` (for example `cmp_labs`) is not uid-named. Entries without a `cloud_uid`, and every
+/// entry whose `cloud_uid` is unique, are untouched; a company's only entry
+/// is never removed. Removal uses `shift_remove`, so the remaining entries
+/// keep their order.
+///
+/// Returns `(cloud_uid, removed_slug, removed_path, kept_slug)` for each
+/// removed entry.
+pub fn drop_duplicate_cloud_uid_entries(
+    value: &mut serde_yaml::Value,
+) -> Vec<(String, String, String, String)> {
+    let Some(companies) = value
+        .as_mapping_mut()
+        .and_then(|m| m.get_mut("companies"))
+        .and_then(|v| v.as_mapping_mut())
+    else {
+        return Vec::new();
+    };
+    let uid_of = |entry: &serde_yaml::Value| -> Option<String> {
+        entry
+            .get("cloud_uid")
+            .and_then(|v| v.as_str())
+            .filter(|uid| looks_like_company_uid(uid))
+            .map(|uid| uid.to_ascii_lowercase())
+    };
+    let path_of = |slug: &str, entry: &serde_yaml::Value| -> String {
+        entry
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("companies/{slug}"))
+    };
+    let is_uid_named = |uid: &str, slug: &str, path: &str| -> bool {
+        let folder = path
+            .trim_end_matches(['/', '\\'])
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or_default();
+        slug.eq_ignore_ascii_case(uid) || folder.eq_ignore_ascii_case(uid)
+    };
+    // Per uid: the index of the entry that stays, and whether it is the
+    // named (non-uid-named) kind. A later entry replaces the current keeper
+    // unless the keeper is named and the later entry is uid-named.
+    let mut keeper: std::collections::HashMap<String, (usize, bool, String)> =
+        std::collections::HashMap::new();
+    for (i, (key, entry)) in companies.iter().enumerate() {
+        let Some(uid) = uid_of(entry) else { continue };
+        let slug = key.as_str().unwrap_or_default();
+        let named = !is_uid_named(&uid, slug, &path_of(slug, entry));
+        match keeper.get(&uid) {
+            Some((_, true, _)) if !named => {}
+            _ => {
+                keeper.insert(uid, (i, named, slug.to_string()));
+            }
+        }
+    }
+    let doomed: Vec<(serde_yaml::Value, String, String, String, String)> = companies
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (key, entry))| {
+            let uid = uid_of(entry)?;
+            let (keep_index, _, kept_slug) = keeper.get(&uid)?;
+            if *keep_index == i {
+                return None;
+            }
+            let kept_slug = kept_slug.clone();
+            let slug = key.as_str().unwrap_or_default().to_string();
+            let path = path_of(&slug, entry);
+            let original_uid = entry
+                .get("cloud_uid")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            Some((key.clone(), original_uid, slug, path, kept_slug))
+        })
+        .collect();
+    doomed
+        .into_iter()
+        .map(|(key, uid, slug, path, kept)| {
+            // Not `remove`: in serde_yaml 0.9 that is `swap_remove`, which
+            // moves the last entry into the gap and reorders the file.
+            companies.shift_remove(&key);
+            (uid, slug, path, kept)
+        })
+        .collect()
+}
+
+/// Under the manifest lock, re-read the manifest, drop duplicate cloud-uid
+/// entries and save it. Re-reading under the lock means an entry another
+/// writer added between the unlocked read and now is kept. Returns the
+/// deduplicated value, or `None` when the file could not be re-read.
+fn dedupe_manifest_on_disk(manifest_path: &Path) -> Option<serde_yaml::Value> {
+    let _lock = match lock_manifest(manifest_path) {
+        Ok(lock) => lock,
+        Err(e) => {
+            log(
+                "manifest",
+                &format!("warn: could not lock manifest for dedupe: {e}"),
+            );
+            return None;
+        }
+    };
+    let bytes = std::fs::read(manifest_path).ok()?;
+    let mut value: serde_yaml::Value = serde_yaml::from_slice(&bytes).ok()?;
+    let removed = drop_duplicate_cloud_uid_entries(&mut value);
+    if removed.is_empty() {
+        return Some(value);
+    }
+    for (uid, slug, path, kept) in &removed {
+        log(
+            "manifest",
+            &format!(
+                "info: removed duplicate manifest entry '{slug}' (path {path}) for company {uid}; kept '{kept}'"
+            ),
+        );
+    }
+    let saved = serde_yaml::to_string(&value)
+        .map_err(|e| format!("serialize manifest: {e}"))
+        .and_then(|serialized| write_manifest_atomic(manifest_path, &serialized));
+    if let Err(e) = saved {
+        log(
+            "manifest",
+            &format!("warn: could not save deduplicated manifest: {e}"),
+        );
+    }
+    Some(value)
+}
+
+/// Advisory lock around a manifest read-modify-write, shared by every writer
+/// in this module. The lock file lives in the app state dir
+/// (`~/.hq/locks/manifest-<sha256 of the manifest path>.lock`), not in the HQ
+/// tree, so git and autosave never pick it up. The OS releases `flock` locks
+/// on process exit, so the lock cannot go stale after a crash.
+struct ManifestLock {
+    file: std::fs::File,
+}
+
+impl Drop for ManifestLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.file);
+    }
+}
+
+/// Path of the lock file for one manifest: one per HQ root, keyed by the
+/// canonical manifest path.
+fn manifest_lock_path(manifest_path: &Path) -> Result<PathBuf, String> {
+    use sha2::{Digest, Sha256};
+    let canonical = manifest_path
+        .parent()
+        .and_then(|dir| std::fs::canonicalize(dir).ok())
+        .map(|dir| dir.join("manifest.yaml"))
+        .unwrap_or_else(|| manifest_path.to_path_buf());
+    let digest = Sha256::digest(canonical.to_string_lossy().as_bytes());
+    let dir = paths::hq_config_dir()?.join("locks");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    Ok(dir.join(format!("manifest-{:x}.lock", digest)))
+}
+
+/// Blocks until the lock is free. A nested call on the same thread deadlocks.
+fn lock_manifest(manifest_path: &Path) -> Result<ManifestLock, String> {
+    let lock_path = manifest_lock_path(manifest_path)?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|e| format!("open manifest lock {}: {e}", lock_path.display()))?;
+    fs2::FileExt::lock_exclusive(&file).map_err(|e| format!("lock manifest: {e}"))?;
+    Ok(ManifestLock { file })
+}
+
+/// Write `serialized` to the manifest atomically: a temp file unique to this
+/// writer (`manifest.yaml.<pid>.<nanos>.<seq>.tmp`), then rename over the manifest. A failed
+/// rename removes the temp file and leaves the original intact.
+fn write_manifest_atomic(manifest_path: &Path, serialized: &str) -> Result<(), String> {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or_default();
+    let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // `manifest.yaml.<pid>.<nanos>.<seq>.tmp`: ends in `.tmp` so the
+    // repo's `*.tmp` ignore rule covers a leftover after a crash.
+    let tmp =
+        manifest_path.with_extension(format!("yaml.{}.{nanos}.{seq}.tmp", std::process::id()));
+    std::fs::write(&tmp, serialized).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("write tmp manifest: {e}")
+    })?;
+    std::fs::rename(&tmp, manifest_path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("rename manifest: {e}")
+    })
+}
+
 /// Discover local companies. Manifest is canonical when present + parseable;
 /// otherwise (or in addition to a parse error) we fall back to enumerating
 /// `companies/*` directories.
@@ -248,14 +542,18 @@ pub fn discover_local_companies(hq_root: &Path) -> (Vec<LocalCompanyEntry>, Opti
             // unconnected entries so they're still visible (and connectable)
             // in the UI — otherwise a folder-only company shows as Cloud Only
             // (via memberships pass) when it actually exists locally.
+            //
+            // A folder the manifest already covers is skipped: by slug, by
+            // `path`, or by a `companies/<cloud uid>/` name matching an
+            // entry's `cloud_uid`. The sync runner can leave that last kind
+            // behind, and listing it would show the company twice, once under
+            // a "Cmp_..." name (feedback 7e456ff8).
+            let extras: Vec<LocalCompanyEntry> = folder_enumeration_fallback(hq_root)
+                .into_iter()
+                .filter(|extra| folder_is_new_to_manifest(&extra.slug, &extra.path, &entries))
+                .collect();
             let mut union = entries;
-            let known: std::collections::HashSet<String> =
-                union.iter().map(|e| e.slug.clone()).collect();
-            for extra in folder_enumeration_fallback(hq_root) {
-                if !known.contains(&extra.slug) {
-                    union.push(extra);
-                }
-            }
+            union.extend(extras);
             (union, None)
         }
         ManifestLoad::Absent => (folder_enumeration_fallback(hq_root), None),
@@ -335,6 +633,48 @@ pub fn read_local_company_name(hq_root: &Path, slug: &str) -> Option<String> {
     let bytes = std::fs::read(&yaml_path).ok()?;
     let parsed: YamlSlice = serde_yaml::from_slice(&bytes).ok()?;
     parsed.name
+}
+
+/// True when `name` is a company cloud UID (`cmp_...`) rather than a slug.
+/// Slugs are lowercase kebab-case, so no real company slug has this prefix.
+pub fn looks_like_company_uid(name: &str) -> bool {
+    name.len() > 4 && name.is_char_boundary(4) && name[..4].eq_ignore_ascii_case("cmp_")
+}
+
+/// Decide whether the post-sync reconcile should add a manifest entry for
+/// the folder `companies/<folder>` (at `folder_path`).
+///
+/// Skips scaffolding folders (`_template`), folders the manifest already
+/// covers by slug or by `path`, and folders named after a company cloud UID.
+/// The sync runner can create `companies/<cloud uid>/` when it cannot
+/// resolve a company's slug; adding that folder would duplicate the company's
+/// real entry under a "Cmp_..." name.
+pub fn folder_needs_manifest_entry(
+    folder: &str,
+    folder_path: &Path,
+    entries: &[LocalCompanyEntry],
+) -> bool {
+    if folder.starts_with('_') || looks_like_company_uid(folder) {
+        return false;
+    }
+    folder_is_new_to_manifest(folder, folder_path, entries)
+}
+
+/// True when no manifest entry covers the folder `companies/<folder>`: no
+/// entry has that slug, that `path`, or a `cloud_uid` equal to the folder
+/// name.
+fn folder_is_new_to_manifest(
+    folder: &str,
+    folder_path: &Path,
+    entries: &[LocalCompanyEntry],
+) -> bool {
+    !entries.iter().any(|e| {
+        e.slug == folder
+            || e.path == folder_path
+            || e.cloud_uid
+                .as_deref()
+                .is_some_and(|uid| uid.eq_ignore_ascii_case(folder))
+    })
 }
 
 pub fn last_synced_at(slug: &str) -> Option<String> {
@@ -479,6 +819,7 @@ pub fn patch_manifest_with_cloud_info(
     cloud_uid: &str,
     bucket_name: &str,
 ) -> Result<(), String> {
+    let _lock = lock_manifest(manifest_path)?;
     let bytes = std::fs::read(manifest_path).map_err(|e| format!("read manifest: {e}"))?;
     let mut value: serde_yaml::Value =
         serde_yaml::from_slice(&bytes).map_err(|e| format!("parse manifest: {e}"))?;
@@ -511,9 +852,7 @@ pub fn patch_manifest_with_cloud_info(
         serde_yaml::to_string(&value).map_err(|e| format!("serialize manifest: {e}"))?;
 
     // Atomic write: tmp → rename. Any failure leaves the original intact.
-    let tmp = manifest_path.with_extension("yaml.tmp");
-    std::fs::write(&tmp, &serialized).map_err(|e| format!("write tmp manifest: {e}"))?;
-    std::fs::rename(&tmp, manifest_path).map_err(|e| format!("rename manifest: {e}"))?;
+    write_manifest_atomic(manifest_path, &serialized)?;
 
     Ok(())
 }
@@ -550,24 +889,12 @@ pub fn add_manifest_entry_for_synced_company(
     cloud_uid: Option<&str>,
     bucket_name: Option<&str>,
 ) -> Result<(), String> {
+    let _lock = lock_manifest(manifest_path)?;
     let bytes = std::fs::read(manifest_path).map_err(|e| format!("read manifest: {e}"))?;
     let mut value: serde_yaml::Value =
         serde_yaml::from_slice(&bytes).map_err(|e| format!("parse manifest: {e}"))?;
 
-    let companies_key = serde_yaml::Value::String("companies".to_string());
-    let mapping = value
-        .as_mapping_mut()
-        .ok_or_else(|| "manifest root is not a mapping".to_string())?;
-    if !mapping.contains_key(&companies_key) {
-        mapping.insert(
-            companies_key.clone(),
-            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
-        );
-    }
-    let companies = mapping
-        .get_mut(&companies_key)
-        .and_then(|v| v.as_mapping_mut())
-        .ok_or_else(|| "manifest `companies` key is not a mapping".to_string())?;
+    let companies = companies_mapping_for_insert(&mut value)?;
 
     let slug_key = serde_yaml::Value::String(slug.to_string());
     if companies.contains_key(&slug_key) {
@@ -597,9 +924,7 @@ pub fn add_manifest_entry_for_synced_company(
     let serialized =
         serde_yaml::to_string(&value).map_err(|e| format!("serialize manifest: {e}"))?;
 
-    let tmp = manifest_path.with_extension("yaml.tmp");
-    std::fs::write(&tmp, &serialized).map_err(|e| format!("write tmp manifest: {e}"))?;
-    std::fs::rename(&tmp, manifest_path).map_err(|e| format!("rename manifest: {e}"))?;
+    write_manifest_atomic(manifest_path, &serialized)?;
 
     Ok(())
 }
@@ -613,6 +938,7 @@ pub fn add_manifest_entry_for_synced_company(
 /// Idempotent: missing slug entries or already-clean entries are a no-op. No
 /// write is performed if neither key was present.
 pub fn strip_manifest_cloud_info(manifest_path: &Path, slug: &str) -> Result<(), String> {
+    let _lock = lock_manifest(manifest_path)?;
     let bytes = std::fs::read(manifest_path).map_err(|e| format!("read manifest: {e}"))?;
     let mut value: serde_yaml::Value =
         serde_yaml::from_slice(&bytes).map_err(|e| format!("parse manifest: {e}"))?;
@@ -649,9 +975,7 @@ pub fn strip_manifest_cloud_info(manifest_path: &Path, slug: &str) -> Result<(),
     let serialized =
         serde_yaml::to_string(&value).map_err(|e| format!("serialize manifest: {e}"))?;
 
-    let tmp = manifest_path.with_extension("yaml.tmp");
-    std::fs::write(&tmp, &serialized).map_err(|e| format!("write tmp manifest: {e}"))?;
-    std::fs::rename(&tmp, manifest_path).map_err(|e| format!("rename manifest: {e}"))?;
+    write_manifest_atomic(manifest_path, &serialized)?;
 
     Ok(())
 }
@@ -783,6 +1107,54 @@ companies:
         let (entries, _) = discover_local_companies(tmp.path());
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].slug, "_archive");
+    }
+
+    /// Feedback 7e456ff8: the sync runner can leave `companies/<cloud uid>/`
+    /// next to the real company folder. The folder union must not list it as
+    /// a second company (it showed as "Cmp_01KT...").
+    #[test]
+    fn discover_skips_folder_named_after_a_manifest_cloud_uid() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            r#"
+companies:
+  solace:
+    name: "Solace"
+    path: "companies/solace"
+    cloud_uid: "cmp_01KT9FG6G8NXKJEJ372TZ42M00"
+"#,
+        );
+        std::fs::create_dir_all(tmp.path().join("companies/solace")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("companies/cmp_01KT9FG6G8NXKJEJ372TZ42M00"))
+            .unwrap();
+        std::fs::create_dir_all(tmp.path().join("companies/other-co")).unwrap();
+
+        let (entries, err) = discover_local_companies(tmp.path());
+        assert!(err.is_none());
+        let slugs: Vec<&str> = entries.iter().map(|e| e.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["solace", "other-co"]);
+    }
+
+    /// A folder the manifest lists under a different key (by `path`) is the
+    /// same company, not a second one.
+    #[test]
+    fn discover_skips_folder_the_manifest_covers_by_path() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            r#"
+companies:
+  weylyn:
+    name: "Weylyn"
+    path: "companies/weylyn-co/"
+"#,
+        );
+        std::fs::create_dir_all(tmp.path().join("companies/weylyn-co")).unwrap();
+
+        let (entries, _) = discover_local_companies(tmp.path());
+        let slugs: Vec<&str> = entries.iter().map(|e| e.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["weylyn"]);
     }
 
     #[test]
@@ -1091,6 +1463,410 @@ companies:
 
         let (entries, _) = discover_local_companies(tmp.path());
         assert!(entries.iter().any(|e| e.slug == "fresh"));
+    }
+
+    /// The hq-core template ships `companies:` with only comments under it,
+    /// which YAML parses as null. A fresh install must still be able to add
+    /// entries (feedback_e6fd5d91-a683-4337-ac5d-c8985ed8ded2).
+    const CORE_TEMPLATE_MANIFEST: &str = "# HQ Company Manifest\n\
+# Single source of truth for company -> resource mapping\n\
+# Run /newcompany to add entries, or edit manually.\n\
+\n\
+companies:\n\
+  # Empty by default. The opt-in HQ_INDIGO_MCP=1 path in core/scripts/setup.sh\n\
+  # and /newcompany append entries here as `<slug>:` blocks at this indent.\n";
+
+    fn assert_add_repairs_empty_companies(contents: &str) {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(tmp.path(), contents);
+        let manifest_path = tmp.path().join("companies").join("manifest.yaml");
+
+        add_manifest_entry_for_synced_company(
+            &manifest_path,
+            "solace",
+            "Solace",
+            Some("cmp_S"),
+            Some("hq-vault-cmp-s"),
+        )
+        .unwrap_or_else(|e| panic!("add failed for {contents:?}: {e}"));
+        add_manifest_entry_for_synced_company(&manifest_path, "ez-brands", "EZ Brands", None, None)
+            .unwrap_or_else(|e| panic!("second add failed for {contents:?}: {e}"));
+
+        let raw = std::fs::read_to_string(&manifest_path).unwrap();
+        let value: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
+        let companies = value
+            .get("companies")
+            .and_then(|v| v.as_mapping())
+            .unwrap_or_else(|| panic!("companies must be a mapping after repair: {raw}"));
+        assert_eq!(companies.len(), 2, "{raw}");
+
+        let (entries, err) = discover_local_companies(tmp.path());
+        assert!(err.is_none(), "manifest must parse after repair: {err:?}");
+        let solace = entries.iter().find(|e| e.slug == "solace").expect("solace");
+        assert_eq!(solace.cloud_uid.as_deref(), Some("cmp_S"));
+        assert!(entries.iter().any(|e| e.slug == "ez-brands"));
+    }
+
+    #[test]
+    fn add_manifest_entry_repairs_core_template_null_companies() {
+        assert_add_repairs_empty_companies(CORE_TEMPLATE_MANIFEST);
+    }
+
+    #[test]
+    fn add_manifest_entry_repairs_bare_null_companies() {
+        assert_add_repairs_empty_companies("companies:\n");
+        assert_add_repairs_empty_companies("companies: ~\n");
+        assert_add_repairs_empty_companies("companies: null\n");
+    }
+
+    #[test]
+    fn add_manifest_entry_repairs_empty_list_companies() {
+        assert_add_repairs_empty_companies("companies: []\n");
+    }
+
+    #[test]
+    fn add_manifest_entry_accepts_empty_flow_mapping_companies() {
+        assert_add_repairs_empty_companies("companies: {}\n");
+    }
+
+    #[test]
+    fn add_manifest_entry_repairs_empty_manifest_file() {
+        assert_add_repairs_empty_companies("");
+        assert_add_repairs_empty_companies("# comments only\n");
+    }
+
+    #[test]
+    fn add_manifest_entry_preserves_other_top_level_keys_on_repair() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(tmp.path(), "version: 2\ncompanies:\nextra:\n  keep: true\n");
+        let manifest_path = tmp.path().join("companies").join("manifest.yaml");
+        add_manifest_entry_for_synced_company(&manifest_path, "solace", "Solace", None, None)
+            .unwrap();
+        let value: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        assert_eq!(value.get("version").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(
+            value
+                .get("extra")
+                .and_then(|v| v.get("keep"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert!(value
+            .get("companies")
+            .and_then(|c| c.get("solace"))
+            .is_some());
+    }
+
+    /// A non-empty non-mapping `companies` value holds data we cannot
+    /// interpret. The writer must refuse and leave the file byte-for-byte.
+    #[test]
+    fn add_manifest_entry_refuses_non_empty_non_mapping_companies() {
+        for contents in [
+            "companies:\n  - solace\n  - ez-brands\n",
+            "companies:\n  - slug: solace\n    name: Solace\n",
+            "companies: solace\n",
+            "companies: 3\n",
+        ] {
+            let tmp = TempDir::new().unwrap();
+            write_manifest(tmp.path(), contents);
+            let manifest_path = tmp.path().join("companies").join("manifest.yaml");
+            let err =
+                add_manifest_entry_for_synced_company(&manifest_path, "fresh", "Fresh", None, None)
+                    .expect_err("non-empty non-mapping companies must be refused");
+            assert!(err.contains("not a mapping"), "{err}");
+            assert_eq!(std::fs::read_to_string(&manifest_path).unwrap(), contents);
+            assert!(!manifest_path.with_extension("yaml.tmp").exists());
+        }
+    }
+
+    #[test]
+    fn read_manifest_treats_null_and_empty_list_companies_as_empty() {
+        for contents in [
+            CORE_TEMPLATE_MANIFEST,
+            "companies:\n",
+            "companies: ~\n",
+            "companies: []\n",
+            "companies: {}\n",
+        ] {
+            let tmp = TempDir::new().unwrap();
+            write_manifest(tmp.path(), contents);
+            std::fs::create_dir_all(tmp.path().join("companies/solace")).unwrap();
+            let (entries, err) = discover_local_companies(tmp.path());
+            assert!(err.is_none(), "{contents:?} must parse: {err:?}");
+            assert_eq!(
+                entries.iter().map(|e| e.slug.as_str()).collect::<Vec<_>>(),
+                vec!["solace"],
+                "{contents:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn read_manifest_reports_non_empty_list_companies() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(tmp.path(), "companies:\n  - solace\n");
+        let (_, err) = discover_local_companies(tmp.path());
+        assert!(err.is_some(), "a list of companies is not a valid manifest");
+    }
+
+    #[test]
+    fn add_manifest_entry_repairs_null_companies_key() {
+        // Fresh installs can carry a bare `companies:` (YAML null). Adding a
+        // company used to fail with "`companies` key is not a mapping" and the
+        // manifest stayed empty (feedback e6fd5d91).
+        let tmp = TempDir::new().unwrap();
+        write_manifest(tmp.path(), "version: 1\ncompanies:\n");
+        let manifest_path = tmp.path().join("companies").join("manifest.yaml");
+
+        add_manifest_entry_for_synced_company(&manifest_path, "solace", "Solace", None, None)
+            .unwrap();
+
+        let (entries, err) = discover_local_companies(tmp.path());
+        assert!(err.is_none(), "manifest should parse: {err:?}");
+        assert!(entries.iter().any(|e| e.slug == "solace"));
+    }
+
+    #[test]
+    fn add_manifest_entry_still_refuses_list_companies_key() {
+        // A list is user content we cannot map onto entries safely; keep the
+        // refusal and leave the file untouched.
+        let tmp = TempDir::new().unwrap();
+        let original = "companies:\n  - solace\n";
+        write_manifest(tmp.path(), original);
+        let manifest_path = tmp.path().join("companies").join("manifest.yaml");
+
+        let err =
+            add_manifest_entry_for_synced_company(&manifest_path, "solace", "Solace", None, None)
+                .unwrap_err();
+        assert!(err.contains("not a mapping"), "{err}");
+        assert_eq!(std::fs::read_to_string(&manifest_path).unwrap(), original);
+    }
+
+    fn load_slugs(root: &Path) -> Vec<String> {
+        match read_manifest(root) {
+            ManifestLoad::Present(entries) => entries.into_iter().map(|e| e.slug).collect(),
+            _ => panic!("expected the manifest to load"),
+        }
+    }
+
+    fn on_disk_keys(root: &Path) -> Vec<String> {
+        let text = std::fs::read_to_string(root.join("companies").join("manifest.yaml")).unwrap();
+        let value: serde_yaml::Value = serde_yaml::from_str(&text).unwrap();
+        value["companies"]
+            .as_mapping()
+            .unwrap()
+            .keys()
+            .map(|k| k.as_str().unwrap().to_string())
+            .collect()
+    }
+
+    const ACME_ENTRY: &str = "  acme:\n    name: Acme\n    path: companies/acme\n    cloud_uid: cmp_01KT9FG6G8NXKJEJ372TZ42M00\n";
+    const UID_ENTRY: &str = "  cmp_01kt9fg6g8nxkjej372tz42m00:\n    name: Cmp_01KT9FG6G8NXKJEJ372TZ42M00\n    path: companies/cmp_01kt9fg6g8nxkjej372tz42m00\n    cloud_uid: cmp_01KT9FG6G8NXKJEJ372TZ42M00\n";
+
+    /// The real duplicate: the company's named entry plus an entry for the
+    /// folder named after its cloud UID. The named entry wins whichever comes
+    /// first, and the file is rewritten without the UID-named entry.
+    #[test]
+    fn read_manifest_keeps_named_entry_over_uid_named_duplicate_in_either_order() {
+        for (first, second) in [(ACME_ENTRY, UID_ENTRY), (UID_ENTRY, ACME_ENTRY)] {
+            let tmp = TempDir::new().unwrap();
+            write_manifest(
+                tmp.path(),
+                &format!("companies:\n{first}  beta-co:\n    name: Beta\n{second}"),
+            );
+            let mut slugs = load_slugs(tmp.path());
+            slugs.sort();
+            assert_eq!(slugs, vec!["acme", "beta-co"]);
+            let mut keys = on_disk_keys(tmp.path());
+            keys.sort();
+            assert_eq!(keys, vec!["acme", "beta-co"]);
+        }
+    }
+
+    /// Both entries are UID-named: the later one is kept.
+    #[test]
+    fn read_manifest_keeps_later_entry_when_both_are_uid_named() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            "companies:\n  CMP_01KT9FG6G8NXKJEJ372TZ42M00:\n    name: Upper\n    cloud_uid: cmp_01KT9FG6G8NXKJEJ372TZ42M00\n  cmp_01kt9fg6g8nxkjej372tz42m00:\n    name: Lower\n    cloud_uid: cmp_01kt9fg6g8nxkjej372tz42m00\n",
+        );
+        assert_eq!(
+            load_slugs(tmp.path()),
+            vec!["cmp_01kt9fg6g8nxkjej372tz42m00"]
+        );
+        assert_eq!(
+            on_disk_keys(tmp.path()),
+            vec!["cmp_01kt9fg6g8nxkjej372tz42m00"]
+        );
+    }
+
+    /// Neither entry is UID-named but both carry the same cloud UID: the
+    /// later one is kept.
+    #[test]
+    fn read_manifest_keeps_later_entry_when_neither_is_uid_named() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            "companies:\n  acme:\n    name: Acme\n    cloud_uid: cmp_01KT9FG6G8NXKJEJ372TZ42M00\n  acme-2:\n    name: Acme 2\n    cloud_uid: cmp_01KT9FG6G8NXKJEJ372TZ42M00\n",
+        );
+        assert_eq!(load_slugs(tmp.path()), vec!["acme-2"]);
+        assert_eq!(on_disk_keys(tmp.path()), vec!["acme-2"]);
+    }
+
+    /// Removing an entry from the middle keeps every other entry in place
+    /// (no swap of the last entry into the gap), and leaves no temp file.
+    #[test]
+    fn read_manifest_dedupe_preserves_order_of_remaining_entries() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            &format!(
+                "companies:\n  alpha:\n    name: Alpha\n{UID_ENTRY}  beta:\n    name: Beta\n  gamma:\n    name: Gamma\n{ACME_ENTRY}"
+            ),
+        );
+        let mut slugs = load_slugs(tmp.path());
+        slugs.sort();
+        assert_eq!(slugs, vec!["acme", "alpha", "beta", "gamma"]);
+        assert_eq!(
+            on_disk_keys(tmp.path()),
+            vec!["alpha", "beta", "gamma", "acme"]
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(tmp.path().join("companies"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    /// A real company whose slug starts with `cmp_` is not uid-named: it
+    /// wins over the entry named after the cloud uid.
+    #[test]
+    fn read_manifest_keeps_cmp_prefixed_real_slug_over_uid_named_entry() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            &format!(
+                "companies:\n  cmp_labs:\n    name: Cmp Labs\n    path: companies/cmp_labs\n    cloud_uid: cmp_01KT9FG6G8NXKJEJ372TZ42M00\n{UID_ENTRY}"
+            ),
+        );
+        assert_eq!(load_slugs(tmp.path()), vec!["cmp_labs"]);
+        assert_eq!(on_disk_keys(tmp.path()), vec!["cmp_labs"]);
+    }
+
+    #[test]
+    fn read_manifest_leaves_single_cloud_uid_entry_unchanged() {
+        let tmp = TempDir::new().unwrap();
+        let original =
+            "companies:\n  acme:\n    name: Acme\n    cloud_uid: cmp_01KT9FG6G8NXKJEJ372TZ42M00\n";
+        write_manifest(tmp.path(), original);
+        let entries = match read_manifest(tmp.path()) {
+            ManifestLoad::Present(entries) => entries,
+            _ => panic!("expected the manifest to load"),
+        };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].slug, "acme");
+        let on_disk =
+            std::fs::read_to_string(tmp.path().join("companies").join("manifest.yaml")).unwrap();
+        assert_eq!(on_disk, original);
+    }
+
+    #[test]
+    fn read_manifest_treats_null_companies_as_empty() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(tmp.path(), "companies:\n");
+        match read_manifest(tmp.path()) {
+            ManifestLoad::Present(entries) => assert!(entries.is_empty()),
+            _ => panic!("expected the manifest to load"),
+        }
+    }
+
+    fn uid_manifest_entries(hq_root: &Path) -> Vec<LocalCompanyEntry> {
+        write_manifest(
+            hq_root,
+            r#"
+companies:
+  solace:
+    name: Solace
+    path: companies/solace
+    cloud_uid: cmp_01KT9FG6G8NXKJEJ372TZ42M00
+    bucket_name: hq-vault-solace
+  weylyn:
+    name: Weylyn
+    path: companies/weylyn-co/
+"#,
+        );
+        match read_manifest(hq_root) {
+            ManifestLoad::Present(entries) => entries,
+            _ => panic!("expected the manifest to load"),
+        }
+    }
+
+    #[test]
+    fn folder_needs_manifest_entry_skips_folder_named_after_cloud_uid() {
+        // The sync runner can leave an empty `companies/<cloud uid>/` folder.
+        // The post-sync reconcile used to add a duplicate manifest entry for
+        // it, named "Cmp_01KT..." (feedback 7e456ff8).
+        let tmp = TempDir::new().unwrap();
+        let entries = uid_manifest_entries(tmp.path());
+        let companies = tmp.path().join("companies");
+        let uid = "cmp_01KT9FG6G8NXKJEJ372TZ42M00";
+        assert!(!folder_needs_manifest_entry(
+            uid,
+            &companies.join(uid),
+            &entries
+        ));
+    }
+
+    #[test]
+    fn folder_needs_manifest_entry_skips_any_company_uid_folder() {
+        let tmp = TempDir::new().unwrap();
+        let entries = uid_manifest_entries(tmp.path());
+        let companies = tmp.path().join("companies");
+        let uid = "cmp_01KSG66K0000000000000000";
+        assert!(!folder_needs_manifest_entry(
+            uid,
+            &companies.join(uid),
+            &entries
+        ));
+    }
+
+    #[test]
+    fn folder_needs_manifest_entry_skips_known_slugs_paths_and_scaffolding() {
+        let tmp = TempDir::new().unwrap();
+        let entries = uid_manifest_entries(tmp.path());
+        let companies = tmp.path().join("companies");
+        assert!(!folder_needs_manifest_entry(
+            "solace",
+            &companies.join("solace"),
+            &entries
+        ));
+        // Entry keyed `weylyn` lives in `companies/weylyn-co/`.
+        assert!(!folder_needs_manifest_entry(
+            "weylyn-co",
+            &companies.join("weylyn-co"),
+            &entries
+        ));
+        assert!(!folder_needs_manifest_entry(
+            "_template",
+            &companies.join("_template"),
+            &entries
+        ));
+    }
+
+    #[test]
+    fn folder_needs_manifest_entry_accepts_new_company_folder() {
+        let tmp = TempDir::new().unwrap();
+        let entries = uid_manifest_entries(tmp.path());
+        let companies = tmp.path().join("companies");
+        assert!(folder_needs_manifest_entry(
+            "ez-brands",
+            &companies.join("ez-brands"),
+            &entries
+        ));
     }
 
     #[test]

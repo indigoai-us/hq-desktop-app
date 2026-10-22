@@ -538,6 +538,59 @@ describe('one continuation attempt', () => {
     expect(final).toEqual({ phase: 'fallback', errorKind: 'cancelled' });
     expect(outcomes(delivered)).toEqual(['started', 'cancelled']);
   });
+
+  it('does not keep waiting after a named provider is chosen once the browser is open', async () => {
+    const { deps, delivered } = harness();
+    let continuationStillPreferred = true;
+    (deps.deliver as ReturnType<typeof vi.fn>).mockImplementation(async (receipt: ContinuationReceipt) => {
+      delivered.push(receipt);
+      if (receipt.body.outcome === 'browser_opened') continuationStillPreferred = false;
+      return 'recorded';
+    });
+
+    const final = await beginContinuation(
+      deps,
+      { enabled: true, config: enabledConfig() },
+      collect,
+      () => continuationStillPreferred,
+    );
+
+    expect(deps.bridge.awaitIdentity).not.toHaveBeenCalled();
+    expect(deps.bridge.cancel).toHaveBeenCalledWith({ attemptId: 'attempt-1' });
+    expect(final).toEqual({ phase: 'fallback', errorKind: 'cancelled' });
+    expect(outcomes(delivered)).toEqual(['started', 'browser_opened', 'cancelled']);
+  });
+
+  it('returns to the provider buttons when the browser opens and sign-in start then fails', async () => {
+    // The website route can error after the browser is already open. That is
+    // not a start failure: the attempt existed, and it has to end on fallback
+    // instead of sitting in `waiting` until something else gives up.
+    const { deps, delivered } = harness();
+    (deps.bridge.awaitIdentity as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('Timed out waiting for sign-in (90 seconds).'),
+    );
+
+    const final = await beginContinuation(deps, { enabled: true, config: enabledConfig() }, collect);
+
+    expect(deps.bridge.start).toHaveBeenCalled();
+    expect(deps.bridge.awaitIdentity).toHaveBeenCalledWith({ attemptId: 'attempt-1' });
+    expect(final).toEqual({ phase: 'fallback', errorKind: 'expired' });
+    expect(states.at(-1)).toEqual({ phase: 'fallback', errorKind: 'expired' });
+    expect(outcomes(delivered)).toEqual(['started', 'browser_opened', 'failed']);
+  });
+
+  it('returns to the provider buttons when the opened website answers with an error', async () => {
+    const { deps } = harness();
+    (deps.bridge.awaitIdentity as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error(JSON.stringify({ code: 'OAUTH_PROVIDER_ERROR', message: 'signin-start failed' })),
+    );
+
+    const final = await beginContinuation(deps, { enabled: true, config: enabledConfig() }, collect);
+
+    expect(deps.bridge.awaitIdentity).toHaveBeenCalled();
+    expect(final).toEqual({ phase: 'fallback', errorKind: 'provider_denied' });
+    expect(states.map((state) => state.phase)).toEqual(['opening', 'waiting', 'fallback']);
+  });
 });
 
 describe('error classification is a closed set', () => {
@@ -562,6 +615,7 @@ describe('error classification is a closed set', () => {
     ['Sign-in was cancelled.', 'cancelled'],
     ['OAuth state mismatch — possible CSRF, aborting.', 'state_mismatch'],
     ['Timed out waiting for sign-in (5 minutes).', 'expired'],
+    ['Timed out waiting for sign-in (90 seconds).', 'expired'],
     ['No person entity for this account', 'person_missing'],
     ['Token exchange failed (400)', 'invalid_token'],
     ['network unreachable', 'offline'],

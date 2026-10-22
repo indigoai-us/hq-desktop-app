@@ -150,3 +150,51 @@ describe("MeetingsPage calendar connect popup blocked (Fix 4)", () => {
     openSpy.mockRestore();
   });
 });
+
+describe("MeetingsPage choose-calendars Console prompt", () => {
+  it("keeps the Console prompt open past the auto-clear delay until Console opens", async () => {
+    let polls = 0;
+    call.mockImplementation((method: string) => {
+      if (method === "connectCalendar") return Promise.resolve(ok({ url: consentUrl }));
+      if (method === "listAccounts") {
+        polls += 1;
+        return Promise.resolve(ok(polls < 3 ? [] : [{ accountId: "acct-new", email: "new@example.com" }]));
+      }
+      if (method === "listCalendars") {
+        return Promise.resolve(ok({ calendars: [{ id: "cal-1", summary: "Primary" }], selectedCalendarIds: [] }));
+      }
+      return Promise.resolve(ok([]));
+    });
+    const openExternal = vi.fn();
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(MeetingsPage, {
+      target: host,
+      props: { adapter: fakeAdapter(), openExternal },
+    });
+    layer = mount(ToastStack, { target: host });
+    await tick();
+
+    vi.useFakeTimers();
+    try {
+      await meetingsStore.beginCalendarConnect();
+      await vi.advanceTimersByTimeAsync(3_000);
+      await vi.advanceTimersByTimeAsync(3_000);
+      const stack = () => document.querySelector('[data-testid="toast-stack"]')?.textContent ?? "";
+      expect(stack()).toContain("Choose your calendars in Console");
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(stack()).toContain("Choose your calendars in Console");
+
+      const btn = document.querySelector<HTMLButtonElement>('[data-testid="meetings-open-console"]');
+      expect(btn).not.toBeNull();
+      btn?.click();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(openExternal).toHaveBeenCalledWith("https://hq.computer/personal/integrations");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(stack()).not.toContain("Choose your calendars in Console");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

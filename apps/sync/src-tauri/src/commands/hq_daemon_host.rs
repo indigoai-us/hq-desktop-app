@@ -95,7 +95,7 @@ static TEST_DAEMON_COMMANDS_ENABLED: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
 static TEST_DAEMON_COMMANDS: Mutex<Vec<Vec<String>>> = Mutex::new(Vec::new());
 #[cfg(test)]
-static TEST_PHASE_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static TEST_PHASE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostFlagReason {
@@ -294,6 +294,13 @@ fn set_phase(phase: HostPhase) {
         .unwrap_or_else(|error| error.into_inner());
     PHASE.store(value, Ordering::Release);
     PHASE_CHANGED.notify_all();
+}
+
+/// Test-only phase switch for callers outside this module. Hold
+/// [`TEST_PHASE_LOCK`] while the phase differs from the test default.
+#[cfg(test)]
+pub(crate) fn set_phase_for_test(phase: HostPhase) {
+    set_phase(phase);
 }
 
 fn wait_for_phase_resolution(timeout: Duration) -> HostPhase {
@@ -1085,7 +1092,9 @@ async fn resolve_mode(cache_path: Option<&Path>) -> (Option<SyncHostMode>, HostF
 
 /// Today's launch behaviour: warm the npx cache and start the watch runner.
 fn start_legacy_services(handle: AppHandle, launch_reconcile_enabled: bool) {
-    crate::commands::prewarm::spawn_prewarm();
+    if let Ok(root) = crate::commands::sync::resolve_hq_folder_path() {
+        crate::commands::prewarm::spawn_prewarm_for_root(std::path::PathBuf::from(root));
+    }
     start_legacy_sync(handle, launch_reconcile_enabled);
 }
 

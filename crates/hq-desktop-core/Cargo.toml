@@ -48,6 +48,10 @@ sha2 = "0.10"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
+# windows_portable_git: in-process extraction of the pinned PortableGit
+# self-extractor's 7z payload, so HQ never runs a downloaded .exe to unpack
+# Git. Pure Rust (LZMA/LZMA2/BCJ + CRC32); `util` is the extract API only.
+sevenz-rust2 = { version = "0.24.1", default-features = false, features = ["util"] }
 # hq_resolver resolves + runs the `hq` CLI (async) and drops Sentry breadcrumbs.
 tokio = { version = "1", features = ["full"] }
 sentry = "^0.35"

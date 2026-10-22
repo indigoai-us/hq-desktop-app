@@ -143,6 +143,38 @@ export function vaultRelativePath(vault: Vault, path: string): string {
   return path;
 }
 
+/**
+ * Where a DM folder share ("Shared a folder with you") opens in the Files
+ * explorer. Share attachments carry a company-relative folder key ending in
+ * `/` (for example `knowledge/clients/acme/`), which is a folder marker, not an
+ * object the file preview can fetch. The result is the company vault id and an
+ * HQ-relative folder path that keeps the trailing `/`, or `path: null` for a
+ * whole-company share. Null when the company is unknown, has no local folder,
+ * or the key has a `..` segment.
+ */
+export function folderShareLocation(
+  share: { vaultPath: string; companyUid: string },
+  workspaces: readonly Workspace[] | null | undefined,
+): { vault: string; path: string | null } | null {
+  const key = (share.companyUid ?? "").trim();
+  if (!key) return null;
+  const company = (workspaces ?? []).find(
+    (w) => w.kind === "company" && ((w.cloudUid ?? "").trim() === key || w.slug === key),
+  );
+  if (!company) return null;
+  const vault = vaultsFor(workspaces).find((v) => v.slug === company.slug);
+  if (!vault) return null;
+  const parts = share.vaultPath.replace(/\\/g, "/").split("/").filter(Boolean);
+  // A glob share ("projects/x/*" or "/**") names the folder it covers.
+  while (parts.length > 0 && /^\*{1,2}$/.test(parts[parts.length - 1])) parts.pop();
+  if (parts.some((part) => part === "." || part === "..")) return null;
+  if (parts[0] === "companies" && parts[1] === company.slug) parts.splice(0, 2);
+  // Files never shows settings, secrets or dot folders; a share does not either.
+  if (parts.some((part) => part.startsWith(".") || isSensitiveName(part, true))) return null;
+  if (parts.length === 0) return { vault: vault.id, path: null };
+  return { vault: vault.id, path: `${vault.root}/${parts.join("/")}/` };
+}
+
 /** Breadcrumb segments for `path` inside `vault`, with the path each one opens. */
 export function breadcrumbs(vault: Vault, path: string): Array<{ label: string; path: string }> {
   const rel = vaultRelativePath(vault, path);
