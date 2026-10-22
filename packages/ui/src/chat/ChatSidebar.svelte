@@ -5293,9 +5293,14 @@
   {@const childrenOpen = childrenAreOpen(row.id, extras?.childrenExpandedByDefault === true)}
   <div class="chat-row-group" data-testid="chat-row-group">
     <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <!-- `.chat-li`, not `.chat-row`, carries the hover and selected fill: the
+         pin is a sibling of the row button (a button cannot nest a button),
+         so on the button the pin hung off the highlight's right edge
+         (owner, #772, restored 2026-10-22). -->
     <div
       role={selectionMode ? "presentation" : "listitem"}
       class="chat-li"
+      class:active={activeId === row.id && !extras?.children?.some((child) => child.selected)}
       class:gutter-open={showSelectGutter}
       onmouseenter={(e) => showHoverCard(row, e.currentTarget)}
       onmouseleave={scheduleHoverCardHide}
@@ -5447,14 +5452,6 @@
             >
           {/if}
         </span>
-        {#if scopeLabel}
-          <span
-            class="chat-row-reveal"
-            data-testid="chat-row-reveal"
-            aria-hidden="true"
-            use:titleWhenTruncated={scopeLabel.text}>{scopeLabel.text}</span
-          >
-        {/if}
         {#if row.notifyLevel === "muted"}
           <span
             class="chat-row-muted"
@@ -5654,7 +5651,10 @@
     place-items: center;
     width: 22px;
     height: 22px;
-    margin-right: 2px;
+    margin-right: 4px;
+    /* A 22px hit target that does not set the row's height (31px, from the
+       13px title); unclamped it pushed every row to 34px. */
+    margin-block: -2px;
     padding: 0;
     border: none;
     border-radius: 6px;
@@ -5664,16 +5664,17 @@
     cursor: pointer;
   }
 
+  /* Hover or focus only, pinned or not: the PINNED section header already
+     says a row is pinned, so at rest the control stays out of the way. */
   .chat-li:hover .chat-pin-btn,
-  .chat-pin-btn.pinned,
+  .chat-li:focus-within .chat-pin-btn,
   .chat-pin-btn:focus-visible {
     opacity: 1;
   }
 
-  .chat-pin-btn:hover,
-  .chat-pin-btn.pinned {
+  .chat-pin-btn:hover {
     color: var(--t1);
-    background: var(--hover);
+    background: var(--btn-bg, var(--hover));
   }
 
   .chat-scope-pill {
@@ -5982,6 +5983,15 @@
     display: flex;
     align-items: center;
     min-width: 0;
+    border-radius: 8px;
+  }
+
+  .chat-li:hover {
+    background: var(--hover);
+  }
+
+  .chat-li.active {
+    background: var(--sel);
   }
 
   .chat-row-children-toggle {
@@ -6136,9 +6146,9 @@
   }
 
   /* Skip style/layout/paint for rows scrolled out of the rail. Safe to
-     contain: the row draws no focus outline of its own, `.chat-row-reveal` is
-     absolutely positioned INSIDE the row, and the row's menus are portaled to
-     the shell so containment cannot clip them. See chat/scroll-perf.css.
+     contain: the row draws no focus outline of its own, its hover fill is on
+     `.chat-li` outside it, and the row's menus are portaled to the shell so
+     containment cannot clip them. See chat/scroll-perf.css.
 
      A one-line row is 14px of text plus 6px padding each side, about 32px. */
   .chat-row {
@@ -6177,13 +6187,19 @@
     color: var(--t2);
   }
 
+  /* The fill is on `.chat-li` for list rows. Standalone rows (Connection
+     requests, Create or join a company) have no `.chat-li` around them and
+     keep their own. */
   .chat-row:hover {
     background: var(--hover);
     color: var(--t1);
   }
 
+  .chat-li > .chat-row:hover {
+    background: transparent;
+  }
+
   .chat-row.active {
-    background: var(--sel);
     box-shadow: none;
     color: var(--t1);
   }
@@ -6241,39 +6257,10 @@
     font-weight: 400;
   }
 
-  .chat-row-reveal {
-    display: none;
-    position: absolute;
-    right: 8px;
-    top: 50%;
-    transform: translateY(-50%);
-    max-width: 46%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    padding: 1px 7px;
-    border-radius: 4px;
-    background: var(--elevated);
-    box-shadow: -10px 0 8px 0 var(--elevated);
-    color: var(--t3);
-    font-size: 12px;
-    font-weight: 400;
-    line-height: 1.3;
-    pointer-events: none;
-    z-index: 1;
-  }
-
-  .chat-li:hover .chat-row:not(.has-badge) .chat-row-reveal,
-  .chat-li:focus-within .chat-row:not(.has-badge) .chat-row-reveal,
-  .chat-row:focus-visible:not(.has-badge) .chat-row-reveal {
-    display: inline-block;
-  }
-
-  .chat-li:hover .chat-row:not(.has-badge) .chat-row-scope,
-  .chat-li:focus-within .chat-row:not(.has-badge) .chat-row-scope,
-  .chat-row:focus-visible:not(.has-badge) .chat-row-scope {
-    visibility: hidden;
-  }
+  /* No hover overlay copy of the label. A second, boxed "Indigo" laid over
+     the row's own title on hover read as a glitch; the label stays where it
+     is, and a truncated one carries its full text as a tooltip
+     (titleWhenTruncated). Owner, #772, restored 2026-10-22. */
 
   .chat-row-draft {
     flex: 0 0 auto;

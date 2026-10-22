@@ -1354,19 +1354,17 @@
       background 0.12s;
   }
 
-  .v4-icon-btn:hover,
-  .v4-icon-btn.active {
+  .v4-icon-btn:hover {
     background: var(--hover);
     color: var(--t1);
   }
 
-  /* Pressed global controls stay visibly selected without inheriting the OS
-     accent color. aria-pressed remains the semantic source of truth. */
-  .v4-icon-btn[aria-pressed="true"] {
-    border-color: var(--v4-control-border);
-    background: color-mix(in srgb, var(--v4-text-1) 8%, transparent);
-    box-shadow: inset 0 0 0 1px var(--v4-hairline);
-    color: var(--v4-text-1);
+  /* "On" is colour alone, with no resting fill (owner, #772, restored
+     2026-10-22). A bordered, inset-shadowed pressed box made the sidebar
+     toggle read as a different kind of control from every other button on
+     the bar. aria-pressed remains the semantic source of truth. */
+  .v4-icon-btn.active {
+    color: var(--t1);
   }
 
   .v4-icon-btn:disabled {
