@@ -858,7 +858,9 @@
     flex-direction: column;
     gap: var(--space-2, 8px);
     padding: 20px 0 24px 56px;
-    border-bottom: 1px solid var(--line);
+    /* No divider under the welcome copy (owner, 2026-10-22); the cards'
+       own fills separate the two sections. */
+    border-bottom: 0;
     justify-content: flex-start;
   }
 

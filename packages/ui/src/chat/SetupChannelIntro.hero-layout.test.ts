@@ -15,6 +15,11 @@ describe("welcome hero layout", () => {
     expect(rule(".hero")).toMatch(/background: transparent/);
   });
 
+  it("draws no divider under the welcome copy", () => {
+    expect(rule(".hero-copy")).toMatch(/border-bottom: 0/);
+    expect(rule(".hero-copy")).not.toMatch(/border-bottom: 1px/);
+  });
+
   it("lets the hero copy fill the column", () => {
     expect(rule(".hero-body")).toMatch(/max-width: none/);
     expect(rule(".launch-error")).toMatch(/max-width: none/);
