@@ -10,10 +10,12 @@ import {
   saveMeetingsCache,
   type MeetingsStorage,
 } from "./meetings-cache";
-import { startJitteredPoll } from "@hq/platform";
+import { startJitteredPoll, usagePauseAction } from "@hq/platform";
+import { callerRole } from "../company/company-roles.svelte.js";
 import {
   isAlreadyScheduledError,
   isPlanRequiredError,
+  meetingUsagePause,
   planRequiredUpgradeUrl,
 } from "./invite-errors";
 import { isRecordingCompanyMembership } from "./recording-membership";
@@ -152,11 +154,25 @@ export interface ToastDescriptor {
   kind: "info" | "warn";
   text: string;
   upgradeUrl?: string;
+  /** Label for the `upgradeUrl` action; the page's default when absent. */
+  upgradeLabel?: string;
   /** Show an "Open Console" action (HQ Console integrations page). */
   consoleAction?: boolean;
 }
 
+/** The company the last bot invite was for, so a usage pause can be answered by role. */
+let lastInviteCompanyId: string | null = null;
+
 function planRequiredToast(err: unknown): ToastDescriptor {
+  // US-024: a usage pause shows the server's message. Owners and admins get
+  // the Billing link; a member is asked to contact one.
+  const usagePause = meetingUsagePause(err);
+  if (usagePause) {
+    const action = usagePauseAction(usagePause, callerRole(lastInviteCompanyId) ?? null);
+    return action.kind === "billing"
+      ? { kind: "warn", text: usagePause.message, upgradeUrl: action.url, upgradeLabel: action.label }
+      : { kind: "warn", text: `${usagePause.message} ${action.hint}` };
+  }
   const upgradeUrl = planRequiredUpgradeUrl(err);
   return {
     kind: "warn",
@@ -973,6 +989,7 @@ async function invitePayload(
     destination.kind === "company" ? destination.companyUid : null,
     { has: isOwnMembershipUid },
   );
+  lastInviteCompanyId = typeof companyId === "string" && companyId ? companyId : null;
   return {
     meetingUrl,
     calendarEventId: evt?.id ?? null,

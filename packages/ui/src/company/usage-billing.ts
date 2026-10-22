@@ -2,24 +2,35 @@
  * Billing pane data for usage-priced companies (usage-only-pricing US-014).
  *
  * Sources, all hq-pro and all owner-gated except the price list:
- * - `GET /v1/billing/summary?companyUid=` → `pricingPlan` is `"usage-only"`
- *   for a usage-priced company; `usageTrial` carries trial dates and cap.
- *   This is the only usage-only signal the pane trusts. Absent, `"current"`,
- *   403 or a failed read keep the seats view.
+ * - `GET /v1/billing/summary?companyUid=` → `billingState` (hq-pro #5088,
+ *   US-024) is the plan status: kind `usage` or `usage-trial` marks a
+ *   usage-priced company, `trial` carries the trial dates and cap, `paused`
+ *   a usage pause. When it is present it wins over `pricingPlan`. Servers
+ *   without it fall back to `pricingPlan: "usage-only"` and `usageTrial`.
+ *   Any other answer, a 403 or a failed read keep the payment-only view.
  * - `GET /v1/billing/usage?companyUid=&window=month` → month-to-date usage,
  *   allowance left and one line per meter.
  * - `GET /v1/pricing` `usage` block → the vault rate and box ladder, with the
  *   bundled contract copy when the feed lacks it (see usage-pricing.ts).
  */
 
-import type { AdapterResult, Json } from "@hq/platform";
+import {
+  LEGACY_USAGE_PRICING_PLAN,
+  isUsagePricedRecord,
+  parseBillingState,
+  type AdapterResult,
+  type BillingState,
+  type BillingStatePause,
+  type Json,
+} from "@hq/platform";
 import {
   PRICING_FALLBACK,
   pricingFromFeed,
   type UsagePricing,
 } from "./usage-pricing.js";
 
-export const USAGE_ONLY_PRICING_PLAN = "usage-only";
+/** The legacy `pricingPlan` value; read only when `billingState` is absent. */
+export const USAGE_ONLY_PRICING_PLAN = LEGACY_USAGE_PRICING_PLAN;
 
 export interface UsageTrialStanding {
   status: "none" | "active" | "ended" | "owner-trial-used";
@@ -49,6 +60,10 @@ export interface UsageBillingView {
   /** Null when the statement could not be read; the pane says so. */
   statement: UsageStatementView | null;
   pricing: UsagePricing;
+  /** The server plan status, when it sent one (US-024). */
+  billingState: BillingState | null;
+  /** A usage pause in force now, from `billingState.paused`. */
+  paused: BillingStatePause | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -63,12 +78,34 @@ function str(value: unknown): string | null {
   return typeof value === "string" && value ? value : null;
 }
 
-/** True only when the summary says `pricingPlan: "usage-only"`. */
+/**
+ * True when the summary marks a usage-priced company: `billingState.kind` is
+ * `usage` or `usage-trial`. `billingState` wins over a conflicting
+ * `pricingPlan`; only a summary without it reads `pricingPlan: "usage-only"`.
+ */
 export function isUsageOnlySummary(summary: unknown): boolean {
-  return isRecord(summary) && summary.pricingPlan === USAGE_ONLY_PRICING_PLAN;
+  return isUsagePricedRecord(summary);
+}
+
+/** The summary's plan status, or null when absent or not a known version. */
+export function billingStateFromSummary(summary: unknown): BillingState | null {
+  return isRecord(summary) ? parseBillingState(summary.billingState) : null;
 }
 
 export function trialFromSummary(summary: unknown): UsageTrialStanding | null {
+  // billingState wins: a running trial is kind `usage-trial` with its dates.
+  // Without a running trial, the legacy record may still say how a past
+  // trial ended, but never that one is active.
+  const state = billingStateFromSummary(summary);
+  if (state?.kind === "usage-trial" && state.trial) {
+    return { status: "active", endsAt: state.trial.endsAt, capCents: state.trial.capCents };
+  }
+  const legacy = legacyTrialFromSummary(summary);
+  if (state && legacy?.status === "active") return null;
+  return legacy;
+}
+
+function legacyTrialFromSummary(summary: unknown): UsageTrialStanding | null {
   if (!isRecord(summary) || !isRecord(summary.usageTrial)) return null;
   const trial = summary.usageTrial;
   const status = trial.status;
@@ -114,8 +151,8 @@ export interface UsageBillingSource {
 
 /**
  * Read the usage view for one company. Null when the company is not
- * usage-only, or when the summary cannot be read (non-owner, offline, older
- * host): the pane then keeps the seats view it has always shown.
+ * usage-priced, or when the summary cannot be read (non-owner, offline, older
+ * host): the pane then shows payment only.
  */
 export async function readUsageBilling(
   source: UsageBillingSource | null | undefined,
@@ -147,7 +184,14 @@ export async function readUsageBilling(
           .catch(() => PRICING_FALLBACK.usage)
       : Promise.resolve(PRICING_FALLBACK.usage),
   ]);
-  return { trial: trialFromSummary(summary.value), statement, pricing };
+  const billingState = billingStateFromSummary(summary.value);
+  return {
+    trial: trialFromSummary(summary.value),
+    statement,
+    pricing,
+    billingState,
+    paused: billingState?.paused ?? null,
+  };
 }
 
 /** The vault line's cost so far, when the statement carries one. */

@@ -33,9 +33,9 @@ function text(target: HTMLElement, id: string): string {
   return target.querySelector(`[data-testid='${id}']`)?.textContent?.replace(/\s+/g, " ").trim() ?? "";
 }
 
-describe("CompanySettingsPage HQ Workforce seats (QA-046)", () => {
-  it("counts seats from the Team roster, agents separately, and re-reads on revisit", async () => {
-    let roster: unknown[] = [
+describe("CompanySettingsPage Billing without usage pricing (US-024)", () => {
+  it("shows cloud bots and payment only: no seats view, no plan checkout", async () => {
+    const roster: unknown[] = [
       { personUid: "prs_ana", displayName: "Ana" },
       { personUid: "prs_bo", displayName: "Bo" },
       { personUid: "agt_scout", displayName: "Scout", kind: "agent" },
@@ -49,27 +49,18 @@ describe("CompanySettingsPage HQ Workforce seats (QA-046)", () => {
     openWorkforce(target);
     await vi.waitFor(() => {
       flushSync();
-      expect(text(target, "workforce-seats")).toMatch(/^2Seats used/);
+      expect(text(target, "billing-bots")).toMatch(/^1Cloud bots/);
     });
-    expect(text(target, "workforce-seats")).not.toContain("0 of 10");
-    expect(text(target, "workforce-agents")).toMatch(/^1Hosted agents/);
-    expect(text(target, "workforce-limit-unavailable")).toContain("not available");
     expect(messaging.listContacts).toHaveBeenCalledWith({ companyUid: "cmp_unicom" });
+    expect(target.querySelector("[data-testid='workforce-seats']")).toBeNull();
+    expect(target.querySelector("[data-testid='workforce-upgrade']")).toBeNull();
+    expect(target.textContent).not.toMatch(/Seats|seats|Upgrade|Workforce|Starter|Individual|plan limit|checkout\.stripe\.com/);
     // Owner 2026-10-05: Billing shows the counts only, not a row per roster member.
     expect(target.querySelectorAll("[data-testid='company-settings'] .line")).toHaveLength(0);
     expect(target.textContent).not.toContain("Scout");
-
-    roster = [...roster, { personUid: "prs_cy", displayName: "Cy" }];
-    current.section = "general";
-    flushSync();
-    openWorkforce(target);
-    await vi.waitFor(() => {
-      flushSync();
-      expect(text(target, "workforce-seats")).toMatch(/^3Seats used/);
-    });
   });
 
-  it("says the seat count is unavailable when the team read fails", async () => {
+  it("shows no raw server text when the team read fails", async () => {
     const company = {
       getTeamTelemetry: vi.fn(async () => ({ ok: false as const, reason: "http", message: "HTTP 500" })),
       listMembers: vi.fn(async () => ({ ok: false as const, reason: "http", message: "HTTP 500" })),
@@ -78,9 +69,10 @@ describe("CompanySettingsPage HQ Workforce seats (QA-046)", () => {
     openWorkforce(target);
     await vi.waitFor(() => {
       flushSync();
-      expect(text(target, "workforce-error")).toContain("Seat count unavailable");
+      expect(company.getTeamTelemetry.mock.calls.length + company.listMembers.mock.calls.length).toBeGreaterThan(0);
     });
     expect(target.textContent).not.toContain("HTTP 500");
+    expect(target.textContent).not.toMatch(/Seat count/);
   });
 });
 
@@ -379,7 +371,7 @@ describe("CompanySettingsPage Billing: usage-priced companies (US-014)", () => {
     ["current", { ok: true as const, value: { companyUid: "cmp_unicom", pricingPlan: "current" } }],
     ["absent", { ok: true as const, value: { companyUid: "cmp_unicom" } }],
     ["forbidden", { ok: false as const, reason: "error" as const, code: "FORBIDDEN", message: "Requires owner role" }],
-  ])("keeps seats and Upgrade when the summary is %s", async (label, answer) => {
+  ])("shows payment only, with no seats or Upgrade, when the summary is %s", async (label, answer) => {
     const company = {
       ...roster(),
       getBillingSummary: vi.fn(async () => answer),
@@ -390,9 +382,97 @@ describe("CompanySettingsPage Billing: usage-priced companies (US-014)", () => {
     await vi.waitFor(() => expect(company.getBillingSummary).toHaveBeenCalled());
     await Promise.resolve();
     flushSync();
-    expect(target.querySelector("[data-testid='workforce-seats']")).not.toBeNull();
-    expect(target.querySelector("[data-testid='workforce-upgrade']")).not.toBeNull();
+    expect(target.querySelector("[data-testid='billing-payment-only']")).not.toBeNull();
+    expect(target.querySelector("[data-testid='workforce-seats']")).toBeNull();
+    expect(target.querySelector("[data-testid='workforce-upgrade']")).toBeNull();
     expect(target.querySelector("[data-testid='usage-billing']")).toBeNull();
     expect(company.getUsageStatement).not.toHaveBeenCalled();
+  });
+
+  const usageTrialState = {
+    version: 1,
+    scope: "company",
+    kind: "usage-trial",
+    view: "full",
+    trial: { daysLeft: 20, endsAt: "2026-11-15T13:00:00Z", capCents: 50000, usedCents: 340 },
+    spendLimit: { cents: null },
+    cardOnFile: false,
+    cardPrompt: false,
+    paused: null,
+    actions: { addCard: true, raiseLimit: false, switchToUsage: false, manageBilling: false },
+  };
+
+  it("billingState wins over a conflicting pricingPlan (US-024)", async () => {
+    const company = {
+      ...roster(),
+      getBillingSummary: vi.fn(async () => ({
+        ok: true as const,
+        value: { companyUid: "cmp_unicom", pricingPlan: "current", billingState: usageTrialState },
+      })),
+      getUsageStatement: vi.fn(async () => ({ ok: true as const, value: statement })),
+    };
+    const target = render({ slug: "unicom-bs-usage", companyUid: "cmp_unicom", company, role: "Owner" });
+    openWorkforce(target);
+    await vi.waitFor(() => {
+      flushSync();
+      expect(target.querySelector("[data-testid='usage-billing']")).not.toBeNull();
+    });
+    expect(text(target, "usage-trial")).toMatch(/^Trial until .+, usage capped at \$500\.$/);
+    expect(target.textContent).not.toMatch(/Seats|Upgrade|Workforce|Starter|Individual|plan limit/);
+  });
+
+  it("a legacy billingState keeps payment only even when pricingPlan says usage-only", async () => {
+    const company = {
+      ...roster(),
+      getBillingSummary: vi.fn(async () => ({
+        ok: true as const,
+        value: { companyUid: "cmp_unicom", pricingPlan: "usage-only", billingState: { ...usageTrialState, kind: "legacy-payer", trial: null } },
+      })),
+      getUsageStatement: vi.fn(),
+    };
+    const target = render({ slug: "unicom-bs-legacy", companyUid: "cmp_unicom", company, role: "Owner" });
+    openWorkforce(target);
+    await vi.waitFor(() => expect(company.getBillingSummary).toHaveBeenCalled());
+    await Promise.resolve();
+    flushSync();
+    expect(target.querySelector("[data-testid='billing-payment-only']")).not.toBeNull();
+    expect(company.getUsageStatement).not.toHaveBeenCalled();
+  });
+
+  it("shows a usage pause from billingState without plan or upgrade wording", async () => {
+    const pausedState = { ...usageTrialState, kind: "usage", trial: null, paused: { reason: "usage_card_required", resumesOn: null } };
+    const company = {
+      ...roster(),
+      getBillingSummary: vi.fn(async () => ({ ok: true as const, value: { companyUid: "cmp_unicom", billingState: pausedState } })),
+      getUsageStatement: vi.fn(async () => ({ ok: true as const, value: statement })),
+    };
+    const target = render({ slug: "unicom-bs-paused", companyUid: "cmp_unicom", company, role: "Owner" });
+    openWorkforce(target);
+    await vi.waitFor(() => {
+      flushSync();
+      expect(text(target, "usage-paused")).toContain("Cloud sync is paused.");
+    });
+    expect(text(target, "usage-paused")).toContain("Add a card on the Billing page");
+    expect(target.querySelector("[data-testid='usage-paused-ask-owner']")).toBeNull();
+    expect(target.textContent).not.toMatch(/plan limit|Upgrade|Starter|Workforce|Individual/);
+  });
+
+  it("a member the summary refuses sees the membership pause and is asked to contact an owner", async () => {
+    const memberState = { version: 1, scope: "company", kind: "usage", view: "member", trial: null, paused: { reason: "usage_spend_limit", resumesOn: "2026-11-01" } };
+    const company = {
+      ...roster(),
+      getBillingSummary: vi.fn(async () => ({ ok: false as const, reason: "error" as const, code: "FORBIDDEN", message: "Requires owner role" })),
+      getUsageStatement: vi.fn(),
+    };
+    const target = render({ slug: "unicom-bs-member", companyUid: "cmp_unicom", company, role: "Member", billingState: memberState });
+    openWorkforce(target);
+    await vi.waitFor(() => expect(company.getBillingSummary).toHaveBeenCalled());
+    await Promise.resolve();
+    flushSync();
+    expect(text(target, "usage-paused")).toContain("reached its monthly spend limit");
+    expect(text(target, "usage-paused-ask-owner")).toBe("Ask a company owner or admin to raise the spend limit.");
+    expect(target.querySelector("[data-testid='usage-owner-only']")).not.toBeNull();
+    expect(target.querySelector("[data-testid='billing-payment-only']")).toBeNull();
+    expect(target.textContent).not.toMatch(/Seats|Upgrade|Workforce|Starter|Individual|plan limit/);
   });
 });

@@ -2,23 +2,24 @@
   import RailButton from "../common/button/RailButton.svelte";
   /**
    * Company settings (console-rail US-030).
-   * General, Brand, Groups, Grants, HQ Workforce, and Billing.
-   * Cached snapshot paints on the first frame. Usage-priced companies see
-   * month-to-date usage, credit left, the vault fee and box prices in
-   * Billing; other companies keep seats and the Upgrade to Stripe checkout.
-   * Manage payment opens a Stripe portal session hq-pro mints for this
-   * company (never a fixed link). Delete group asks first.
+   * General, Brand, Groups, Grants, and Billing.
+   * Cached snapshot paints on the first frame. Billing reads the server plan
+   * status (`billingState`, US-024; `pricingPlan` only on servers without
+   * it). Usage-priced companies see month-to-date usage, credit left, the
+   * vault fee, box prices and any usage pause. Every company gets Manage
+   * payment, which opens a Stripe portal session hq-pro mints for this
+   * company (never a fixed link). There is no seats view and no plan
+   * checkout. Delete group asks first.
    */
   import {
     emptySnapshot,
     metadata,
     readSettingsCache,
-    stripeDestination,
     writeSettingsCache,
     type SettingsSnapshot,
     type SettingsTab,
   } from "./company-settings.js";
-  import type { CompanyApi, FilesApi, MessagingApi } from "@hq/platform";
+  import { askOwnerHint, billingPauseMessage, roleCanManageBilling, type BillingState, type CompanyApi, type FilesApi, type MessagingApi } from "@hq/platform";
   import { billingPortalHint, openBillingPortal, type BillingPortalOutcome } from "../account/billing-portal.js";
   import { readUsageBilling, vaultCostCents, type UsageBillingView } from "./usage-billing.js";
   import { boxLadder, boxRange, formatCardCents, formatCardUsd, vaultMeter } from "./usage-pricing.js";
@@ -39,7 +40,7 @@
     type FolderRead,
   } from "./company-access.js";
   import type { CompanyGroup, PathGrant } from "./company-settings.js";
-  import { readCompanyTeam, readTeamCache, seatCounts, writeTeamCache } from "./team-bots-pages.js";
+  import { readCompanyTeam, readTeamCache, writeTeamCache } from "./team-bots-pages.js";
   import type { TeamMember } from "./team-telemetry.js";
   import { loadPeople } from "../common/people/people-roster.svelte.js";
   import "../home/tokens.css";
@@ -53,8 +54,8 @@
     companyUid?: string | null;
     company?: CompanyApi | null;
     messaging?: MessagingApi | null;
-    /** RELEASE-001 gate: false hides the plan seat-limit line on Workforce. */
-    seatLimit?: boolean;
+    /** The plan status on the caller's membership row (US-024), for callers the summary refuses. */
+    billingState?: BillingState | null;
     /** OWNER-R24: which company panel pane this is. */
     section?: "general" | "brand" | "groups" | "grants" | "billing";
     /** OWNER-R24: the caller's role; only an Owner edits General and Brand. */
@@ -65,7 +66,7 @@
     targets?: GrantTarget[];
   }
 
-  let { slug, companyLabel, openExternal, companyUid = null, company = null, messaging = null, seatLimit = true, section = "general", role = null, files = null, targets = [] }: Props = $props();
+  let { slug, companyLabel, openExternal, companyUid = null, company = null, messaging = null, billingState = null, section = "general", role = null, files = null, targets = [] }: Props = $props();
 
   // OWNER-R24: one pane per panel row; Billing carries the plan (seats and
   // hosted agents, formerly "HQ Workforce") at its top.
@@ -88,25 +89,20 @@
     void loadPeople({ slug, companyUid, company, messaging });
   });
 
-  // HQ Workforce seats come from the same roster as Team. The Team cache
-  // paints first; the roster re-reads every time the Workforce tab opens.
-  let rosterHumans = $state<number | null>(null);
+  // Cloud bot boxes come from the same roster as Team. The Team cache paints
+  // first; the roster re-reads every time Billing opens.
   let rosterAgents = $state<TeamMember[]>([]);
-  let rosterError = $state<string | null>(null);
 
   function applyTeam(key: string): void {
     const hit = readTeamCache(key);
     if (!hit) return;
-    rosterHumans = seatCounts(hit.view).seats;
     rosterAgents = hit.view.agents;
   }
 
   $effect(() => {
     if (!showPlan) return;
     const key = slug;
-    rosterHumans = null;
     rosterAgents = [];
-    rosterError = null;
     applyTeam(key);
     if (!company || !key) return;
     const api = company;
@@ -114,18 +110,14 @@
     void readCompanyTeam({ slug: key, companyUid, company: api, messaging })
       .then((read) => {
         if (cancelled) return;
-        if (read.error) {
-          if (rosterHumans === null) rosterError = "Could not read the team. Seat count unavailable.";
-          return;
-        }
+        if (read.error) return;
         const prior = readTeamCache(key);
         writeTeamCache(key, { view: read.view, invites: read.invites.length ? read.invites : (prior?.invites ?? []) });
         applyTeam(key);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        console.warn("[settings] workforce roster read failed", err);
-        if (rosterHumans === null) rosterError = "Could not read the team. Seat count unavailable.";
+        console.warn("[settings] billing roster read failed", err);
       });
     return () => {
       cancelled = true;
@@ -134,10 +126,11 @@
 
   const hostedAgentCount = $derived(snap.agents.length || rosterAgents.length);
 
-  // Usage-priced companies (usage-only-pricing US-014). hq-pro's billing
-  // summary says `pricingPlan: "usage-only"`; then the pane shows this month's
-  // usage statement instead of seats. Null keeps the seats view: not
-  // usage-only, not an owner (403), or the summary could not be read.
+  // Usage-priced companies (usage-only-pricing US-014, US-024). hq-pro's
+  // billing summary carries `billingState` (kind `usage` / `usage-trial`;
+  // older servers: `pricingPlan: "usage-only"`); then the pane shows this
+  // month's usage statement. Null shows payment only: not usage-priced, not
+  // an owner (403), or the summary could not be read.
   let usage = $state<UsageBillingView | null>(null);
   let usageCompany = $state<string | null>(null);
   $effect(() => {
@@ -159,6 +152,10 @@
   const usageVault = $derived(usage ? vaultMeter(usage.pricing) : null);
   const usageVaultCents = $derived(usage ? vaultCostCents(usage.statement) : null);
   const usageTrialActive = $derived(usage?.trial?.status === "active");
+  // A usage pause in force: from the owner summary, else the membership row
+  // (admins and members cannot read the summary).
+  const pausedReason = $derived(usage?.paused?.reason ?? billingState?.paused?.reason ?? null);
+  const usagePriced = $derived(usage !== null || billingState?.kind === "usage" || billingState?.kind === "usage-trial");
   const usageTrialEnds = $derived(
     usage?.trial?.endsAt ? new Date(usage.trial.endsAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : null,
   );
@@ -279,11 +276,6 @@
 
   function saveGeneral(): void {
     remember();
-  }
-
-  function openStripe(action: "upgrade"): void {
-    const url = stripeDestination(action);
-    openExternal?.(url);
   }
 
   // Manage payment: hq-pro mints the portal session per click (owner-gated,
@@ -430,7 +422,7 @@
       <div class="page-head">
         <div>
           <h2>Billing</h2>
-          <p class="sub">{usage ? "Usage, credit and payment" : "Plan, seats and payment"} · billed to {snap.general.name || companyLabel}</p>
+          <p class="sub">{usagePriced ? "Usage, credit and payment" : "Payment"} · billed to {snap.general.name || companyLabel}</p>
         </div>
         <span class="grow"></span>
         {#if !portalOwnerOnly}
@@ -446,6 +438,12 @@
       </div>
       {#if portalHint}
         <p class="note" data-testid="manage-payment-hint" role="status">{portalHint}</p>
+      {/if}
+      {#if pausedReason}
+        <p class="note" data-testid="usage-paused" role="status">{billingPauseMessage(pausedReason, snap.general.name || companyLabel)}</p>
+        {#if !roleCanManageBilling(role)}
+          <p class="note" data-testid="usage-paused-ask-owner">{askOwnerHint(pausedReason)}</p>
+        {/if}
       {/if}
       {#if usage}
         {@const statement = usage.statement}
@@ -472,28 +470,14 @@
           <p class="note" data-testid="usage-trial">Trial{usageTrialEnds ? ` until ${usageTrialEnds}` : ""}, usage capped at {formatCardUsd(usage.trial?.capCents != null ? usage.trial.capCents / 100 : usage.pricing.trial.capUsd)}.</p>
         {/if}
         <p class="note" data-testid="usage-box-ladder">Box sizes: {boxLadder(usage.pricing.boxes)} a month.</p>
+      {:else if usagePriced}
+        <p class="note" data-testid="usage-owner-only">Usage and credit for {snap.general.name || companyLabel} are shown to company owners.</p>
       {:else}
-      <div class="plan">
-        <div data-testid="workforce-seats">
-          <b>{rosterHumans ?? "–"}</b>{#if seatLimit && snap.seatsLimit !== null}<span data-testid="workforce-seat-limit"> of {snap.seatsLimit}</span>{/if}<span>Seats used · humans on Team</span>
+        <div class="plan" data-testid="billing-payment-only">
+          <div data-testid="billing-bots">
+            <b>{hostedAgentCount}</b><span>Cloud bots</span>
+          </div>
         </div>
-        <div data-testid="workforce-agents">
-          <b>{hostedAgentCount}</b>{#if snap.agentsLimit !== null} of {snap.agentsLimit}{/if}<span>Hosted agents · counted separately</span>
-        </div>
-      </div>
-      {#if rosterError}
-        <p class="note" data-testid="workforce-error">{rosterError}</p>
-      {/if}
-      {#if seatLimit && snap.seatsLimit === null}
-        <p class="note" data-testid="workforce-limit-unavailable">Plan limits are not available yet. Counts come from the Team roster.</p>
-      {/if}
-      <div class="up">
-        <div>
-          <b>Need more seats or agents?</b>
-          Upgrade continues to Stripe checkout in your browser. The desktop collects no card data.
-        </div>
-        <RailButton icon="arrow-right" variant="primary" type="button" data-testid="workforce-upgrade" onclick={() => openStripe("upgrade")}>Upgrade</RailButton>
-      </div>
       {/if}
       <p class="note">Manage payment opens the Stripe customer portal in your browser. Invoices are listed there.</p>
     {/if}
@@ -602,5 +586,4 @@
   .nm { color: var(--t1); }
   .plan { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 520px; padding: 14px 16px; border-radius: 10px; background: var(--raised); }
   .plan span { display: block; color: var(--t3); font-size: 13px; }
-  .up { display: flex; align-items: center; gap: 12px; margin-top: 18px; max-width: 720px; padding: 14px 16px; border-radius: 10px; background: var(--raised); }
 </style>

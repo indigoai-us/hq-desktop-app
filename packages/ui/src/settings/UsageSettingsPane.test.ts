@@ -147,11 +147,11 @@ describe("UsageSettingsPane: one line per account", () => {
     const src = source();
     await render(src);
     expect(lines()).toEqual([
-      ["Personal", "Starter (free)", "No usage bill"],
+      ["Personal", "Free plan", "No usage bill"],
       ["Aspen", "", "Owner only"],
       ["Birch", "Trial, 12 days left", "$420.00"],
       ["Cedar", "Legacy plan", "No usage bill"],
-      ["Dogwood", "Starter (free)", "No usage bill"],
+      ["Dogwood", "Free plan", "No usage bill"],
       ["Elm", "Usage plan", "$1.20"],
       ["Northwind", "Usage plan", "$8.00"],
     ]);
@@ -397,7 +397,7 @@ describe("UsageSettingsPane: Switch to usage pricing (hq-pro #5081)", () => {
     );
     expect(q("usage-switch-confirm")).toBeNull();
     expect(q("usage-switch", detail()!)?.dataset.state).toBe("refused");
-    expect(clean(header("cmp_dogwood").querySelector('[data-testid="usage-account-plan"]'))).toBe("Starter (free)");
+    expect(clean(header("cmp_dogwood").querySelector('[data-testid="usage-account-plan"]'))).toBe("Free plan");
   });
 
   it("a conflict keeps the confirm open and asks to try again", async () => {

@@ -287,11 +287,25 @@ impl RunTotals {
             }
             SyncEvent::PlanLimit(notice) => {
                 // Only a link on a host hq-pro returns is kept; the notice
-                // itself counts either way.
-                self.uploads_pass.plan_limited.insert(
-                    notice.company.clone(),
-                    crate::plan_limit::approved_plan_upgrade_url(&notice.upgrade_url),
-                );
+                // itself counts either way. A usage pause carries its own
+                // Billing link (already checked by `parse_usage_pause`).
+                let link = match &notice.usage_pause {
+                    Some(pause) => Some(pause.action_url.clone()),
+                    None => crate::plan_limit::approved_plan_upgrade_url(&notice.upgrade_url),
+                };
+                self.uploads_pass
+                    .plan_limited
+                    .insert(notice.company.clone(), link);
+                match &notice.usage_pause {
+                    Some(pause) => {
+                        self.uploads_pass
+                            .usage_paused
+                            .insert(notice.company.clone(), pause.clone());
+                    }
+                    None => {
+                        self.uploads_pass.usage_paused.remove(&notice.company);
+                    }
+                }
             }
             SyncEvent::Progress(p)
                 if p.direction.as_deref() == Some("up") && p.deleted != Some(true) =>
@@ -4248,6 +4262,22 @@ pub fn should_alert_on_nonzero_exit_with_fault(
         saw_node_too_old,
     ) && !runner_exit_is_disk_exhaustion(code, signal, saw_genuine_crash, error_rollup)
         && !runner_exit_is_file_lock(code, signal, saw_genuine_crash, error_rollup)
+}
+
+/// The error event to show a person. A usage-pause refusal (US-024) never
+/// shows raw runner text such as `VaultClientError code=PLAN_LIMIT_EXCEEDED
+/// http=402 ...` or a JSON body: the message becomes the server's usage
+/// sentence, or a plain fallback when that cannot be read. Every other error
+/// is returned unchanged. Alerting is unaffected: usage pauses are already
+/// non-alertable through `plan_limit::is_plan_limit_refusal_message`.
+pub fn presentable_error_event(payload: &SyncErrorEvent) -> SyncErrorEvent {
+    match crate::plan_limit::usage_pause_runner_message(&payload.message) {
+        Some(message) => SyncErrorEvent {
+            message,
+            ..payload.clone()
+        },
+        None => payload.clone(),
+    }
 }
 
 /// Classifies a per-company error event. Returns `Some(SyncCompleteEvent)` when

@@ -334,7 +334,9 @@ export function snapshotFromMe(
 /** Plain reason for a failed load. Raw transport text stays in `detail`. */
 export function telemetryErrorReason(code: string | undefined, message: string | undefined): string {
   const text = `${code ?? ""} ${message ?? ""}`;
-  if (/402|plan|payment/i.test(text)) return "My Telemetry needs the Individual plan on your personal account.";
+  // US-024: there is no Individual plan to buy; a 402 is a billing state on
+  // the personal account, which Settings > Usage explains.
+  if (/402|plan|payment/i.test(text)) return "My Telemetry is not available on your personal account right now. Check Settings > Usage.";
   if (/401|403|auth|sign/i.test(text)) return "Your sign-in expired. Sign in again to see your telemetry.";
   if (/no-person-entity|404/i.test(text)) return "Your HQ account has no personal profile yet, so there is no telemetry to show.";
   if (/unavailable|not-yet-implemented|desktop-only/i.test(text)) return "Telemetry is not available in this window.";

@@ -8,6 +8,7 @@
 
 import {
   approvedPlanUpgradeUrl,
+  askOwnerHint,
   isPlanLimitCode,
   type AdapterResult,
   type Json,
@@ -130,6 +131,11 @@ export function inviteClaimOutcome(
     const upgradeUrl = approvedPlanUpgradeUrl(claim.upgradeUrl);
     // AUDIT-3c: the server's own text is logged, never shown.
     console.warn("[company-invite] join failed", claim.code, claim.message);
+    // US-024: a usage pause shows the server's message. The person joining
+    // is not an owner yet, so they are asked to contact one; no link.
+    if (claim.usagePause) {
+      return { ok: false, message: `${claim.usagePause.message} ${askOwnerHint(claim.usagePause.reason)}`, upgradeUrl: null };
+    }
     const message =
       claim.code && isPlanLimitCode(claim.code)
         ? "Your plan limit is reached."

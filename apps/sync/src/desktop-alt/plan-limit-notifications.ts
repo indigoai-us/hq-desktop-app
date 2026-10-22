@@ -14,6 +14,8 @@
  * because the rows (and which episodes are still open) persist per account.
  */
 
+import { billingPauseMessage, isUsageBillingKind, parseBillingState, type UsagePauseReason } from '@hq/platform';
+
 const PLAN_LIMIT_NOTIFICATION_TYPE = 'plan_limit';
 const PLAN_LIMIT_ID_PREFIX = 'local:plan-limit:';
 /** Rows kept in history. Old ended episodes fall off first. */
@@ -40,12 +42,27 @@ export interface PlanLimitNotificationRow {
   exposed: boolean;
   /** True while the company is still paused (the episode is open). */
   active: boolean;
+  /**
+   * US-024: the server's usage-pause message when usage state (trial cap,
+   * card required, spend limit) paused the company, not a plan limit. The
+   * row then reads as a cloud sync pause with the Billing link.
+   */
+  usageMessage?: string;
+}
+
+/** A usage pause behind a paused company (US-024). */
+export interface PlanLimitUsagePause {
+  reason: UsagePauseReason;
+  /** The server message; built from the reason when the source had none. */
+  message: string;
 }
 
 export interface PlanLimitPause {
   company: string;
   companyUid: string | null;
+  /** The upgrade link, or for a usage pause the Billing link. */
   upgradeUrl: string | null;
+  usagePause?: PlanLimitUsagePause | null;
 }
 
 /**
@@ -68,9 +85,16 @@ export const FILES_PAUSED_ARMED_STOP = 'files.create';
  */
 export function statusPushFilesPause(
   body: unknown,
-): { paused: true; upgradeUrl: unknown } | { paused: false } {
+): { paused: true; upgradeUrl: unknown; usageReason?: UsagePauseReason } | { paused: false } {
   if (!body || typeof body !== 'object') return { paused: false };
   const status = body as Record<string, unknown>;
+  // US-024: the shared plan status wins. A usage-priced company is paused
+  // only by `billingState.paused`; the Starter fields below never apply to it.
+  const billingState = parseBillingState(status.billingState);
+  if (billingState?.paused) {
+    return { paused: true, upgradeUrl: status.upgradeUrl ?? null, usageReason: billingState.paused.reason };
+  }
+  if (billingState && isUsageBillingKind(billingState.kind)) return { paused: false };
   const plan =
     status.planLimits && typeof status.planLimits === 'object'
       ? (status.planLimits as Record<string, unknown>)
@@ -97,19 +121,21 @@ export interface StorageLike {
   setItem(key: string, value: string): void;
 }
 
-function planLimitNotificationTitle(company: string): string {
-  return `New files are paused for ${company}.`;
+function planLimitNotificationTitle(company: string, usage = false): string {
+  return usage ? `Cloud sync is paused for ${company}.` : `New files are paused for ${company}.`;
 }
 
-function rowBody(upgradeUrl: string | null): string {
+function rowBody(upgradeUrl: string | null, usageMessage?: string): string {
+  if (usageMessage) return upgradeUrl ? `${usageMessage} Open to go to Billing.` : usageMessage;
   return upgradeUrl
     ? 'This company reached its plan limit. Open to upgrade the plan.'
     : 'This company reached its plan limit.';
 }
 
 function newRow(pause: PlanLimitPause, now: number, nonce: string): PlanLimitNotificationRow {
-  const title = planLimitNotificationTitle(pause.company);
-  const body = rowBody(pause.upgradeUrl);
+  const usageMessage = pause.usagePause?.message;
+  const title = planLimitNotificationTitle(pause.company, Boolean(usageMessage));
+  const body = rowBody(pause.upgradeUrl, usageMessage);
   return {
     id: `${PLAN_LIMIT_ID_PREFIX}${encodeURIComponent(pause.company)}:${now}-${nonce}`,
     type: PLAN_LIMIT_NOTIFICATION_TYPE,
@@ -125,6 +151,7 @@ function newRow(pause: PlanLimitPause, now: number, nonce: string): PlanLimitNot
     exposureId: `exposure:${nonce}`,
     exposed: false,
     active: true,
+    ...(usageMessage ? { usageMessage } : {}),
   };
 }
 
@@ -155,13 +182,16 @@ export function recordPlanLimitPauses(
       const current = next[index];
       const upgradeUrl = pause.upgradeUrl ?? current.targetRef;
       const companyUid = current.companyUid ?? pause.companyUid;
-      if (upgradeUrl !== current.targetRef || companyUid !== current.companyUid) {
+      const usageMessage = pause.usagePause?.message ?? current.usageMessage;
+      if (upgradeUrl !== current.targetRef || companyUid !== current.companyUid || usageMessage !== current.usageMessage) {
         next[index] = {
           ...current,
           targetRef: upgradeUrl,
           companyUid,
-          body: rowBody(upgradeUrl),
-          context: rowBody(upgradeUrl),
+          title: planLimitNotificationTitle(company, Boolean(usageMessage)),
+          body: rowBody(upgradeUrl, usageMessage),
+          context: rowBody(upgradeUrl, usageMessage),
+          ...(usageMessage ? { usageMessage } : {}),
         };
       }
       continue;
@@ -222,6 +252,17 @@ export function planLimitNativeBanner(
   created: readonly PlanLimitNotificationRow[],
 ): { title: string; body: string } | null {
   if (created.length === 0) return null;
+  const allUsage = created.every((row) => Boolean(row.usageMessage));
+  if (allUsage) {
+    // US-024: a usage pause is not a plan limit; no upgrade wording.
+    if (created.length === 1) {
+      return { title: planLimitNotificationTitle(created[0].company, true), body: created[0].usageMessage! };
+    }
+    return {
+      title: `Cloud sync is paused for ${created.length} companies.`,
+      body: 'Open HQ notifications to see which ones and go to Billing.',
+    };
+  }
   if (created.length === 1) {
     return { title: planLimitNotificationTitle(created[0].company), body: 'Open HQ to upgrade the plan.' };
   }
@@ -302,4 +343,12 @@ export function planLimitBannerAllowed(
     if (Number.isFinite(ts) && ts > now) return false;
   }
   return prefs.files !== false;
+}
+
+/**
+ * The usage pause for a status-push answer that carried only
+ * `billingState.paused` (no server message): a plain sentence from the reason.
+ */
+export function usagePauseFromReason(reason: UsagePauseReason, company: string): PlanLimitUsagePause {
+  return { reason, message: billingPauseMessage(reason, company) };
 }

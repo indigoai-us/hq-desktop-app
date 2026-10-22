@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Json } from "@hq/platform";
 import {
   accountGroups,
+  accountTrial,
   cardOnFileFromSummary,
   oldPlanFromSummary,
   orderedAccounts,
@@ -77,7 +78,7 @@ describe("account lines", () => {
     expect(
       rowTotalText({ ...base, plan: "trial", planLabel: "Trial", trial: { endsAt: "x", daysLeft: 3, capCents: 50000, usedCents: 12000, unknownMeters: ["vault"] }, usage: null }),
     ).toBe("At least $120.00");
-    expect(rowTotalText({ ...base, plan: "starter", planLabel: "Starter (free)", trial: null, usage: null })).toBe("No usage bill");
+    expect(rowTotalText({ ...base, plan: "starter", planLabel: "Free plan", trial: null, usage: null })).toBe("No usage bill");
     expect(rowTotalText({ kind: "owner-only" })).toBe("Owner only");
     expect(rowTotalText({ kind: "unavailable" })).toBe("Unavailable");
     expect(rowTotalText(undefined)).toBe("…");
@@ -175,5 +176,38 @@ describe("quiet retries on the Settings > Usage reads (review, 2026-10-20)", () 
     const getSpendLimit = vi.fn(async () => fail("http-500"));
     expect(await readSpendLimit({ getSpendLimit }, owner, { delays: [] })).toBeNull();
     expect(getSpendLimit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("billingState wins on account lines (US-024)", () => {
+  const NOW = new Date("2026-10-22T12:00:00.000Z");
+  const owner = { kind: "company" as const, uid: "cmp_a", name: "Acme", role: "owner" };
+  const state = (kind: string, extra: Record<string, unknown> = {}) => ({ version: 1, scope: "company", view: "full", kind, ...extra });
+
+  it("a usage-trial billingState shows the trial even when pricingPlan says current", async () => {
+    const getBillingSummary = vi.fn(async () =>
+      ok({ pricingPlan: "current", billingState: state("usage-trial", { trial: { daysLeft: 5, endsAt: "2026-10-27T00:00:00.000Z", capCents: 2500, usedCents: 100 } }) }),
+    );
+    const view = await readAccountRow({ getBillingSummary }, owner, null, () => NOW);
+    expect(view).toMatchObject({ kind: "ready", plan: "trial" });
+    expect(view.kind === "ready" && view.planLabel).not.toMatch(/Starter|Workforce|Individual/);
+  });
+
+  it("a legacy billingState keeps the older plan line even when pricingPlan says usage-only", async () => {
+    const getBillingSummary = vi.fn(async () => ok({ pricingPlan: "usage-only", billingState: state("legacy-free") }));
+    expect(await readAccountRow({ getBillingSummary }, owner, null, () => NOW)).toMatchObject({ kind: "ready", plan: "starter", planLabel: "Free plan" });
+    expect(oldPlanFromSummary({ billingState: state("legacy-payer") })).toBe("legacy");
+    expect(oldPlanFromSummary({ plan: "team", billingState: state("legacy-free") })).toBe("starter");
+  });
+
+  it("a usage kind without a trial ignores an older active usageTrial", () => {
+    expect(accountTrial({ billingState: state("usage"), usageTrial: { status: "active", endsAt: "2026-10-30T00:00:00.000Z" } }, NOW)).toBeNull();
+    expect(accountTrial({ usageTrial: { status: "active", endsAt: "2026-10-30T00:00:00.000Z" } }, NOW)?.daysLeft).toBe(8);
+  });
+
+  it("a person summary with a usage billingState reads as usage without a personalUsage record", async () => {
+    const getPersonalBillingSummary = vi.fn(async () => ok({ billingState: { ...state("usage"), scope: "person" } }));
+    const view = await readAccountRow({ getPersonalBillingSummary }, { kind: "personal", uid: null, name: "Personal", role: null } as never, null, () => NOW);
+    expect(view).toMatchObject({ kind: "ready", plan: "usage" });
   });
 });

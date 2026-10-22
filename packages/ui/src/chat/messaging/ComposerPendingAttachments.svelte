@@ -11,6 +11,7 @@
    */
   import { onDestroy } from "svelte";
   import { isImageFile } from "./chat-attachments";
+  import { usagePauseAction, type UsagePause } from "@hq/platform";
 
   interface Props {
     files: File[];
@@ -18,6 +19,14 @@
     /** Approved upgrade link for a plan-limit refusal (hard-stop US-018). */
     upgradeUrl?: string | null;
     onupgrade?: (url: string) => void;
+    /**
+     * US-024: a usage pause behind the refusal. The error is then the server
+     * message; owners and admins get the Billing link, members are asked to
+     * contact an owner.
+     */
+    usagePause?: UsagePause | null;
+    /** The person's role in the company, for the usage pause action. */
+    billingRole?: string | null;
     onremove: (index: number) => void;
     testid?: string;
   }
@@ -27,9 +36,13 @@
     error = null,
     upgradeUrl = null,
     onupgrade,
+    usagePause = null,
+    billingRole = null,
     onremove,
     testid = "composer-pending",
   }: Props = $props();
+
+  const pauseAction = $derived(usagePause ? usagePauseAction(usagePause, billingRole) : null);
 
   const pendingPreviewUrls = new Map<File, string>();
   function pendingPreviewUrl(file: File): string {
@@ -121,7 +134,18 @@
   {/each}
   {#if error}
     <span class="composer-attach-error">{error}</span>
-    {#if upgradeUrl && onupgrade}
+    {#if pauseAction?.kind === "billing" && onupgrade}
+      <button
+        type="button"
+        class="composer-attach-upgrade"
+        data-testid="composer-attach-billing"
+        onclick={() => pauseAction.kind === "billing" && onupgrade?.(pauseAction.url)}
+      ><RailIcon name="arrow-right" />
+        {pauseAction.label}
+      </button>
+    {:else if pauseAction?.kind === "ask-owner"}
+      <span class="composer-attach-error" data-testid="composer-attach-ask-owner">{pauseAction.hint}</span>
+    {:else if upgradeUrl && onupgrade}
       <button
         type="button"
         class="composer-attach-upgrade"

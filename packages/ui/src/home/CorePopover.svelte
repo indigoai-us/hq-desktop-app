@@ -634,7 +634,7 @@
               if (row.upgradeUrl) onopenurl?.(row.upgradeUrl);
             }}
           ><RailIcon name="arrow-right" />
-            Upgrade plan
+            {row.actionLabel}
           </button>
         </div>
       {/if}

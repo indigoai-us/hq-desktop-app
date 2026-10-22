@@ -1,3 +1,5 @@
+import { parseUsagePause, type UsagePause } from "@hq/platform";
+
 /**
  * Classify a `meetings_invite_bot` failure as the benign "already scheduled"
  * case.
@@ -81,4 +83,22 @@ export function planRequiredUpgradeUrl(err: unknown): string | undefined {
     return undefined;
   }
   return upgradeUrl;
+}
+
+/**
+ * The usage pause a bot invite/join refusal carries (usage-only-pricing
+ * US-024), read from the flattened `HTTP 402: {…}` command-error string.
+ * Null when there is none or it is not valid.
+ */
+export function meetingUsagePause(err: unknown): UsagePause | null {
+  const message = String(err ?? "");
+  const jsonStart = message.indexOf("{");
+  if (jsonStart < 0) return null;
+  try {
+    const payload: unknown = JSON.parse(message.slice(jsonStart));
+    if (!payload || typeof payload !== "object") return null;
+    return parseUsagePause((payload as Record<string, unknown>).usagePause);
+  } catch {
+    return null;
+  }
 }

@@ -11,6 +11,7 @@ import {
   resolvePlanLimitCompanyUids,
   savePlanLimitNotifications,
   statusPushFilesPause,
+  usagePauseFromReason,
 } from './plan-limit-notifications';
 
 const URL_A = 'https://hq.computer/companies/acme/billing?entrySurface=desktop_limit';
@@ -168,5 +169,79 @@ describe('statusPushFilesPause (usage-limits body -> "files are paused" row)', (
     expect(statusPushFilesPause(null)).toEqual({ paused: false });
     expect(statusPushFilesPause('paused')).toEqual({ paused: false });
     expect(statusPushFilesPause({ armedStops: 'files.create' })).toEqual({ paused: false });
+  });
+});
+
+describe('usage pause rows (US-024)', () => {
+  const BILLING = 'https://hq.computer/companies/acme/billing';
+  const MESSAGE =
+    'Cloud sync is paused. Acme used its $10.00 monthly allowance. Add a card on the Billing page to resume. Files on this computer are not affected.';
+  const retired = /plan limit|upgrade|Starter|Workforce|Individual/i;
+
+  it('titles and bodies a usage pause without plan or upgrade wording', () => {
+    const { rows, created } = recordPlanLimitPauses(
+      [],
+      [{ company: 'Acme', companyUid: 'cmp_acme', upgradeUrl: BILLING, usagePause: { reason: 'usage_card_required', message: MESSAGE } }],
+      1_000,
+      nonce,
+    );
+    expect(created).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      title: 'Cloud sync is paused for Acme.',
+      body: `${MESSAGE} Open to go to Billing.`,
+      targetRef: BILLING,
+      usageMessage: MESSAGE,
+    });
+    expect(`${rows[0].title} ${rows[0].body}`).not.toMatch(retired);
+    const banner = planLimitNativeBanner(created)!;
+    expect(banner).toEqual({ title: 'Cloud sync is paused for Acme.', body: MESSAGE });
+    expect(`${banner.title} ${banner.body}`).not.toMatch(retired);
+  });
+
+  it('turns an open legacy row into a usage row when the pause turns out to be usage', () => {
+    const first = recordPlanLimitPauses([], [pause('Acme')], 1_000, nonce).rows;
+    const { rows } = recordPlanLimitPauses(
+      first,
+      [{ company: 'Acme', companyUid: null, upgradeUrl: BILLING, usagePause: { reason: 'usage_spend_limit', message: MESSAGE } }],
+      2_000,
+      nonce,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].title).toBe('Cloud sync is paused for Acme.');
+    expect(rows[0].body).not.toMatch(retired);
+  });
+
+  it('banners several usage pauses without upgrade wording', () => {
+    const { created } = recordPlanLimitPauses(
+      [],
+      ['A', 'B'].map((company) => ({ company, companyUid: null, upgradeUrl: null, usagePause: usagePauseFromReason('usage_spend_limit', company) })),
+      1_000,
+      nonce,
+    );
+    const banner = planLimitNativeBanner(created)!;
+    expect(banner.title).toBe('Cloud sync is paused for 2 companies.');
+    expect(banner.body).not.toMatch(retired);
+  });
+
+  it('status push reads billingState first', () => {
+    const paused = {
+      plan: 'free',
+      cohort: 'enforceable',
+      armedStops: [],
+      billingState: { version: 1, kind: 'usage', scope: 'company', view: 'full', paused: { reason: 'usage_card_required', resumesOn: null } },
+    };
+    expect(statusPushFilesPause(paused)).toEqual({ paused: true, upgradeUrl: null, usageReason: 'usage_card_required' });
+    // A usage company is never paused by the Starter fields.
+    const notPaused = {
+      plan: 'free',
+      cohort: 'enforceable',
+      armedStops: ['files.create'],
+      upgradeUrl: URL_A,
+      billingState: { version: 1, kind: 'usage-trial', scope: 'company', view: 'full', paused: null },
+    };
+    expect(statusPushFilesPause(notPaused)).toEqual({ paused: false });
+    // Without billingState the legacy fields still decide.
+    expect(statusPushFilesPause({ ...notPaused, billingState: undefined })).toEqual({ paused: true, upgradeUrl: URL_A });
+    expect(usagePauseFromReason('usage_spend_limit', 'Acme').message).not.toMatch(retired);
   });
 });
