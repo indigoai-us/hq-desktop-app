@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ok, type PlatformAdapter } from "@hq/platform";
+import { createSyncPlatformAdapter, ok, type PlatformAdapter } from "@hq/platform";
 import BrainPage from "./BrainPage.svelte";
 
 let component: ReturnType<typeof mount> | null = null;
@@ -11,7 +11,7 @@ afterEach(async () => {
   document.body.innerHTML = "";
 });
 
-async function renderAssets(withAdapter = true) {
+async function renderAssets(withAdapter = true, useNativeAdapter = false) {
   const slug = `asset-co-${Math.random().toString(36).slice(2)}`;
   const root = `companies/${slug}/knowledge`;
   const folder = `${root}/marketing/email/inboxphil-research`;
@@ -31,13 +31,29 @@ async function renderAssets(withAdapter = true) {
       }
       return ok([...entries].map(([name, isDir]) => ({ name, path: `${prefix}${name}`, isDir, hasChildren: isDir })));
     }),
-    getFileContent: vi.fn(async (path: string) => path in bodies ? ok(bodies[path]!) : { ok: false, reason: "error" as const, message: "Binary file cannot be read as text" }),
+    getFileContent: vi.fn(async (path: string) => path in bodies ? ok(bodies[path]!) : { ok: false as const, reason: "error" as const, message: "Binary file cannot be read as text" }),
     getAuthorizedPreview: vi.fn(async (path: string) => ok({ mimeType: path.endsWith(".pdf") ? "application/pdf" : "image/png", dataBase64: "YWJj" })),
     revealInFinder: vi.fn(async () => ok(undefined)),
   };
-  const adapter = { files, isAvailable: (cap: string) => cap === "localFiles" } as unknown as PlatformAdapter;
+  const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+    if (command === "list_hq_dir") {
+      const result = await files.listDir(String(args?.relPath));
+      if (!result.ok) throw new Error(result.message);
+      return result.value;
+    }
+    if (command === "get_company_file_content") {
+      const result = await files.getFileContent(String(args?.path));
+      if (!result.ok) throw new Error(result.message);
+      return result.value;
+    }
+    if (command === "reveal_authorized_file") return undefined;
+    throw new Error(`Unexpected native command: ${command}`);
+  });
+  const adapter = useNativeAdapter
+    ? createSyncPlatformAdapter({ invoke })
+    : { files, isAvailable: (cap: string) => cap === "localFiles" } as unknown as PlatformAdapter;
   component = mount(BrainPage, { target: document.body, props: {
-    page: "knowledge", slug, files: files as never, library: null, shell: null, settings: null,
+    page: "knowledge", slug, files: (useNativeAdapter ? adapter.files : files) as never, library: null, shell: null, settings: null,
     adapter: withAdapter ? adapter : null,
   } });
   await vi.waitFor(() => expect(document.querySelector("[data-testid='brain-page']")?.getAttribute("data-phase")).toBe("ready"));
@@ -50,7 +66,7 @@ async function renderAssets(withAdapter = true) {
     const row = [...document.querySelectorAll<HTMLButtonElement>("[data-testid='vault-tree-row']")].find((row) => row.querySelector(".vt-name")?.textContent === name)!;
     row.click(); flushSync();
   };
-  return { root, folder, paths, files, select, search };
+  return { root, folder, paths, files, invoke, select, search };
 }
 
 describe("Knowledge assets (feedback ca1862ba)", () => {
@@ -90,6 +106,20 @@ describe("Knowledge assets (feedback ca1862ba)", () => {
     [...fallback.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("Show in folder"))!.click();
     await vi.waitFor(() => expect(files.revealInFinder).toHaveBeenCalledWith(paths[4]));
     expect(files.getFileContent.mock.calls.map(([path]) => path)).toEqual([paths[0]]);
+  });
+
+  it.each([true, false])("routes reveal through the actual Sync adapter (preview host: %s)", async (withPreview) => {
+    const { paths, invoke, select } = await renderAssets(withPreview, true);
+    await select("draft.docx");
+    if (withPreview) {
+      await vi.waitFor(() => expect(document.querySelector("[data-testid='file-preview-unsupported']")).toBeTruthy());
+      document.querySelector<HTMLButtonElement>("[data-testid='reveal-in-finder']")!.click();
+    } else {
+      const fallback = document.querySelector("[data-testid='brain-asset-fallback']")!;
+      [...fallback.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("Show in folder"))!.click();
+    }
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("reveal_authorized_file", { path: paths[4] }));
+    expect(invoke.mock.calls.map(([command]) => command)).not.toContain("reveal_folder");
   });
 
   it("keeps unsupported binary files discoverable with a native reveal action", async () => {
