@@ -328,9 +328,44 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --no-frozen-lockfile
+      # The old single `playwright install --with-deps` step apt-installs ~181
+      # packages (~119 MB) from the runner's Ubuntu mirror. On 2026-10-22
+      # (run 39856307669) that mirror served ~45-50 KB/s and the step ran out
+      # the whole 30-minute job. It normally takes 37-53s. The system deps are
+      # now their own step: apt gives up on a stalled connection after 20s,
+      # each attempt is capped at 2 minutes, there are 3 attempts, and the step
+      # is capped at 6 minutes, so a bad mirror fails the job fast instead.
+      - name: Resolve Playwright version
+        id: playwright-version
+        working-directory: apps/sync
+        run: echo "version=$(pnpm exec playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright-version.outputs.version }}-chromium-webkit
+      - name: Install layout regression browser system deps
+        working-directory: apps/sync
+        timeout-minutes: 6
+        run: |
+          # install-deps shells out to apt-get without a way to pass `-o`, so the
+          # same options go in an apt.conf.d drop-in that every apt call reads.
+          printf 'Acquire::http::Timeout "20";\nAcquire::https::Timeout "20";\nAcquire::Retries "2";\n' \
+            | sudo tee /etc/apt/apt.conf.d/99ci-timeouts >/dev/null
+          for attempt in 1 2 3; do
+            if timeout --kill-after=10 120 pnpm exec playwright install-deps chromium webkit; then
+              exit 0
+            fi
+            echo "::warning::playwright install-deps attempt ${attempt}/3 failed or timed out"
+            # A kill mid-unpack can leave dpkg half-configured; repair before retrying.
+            sudo dpkg --configure -a || true
+            [ "$attempt" -lt 3 ] && sleep 10
+          done
+          echo "::error::playwright install-deps failed after 3 attempts (slow or unreachable Ubuntu mirror?)"
+          exit 1
       - name: Install layout regression browsers
         working-directory: apps/sync
-        run: pnpm exec playwright install --with-deps chromium webkit
+        run: pnpm exec playwright install chromium webkit
       # No `pnpm build` first: playwright.config.ts starts its own vite preview
       # server, so this suite never reads the dist the old serial job produced.
       - name: Desktop scroll containment (Chromium + WebKit)
