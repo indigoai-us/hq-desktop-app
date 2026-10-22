@@ -154,7 +154,15 @@
   const usageTrialActive = $derived(usage?.trial?.status === "active");
   // A usage pause in force: from the owner summary, else the membership row
   // (admins and members cannot read the summary).
-  const pausedReason = $derived(usage?.paused?.reason ?? billingState?.paused?.reason ?? null);
+  const pauseState = $derived(usage?.billingState?.paused ? usage.billingState : billingState?.paused ? billingState : null);
+  const pausedReason = $derived(pauseState?.paused?.reason ?? null);
+  // The pause copy follows the whole state, not the reason alone: a trial
+  // cap with a card on file lifts at trial end, so it never asks for a card.
+  const pauseContext = $derived({
+    resumesOn: pauseState?.paused?.resumesOn ?? null,
+    cardOnFile: pauseState?.cardOnFile ?? null,
+    addCard: pauseState?.actions?.addCard ?? null,
+  });
   const usagePriced = $derived(usage !== null || billingState?.kind === "usage" || billingState?.kind === "usage-trial");
   const usageTrialEnds = $derived(
     usage?.trial?.endsAt ? new Date(usage.trial.endsAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : null,
@@ -440,9 +448,9 @@
         <p class="note" data-testid="manage-payment-hint" role="status">{portalHint}</p>
       {/if}
       {#if pausedReason}
-        <p class="note" data-testid="usage-paused" role="status">{billingPauseMessage(pausedReason, snap.general.name || companyLabel)}</p>
+        <p class="note" data-testid="usage-paused" role="status">{billingPauseMessage(pausedReason, { ...pauseContext, company: snap.general.name || companyLabel })}</p>
         {#if !roleCanManageBilling(role)}
-          <p class="note" data-testid="usage-paused-ask-owner">{askOwnerHint(pausedReason)}</p>
+          <p class="note" data-testid="usage-paused-ask-owner">{askOwnerHint(pausedReason, pauseContext)}</p>
         {/if}
       {/if}
       {#if usage}

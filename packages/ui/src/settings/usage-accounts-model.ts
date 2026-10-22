@@ -189,6 +189,8 @@ export function oldPlanFromSummary(summary: Record<string, unknown>): "legacy" |
 
 /** Card on file from a company or person summary; null when the summary doesn't say. */
 export function cardOnFileFromSummary(summary: Record<string, unknown>): boolean | null {
+  const stateCard = parseBillingState(summary.billingState)?.cardOnFile;
+  if (typeof stateCard === "boolean") return stateCard;
   const trial = isRecord(summary.usageTrial) ? summary.usageTrial : null;
   const personal = isRecord(summary.personalUsage) ? summary.personalUsage : null;
   const pm = isRecord(summary.defaultPaymentMethod) ? summary.defaultPaymentMethod : null;

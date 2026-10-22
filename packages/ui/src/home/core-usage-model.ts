@@ -17,7 +17,7 @@
  * failed read is "unavailable", never zero usage. No price lives here.
  */
 
-import type { AdapterResult, Json } from "@hq/platform";
+import { parseBillingState, type AdapterResult, type Json } from "@hq/platform";
 import { isUsageOnlySummary } from "../company/usage-billing.js";
 import { registerAccountCache } from "../common/account-caches.js";
 import type { StackSegment } from "./usage-stack.js";
@@ -409,6 +409,21 @@ export function usageNoticeFromSummary(summary: unknown): UsageNotice | null {
   const capText = cap !== null ? `the trial's ${formatUsd(cap)} of usage` : "the trial's usage cap";
   const allowanceText = allowance !== null ? `the ${formatUsd(allowance)} of usage included this month` : "this month's included usage";
   const memberAsk = "Ask an owner or admin to add a card.";
+  // billingState decides whether a card can help: a trial cap with a card on
+  // file (or no Add a card action) holds until the trial ends (hq-pro #5088).
+  const state = parseBillingState(summary.billingState);
+  const cardOnFile = state?.cardOnFile ?? (typeof t.cardOnFile === "boolean" ? t.cardOnFile : null);
+  const offersCard = cardOnFile !== true && state?.actions.addCard !== false;
+  if (t.syncPaused === true && t.pauseReason === "usage_trial_cap" && !offersCard) {
+    const resumes = state?.paused?.resumesOn ? longDate(state.paused.resumesOn) : ends;
+    const when = resumes ? ` Usage is paused until ${resumes}, when the trial ends.` : "";
+    return {
+      kind: "paused-trial-cap",
+      text: `Cloud sync is paused: ${capText} is used up.${when} Files on your computers are not affected.`,
+      actionLabel: "Manage billing",
+      memberText: `Cloud sync is paused: ${capText} is used up.${when} Ask an owner or admin about billing.`,
+    };
+  }
   if (t.syncPaused === true && t.pauseReason === "usage_trial_cap") {
     return {
       kind: "paused-trial-cap",
@@ -467,6 +482,7 @@ export function planLabelFromSummary(summary: unknown, now: Date = new Date()): 
 export function billingIsSetUp(summary: unknown): boolean {
   if (!isRecord(summary)) return false;
   if (summary.plan === "team") return true;
+  if (parseBillingState(summary.billingState)?.cardOnFile === true) return true;
   const trial = isRecord(summary.usageTrial) ? summary.usageTrial : null;
   if (trial?.cardOnFile === true) return true;
   const pm = isRecord(summary.defaultPaymentMethod) ? summary.defaultPaymentMethod : null;

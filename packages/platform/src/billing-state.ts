@@ -209,10 +209,55 @@ export type UsagePauseAction =
   | { kind: "billing"; label: string; url: string }
   | { kind: "ask-owner"; hint: string };
 
-/** What a member is asked to do, by pause reason. */
-export function askOwnerHint(reason: UsagePauseReason | null | undefined): string {
+/**
+ * What billingState says about a pause, beyond its reason. The copy is
+ * driven by these fields, not by the reason alone: a trial cap holds until
+ * the trial ends or the first invoice even with a card on file (hq-pro
+ * #5088, #5064), so adding another card cannot clear it.
+ */
+export interface BillingPauseContext {
+  company?: string | null;
+  /** `billingState.paused.resumesOn`: when the pause lifts on its own. */
+  resumesOn?: string | null;
+  cardOnFile?: boolean | null;
+  /** `billingState.actions.addCard`. */
+  addCard?: boolean | null;
+  /** The server's `usagePause.message`. Shown as is when present. */
+  message?: string | null;
+}
+
+/**
+ * True unless the state says a card cannot help: a card is already on file,
+ * or the server does not offer Add a card. Unknown (older callers that pass
+ * neither field) keeps the add-card copy.
+ */
+export function pauseOffersAddCard(context: Pick<BillingPauseContext, "cardOnFile" | "addCard"> = {}): boolean {
+  return context.cardOnFile !== true && context.addCard !== false;
+}
+
+/**
+ * A pause date in the app's short form ("Nov 15"), as Settings shows the
+ * trial end. A date with no time is read as that calendar day.
+ */
+export function formatPauseDate(value: string | null | undefined): string | null {
+  const raw = value?.trim();
+  if (!raw) return null;
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return null;
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(raw);
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(dateOnly ? { timeZone: "UTC" } : {}) });
+}
+
+/** What a member is asked to do, by pause reason and, when known, the pause state. */
+export function askOwnerHint(
+  reason: UsagePauseReason | null | undefined,
+  context: Pick<BillingPauseContext, "cardOnFile" | "resumesOn"> = {},
+): string {
   if (reason === "usage_spend_limit") {
     return "Ask a company owner or admin to raise the spend limit.";
+  }
+  if (context.cardOnFile === true || formatPauseDate(context.resumesOn)) {
+    return "Ask a company owner or admin about billing.";
   }
   return "Ask a company owner or admin to add a card on the Billing page.";
 }
@@ -231,16 +276,25 @@ export function usagePauseAction(
 }
 
 /**
- * A plain sentence for a pause known only from `billingState.paused`, when no
- * server message came with it.
+ * The sentence for a usage pause. The server's `usagePause.message` wins when
+ * present. Otherwise the copy follows billingState: it never asks for a card
+ * when one is on file or `actions.addCard` is false, and it says when the
+ * pause lifts when `resumesOn` is set.
  */
-export function billingPauseMessage(reason: UsagePauseReason, company?: string | null): string {
-  const who = company?.trim() || "This company";
+export function billingPauseMessage(reason: UsagePauseReason, context: BillingPauseContext = {}): string {
+  const server = context.message?.trim();
+  if (server) return server;
+  const who = context.company?.trim() || "This company";
+  const until = formatPauseDate(context.resumesOn);
+  const addCard = pauseOffersAddCard(context);
+  const keep = "Files on this computer are not affected.";
   if (reason === "usage_spend_limit") {
-    return `Cloud sync is paused. ${who} reached its monthly spend limit. Raise the limit on the Billing page to resume. Files on this computer are not affected.`;
+    const resume = until ? `Usage is paused until ${until}. Raise the limit on the Billing page to resume sooner.` : "Raise the limit on the Billing page to resume.";
+    return `Cloud sync is paused. ${who} reached its monthly spend limit. ${resume} ${keep}`;
   }
-  if (reason === "usage_trial_cap") {
-    return `Cloud sync is paused. ${who} used the usage included in its trial. Add a card on the Billing page to resume. Files on this computer are not affected.`;
-  }
-  return `Cloud sync is paused. ${who} used its monthly allowance. Add a card on the Billing page to resume. Files on this computer are not affected.`;
+  const what = reason === "usage_trial_cap" ? `${who} used the usage included in its trial.` : `${who} used its monthly allowance.`;
+  const steps: string[] = [];
+  if (until) steps.push(reason === "usage_trial_cap" ? `Usage is paused until ${until}, when the trial ends.` : `Usage is paused until ${until}.`);
+  if (addCard) steps.push(until ? "Add a card on the Billing page to resume sooner." : "Add a card on the Billing page to resume.");
+  return ["Cloud sync is paused.", what, ...steps, keep].join(" ");
 }

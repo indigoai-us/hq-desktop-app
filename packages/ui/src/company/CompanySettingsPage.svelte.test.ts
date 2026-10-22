@@ -457,6 +457,67 @@ describe("CompanySettingsPage Billing: usage-priced companies (US-014)", () => {
     expect(target.textContent).not.toMatch(/plan limit|Upgrade|Starter|Workforce|Individual/);
   });
 
+  // Stefan's acceptance regression for #1773 (codex-support-2026-10-22/desktop1773-trial-card-regression-snippet.ts), verbatim.
+  it("support: capped trial with card already on file does not tell owner to add another card", async()=>{
+    const pausedState={...usageTrialState,cardOnFile:true,paused:{reason:"usage_trial_cap",resumesOn:"2026-11-15T13:00:00Z"},actions:{addCard:false,raiseLimit:true,switchToUsage:false,manageBilling:true}};
+    const company={...roster(),getBillingSummary:vi.fn(async()=>({ok:true as const,value:{companyUid:"cmp_unicom",billingState:pausedState}})),getUsageStatement:vi.fn(async()=>({ok:true as const,value:statement}))};
+    const target=render({slug:"unicom-cap-with-card",companyUid:"cmp_unicom",company,role:"Owner"});openWorkforce(target);
+    await vi.waitFor(()=>{flushSync();expect(text(target,"usage-paused")).toContain("Cloud sync is paused.");});
+    expect(text(target,"usage-paused")).not.toContain("Add a card");
+  });
+
+  it("a capped trial with a card on file says when usage resumes", async () => {
+    const resumesOn = "2026-11-15T13:00:00Z";
+    const pausedState = { ...usageTrialState, cardOnFile: true, paused: { reason: "usage_trial_cap", resumesOn }, actions: { addCard: false, raiseLimit: true, switchToUsage: false, manageBilling: true } };
+    const company = {
+      ...roster(),
+      getBillingSummary: vi.fn(async () => ({ ok: true as const, value: { companyUid: "cmp_unicom", billingState: pausedState } })),
+      getUsageStatement: vi.fn(async () => ({ ok: true as const, value: statement })),
+    };
+    const target = render({ slug: "unicom-cap-resumes", companyUid: "cmp_unicom", company, role: "Owner" });
+    openWorkforce(target);
+    await vi.waitFor(() => {
+      flushSync();
+      expect(text(target, "usage-paused")).toContain("Cloud sync is paused.");
+    });
+    const day = new Date(resumesOn).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    expect(text(target, "usage-paused")).toContain(`Usage is paused until ${day}, when the trial ends.`);
+    expect(target.querySelector("[data-testid='usage-paused-ask-owner']")).toBeNull();
+  });
+
+  it("control: a capped trial that offers Add a card and has no card keeps the add-card copy", async () => {
+    const pausedState = { ...usageTrialState, cardOnFile: false, paused: { reason: "usage_trial_cap", resumesOn: null }, actions: { addCard: true, raiseLimit: false, switchToUsage: false, manageBilling: false } };
+    const company = {
+      ...roster(),
+      getBillingSummary: vi.fn(async () => ({ ok: true as const, value: { companyUid: "cmp_unicom", billingState: pausedState } })),
+      getUsageStatement: vi.fn(async () => ({ ok: true as const, value: statement })),
+    };
+    const target = render({ slug: "unicom-cap-no-card", companyUid: "cmp_unicom", company, role: "Owner" });
+    openWorkforce(target);
+    await vi.waitFor(() => {
+      flushSync();
+      expect(text(target, "usage-paused")).toContain("Cloud sync is paused.");
+    });
+    expect(text(target, "usage-paused")).toContain("Add a card on the Billing page to resume.");
+  });
+
+  it("control: a member on a capped trial with an end date is asked to contact an owner, not to add a card", async () => {
+    const memberState = { version: 1, scope: "company", kind: "usage-trial", view: "member", trial: null, cardOnFile: null, paused: { reason: "usage_trial_cap", resumesOn: "2026-11-15T13:00:00Z" }, actions: { addCard: false, raiseLimit: false, switchToUsage: false, manageBilling: false } };
+    const company = {
+      ...roster(),
+      getBillingSummary: vi.fn(async () => ({ ok: false as const, reason: "error" as const, code: "FORBIDDEN", message: "Requires owner role" })),
+      getUsageStatement: vi.fn(),
+    };
+    const target = render({ slug: "unicom-cap-member", companyUid: "cmp_unicom", company, role: "Member", billingState: memberState });
+    openWorkforce(target);
+    await vi.waitFor(() => expect(company.getBillingSummary).toHaveBeenCalled());
+    await Promise.resolve();
+    flushSync();
+    expect(text(target, "usage-paused")).toContain("when the trial ends");
+    expect(text(target, "usage-paused")).not.toContain("Add a card");
+    expect(text(target, "usage-paused-ask-owner")).toBe("Ask a company owner or admin about billing.");
+  });
+
   it("a member the summary refuses sees the membership pause and is asked to contact an owner", async () => {
     const memberState = { version: 1, scope: "company", kind: "usage", view: "member", trial: null, paused: { reason: "usage_spend_limit", resumesOn: "2026-11-01" } };
     const company = {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  askOwnerHint,
   billingPauseMessage,
   isUsagePricedRecord,
   parseBillingState,
@@ -167,11 +168,59 @@ describe("usage pause on an hq-pro refusal", () => {
 });
 
 describe("billingPauseMessage", () => {
+  const trialEnd = "2026-11-15T13:00:00Z";
+  const shortDate = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+
+  it("regression #1773: a capped trial with a card on file and no Add a card action says when it resumes, not to add a card", () => {
+    const text = billingPauseMessage("usage_trial_cap", { company: "Unicom", cardOnFile: true, addCard: false, resumesOn: trialEnd });
+    expect(text).not.toMatch(/add a card/i);
+    expect(text).toContain(`Usage is paused until ${shortDate(trialEnd)}, when the trial ends.`);
+    expect(text).toContain("Files on this computer are not affected.");
+  });
+
+  it("never asks for a card when actions.addCard is false or a card is on file", () => {
+    for (const reason of ["usage_trial_cap", "usage_card_required"] as const) {
+      expect(billingPauseMessage(reason, { addCard: false })).not.toMatch(/add a card/i);
+      expect(billingPauseMessage(reason, { cardOnFile: true, addCard: true })).not.toMatch(/add a card/i);
+    }
+  });
+
+  it("control: Add a card offered and no card on file keeps the add-card copy", () => {
+    const text = billingPauseMessage("usage_trial_cap", { company: "Unicom", cardOnFile: false, addCard: true, resumesOn: null });
+    expect(text).toBe(
+      "Cloud sync is paused. Unicom used the usage included in its trial. Add a card on the Billing page to resume. Files on this computer are not affected.",
+    );
+  });
+
+  it("control: the server usagePause.message wins over built copy", () => {
+    const message = "Cloud sync is paused until Nov 15, when your trial ends.";
+    expect(billingPauseMessage("usage_trial_cap", { company: "Unicom", cardOnFile: false, addCard: true, message })).toBe(message);
+    expect(billingPauseMessage("usage_trial_cap", { company: "Unicom", message: "   " })).toContain("Unicom");
+  });
+
+  it("a spend-limit pause with a resume date says when it resumes and still offers the limit", () => {
+    const text = billingPauseMessage("usage_spend_limit", { company: "Acme", resumesOn: "2026-11-01" });
+    expect(text).toContain("Usage is paused until Nov 1.");
+    expect(text).toContain("Raise the limit on the Billing page to resume sooner.");
+  });
+
   it("never names a plan or an upgrade", () => {
     for (const reason of ["usage_trial_cap", "usage_card_required", "usage_spend_limit"] as const) {
-      const text = billingPauseMessage(reason, "Acme");
+      const text = billingPauseMessage(reason, { company: "Acme" });
       expect(text).toContain("Acme");
       expect(text).not.toMatch(/plan|upgrade|starter|workforce|individual/i);
     }
+  });
+});
+
+describe("askOwnerHint with pause state", () => {
+  it("control: a member is still asked to contact an owner or admin", () => {
+    expect(askOwnerHint("usage_trial_cap")).toBe("Ask a company owner or admin to add a card on the Billing page.");
+    expect(askOwnerHint("usage_spend_limit")).toBe("Ask a company owner or admin to raise the spend limit.");
+  });
+
+  it("does not ask an owner to add a card when one is on file or the pause has an end date", () => {
+    expect(askOwnerHint("usage_trial_cap", { cardOnFile: true })).toBe("Ask a company owner or admin about billing.");
+    expect(askOwnerHint("usage_trial_cap", { resumesOn: "2026-11-15T13:00:00Z" })).toBe("Ask a company owner or admin about billing.");
   });
 });

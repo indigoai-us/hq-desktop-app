@@ -447,6 +447,34 @@ describe("pause and card notices", () => {
     expect(n.memberText).toContain("Ask an owner or admin to add a card.");
   });
 
+  it("regression #1773: a trial cap with a card on file (billingState) says when it resumes and never asks for a card", () => {
+    const n = usageNoticeFromSummary({
+      ...trial({ syncPaused: true, pauseReason: "usage_trial_cap", capReached: true }),
+      billingState: {
+        version: 1, scope: "company", kind: "usage-trial", view: "full", trial: null, cardOnFile: true, cardPrompt: false,
+        paused: { reason: "usage_trial_cap", resumesOn: "2026-11-15T13:00:00Z" },
+        actions: { addCard: false, raiseLimit: true, switchToUsage: false, manageBilling: true },
+      },
+    })!;
+    expect(n.kind).toBe("paused-trial-cap");
+    expect(n.text).toBe(
+      "Cloud sync is paused: the trial's $500.00 of usage is used up. Usage is paused until Nov 15, when the trial ends. Files on your computers are not affected.",
+    );
+    expect(n.actionLabel).toBe("Manage billing");
+    expect(n.memberText).not.toMatch(/add a card/i);
+    expect(n.memberText).toContain("Ask an owner or admin");
+  });
+
+  it("a trial cap with cardOnFile on the legacy usageTrial block does not ask for a card", () => {
+    const n = usageNoticeFromSummary(trial({ syncPaused: true, pauseReason: "usage_trial_cap", capReached: true, cardOnFile: true }))!;
+    expect(n.text).toContain("Usage is paused until Nov 3, when the trial ends.");
+    expect(n.text).not.toMatch(/card/i);
+  });
+
+  it("billingIsSetUp reads billingState.cardOnFile", () => {
+    expect(billingIsSetUp({ billingState: { version: 1, scope: "company", kind: "usage-trial", cardOnFile: true } })).toBe(true);
+  });
+
   it("sync paused for a card after the included usage says so and offers Add a card to resume", () => {
     const n = usageNoticeFromSummary({
       pricingPlan: "usage-only",
