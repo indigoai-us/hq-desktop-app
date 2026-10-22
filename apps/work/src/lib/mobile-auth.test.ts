@@ -115,6 +115,20 @@ describe("mobile sign-in: starting the flow", () => {
     expect(opened[0]).not.toContain("verifier");
   });
 
+  it("opens the Cognito chooser, which offers Microsoft, without asking hq-pro", async () => {
+    // A phone reaches Microsoft through the hosted chooser. Naming a provider
+    // here would skip it, and resolving a Microsoft email would need a call to
+    // hq-pro that the mobile webview origin is not allowed to make.
+    const fetchMock = vi.fn();
+    const { session, opened } = setup({
+      fetch: fetchMock as unknown as typeof globalThis.fetch,
+    });
+    await session.beginSignIn();
+
+    expect(new URL(opened[0]).searchParams.has("identity_provider")).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("passes a chosen identity provider through so the chooser is skipped", async () => {
     const { session, opened } = setup();
     await session.beginSignIn({ identityProvider: "Google" });

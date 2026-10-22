@@ -1179,8 +1179,12 @@
   .body :global(code) { font-family: var(--font-mono); font-size: 12px; padding: 1px 4px; border-radius: 4px; background: var(--raised, var(--v4-control-faint)); }
   .body :global(pre) { padding: 10px 12px; border-radius: 6px; background: var(--raised, var(--v4-control-faint)); overflow: auto; }
   .body :global(pre code) { padding: 0; background: none; }
-  .body :global(table) { border-collapse: collapse; display: block; overflow-x: auto; }
-  .body :global(th), .body :global(td) { padding: 4px 10px; border-bottom: 1px solid var(--line, var(--v4-rowline)); text-align: left; vertical-align: top; }
+  /* Wide tables scroll in their own box. Cells wrap only between words, so
+     the body's overflow-wrap: anywhere cannot squeeze a table mid-word. */
+  .body :global(.markdown-table-scroll) { max-width: 100%; margin: 0 0 10px; overflow-x: auto; }
+  .body :global(.markdown-table-scroll table) { margin: 0; }
+  .body :global(table) { width: max-content; min-width: 100%; border-collapse: collapse; }
+  .body :global(th), .body :global(td) { max-width: 40ch; padding: 4px 10px; border-bottom: 1px solid var(--line, var(--v4-rowline)); text-align: left; vertical-align: top; overflow-wrap: normal; word-break: normal; }
   .body :global(th) { color: var(--t1, var(--v4-text-1)); font-weight: 500; }
   .body :global(blockquote) { padding-left: 12px; color: var(--t3, var(--v4-text-3)); border-left: 0; background: var(--raised, var(--v4-control-faint)); padding: 8px 12px; border-radius: 6px; }
   .body :global(a) { color: var(--t1, var(--v4-text-1)); }
