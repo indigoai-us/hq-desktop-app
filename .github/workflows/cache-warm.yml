@@ -182,12 +182,6 @@ jobs:
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: apps/sync/pnpm-lock.yaml
-
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: ${{ matrix.target }}
@@ -197,6 +191,15 @@ jobs:
         with:
           workspaces: apps/sync/src-tauri
           shared-key: release-${{ matrix.target }}
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          # pnpm's store only exists when the install below runs; on a Rust cache
+          # hit the install is skipped and setup-node's post-job cache save would
+          # fail with "Path Validation Error" (run 39753133839).
+          cache: ${{ steps.rust-cache.outputs.cache-hit != 'true' && 'pnpm' || '' }}
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
 
       - name: Install dependencies
         if: steps.rust-cache.outputs.cache-hit != 'true'
@@ -283,12 +286,6 @@ jobs:
       # passing an explicit version here too is rejected as a conflict.
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: "22"
-          cache: pnpm
-          cache-dependency-path: apps/sync/pnpm-lock.yaml
-
       - name: Install Rust (stable, x86_64-pc-windows-msvc)
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -303,6 +300,15 @@ jobs:
             apps/sync/src-tauri
           shared-key: windows-check-debug
           cache-on-failure: true
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          # pnpm's store only exists when the install below runs; on a Rust cache
+          # hit the install is skipped and setup-node's post-job cache save would
+          # fail with "Path Validation Error" (run 39753133839).
+          cache: ${{ steps.rust-cache.outputs.cache-hit != 'true' && 'pnpm' || '' }}
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
 
       - name: Install JS deps
         if: steps.rust-cache.outputs.cache-hit != 'true'
@@ -350,12 +356,6 @@ jobs:
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: "22"
-          cache: pnpm
-          cache-dependency-path: apps/sync/pnpm-lock.yaml
-
       - name: Install Rust (stable, x86_64-pc-windows-msvc)
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -369,6 +369,15 @@ jobs:
             apps/sync/src-tauri
           shared-key: windows-installer-release
           cache-on-failure: true
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          # pnpm's store only exists when the install below runs; on a Rust cache
+          # hit the install is skipped and setup-node's post-job cache save would
+          # fail with "Path Validation Error" (run 39753133839).
+          cache: ${{ steps.rust-cache.outputs.cache-hit != 'true' && 'pnpm' || '' }}
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
 
       - name: Install JS deps
         if: steps.rust-cache.outputs.cache-hit != 'true'
