@@ -1012,16 +1012,37 @@
     width: min(1180px, 100%);
     height: min(800px, 100%);
     border-radius: 18px;
-    background: rgba(250, 250, 252, 0.82);
-    backdrop-filter: blur(60px) saturate(1.6);
-    -webkit-backdrop-filter: blur(60px) saturate(1.6);
+    /* A stacking context for the material layer below, and nothing more.
+       `isolation` does not make a containing block for fixed elements. */
+    isolation: isolate;
     box-shadow:
       0 0 0 1px rgba(0, 0, 0, 0.23),
       0 16px 48px rgba(0, 0, 0, 0.35);
   }
 
-  :global(html[data-force-theme="dark"]) .stage.staged .harness-root {
+  /* The material sits on its own layer, never on the window element itself:
+     `backdrop-filter` (like `transform` and `filter`) makes an element the
+     containing block for every `position: fixed` descendant. On the window it
+     shifted every menu and popover by the window's offset on the stage, so
+     each dropdown opened down and to the right of its button. The app's
+     window has no such ancestor. */
+  .stage.staged .harness-root::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: rgba(250, 250, 252, 0.82);
+    backdrop-filter: blur(60px) saturate(1.6);
+    -webkit-backdrop-filter: blur(60px) saturate(1.6);
+    pointer-events: none;
+  }
+
+  :global(html[data-force-theme="dark"]) .stage.staged .harness-root::before {
     background: rgba(14, 14, 18, 0.86);
+  }
+
+  :global(html[data-force-theme="dark"]) .stage.staged .harness-root {
     box-shadow:
       0 0 0 1px rgba(255, 255, 255, 0.12),
       0 16px 48px rgba(0, 0, 0, 0.55);

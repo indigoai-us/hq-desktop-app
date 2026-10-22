@@ -64,4 +64,22 @@ describe("design harness fidelity", () => {
       /fetchChannel:[\s\S]*?fixtureConversation\.fetchChannel/,
     );
   });
+
+  it("never makes the window a containing block for menus", () => {
+    // backdrop-filter, filter and transform on the window element make it
+    // the containing block for every position: fixed descendant. With the
+    // glass blur on .harness-root, every menu and popover opened offset by
+    // the window's position on the stage (owner, 2026-10-21). The material
+    // belongs on the ::before layer.
+    const windowRules = [
+      ...harnessStyle.matchAll(/([^{}]*\.harness-root)\s*\{([^}]*)\}/g),
+    ].map(([, , body]) => body);
+    expect(windowRules.length).toBeGreaterThan(0);
+    for (const body of windowRules) {
+      expect(body).not.toMatch(/(^|[\s;])(-webkit-)?backdrop-filter:/);
+      expect(body).not.toMatch(/(^|[\s;])filter:/);
+      expect(body).not.toMatch(/(^|[\s;])transform:/);
+      expect(body).not.toMatch(/will-change:\s*[^;]*(transform|filter)/);
+    }
+  });
 });
