@@ -23,6 +23,7 @@ the variable can hold a label set or one hosted label.
 | `HQ_DESKTOP_RUNNER_LINUX_2204` | `["self-hosted","linux","X64","indigo-x64"]` | `ubuntu-22.04` | release.yml Linux AppImage build | Same pool. The pool image is Ubuntu 24.04, so the AppImage glibc floor rises unless the build moves into a 22.04 container first. Leave unset. |
 | `HQ_DESKTOP_RUNNER_LINUX_ARM` | `["self-hosted","linux","ARM64","indigo-arm64"]` | none | No job uses it today | Reserved. |
 | `HQ_DESKTOP_RUNNER_WINDOWS` | `["self-hosted","Windows","X64","hq-windows"]` | `windows-latest` | 18 jobs (windows-check, release, cache-warm, windows-cold-install, meet-native-artifacts) | No runner exists. Leave unset. |
+| `HQ_DESKTOP_RUNNER_WINDOWS_ARM64` | `["self-hosted","Windows","ARM64","hq-windows-arm"]` | `windows-11-arm` | windows-portable-git-arm64.yml managed PortableGit ARM64 job (release/* branches and manual dispatch only) | No runner exists. Leave unset. |
 | `HQ_DESKTOP_RUNNER_MACOS` | `["self-hosted","macOS","ARM64","hq-desktop"]` | `macos-latest` / `macos-14` | ci.yml Rust tests (macOS runner), cache-warm macOS jobs | No runner exists. Leave unset. |
 | `HQ_DESKTOP_RUNNER_MACOS_RELEASE` | `["self-hosted","macOS","ARM64","hq-desktop-release"]` | `macos-14` | release.yml signing and notarization jobs | No runner exists. Leave unset until the notarization gate below passes. |
 

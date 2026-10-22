@@ -36,6 +36,13 @@ describe("parseMessageAttachments", () => {
     expect(items[1]).toMatchObject({ kind: "file", caption: "FILES · 12 KB" });
   });
 
+  it("treats a glob folder share key as a folder, not a file (feedback ae977608)", () => {
+    const item = parseAttachment({ vaultPath: "projects/ops-workflow-design/*" });
+    expect(item?.kind).toBe("folder");
+    expect(item?.name).toBe("ops-workflow-design");
+    expect(parseAttachment({ vaultPath: "projects/ops/**", name: "ops" })?.kind).toBe("folder");
+  });
+
   it("treats a gif with no kind/contentType as an image", () => {
     const item = parseAttachment({
       vaultPath: "chat/attachments/chan/chn_x/source.gif",

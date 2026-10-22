@@ -179,6 +179,13 @@ describe("folderShareLocation (feedback 3e124bcd)", () => {
     expect(folderShareLocation({ vaultPath: "knowledge/", companyUid: "" }, roster)).toBeNull();
   });
 
+  it("maps a glob folder share to the folder it covers (feedback ae977608)", () => {
+    expect(folderShareLocation({ vaultPath: "projects/ops-workflow-design/*", companyUid: "cmp_1" }, roster)).toEqual({
+      vault: "company:acme",
+      path: "companies/acme/projects/ops-workflow-design/",
+    });
+  });
+
   it("never opens a folder Files hides", () => {
     expect(folderShareLocation({ vaultPath: "settings/", companyUid: "cmp_1" }, roster)).toBeNull();
     expect(folderShareLocation({ vaultPath: "knowledge/.git/", companyUid: "cmp_1" }, roster)).toBeNull();
