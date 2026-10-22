@@ -894,6 +894,30 @@ describe("meetings store in-app calendar connect", () => {
     });
   }
 
+  it("after Google OAuth, says connected when the calendar selection lookup fails", async () => {
+    vi.useFakeTimers();
+    try {
+      let polls = 0;
+      call.mockImplementation((method: string) => {
+        if (method === "connectCalendar") return Promise.resolve(ok({ url: consentUrl }));
+        if (method === "listAccounts") {
+          polls += 1;
+          return Promise.resolve(ok(polls < 2 ? [] : [newAccount]));
+        }
+        if (method === "listCalendars") return Promise.resolve(failure("calendar lookup failed"));
+        return Promise.resolve(ok([]));
+      });
+      await meetingsStore.beginCalendarConnect();
+      await vi.advanceTimersByTimeAsync(3_000);
+      await vi.runOnlyPendingTimersAsync();
+      expect(meetingsStore.connectPending).toBe(false);
+      expect(meetingsStore.connectNotice).toEqual({ kind: "info", text: "Calendar connected." });
+    } finally {
+      meetingsStore.stopCalendarConnectWatch();
+      vi.useRealTimers();
+    }
+  });
+
   it("baselines connect watch from live listAccounts when store accounts are empty", async () => {
     vi.useFakeTimers();
     try {

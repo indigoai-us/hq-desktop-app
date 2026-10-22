@@ -391,6 +391,9 @@
       ...(consoleAction ? { consoleAction } : {}),
     };
     toast = nextToast;
+    // The Console prompt stays until dismissed or Console opens, so its
+    // action button is not lost to the short auto-clear timer.
+    if (consoleAction) return;
     setTimeout(() => {
       if (toastRevision === revision) toast = null;
     }, 4000);
