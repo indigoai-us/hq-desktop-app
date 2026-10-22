@@ -7,7 +7,7 @@
  */
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ok, unavailable } from "@hq/platform";
+import { failure, ok, unavailable } from "@hq/platform";
 import AccessSection from "./AccessSection.svelte";
 import AccessSectionHarness from "./AccessSectionHarness.test-support.svelte";
 import { accessCache, accessView } from "./access-model.js";
@@ -160,6 +160,26 @@ describe("OWNER-R17 AccessSection", () => {
     await settle();
     expect(el.querySelectorAll("[data-testid='access-row']").length).toBeGreaterThan(0);
     warn.mockRestore();
+  });
+
+  it("feedback 227937a0: 'No ACL record exists' shows the owner-only view, not the failed state", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const readTree = vi.fn(async () => failure("http_404", "No ACL record exists"));
+    const el = render({ vault: COMPANY, path: `${COMPANY.root}/${uniquePath("noacl")}`, isDir: true, companyUid: "cmp_acme", readTree });
+    await settle();
+    expect(el.querySelector("[data-testid='access-failed']")).toBeNull();
+    const rows = [...el.querySelectorAll("[data-testid='access-row']")].map((r) => r.textContent?.replace(/\s+/g, " ").trim());
+    expect(rows).toEqual(["Company owners Admin Owner of this company"]);
+    expect(el.textContent).not.toContain("No ACL record");
+    warn.mockRestore();
+  });
+
+  it("feedback 227937a0: personal vault path with no ACL record reads Only you", async () => {
+    const readTree = vi.fn(async () => failure(undefined, "No ACL record exists"));
+    const el = render({ vault: PERSONAL, path: `personal/${uniquePath("noacl")}.md`, isDir: false, companyUid: "prs_SELF0000", readTree });
+    await settle();
+    expect(el.querySelector("[data-testid='access-failed']")).toBeNull();
+    expect(el.querySelector("[data-testid='access-only-you']")?.textContent).toBe("Only you");
   });
 
   it("debounces focus: arrowing through rows fires one read, for the last row; the cache paints at once", async () => {

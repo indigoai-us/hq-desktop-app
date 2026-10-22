@@ -249,3 +249,14 @@ export class AccessCache {
 }
 
 export const accessCache = new AccessCache();
+
+/**
+ * True when an access-tree read failed only because the path has no ACL row
+ * of its own yet (hq-pro answers "No ACL record exists"). That is not a
+ * failure: nobody was granted on the path directly, so it shows the
+ * owner-only view instead of "Couldn't read who has access".
+ */
+export function isNoAclRecord(failure: { code?: string; message?: string } | null | undefined): boolean {
+  if (!failure) return false;
+  return /no acl record/i.test(failure.message ?? "") || /^no[_-]?acl[_-]?record$/i.test(failure.code ?? "");
+}

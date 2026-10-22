@@ -19,6 +19,7 @@
     accessView,
     groupNames,
     inheritedPath,
+    isNoAclRecord,
     type AccessView,
   } from "./access-model.js";
 
@@ -83,8 +84,10 @@
       try {
         const [res, groups] = await Promise.all([read(t.companyUid, t.prefix), groupsFor(t.companyUid)]);
         if (mine !== seq) return;
-        if (!res.ok) throw new Error(res.message ?? res.reason);
-        const next = accessView(res.value, groups);
+        // A path nobody was granted on directly has no ACL row; that is the
+        // owner-only view, not a failed read.
+        if (!res.ok && !isNoAclRecord(res)) throw new Error(res.message ?? res.reason);
+        const next = accessView(res.ok ? res.value : {}, groups);
         accessCache.set(t, next);
         view = next;
       } catch (err) {
