@@ -114,6 +114,25 @@ pub fn parse_link_anon_id(status: u16, body: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The plan the visitor picked on the website, from the same
+/// `POST /api/desktop/signin-link` reply (`200 {"anonId", "planIntent"}`).
+/// Lowercased and kept only when it is 1-32 chars of `[a-z0-9_-]`; anything
+/// else, or a non-200 status, is `None`. Onboarding decides which plans count.
+pub fn parse_link_plan_intent(status: u16, body: &str) -> Option<String> {
+    if status != 200 {
+        return None;
+    }
+    plan_intent_from_link_body(&serde_json::from_str::<serde_json::Value>(body).ok()?)
+}
+
+/// `planIntent` of an already-parsed sign-in link reply body.
+pub fn plan_intent_from_link_body(body: &serde_json::Value) -> Option<String> {
+    body.as_object()?
+        .get("planIntent")?
+        .as_str()
+        .and_then(crate::download_tag::safe_plan)
+}
+
 /// Body for `POST /api/desktop/signin-link`. A download-tagged visitor id is
 /// sent with `linkSource: "download_url"` so the website can emit
 /// `install_linked` for it even when the browser hop carried no cookie.
@@ -245,6 +264,30 @@ mod tests {
         assert_eq!(parse_link_anon_id(200, "[]"), None);
         let long = format!(r#"{{"anonId":"{}"}}"#, "a".repeat(129));
         assert_eq!(parse_link_anon_id(200, &long), None);
+    }
+
+    #[test]
+    fn link_completion_returns_plan_intent_alongside_anon_id() {
+        assert_eq!(
+            parse_link_plan_intent(200, r#"{"anonId":"vyg-1","planIntent":" Just-Me "}"#).as_deref(),
+            Some("just-me")
+        );
+        assert_eq!(
+            parse_link_plan_intent(200, r#"{"planIntent":"free"}"#).as_deref(),
+            Some("free")
+        );
+        assert_eq!(parse_link_plan_intent(200, r#"{"anonId":"vyg-1"}"#), None);
+        assert_eq!(parse_link_plan_intent(204, ""), None);
+        assert_eq!(parse_link_plan_intent(500, r#"{"planIntent":"free"}"#), None);
+        assert_eq!(parse_link_plan_intent(200, r#"{"planIntent":7}"#), None);
+        assert_eq!(parse_link_plan_intent(200, r#"{"planIntent":"a b"}"#), None);
+        assert_eq!(parse_link_plan_intent(200, "not json"), None);
+        let long = format!(r#"{{"planIntent":"{}"}}"#, "a".repeat(33));
+        assert_eq!(parse_link_plan_intent(200, &long), None);
+        assert_eq!(
+            plan_intent_from_link_body(&serde_json::json!({ "planIntent": "SOLO" })).as_deref(),
+            Some("solo")
+        );
     }
 
     #[test]

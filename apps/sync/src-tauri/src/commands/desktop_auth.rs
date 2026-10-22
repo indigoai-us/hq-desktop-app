@@ -334,6 +334,9 @@ async fn post_desktop_referral_receipt(
                     })
                     .await;
             }
+            if let Some(plan) = ack.plan_intent.as_deref() {
+                crate::commands::cdp_mirror::note_signin_link_plan_intent(plan);
+            }
             if ack.referral.status == hq_desktop_core::desktop_referral::ReferralStatus::Expired {
                 eprintln!("[desktop-referral] referral expired on the server");
             }
