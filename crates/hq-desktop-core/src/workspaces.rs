@@ -201,7 +201,30 @@ pub fn read_manifest(hq_root: &Path) -> ManifestLoad {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return ManifestLoad::Absent,
         Err(e) => return ManifestLoad::Failed(format!("read {}: {e}", manifest_path.display())),
     };
-    let parsed: CompaniesManifest = match serde_yaml::from_slice(&bytes) {
+    let mut value: serde_yaml::Value = match serde_yaml::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            return ManifestLoad::Failed(format!("parse {}: {e}", manifest_path.display()));
+        }
+    };
+    let removed = drop_duplicate_cloud_uid_entries(&mut value);
+    if !removed.is_empty() {
+        for (uid, slug, path) in &removed {
+            log(
+                "manifest",
+                &format!(
+                    "info: removed duplicate manifest entry '{slug}' (path {path}) for company {uid}; kept the newer entry"
+                ),
+            );
+        }
+        if let Err(e) = write_manifest_value(&manifest_path, &value) {
+            log(
+                "manifest",
+                &format!("warn: could not save deduplicated manifest: {e}"),
+            );
+        }
+    }
+    let parsed: CompaniesManifest = match serde_yaml::from_value(value) {
         Ok(p) => p,
         Err(e) => {
             return ManifestLoad::Failed(format!("parse {}: {e}", manifest_path.display()));
@@ -227,6 +250,78 @@ pub fn read_manifest(hq_root: &Path) -> ManifestLoad {
         })
         .collect();
     ManifestLoad::Present(entries)
+}
+
+/// Remove duplicate manifest entries that share one company `cloud_uid`
+/// (`cmp_...`), keeping the newer entry. Manifest entries carry no timestamp
+/// field, so "newer" means the entry that appears later in the file (the
+/// reconcile path appends new entries at the end). Entries without a
+/// `cloud_uid`, and every entry whose `cloud_uid` is unique, are untouched; a
+/// company's only entry is never removed.
+///
+/// Returns `(cloud_uid, removed_slug, removed_path)` for each removed entry.
+pub fn drop_duplicate_cloud_uid_entries(
+    value: &mut serde_yaml::Value,
+) -> Vec<(String, String, String)> {
+    let Some(companies) = value
+        .as_mapping_mut()
+        .and_then(|m| m.get_mut("companies"))
+        .and_then(|v| v.as_mapping_mut())
+    else {
+        return Vec::new();
+    };
+    let uid_of = |entry: &serde_yaml::Value| -> Option<String> {
+        entry
+            .get("cloud_uid")
+            .and_then(|v| v.as_str())
+            .filter(|uid| looks_like_company_uid(uid))
+            .map(|uid| uid.to_ascii_lowercase())
+    };
+    // The last position of each uid is the entry that stays.
+    let mut newest: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (i, (_, entry)) in companies.iter().enumerate() {
+        if let Some(uid) = uid_of(entry) {
+            newest.insert(uid, i);
+        }
+    }
+    let doomed: Vec<(serde_yaml::Value, String, String, String)> = companies
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (key, entry))| {
+            let uid = uid_of(entry)?;
+            if newest.get(&uid) == Some(&i) {
+                return None;
+            }
+            let slug = key.as_str().unwrap_or_default().to_string();
+            let path = entry
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("companies/{}", slug));
+            let original_uid = entry
+                .get("cloud_uid")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            Some((key.clone(), original_uid, slug, path))
+        })
+        .collect();
+    doomed
+        .into_iter()
+        .map(|(key, uid, slug, path)| {
+            companies.remove(&key);
+            (uid, slug, path)
+        })
+        .collect()
+}
+
+fn write_manifest_value(manifest_path: &Path, value: &serde_yaml::Value) -> Result<(), String> {
+    let serialized =
+        serde_yaml::to_string(value).map_err(|e| format!("serialize manifest: {e}"))?;
+    let tmp = manifest_path.with_extension("yaml.tmp");
+    std::fs::write(&tmp, &serialized).map_err(|e| format!("write tmp manifest: {e}"))?;
+    std::fs::rename(&tmp, manifest_path).map_err(|e| format!("rename manifest: {e}"))?;
+    Ok(())
 }
 
 /// Discover local companies. Manifest is canonical when present + parseable;
@@ -1223,6 +1318,59 @@ companies:
                 .unwrap_err();
         assert!(err.contains("not a mapping"), "{err}");
         assert_eq!(std::fs::read_to_string(&manifest_path).unwrap(), original);
+    }
+
+    /// Owner decision: a manifest with two entries for one cloud UID keeps
+    /// only the newer (later) entry, and the file is rewritten without the
+    /// older one.
+    #[test]
+    fn read_manifest_drops_duplicate_cloud_uid_entry_keeping_newer() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            r#"
+companies:
+  acme:
+    name: Acme
+    path: companies/acme
+    cloud_uid: cmp_01KT9FG6G8NXKJEJ372TZ42M00
+  beta-co:
+    name: Beta
+    path: companies/beta-co/
+  cmp_01kt9fg6g8nxkjej372tz42m00:
+    name: Cmp_01KT9FG6G8NXKJEJ372TZ42M00
+    path: companies/cmp_01kt9fg6g8nxkjej372tz42m00
+    cloud_uid: cmp_01KT9FG6G8NXKJEJ372TZ42M00
+"#,
+        );
+        let entries = match read_manifest(tmp.path()) {
+            ManifestLoad::Present(entries) => entries,
+            _ => panic!("expected the manifest to load"),
+        };
+        let mut slugs: Vec<&str> = entries.iter().map(|e| e.slug.as_str()).collect();
+        slugs.sort();
+        assert_eq!(slugs, vec!["beta-co", "cmp_01kt9fg6g8nxkjej372tz42m00"]);
+        let on_disk =
+            std::fs::read_to_string(tmp.path().join("companies").join("manifest.yaml")).unwrap();
+        assert!(!on_disk.contains("acme"), "{on_disk}");
+        assert!(on_disk.contains("beta-co"), "{on_disk}");
+    }
+
+    #[test]
+    fn read_manifest_leaves_single_cloud_uid_entry_unchanged() {
+        let tmp = TempDir::new().unwrap();
+        let original =
+            "companies:\n  acme:\n    name: Acme\n    cloud_uid: cmp_01KT9FG6G8NXKJEJ372TZ42M00\n";
+        write_manifest(tmp.path(), original);
+        let entries = match read_manifest(tmp.path()) {
+            ManifestLoad::Present(entries) => entries,
+            _ => panic!("expected the manifest to load"),
+        };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].slug, "acme");
+        let on_disk =
+            std::fs::read_to_string(tmp.path().join("companies").join("manifest.yaml")).unwrap();
+        assert_eq!(on_disk, original);
     }
 
     #[test]

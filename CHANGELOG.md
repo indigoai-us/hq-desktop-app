@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Company list: when the companies manifest has two entries for the same company cloud ID (`cmp_...`), HQ now removes the earlier entry and keeps the one that appears later in the file, logging one line that names the company and the removed entry's path.
 - Setup and the hq CLI repair now write the managed `PATH` into `.claude/settings.local.json` and no longer add it to `.claude/settings.json`, so setup stops making that file show up as Core Drift. Directories you already had in either file's `PATH`, and every other value in settings.local.json, are kept. If settings.local.json doesn't exist yet, it is created. Update / Restore now tells the rescue step where the hq CLI is installed, so rescue can read the HQ setting that moves `PATH` into settings.local.json. Before, rescue could not find the CLI and always wrote `PATH` into settings.json.
 - Knowledge: the company file browser now lists all file types, including images, PDFs, HTML and Word documents, in folders, search and file counts. Images and PDFs use the existing authorized preview; HTML appears as text, and files that cannot be previewed can be shown in their folder.
 
