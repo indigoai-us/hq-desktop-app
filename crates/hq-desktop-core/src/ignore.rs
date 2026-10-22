@@ -406,6 +406,8 @@ mod tests {
         assert!(!filter.should_sync(&root.join(".hq-sync.pid")));
         assert!(!filter.should_sync(&root.join(".hq-sync-journal.json")));
         assert!(!filter.should_sync(&root.join(".hq-sync-state.json")));
+        assert!(!filter.should_sync(&root.join(".hq-sync-retry.json")));
+        assert!(!filter.should_sync(&root.join(".hq-sync-retry.lock")));
         assert!(!filter.should_sync(&root.join(".hq-embeddings-pending.json")));
         assert!(!filter.should_sync(&root.join("companies/indigo/.hq-foo.json")));
         assert!(!filter.should_sync(&root.join(".hq-cache/blob.bin")));

@@ -99,7 +99,7 @@ describe("CorePopover sync status header (PL-01)", () => {
     const header = host.querySelector('[data-testid="core-popover-sync-status"]');
     expect(header?.getAttribute("data-tone")).toBe("ok");
     expect(text(host.querySelector('[data-testid="core-popover-sync-state"]'))).toContain(
-      "All synced",
+      "HQ is synced",
     );
     expect(host.querySelector('[data-testid="core-popover-sync-caption"]')).toBeNull();
     expect(host.querySelector('[data-testid="core-popover-notice"]')).toBeNull();
@@ -213,6 +213,36 @@ describe("CorePopover first-week return nudge", () => {
     await vi.waitFor(() => expect(adapter.sync.startSync).toHaveBeenCalledWith("next"));
     localStorage.removeItem("hq:desktop:first-week-return-nudge:v1:cmp_prior");
     localStorage.removeItem("hq:desktop:first-week-return-nudge:v1:cmp_next");
+  });
+
+  it("skips a company whose sync is switched off on this computer and offers the next one (US-016)", async () => {
+    const adapter = makeAdapter({ flag: true, eligibility: eligible });
+    mountPopover({
+      adapter,
+      workspaces: [
+        { uid: "cmp_off", slug: "off", name: "Off", syncEnabled: false },
+        { uid: "cmp_on", slug: "on", name: "On", syncEnabled: true },
+      ],
+    });
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="core-popover-return-nudge-sync"]')).not.toBeNull());
+    expect(adapter.company.getFirstWeekReturnNudge).toHaveBeenCalledTimes(1);
+    expect(adapter.company.getFirstWeekReturnNudge).toHaveBeenCalledWith("cmp_on");
+    expect(localStorage.getItem("hq:desktop:first-week-return-nudge:v1:cmp_off")).toBeNull();
+    host.querySelector<HTMLButtonElement>('[data-testid="core-popover-return-nudge-sync"]')!.click();
+    await vi.waitFor(() => expect(adapter.sync.startSync).toHaveBeenCalledWith("on"));
+    expect(adapter.sync.startSync).not.toHaveBeenCalledWith("off");
+    localStorage.removeItem("hq:desktop:first-week-return-nudge:v1:cmp_on");
+  });
+
+  it("shows no nudge when the only eligible company has sync switched off (US-016)", async () => {
+    const adapter = makeAdapter({ flag: true, eligibility: eligible });
+    mountPopover({ adapter, workspaces: [{ ...workspaces[0], syncEnabled: false }] });
+    await vi.waitFor(() => expect(adapter.identity.hasFeature).toHaveBeenCalledOnce());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    expect(adapter.company.getFirstWeekReturnNudge).not.toHaveBeenCalled();
+    expect(host.querySelector('[data-testid="core-popover-return-nudge"]')).toBeNull();
+    expect(adapter.sync.startSync).not.toHaveBeenCalled();
   });
 
   it("records dismissal in the existing event and hides the line", async () => {

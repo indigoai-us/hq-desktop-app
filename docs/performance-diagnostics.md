@@ -77,11 +77,11 @@ bytes the browser receives are the bytes the app ships.
 | `scroll · messages · worst frame` | the single worst frame in the gesture — this is what a hitch feels like | ~17–25ms |
 | `scroll · messages · dropped frames` | % of frames over the 16.7ms budget | <1% |
 | `interaction · switch conversation` | input → next painted frame when clicking a rail row | ~45ms |
-| `interaction · command palette` | Cmd-K → first painted frame where the palette input is visible | ~13ms |
+| `interaction · command palette` | Cmd-K keydown (`event.timeStamp`) → end of the frame that paints the palette input and its result rows | ~5–15ms |
 | `interaction · composer keystroke` | mean per-character cost of typing in the composer | ~15ms |
 | `idle · main-thread busy` | total time in >50ms long tasks while untouched for 30s | **0ms** |
 | `idle · render batches /min` | DOM mutation batches (≈ render passes) while untouched | **~2/min** |
-| `bundle · total JS` | bytes the shell downloads, parses and compiles | ~2.49 MB |
+| `bundle · total JS` | bytes of every JS file in the harness build, lazy chunks included. The console-rail gate judges initial JS (entry plus its static imports) instead | ~5.4 MB |
 
 The idle numbers are the ones that catch a polling/churn regression coming
 back. They should stay near zero; a store that starts refreshing in the

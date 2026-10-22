@@ -37,6 +37,7 @@
     rosterLoading?: boolean;
     /** OWNER-R24: owner or admin; false hides Grants and Billing. */
     canManage?: boolean;
+    officeVisible?: boolean;
   }
 
   let {
@@ -48,6 +49,7 @@
     roster = [],
     rosterLoading = false,
     canManage = false,
+    officeVisible = false,
   }: Props = $props();
 
   // Same wiring the old company Overview did, minus the poller: counts load once per
@@ -87,6 +89,7 @@
       selectedId,
       { ...storeCounts, ...companyPageCounts(company.slug, company.uid) },
       canManage,
+      officeVisible,
     );
     if (!atlasActive || rosterLoading) return base;
     // Same pane key either way, so landing on Atlas keeps scroll memory.

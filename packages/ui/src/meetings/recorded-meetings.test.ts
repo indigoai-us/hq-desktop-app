@@ -51,6 +51,7 @@ describe("parseRecordedMeetings", () => {
         durationSec: null,
         companyUid: null,
         hasSignals: true,
+        recordedByCaller: false,
       },
       {
         meetingId: "6e448aaa-ea2c-42e4-8252-36703f127ee8",
@@ -60,6 +61,7 @@ describe("parseRecordedMeetings", () => {
         durationSec: 2700,
         companyUid: "cmp_indigo",
         hasSignals: false,
+        recordedByCaller: false,
       },
     ]);
   });
