@@ -8,6 +8,7 @@ import {
   cloudNameIssue,
   companyTemplates,
   cloudBrainChoices,
+  defaultCloudRuntime,
   firstBlockingStep,
   firstReadyRuntime,
   firstSignedInCloudRuntime,
@@ -98,7 +99,6 @@ function ctx(over: Partial<CreateBotContext> = {}): CreateBotContext {
       { slug: "acme", label: "Acme" },
     ],
     templates: WORKERS,
-    claudeProviderEnabled: true,
     cloudQuoteStatus: "ready",
     cloudProvisionOptions: {
       defaultInstanceType: "t4g.medium",
@@ -127,7 +127,7 @@ function ctx(over: Partial<CreateBotContext> = {}): CreateBotContext {
 function draft(over: Partial<CreateBotDraft> = {}, c: CreateBotContext = ctx()): CreateBotDraft {
   return {
     ...initialDraft(c),
-    ...(over.home === "cloud" ? { size: "basic" as const } : {}),
+    ...(over.home === "cloud" ? { size: "basic" as const, runtime: defaultCloudRuntime() } : {}),
     ...over,
   };
 }
@@ -153,17 +153,19 @@ describe("initialDraft", () => {
 
   it("opens on Cloud when this Mac cannot host a bot", () => {
     expect(initialDraft(ctx({ canLocal: false })).home).toBe("cloud");
-    expect(initialDraft(ctx({ canLocal: false })).runtime).toBe("claude");
-    expect(initialDraft(ctx({ canLocal: false, claudeProviderEnabled: false })).runtime).toBe("codex");
+    expect(initialDraft(ctx({ canLocal: false })).runtime).toBe("codex");
+    expect(initialDraft(ctx({ canLocal: false, runtimeReady: { claude: true, codex: true, grok: true } })).runtime).toBe("codex");
+    expect(defaultCloudRuntime()).toBe("codex");
     expect(firstReadyRuntime(null)).toBe("claude");
     expect(firstReadyRuntime({ claude: false, codex: false, grok: false })).toBe("claude");
   });
 
-  it("starts a Cloud bot on Claude when agents.desktop-agent-creation is on, with no Claude flag", () => {
-    const on = ctx({ canLocal: false, claudeProviderEnabled: false, directCloudOn: true });
-    expect(initialDraft(on).runtime).toBe("claude");
-    expect(stepIssue("details", draft({ home: "cloud", runtime: "claude", name: "scout", handle: "scout" }, on), on)).not.toBe(
-      "Claude isn’t available for this account.",
+  it("starts a Cloud bot on Codex even when agents.desktop-agent-creation is on and Claude is signed in", () => {
+    const on = ctx({ canLocal: false, directCloudOn: true, runtimeReady: { claude: true, codex: true, grok: true } });
+    expect(initialDraft(on).runtime).toBe("codex");
+    expect(stepIssue("details", draft({ home: "cloud", name: "scout", handle: "scout" }, on), on)).toBeNull();
+    expect(stepIssue("details", draft({ home: "cloud", runtime: "claude", name: "scout", handle: "scout" }, on), on)).toBe(
+      "Pick Codex or Grok for a cloud bot.",
     );
   });
 });
@@ -177,17 +179,13 @@ describe("firstSignedInCloudRuntime", () => {
   });
 
   it("never answers a brain the caller does not offer (review A-C1)", () => {
-    // Claude signed in on this computer, but the company does not have the
-    // Claude provider: the New Bot flow offers Codex and Grok only.
-    const offered = cloudBrainChoices(false);
+    const offered = cloudBrainChoices();
     expect(offered).toEqual(["codex", "grok"]);
     expect(firstSignedInCloudRuntime({ claude: true, codex: true, grok: true }, offered)).toBe("codex");
     expect(firstSignedInCloudRuntime({ claude: true, codex: false, grok: true }, offered)).toBe("grok");
     expect(firstSignedInCloudRuntime({ claude: true, codex: false, grok: false }, offered)).toBe("codex");
     expect(firstSignedInCloudRuntime(null, offered)).toBe("codex");
-    // With the provider on, Claude is offered and a signed-in Claude leads.
-    expect(cloudBrainChoices(true)).toEqual(["codex", "claude", "grok"]);
-    expect(firstSignedInCloudRuntime({ claude: true, codex: true, grok: true }, cloudBrainChoices(true))).toBe("claude");
+    expect(offered).not.toContain("claude");
   });
 });
 
@@ -506,10 +504,21 @@ describe("steps", () => {
 
   it("requires server permission, a selectable tenant quote, and a key for API-key auth", () => {
     const base = draft({ home: "cloud", companyUid: "cmp_acme", name: "Polar", size: "basic" });
-    expect(stepIssue("details", base, ctx({ claudeProviderEnabled: false }))).toContain("Claude isn’t available");
+    expect(stepIssue("details", { ...base, runtime: "claude" }, ctx())).toBe("Pick Codex or Grok for a cloud bot.");
     expect(stepIssue("details", { ...base, runtime: "codex" }, ctx({ cloudQuoteStatus: "loading" }))).toContain("Checking company pricing");
     expect(stepIssue("details", { ...base, runtime: "codex", size: "power" }, ctx())).toBe("Choose an available size.");
     expect(stepIssue("details", { ...base, runtime: "codex" }, ctx())).toBeNull();
+  });
+
+  it("a cloud draft on Claude fails the details step, even with directCloudOn", () => {
+    const base = draft({ home: "cloud", companyUid: "cmp_acme", name: "Polar", size: "basic" });
+    const claude = { ...base, runtime: "claude" as const };
+    expect(stepIssue("details", claude, ctx())).toBe("Pick Codex or Grok for a cloud bot.");
+    expect(stepIssue("details", claude, ctx({ directCloudOn: true }))).toBe("Pick Codex or Grok for a cloud bot.");
+    expect(canCreate(claude, ctx({ directCloudOn: true }))).toBe(false);
+    expect(firstBlockingStep(claude, ctx())).toBe("details");
+    expect(stepIssue("details", { ...base, runtime: "codex" }, ctx())).toBeNull();
+    expect(stepIssue("details", { ...base, runtime: "grok" }, ctx())).toBeNull();
   });
 
   it("cloud details validates the name and the @handle it will be created under", () => {
