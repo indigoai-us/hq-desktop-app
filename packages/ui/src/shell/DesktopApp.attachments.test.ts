@@ -23,6 +23,7 @@ const row: ConversationRow = {
 
 function adapter(
   presignVaultGet: (companyUid: string, vaultPath: string) => Promise<unknown>,
+  listVaultPrefix?: (companyUid: string, prefix: string, cursor?: string) => Promise<unknown>,
 ): PlatformAdapter {
   return {
     kind: "web",
@@ -36,6 +37,7 @@ function adapter(
     },
     files: {
       presignVaultGet,
+      listVaultPrefix,
       // The Files explorer lists the shared folder after the card opens it.
       listDir: async () => ok([]),
     },
@@ -288,5 +290,80 @@ describe("DesktopApp received attachment flow", () => {
     );
     expect(host.querySelector("[data-testid='attachment-tray']")).toBeNull();
     expect(presignVaultGet).not.toHaveBeenCalledWith("cmp_conversation", "knowledge/clients/frank/");
+  });
+
+  // Follow-up: the company is known but not synced on this computer. The
+  // shared-with-me view lists the folder from the vault and names the company
+  // to sync; nothing is presigned or downloaded.
+  it("lists the shared folder remotely with a sync note when the company is not synced here", async () => {
+    const presignVaultGet = vi.fn(async () => ok({ results: [{ url: "https://vault.example/x" }] }));
+    const listVaultPrefix = vi.fn(async () =>
+      ok({ objects: [{ key: "knowledge/clients/frank/brief.md" }, { key: "knowledge/clients/frank/notes/a.md" }], cursor: null }),
+    );
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(DesktopApp, {
+      target: host,
+      props: {
+        adapter: adapter(presignVaultGet, listVaultPrefix),
+        sidebarApi: createFixtureChatSidebarApi(),
+        notificationsApi: createEmptyNotificationsApi(),
+        initialRow: row,
+        searchRows: [row],
+        companies: [
+          {
+            slug: "acme",
+            displayName: "Acme",
+            kind: "company",
+            state: "cloud-only",
+            cloudUid: "cmp_conversation",
+            bucketName: null,
+            hasLocalFolder: false,
+            localPath: null,
+            membershipStatus: "active",
+            role: "member",
+            lastSyncedAt: null,
+            brokenReason: null,
+          },
+        ] as never,
+        self: { uid: "prs_test", displayName: "Stefan", email: "s@x.y" },
+        coreFixtures: false,
+        messagesByRow: () => [
+          {
+            eventId: "evt_folder_share",
+            direction: "in",
+            fromDisplayName: "Corey",
+            body: "Shared a folder with you.",
+            createdAt: "2026-10-07T00:00:00.000Z",
+            attachments: [
+              { vaultPath: "knowledge/clients/frank/", name: "frank", companyUid: "cmp_conversation", kind: "folder" },
+            ],
+          },
+        ],
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(host.querySelector("[data-testid='attachment-card']")).toBeTruthy();
+    });
+    host.querySelector<HTMLButtonElement>("[data-testid='attachment-card']")!.click();
+    await vi.waitFor(
+      () => {
+        expect(host.querySelector("[data-testid='shared-folder-entry']")).toBeTruthy();
+      },
+      { timeout: 5000 },
+    );
+    expect(host.querySelector("[data-testid='shared-folder-sync-note']")?.textContent?.trim()).toBe(
+      "Acme isn't synced on this Mac yet. Sync it to open this folder in Files.",
+    );
+    expect(host.querySelector("[data-testid='shared-folder-title']")?.textContent).toBe("frank");
+    expect(listVaultPrefix).toHaveBeenCalledWith("cmp_conversation", "knowledge/clients/frank/", undefined);
+    expect(host.querySelector("[data-testid='files-host']")).toBeNull();
+    expect(host.querySelector("[data-testid='attachment-tray']")).toBeNull();
+    // Nothing under the shared folder is presigned or downloaded (the only
+    // presign calls are the project tab's own prd.json read).
+    for (const [, key] of presignVaultGet.mock.calls as unknown as Array<[string, string]>) {
+      expect(key.startsWith("knowledge/clients/frank/")).toBe(false);
+    }
   });
 });
