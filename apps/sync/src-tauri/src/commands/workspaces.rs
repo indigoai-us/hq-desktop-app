@@ -68,11 +68,12 @@ use crate::util::logfile::log;
 #[allow(unused_imports)]
 pub use hq_desktop_core::workspaces::{
     add_manifest_entry_for_synced_company, discover_local_companies, folder_enumeration_fallback,
-    humanize_slug, last_synced_at, list_local_company_folders, patch_manifest_with_cloud_info,
-    read_local_company_name, read_manifest, read_workspace_sync_enabled_map,
-    resolve_hq_folder_path, strip_manifest_cloud_info, workspace_sync_enabled_for_slug,
-    write_workspace_sync_enabled, CompaniesManifest, CompanyManifestEntry, LocalCompanyEntry,
-    ManifestLoad, Workspace, WorkspaceKind, WorkspaceState, WorkspacesResult,
+    folder_needs_manifest_entry, humanize_slug, last_synced_at, list_local_company_folders,
+    patch_manifest_with_cloud_info, read_local_company_name, read_manifest,
+    read_workspace_sync_enabled_map, resolve_hq_folder_path, strip_manifest_cloud_info,
+    workspace_sync_enabled_for_slug, write_workspace_sync_enabled, CompaniesManifest,
+    CompanyManifestEntry, LocalCompanyEntry, ManifestLoad, Workspace, WorkspaceKind,
+    WorkspaceState, WorkspacesResult,
 };
 
 /// Manifest `cloud_uid`s the cloud roster could not place: the folder exists,
@@ -169,8 +170,8 @@ pub(crate) async fn reconcile_manifest_after_sync(
         return Ok(0);
     }
 
-    let known_slugs: std::collections::HashSet<String> = match read_manifest(hq_root) {
-        ManifestLoad::Present(entries) => entries.into_iter().map(|e| e.slug).collect(),
+    let known_entries = match read_manifest(hq_root) {
+        ManifestLoad::Present(entries) => entries,
         // Manifest unparseable — bail; we'd risk overwriting whatever the user
         // has in there. The folder-union in discover_local_companies still
         // gives the UI a workable view in the meantime.
@@ -181,12 +182,12 @@ pub(crate) async fn reconcile_manifest_after_sync(
     };
 
     let mut added = 0usize;
-    for (slug, _path) in list_local_company_folders(hq_root) {
-        if slug.starts_with('_') {
-            continue; // scaffolding folders (e.g. _template)
-        }
-        if known_slugs.contains(&slug) {
-            continue; // already in manifest
+    for (slug, path) in list_local_company_folders(hq_root) {
+        // Skips scaffolding (`_template`), folders already in the manifest by
+        // slug or path, and `companies/<cloud uid>/` folders the runner can
+        // leave behind (feedback 7e456ff8).
+        if !folder_needs_manifest_entry(&slug, &path, &known_entries) {
+            continue;
         }
         // Look up the cloud entity. We always add a manifest entry — but if
         // the cloud has matching slug + bucket, we stamp it with cloud info
@@ -872,7 +873,19 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
         };
         workspace
     })
-    .collect();
+    .collect::<Vec<_>>();
+
+    // Save company display names so a "Sync is off for" refusal from a
+    // one-off sync path (which knows only the slug) names the company the way
+    // this list does (US-016). Best effort.
+    if let Err(e) = hq_desktop_core::vault_sync::save_company_display_names(
+        workspaces
+            .iter()
+            .filter(|w| w.kind == WorkspaceKind::Company)
+            .map(|w| (w.slug.as_str(), w.display_name.as_str())),
+    ) {
+        log("workspaces", &format!("company names not saved: {e}"));
+    }
 
     Ok(WorkspacesResult {
         workspaces,

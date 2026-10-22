@@ -16,7 +16,14 @@ use crate::ignore::MAX_FILE_BYTES;
 use crate::paths;
 use crate::workspaces::{Workspace, WorkspaceKind, WorkspaceState};
 
-const HQ_DEPLOY_APP_DOMAIN: &str = "indigo-hq.com";
+/// Root used to build a deployment host when the API row carries no `url`.
+/// Rows that do carry a `url` are displayed from that URL, so they follow the
+/// API's own base domain.
+const HQ_DEPLOY_APP_DOMAIN: &str = "hq.work";
+
+/// Every root an HQ deploy app is served on. Each app answers on both, with no
+/// redirects, and old `indigo-hq.com` links stay live.
+const HQ_DEPLOY_APP_DOMAINS: &[&str] = &["hq.work", "indigo-hq.com"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -581,6 +588,40 @@ pub fn deploy_access_url(base: &str, method: &str, path: &str) -> Result<String,
     };
     if !allowed {
         return Err(format!("deploy access: {method} {path} is not an access route"));
+    }
+    Ok(format!("{}{}", base.trim_end_matches('/'), path))
+}
+
+/// Validate one hq-deploy custom-domain request from the Custom domain sheet
+/// and return its full URL. Only the per-app domain routes are reachable:
+/// `GET`/`POST /api/apps/:id/domains`, `DELETE /api/apps/:id/domains/:domain`
+/// and `POST /api/apps/:id/domains/:domain/refresh`. The domain segment must
+/// be a lowercase hostname. Anything else is refused before the network.
+pub fn deploy_domain_url(base: &str, method: &str, path: &str) -> Result<String, String> {
+    let rest = path
+        .strip_prefix("/api/apps/")
+        .ok_or_else(|| "deploy domain: path must start with /api/apps/".to_string())?;
+    let parts: Vec<&str> = rest.split('/').collect();
+    let app_id = parts.first().copied().unwrap_or("");
+    if app_id.is_empty() || !is_url_safe_id(app_id) {
+        return Err("deploy domain: invalid app id".to_string());
+    }
+    let hostname = |h: &str| {
+        !h.is_empty()
+            && h.len() <= 253
+            && h.contains('.')
+            && !h.starts_with('.')
+            && !h.contains("..")
+            && h.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'.'))
+    };
+    let allowed = match (method, &parts[1..]) {
+        ("GET" | "POST", ["domains"]) => true,
+        ("DELETE", ["domains", domain]) => hostname(domain),
+        ("POST", ["domains", domain, "refresh"]) => hostname(domain),
+        _ => false,
+    };
+    if !allowed {
+        return Err(format!("deploy domain: {method} {path} is not a domain route"));
     }
     Ok(format!("{}{}", base.trim_end_matches('/'), path))
 }
@@ -1312,14 +1353,21 @@ pub fn normalize_deployment_host(url: &str) -> Option<String> {
 
 pub fn subdomain_from_url(url: &str) -> Option<String> {
     let host = normalize_deployment_host(url)?;
-    host.strip_suffix(&format!(".{HQ_DEPLOY_APP_DOMAIN}"))
-        .map(str::to_string)
-        .filter(|sub| !sub.is_empty())
+    deployment_label_for_host(&host).map(str::to_string)
 }
 
 pub fn is_safe_deployment_host(host: &str) -> bool {
-    host.strip_suffix(&format!(".{HQ_DEPLOY_APP_DOMAIN}"))
-        .is_some_and(|sub| is_safe_deployment_label(sub))
+    deployment_label_for_host(host).is_some_and(is_safe_deployment_label)
+}
+
+/// The app label of `host` when it sits directly under one of the HQ deploy
+/// roots (`{label}.hq.work` or `{label}.indigo-hq.com`).
+fn deployment_label_for_host(host: &str) -> Option<&str> {
+    HQ_DEPLOY_APP_DOMAINS.iter().find_map(|root| {
+        host.strip_suffix(root)
+            .and_then(|rest| rest.strip_suffix('.'))
+            .filter(|sub| !sub.is_empty())
+    })
 }
 
 pub fn is_safe_deployment_label(label: &str) -> bool {
@@ -2905,6 +2953,28 @@ mod tests {
         assert!(deploy_access_url(base, "GET", "/api/orgs/x").is_err());
     }
 
+    #[test]
+    fn deploy_domain_url_allows_only_domain_routes() {
+        use super::deploy_domain_url;
+        let base = "https://api.example.test/";
+        assert_eq!(
+            deploy_domain_url(base, "GET", "/api/apps/app_1/domains").unwrap(),
+            "https://api.example.test/api/apps/app_1/domains"
+        );
+        assert!(deploy_domain_url(base, "POST", "/api/apps/app_1/domains").is_ok());
+        assert!(deploy_domain_url(base, "DELETE", "/api/apps/app_1/domains/app.example.com").is_ok());
+        assert!(deploy_domain_url(base, "POST", "/api/apps/app_1/domains/example.com/refresh").is_ok());
+        assert!(deploy_domain_url(base, "DELETE", "/api/apps/app_1/domains").is_err());
+        assert!(deploy_domain_url(base, "DELETE", "/api/apps/app_1").is_err());
+        assert!(deploy_domain_url(base, "PUT", "/api/apps/app_1/domains").is_err());
+        assert!(deploy_domain_url(base, "DELETE", "/api/apps/app_1/domains/../x").is_err());
+        assert!(deploy_domain_url(base, "DELETE", "/api/apps/app_1/domains/Example.com").is_err());
+        assert!(deploy_domain_url(base, "DELETE", "/api/apps/app_1/domains/localhost").is_err());
+        assert!(deploy_domain_url(base, "POST", "/api/apps/app_1/domains/a.com/delete").is_err());
+        assert!(deploy_domain_url(base, "GET", "/api/apps/a b/domains").is_err());
+        assert!(deploy_domain_url(base, "GET", "/api/apps/app_1/access-policy").is_err());
+    }
+
     use chrono::TimeZone;
 
     use crate::feature_gate::email_present;
@@ -3458,7 +3528,7 @@ mod tests {
         assert!(deployments[0].pwd);
         assert_eq!(deployments[1].url, "preview.indigo-hq.com");
         assert_eq!(deployments[1].state, "deploying");
-        assert_eq!(deployments[2].url, "paused-app.indigo-hq.com");
+        assert_eq!(deployments[2].url, "paused-app.hq.work");
         assert_eq!(deployments[2].state, "paused");
     }
 
@@ -3792,6 +3862,59 @@ mod tests {
             Some("2d ago")
         );
         assert_eq!(super::format_bytes(25 * 1024 * 1024), "25 MB");
+    }
+
+    #[test]
+    fn deployment_helpers_accept_hq_work_and_indigo_hq_hosts() {
+        // Every app serves on both roots; rows from either must parse.
+        assert_eq!(super::HQ_DEPLOY_APP_DOMAIN, "hq.work");
+        assert_eq!(super::HQ_DEPLOY_APP_DOMAINS, &["hq.work", "indigo-hq.com"]);
+        for (url, host, sub) in [
+            ("https://console.hq.work/path", "console.hq.work", "console"),
+            (
+                "https://console.indigo-hq.com/path",
+                "console.indigo-hq.com",
+                "console",
+            ),
+            ("https://Board-V2.HQ.WORK./", "board-v2.hq.work", "board-v2"),
+        ] {
+            assert_eq!(
+                super::normalize_deployment_host(url),
+                Some(host.to_string())
+            );
+            assert_eq!(super::subdomain_from_url(url), Some(sub.to_string()));
+        }
+        for url in [
+            "https://hq.work",
+            "https://evilhq.work",
+            "https://console.hq.work.evil.test",
+            "https://a.b.hq.work",
+            "https://bad_sub.hq.work",
+        ] {
+            assert_eq!(super::normalize_deployment_host(url), None, "{url}");
+        }
+
+        let deployments = super::parse_deployments_response(
+            reqwest::StatusCode::OK,
+            r#"[
+                {"subdomain":"new-app","url":"https://new-app.hq.work"},
+                {"subdomain":"old-app","url":"https://old-app.indigo-hq.com/"},
+                {"subdomain":"bare-app"}
+            ]"#,
+            "test-org",
+        )
+        .expect("mixed-domain rows should parse");
+        let urls: Vec<&str> = deployments.iter().map(|d| d.url.as_str()).collect();
+        // The API-returned host is kept as-is; only a row without a url falls
+        // back to the hq.work root.
+        assert_eq!(
+            urls,
+            vec![
+                "new-app.hq.work",
+                "old-app.indigo-hq.com",
+                "bare-app.hq.work"
+            ]
+        );
     }
 
     #[test]

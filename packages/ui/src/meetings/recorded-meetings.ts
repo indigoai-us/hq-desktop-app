@@ -23,6 +23,12 @@ export interface RecordedMeeting {
   /** null when the server reports no company ("unknown"). */
   companyUid: string | null;
   hasSignals: boolean;
+  /**
+   * hq-pro's `recordedByCaller`: the signed-in person recorded this meeting.
+   * The only own-meeting signal for a saved desktop SDK recording, which has
+   * no bot id or calendar event. False when the server omits it.
+   */
+  recordedByCaller: boolean;
 }
 
 /** Event ids for recorded rows, kept distinct from calendar event ids. */
@@ -74,6 +80,7 @@ export function parseRecordedMeetings(raw: unknown): RecordedMeeting[] {
       durationSec: num(m.duration) ?? num(m.durationSec),
       companyUid: company && company !== "unknown" ? company : null,
       hasSignals: m.hasSignals === true,
+      recordedByCaller: m.recordedByCaller === true,
     });
   }
   return out;
@@ -85,7 +92,9 @@ export function mergeRecordedMeetings(lists: readonly RecordedMeeting[][]): Reco
   for (const list of lists) {
     for (const m of list) {
       const prev = byId.get(m.meetingId);
-      if (!prev || (!prev.companyUid && m.companyUid)) byId.set(m.meetingId, m);
+      const next = !prev || (!prev.companyUid && m.companyUid) ? m : prev;
+      const recordedByCaller = (prev?.recordedByCaller ?? false) || m.recordedByCaller;
+      byId.set(m.meetingId, next.recordedByCaller === recordedByCaller ? next : { ...next, recordedByCaller });
     }
   }
   return Array.from(byId.values()).sort(
@@ -160,8 +169,7 @@ export function withRecordedEvents(
 
 /**
  * What the client knows about the signed-in person's own meetings. hq-pro's
- * list rows carry no attendee, organizer or recorder field (only meetingId,
- * title, startTime, companyId), and the list is ACL-filtered, so a company
+ * list rows carry no attendee or organizer field, and the list is ACL-filtered, so a company
  * owner or admin can read every member's recordings. Each signal here is
  * person-scoped on its own:
  *  - `botIds`: the caller's notetaker bots (`GET /v1/bot/list` is keyed by the
@@ -169,6 +177,9 @@ export function withRecordedEvents(
  *  - `calendarEvents`: events from the caller's own connected calendars, so the
  *    caller is on the invite.
  *  - `localRecordingIds`: recordings started from this device.
+ * A row hq-pro marks `recordedByCaller` (its recorder is the caller) is also
+ * kept: a saved desktop SDK recording matches none of the signals above once
+ * it is no longer active on this device.
  */
 export interface OwnMeetingSignals {
   botIds: Iterable<string>;
@@ -219,7 +230,9 @@ export function ownRecordedMeetings(
 ): RecordedMeeting[] {
   const ids = new Set<string>([...signals.botIds, ...(signals.localRecordingIds ?? [])]);
   const calendar = calendarKeys(signals.calendarEvents);
-  return rows.filter((m) => ids.has(m.meetingId) || calendar.some((e) => calendarMatchesRecording(e, m)));
+  return rows.filter(
+    (m) => m.recordedByCaller || ids.has(m.meetingId) || calendar.some((e) => calendarMatchesRecording(e, m)),
+  );
 }
 
 // ── Recorded meeting detail (`GET /v1/meetings/{id}`) ─────────────────────

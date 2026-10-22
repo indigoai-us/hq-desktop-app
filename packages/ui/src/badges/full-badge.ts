@@ -10,7 +10,8 @@
 
 import { BADGE_FONT } from "./badge-mark.js";
 import type { BadgeTheme } from "./badge-theme.js";
-import { PALETTE_ALPHABET, type AsciiArt } from "./full-ascii-data.js";
+import type { AsciiArt } from "./full-ascii-data.js";
+import { PALETTE_ALPHABET } from "./full-ascii-palette.js";
 
 const GRID = 48;
 

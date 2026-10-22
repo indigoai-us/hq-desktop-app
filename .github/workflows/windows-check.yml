@@ -514,6 +514,13 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo test --target x86_64-pc-windows-msvc --bins commands::run_cli_provision::tests
 
+      # The HQ CLI step patches hq-cli's rsync call on Windows. hq-cli 5.345.148
+      # dropped rsync, and the patch failed every fresh install until it
+      # learned to skip. These run only on Windows (cfg(windows)).
+      - name: HQ CLI pack-install patch tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc --bins commands::install_deps::windows_tests::hq_cli_pack_install_patch -- --nocapture
+
       # The Connect self-repair policy decides whether HQ downloads a Node
       # runtime. Its bound (one repair, one retry) is what stops a machine that
       # cannot install Node from looping on the download, so it is verified on
