@@ -77,6 +77,8 @@ export interface BuildCorePopoverInput {
 export interface CoreUploadsPausedInput {
   company: string;
   upgradeUrl?: string | null;
+  /** US-024: set when usage state paused cloud sync; its message is shown as is. */
+  usagePause?: { message: string } | null;
 }
 
 // ── Outputs ──────────────────────────────────────────────────────────────────
@@ -121,8 +123,10 @@ export interface CoreUploadsPausedRow {
   company: string;
   title: string;
   body: string;
-  /** Upgrade link to open; null → no upgrade action. */
+  /** Link to open (upgrade, or Billing for a usage pause); null → no action. */
   upgradeUrl: string | null;
+  /** The action's label: "Open Billing" for a usage pause, else "Upgrade plan". */
+  actionLabel: string;
 }
 
 /** Rows for the plan-limit upload pause, in the order the journal lists them. */
@@ -135,11 +139,25 @@ export function buildUploadsPausedRows(
     const company = (entry.company ?? "").trim();
     if (!company || seen.has(company)) continue;
     seen.add(company);
+    const usageMessage = entry.usagePause?.message?.trim();
+    if (usageMessage) {
+      // US-024: a usage pause stops the whole company's cloud sync. The
+      // server message says why and what to do; no plan wording.
+      rows.push({
+        company,
+        title: `Cloud sync paused for ${company}`,
+        body: usageMessage,
+        upgradeUrl: entry.upgradeUrl?.trim() || null,
+        actionLabel: "Open Billing",
+      });
+      continue;
+    }
     rows.push({
       company,
       title: `Uploads paused for ${company}`,
       body: "New files are not uploading because this company is over its plan limit. Downloads and edits to synced files still work.",
       upgradeUrl: entry.upgradeUrl?.trim() || null,
+      actionLabel: "Upgrade plan",
     });
   }
   return rows;

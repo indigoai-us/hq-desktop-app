@@ -93,15 +93,45 @@ pub struct SyncMaintenanceProgressEvent {
     pub total_bytes: u64,
 }
 
-/// `{type: "plan-limit", company, upgradeUrl}`
+/// `{type: "plan-limit", company, upgradeUrl, message?, usagePause?, vaultPaused?}`
 /// One server-linked notice for a company's upload pass when the current plan
 /// prevents new files from being uploaded. This is informational and does not
 /// count as a sync error.
+///
+/// For a usage pause (US-024) the runner adds `usagePause` and
+/// `vaultPaused: true`: the company's whole cloud sync is paused, and the
+/// Billing link is `usagePause.actionUrl`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncPlanLimitEvent {
     pub company: String,
     pub upgrade_url: String,
+    /// The server's sentence for the notice, when the runner forwards one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// A valid usage pause. A malformed or invalid block reads as `None`
+    /// rather than failing the whole event.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_lenient_usage_pause"
+    )]
+    pub usage_pause: Option<crate::plan_limit::UsagePause>,
+    /// True when the company's whole cloud sync is paused, not only new files.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub vault_paused: bool,
+}
+
+fn deserialize_lenient_usage_pause<'de, D>(
+    deserializer: D,
+) -> Result<Option<crate::plan_limit::UsagePause>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value
+        .as_ref()
+        .and_then(crate::plan_limit::parse_usage_pause))
 }
 
 /// `{type: "error", company?, path, message}`
@@ -829,6 +859,9 @@ mod tests {
             Some(SyncEvent::PlanLimit(SyncPlanLimitEvent {
                 company: "Acme".to_string(),
                 upgrade_url: "https://hq.computer/companies/acme/billing?upgrade=team".to_string(),
+                message: None,
+                usage_pause: None,
+                vault_paused: false,
             }))
         );
         let payload = match parse_sync_line(line).expect("server event must parse") {
@@ -841,6 +874,62 @@ mod tests {
             "https://hq.computer/companies/acme/billing?upgrade=team"
         );
         assert!(wire.get("upgrade_url").is_none());
+        assert!(wire.get("usagePause").is_none());
+        assert!(wire.get("vaultPaused").is_none());
+        assert!(wire.get("message").is_none());
+    }
+
+    #[test]
+    fn test_parse_plan_limit_line_with_a_usage_pause() {
+        let line = r#"{"type":"plan-limit","company":"Acme","upgradeUrl":"https://hq.computer/companies/acme/billing","message":"Cloud sync is paused. Acme used its $10.00 monthly allowance. Add a card on the Billing page to resume. Files on this computer are not affected.","vaultPaused":true,"usagePause":{"code":"usage_paused","reason":"usage_card_required","message":"Cloud sync is paused. Acme used its $10.00 monthly allowance. Add a card on the Billing page to resume. Files on this computer are not affected.","actionUrl":"https://hq.computer/companies/acme/billing"}}"#;
+        let payload = match parse_sync_line(line).expect("usage pause event must parse") {
+            SyncEvent::PlanLimit(payload) => payload,
+            other => panic!("expected PlanLimit, got {other:?}"),
+        };
+        assert!(payload.vault_paused);
+        let pause = payload.usage_pause.clone().expect("usage pause is kept");
+        assert_eq!(pause.reason, "usage_card_required");
+        assert_eq!(
+            pause.action_url,
+            "https://hq.computer/companies/acme/billing"
+        );
+        assert!(payload
+            .message
+            .as_deref()
+            .is_some_and(|m| m.starts_with("Cloud sync is paused.")));
+        let wire = serde_json::to_value(&payload).unwrap();
+        assert_eq!(wire["vaultPaused"], true);
+        assert_eq!(wire["usagePause"]["code"], "usage_paused");
+        assert_eq!(wire["usagePause"]["reason"], "usage_card_required");
+        assert_eq!(
+            wire["usagePause"]["actionUrl"],
+            "https://hq.computer/companies/acme/billing"
+        );
+        assert!(wire["message"].is_string());
+    }
+
+    #[test]
+    fn test_parse_plan_limit_line_tolerates_a_bad_usage_pause() {
+        for bad in [
+            r#""usage_paused""#,
+            r#"null"#,
+            r#"[1,2]"#,
+            r#"{"code":"usage_paused","reason":"usage_other","message":"x","actionUrl":"https://hq.computer/billing"}"#,
+            r#"{"code":"usage_paused","reason":"usage_trial_cap","message":"x","actionUrl":"https://evil.example.com/billing"}"#,
+            r#"{"code":"usage_paused","reason":"usage_trial_cap","message":"","actionUrl":"https://hq.computer/billing"}"#,
+        ] {
+            let line = format!(
+                r#"{{"type":"plan-limit","company":"Acme","upgradeUrl":"https://hq.computer/billing","usagePause":{bad}}}"#
+            );
+            match parse_sync_line(&line) {
+                Some(SyncEvent::PlanLimit(payload)) => {
+                    assert_eq!(payload.company, "Acme", "{bad}");
+                    assert_eq!(payload.usage_pause, None, "{bad}");
+                    assert!(!payload.vault_paused, "{bad}");
+                }
+                other => panic!("expected PlanLimit for {bad}, got {other:?}"),
+            }
+        }
     }
 
     #[test]

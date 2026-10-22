@@ -5,7 +5,9 @@
 
 import {
   approvedPlanUpgradeUrl,
+  parseUsagePause,
   type AdapterResult,
+  type UsagePause,
   type DaemonSyncStatus,
   type PlatformAdapter,
   type SyncStatus,
@@ -18,8 +20,10 @@ import type { SyncState } from "../common/sync-model.js";
  */
 export interface UploadsPausedCompany {
   company: string;
-  /** Approved hq-pro upgrade link, or null when none came with the notice. */
+  /** Approved hq-pro link (for a usage pause, the Billing page), or null when none came. */
   upgradeUrl: string | null;
+  /** US-024: the usage pause behind it, when usage state (not a plan limit) paused sync. */
+  usagePause?: UsagePause | null;
 }
 
 export interface LiveSyncStatus {
@@ -75,7 +79,12 @@ function parseUploadsPaused(raw: unknown): UploadsPausedCompany[] {
       rec && typeof rec.company === "string" ? rec.company.trim() : "";
     if (!company || seen.has(company)) continue;
     seen.add(company);
-    rows.push({ company, upgradeUrl: approvedPlanUpgradeUrl(rec?.upgradeUrl) });
+    const usagePause = parseUsagePause(rec?.usagePause);
+    rows.push(
+      usagePause
+        ? { company, upgradeUrl: usagePause.actionUrl, usagePause }
+        : { company, upgradeUrl: approvedPlanUpgradeUrl(rec?.upgradeUrl) },
+    );
   }
   return rows;
 }

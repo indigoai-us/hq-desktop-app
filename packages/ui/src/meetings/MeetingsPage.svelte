@@ -382,12 +382,14 @@
     text: string,
     upgradeUrl?: string,
     consoleAction?: boolean,
+    upgradeLabel?: string,
   ): void {
     const revision = ++toastRevision;
     const nextToast: ToastDescriptor = {
       kind,
       text,
       ...(upgradeUrl ? { upgradeUrl } : {}),
+      ...(upgradeUrl && upgradeLabel ? { upgradeLabel } : {}),
       ...(consoleAction ? { consoleAction } : {}),
     };
     toast = nextToast;
@@ -423,7 +425,7 @@
         actions: upgradeUrl
           ? [
               {
-                label: pending ? "Opening…" : "Upgrade",
+                label: pending ? "Opening…" : (current.upgradeLabel ?? "Upgrade"),
                 testId: "meetings-plan-upgrade",
                 primary: true,
                 disabled: pending,
@@ -481,15 +483,15 @@
   // refresh-error banner (fetchError is store-owned and left untouched).
   async function onInvite(evt: MeetingEvent): Promise<void> {
     const t = await meetingsStore.inviteBot(evt);
-    if (t) flashToast(t.kind, t.text, t.upgradeUrl);
+    if (t) flashToast(t.kind, t.text, t.upgradeUrl, undefined, t.upgradeLabel);
   }
   async function onUninvite(evt: MeetingEvent): Promise<void> {
     const t = await meetingsStore.cancelBot(evt);
-    if (t) flashToast(t.kind, t.text, t.upgradeUrl);
+    if (t) flashToast(t.kind, t.text, t.upgradeUrl, undefined, t.upgradeLabel);
   }
   async function onJoinNow(evt: MeetingEvent): Promise<void> {
     const t = await meetingsStore.joinBotNow(evt);
-    if (t) flashToast(t.kind, t.text, t.upgradeUrl);
+    if (t) flashToast(t.kind, t.text, t.upgradeUrl, undefined, t.upgradeLabel);
   }
 
   // Ad-hoc "paste a meeting URL" invite — parity with the classic
@@ -515,7 +517,7 @@
           urlInput = "";
           urlInputCompanyId = null;
         }
-        flashToast(t.kind, t.text, t.upgradeUrl);
+        flashToast(t.kind, t.text, t.upgradeUrl, undefined, t.upgradeLabel);
       }
     } finally {
       urlInviting = false;
