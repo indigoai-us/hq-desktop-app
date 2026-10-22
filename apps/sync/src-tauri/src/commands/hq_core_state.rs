@@ -3447,50 +3447,6 @@ struct GhCommit {
 }
 
 #[derive(Debug, Deserialize)]
-struct GhBlobResponse {
-    sha: String,
-    encoding: String,
-    content: String,
-}
-
-async fn fetch_blob_content(
-    client: &reqwest::Client,
-    repo: &str,
-    blob_sha: &str,
-    scope: crate::commands::github_api::ApiScope,
-) -> Result<Vec<u8>, String> {
-    let url = format!("https://api.github.com/repos/{repo}/git/blobs/{blob_sha}");
-    let resp = crate::commands::github_api::get(client, &url, scope)
-        .await
-        .map_err(github_api_fetch_failure)?;
-    if !resp.status().is_success() {
-        return Err(github_http_fetch_failure(
-            resp.status(),
-            &resp.headers,
-            format!("git/blobs/{blob_sha}"),
-        ));
-    }
-    let parsed: GhBlobResponse = serde_json::from_slice(&resp.body).map_err(|error| {
-        github_fetch_failure("invalid_response", format!("parse blob JSON: {error}"))
-    })?;
-    if parsed.sha != blob_sha || parsed.encoding != "base64" {
-        return Err(github_fetch_failure(
-            "invalid_response",
-            format!("unexpected blob metadata for {blob_sha}"),
-        ));
-    }
-    use base64::Engine as _;
-    let compact = parsed
-        .content
-        .chars()
-        .filter(|ch| !ch.is_ascii_whitespace())
-        .collect::<String>();
-    base64::engine::general_purpose::STANDARD
-        .decode(compact)
-        .map_err(|error| github_fetch_failure("invalid_response", format!("decode blob: {error}")))
-}
-
-#[derive(Debug, Deserialize)]
 struct GhTreesResponse {
     #[serde(default)]
     tree: Vec<GhTreeEntry>,
@@ -3790,6 +3746,20 @@ async fn fetch_tree(
 }
 
 const GENERATED_SETTINGS_PATH: &str = ".claude/settings.json";
+
+/// Upstream SHA to put in a drift entry. Classification replaces the target
+/// settings SHA with its env.PATH-stripped hash; Restore verifies the fetched
+/// bytes against this value, so the settings entry carries the real blob SHA.
+fn report_upstream_sha(
+    path: &str,
+    sha_target: &str,
+    target_settings_raw_sha: Option<&str>,
+) -> String {
+    match (path == GENERATED_SETTINGS_PATH, target_settings_raw_sha) {
+        (true, Some(raw)) => raw.to_string(),
+        _ => sha_target.to_string(),
+    }
+}
 
 /// Resolve the generated PATH settings file to the same normalized hash used
 /// for the local tree. The tree API carries only blob hashes, so fetch this
@@ -4454,11 +4424,17 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
 
     // Fetch trees. Target only if we're actually going to scan drift.
     // Floor only if available + matches source.
+    //
+    // The settings SHAs in both trees are replaced by the env.PATH-stripped
+    // hash for classification. The target's real blob SHA is kept so the
+    // report can still hand Restore a SHA that matches the fetched bytes.
+    let mut target_settings_raw_sha: Option<String> = None;
     let (target_tree, floor_blobs) = if drift_scan_possible {
         let mut target_tree = fetch_tree(&client, &target_repo, &target_ref, request_scope)
             .await
             .map_err(|error| CoreUpdateError::new(CoreUpdateErrorKind::Network, error))?;
         if let Some((raw_sha, _)) = target_tree.get(GENERATED_SETTINGS_PATH).cloned() {
+            target_settings_raw_sha = Some(raw_sha.clone());
             let normalized =
                 fetch_normalized_settings_sha(&client, &target_repo, &target_ref, Some(&raw_sha))
                     .await;
@@ -4590,7 +4566,13 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
 
             // Compare this setup-owned field semantically while retaining the
             // real Git SHAs in the report so restore-from-upstream stays valid.
-            let settings_path = ".claude/settings.json";
+            // The floor and target settings SHAs were already replaced with the
+            // env.PATH-stripped hash above (or kept raw when that failed), so
+            // they are compared directly against the local semantic hash.
+            let settings_path = GENERATED_SETTINGS_PATH;
+            let upstream_sha_for_report = |path: &str, sha_target: &String| -> String {
+                report_upstream_sha(path, sha_target, target_settings_raw_sha.as_deref())
+            };
             let local_settings_sha = if local.contains_key(settings_path) {
                 match std::fs::read(hq_folder.join(settings_path)) {
                     Ok(bytes) => Some(hq_desktop_core::drift_scope::drift_blob_sha_for_path(
@@ -4610,51 +4592,6 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
             } else {
                 None
             };
-            let target_settings_sha = match target_in_scope.get(settings_path) {
-                Some((sha, _)) => {
-                    match fetch_blob_content(&client, &target_repo, sha, request_scope).await {
-                        Ok(content) => Some(
-                            hq_desktop_core::drift_scope::drift_blob_sha_for_path(
-                                settings_path,
-                                &content,
-                            ),
-                        ),
-                        Err(error) => {
-                            log(
-                                "hq-core-state",
-                                &format!(
-                                    "could not read target settings blob for semantic drift comparison: {error}; retaining raw SHA comparison"
-                                ),
-                            );
-                            None
-                        }
-                    }
-                }
-                None => None,
-            };
-            let floor_settings_sha =
-                match (floor_identity.as_ref(), floor_in_scope.get(settings_path)) {
-                    (Some((source, _)), Some(sha)) => {
-                        match fetch_blob_content(&client, source, sha, request_scope).await {
-                            Ok(content) => Some(
-                                hq_desktop_core::drift_scope::drift_blob_sha_for_path(
-                                    settings_path,
-                                    &content,
-                                ),
-                            ),
-                            Err(error) => {
-                                log(
-                                    "hq-core-state",
-                                    &format!(
-                                        "could not read settings baseline blob for semantic drift comparison: {error}; retaining raw SHA comparison"
-                                    ),
-                                );
-                                None
-                            }
-                        }
-                    }
-                    _ => None,
-                };
 
             // Three-way classify each path (USER-EDIT goes to `modified`,
             // MISSING goes to `missing`, USER-ONLY goes to `added` —
@@ -4679,16 +4616,10 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
                     .cloned()
                     .unwrap_or_else(|| sha_target.clone());
                 let unchanged = if *path == settings_path {
-                    let expected = if floor_in_scope.contains_key(settings_path) {
-                        floor_settings_sha.as_deref()
-                    } else {
-                        target_settings_sha.as_deref()
-                    };
-                    hq_desktop_core::drift_scope::drift_hash_matches_with_raw_fallback(
+                    hq_desktop_core::drift_scope::settings_drift_matches(
                         sha_local,
-                        &classification_sha,
                         local_settings_sha.as_deref(),
-                        expected,
+                        &classification_sha,
                     )
                 } else {
                     sha_local == &classification_sha
@@ -4701,7 +4632,7 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
                         path: (*path).clone(),
                         size: *size_local,
                         git_sha_local: Some(sha_local.clone()),
-                        git_sha_upstream: Some(sha_target.clone()),
+                        git_sha_upstream: Some(upstream_sha_for_report(path, sha_target)),
                         staging_status: None,
                     });
                 }
@@ -4712,7 +4643,7 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
                     path: (*path).clone(),
                     size: *size_target,
                     git_sha_local: None,
-                    git_sha_upstream: Some(sha_target.clone()),
+                    git_sha_upstream: Some(upstream_sha_for_report(path, sha_target)),
                     staging_status: None,
                 });
             }
@@ -4744,11 +4675,10 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
                 let floor_sha_at_path = floor_in_scope.get(*path);
                 let floor_matches_local = floor_sha_at_path.map(|floor_sha| {
                     if *path == settings_path {
-                        hq_desktop_core::drift_scope::drift_hash_matches_with_raw_fallback(
+                        hq_desktop_core::drift_scope::settings_drift_matches(
                             sha_local,
-                            floor_sha,
                             local_settings_sha.as_deref(),
-                            floor_settings_sha.as_deref(),
+                            floor_sha,
                         )
                     } else {
                         sha_local == floor_sha
@@ -6112,6 +6042,17 @@ mod tests {
         Arc, Mutex,
     };
     use tempfile::TempDir;
+
+    #[test]
+    fn drift_report_keeps_the_real_settings_blob_sha_for_restore() {
+        let settings = GENERATED_SETTINGS_PATH;
+        assert_eq!(report_upstream_sha(settings, "semantic", Some("raw")), "raw");
+        assert_eq!(report_upstream_sha(settings, "raw", None), "raw");
+        assert_eq!(
+            report_upstream_sha("core/policies/a.md", "tree", Some("raw")),
+            "tree"
+        );
+    }
 
     static CORE_UPDATE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     static CORE_UPDATE_SENTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
