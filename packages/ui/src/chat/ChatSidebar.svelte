@@ -5708,7 +5708,11 @@
 
   /* S3: 252px panel, 32px single-line rows (tile + label + chord inline),
      no wrap and no resting scrollbar artifact — token contract §6 scopePanel. */
-  .chat-scope-menu {
+  /* Doubled class: the shared `.chat-popover` rule comes later in this sheet
+     and, on equal specificity, its `right: 0` and `min-width: 160px` won,
+     so the menu stretched edge to edge or shrank to 160px instead of its
+     252px. */
+  .chat-popover.chat-scope-menu {
     left: 0;
     right: auto;
     width: 252px;

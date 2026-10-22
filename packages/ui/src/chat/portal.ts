@@ -82,8 +82,15 @@ export function menuPortal(node: HTMLElement, params: MenuPortalParams) {
       node.style.maxWidth = "";
       return;
     }
+    // Measure at the panel's own width. Pinned only on the left: a panel
+    // whose stylesheet also sets `right` (`.chat-popover { right: 0 }` beats
+    // `.chat-scope-menu { right: auto }` on equal specificity) otherwise
+    // stretched edge to edge, and measuring that made the company menu as
+    // wide as the window.
     node.style.width = "auto";
     node.style.maxWidth = "none";
+    node.style.left = "0px";
+    node.style.right = "auto";
     const rail =
       current.railOverhang != null
         ? anchor.closest(current.railSelector ?? ".chat-sidebar")
