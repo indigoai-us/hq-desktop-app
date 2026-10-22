@@ -546,10 +546,7 @@ pub fn bundled_codex_bin() -> Option<std::path::PathBuf> {
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn bundled_codex_bin_in(app_dirs: &[std::path::PathBuf]) -> Option<std::path::PathBuf> {
     const BUNDLES: [&str; 2] = ["ChatGPT.app", "Codex.app"];
-    const CLI_PATHS: [&str; 2] = [
-        "Contents/Resources/codex-cli/bin/codex",
-        "Contents/Resources/codex",
-    ];
+    const CLI_PATHS: [&str; 2] = ["Contents/Resources/codex-cli/bin/codex", "Contents/Resources/codex"];
     app_dirs
         .iter()
         .flat_map(|dir| BUNDLES.iter().map(move |bundle| dir.join(bundle)))
@@ -764,11 +761,7 @@ fn ps_single_quote(s: &str) -> String {
 /// argument. The mode is allowlisted; the prompt is free text, so it is
 /// flattened to one line (control characters become spaces) and quoted by
 /// `quote` for the target shell. Empty input adds nothing.
-fn claude_args(
-    permission_mode: Option<&str>,
-    prompt: Option<&str>,
-    quote: fn(&str) -> String,
-) -> Result<String, String> {
+fn claude_args(permission_mode: Option<&str>, prompt: Option<&str>, quote: fn(&str) -> String) -> Result<String, String> {
     let mut args: Vec<String> = Vec::new();
     match permission_mode.map(str::trim).filter(|m| !m.is_empty()) {
         None => {}
@@ -794,11 +787,7 @@ fn claude_args(
 /// The macOS `claude` command line: `claude [--permission-mode <mode>] ['<prompt>']`.
 fn claude_command(permission_mode: Option<&str>, prompt: Option<&str>) -> Result<String, String> {
     let args = claude_args(permission_mode, prompt, sh_single_quote)?;
-    Ok(if args.is_empty() {
-        "claude".to_string()
-    } else {
-        format!("claude {args}")
-    })
+    Ok(if args.is_empty() { "claude".to_string() } else { format!("claude {args}") })
 }
 
 /// Open a new Terminal window at `path` and auto-run `claude`, optionally in
@@ -806,13 +795,8 @@ fn claude_command(permission_mode: Option<&str>, prompt: Option<&str>) -> Result
 /// `prompt` from the renderer; both absent = the plain launch).
 #[cfg(not(windows))]
 #[tauri::command]
-pub fn launch_claude_code(
-    path: String,
-    permission_mode: Option<String>,
-    prompt: Option<String>,
-) -> Result<(), String> {
-    let result = claude_command(permission_mode.as_deref(), prompt.as_deref())
-        .and_then(|cmd| spawn_cli_terminal_unix(&path, &cmd));
+pub fn launch_claude_code(path: String, permission_mode: Option<String>, prompt: Option<String>) -> Result<(), String> {
+    let result = claude_command(permission_mode.as_deref(), prompt.as_deref()).and_then(|cmd| spawn_cli_terminal_unix(&path, &cmd));
     crate::commands::cdp_mirror::note_agent_session_launched("claude", "terminal", &result);
     result
 }
@@ -821,11 +805,7 @@ pub fn launch_claude_code(
 /// optionally with a first prompt (see `sanitize_terminal_prompt`).
 #[cfg(not(windows))]
 #[tauri::command]
-pub fn launch_cli_in_terminal(
-    path: String,
-    tool: String,
-    prompt: Option<String>,
-) -> Result<(), String> {
+pub fn launch_cli_in_terminal(path: String, tool: String, prompt: Option<String>) -> Result<(), String> {
     let prompt = sanitize_terminal_prompt(prompt.as_deref());
     let result = cli_binary_for(&tool)
         .and_then(|binary| spawn_cli_terminal_unix_with_prompt(&path, binary, prompt.as_deref()));
@@ -891,17 +871,9 @@ fn spawn_cli_terminal_unix_with_prompt(
 /// in a permission mode.
 #[cfg(windows)]
 #[tauri::command]
-pub fn launch_claude_code(
-    path: String,
-    permission_mode: Option<String>,
-    prompt: Option<String>,
-) -> Result<(), String> {
-    let result = claude_args(
-        permission_mode.as_deref(),
-        prompt.as_deref(),
-        ps_single_quote,
-    )
-    .and_then(|args| spawn_cli_terminal_windows_args(&path, "claude", &args));
+pub fn launch_claude_code(path: String, permission_mode: Option<String>, prompt: Option<String>) -> Result<(), String> {
+    let result = claude_args(permission_mode.as_deref(), prompt.as_deref(), ps_single_quote)
+        .and_then(|args| spawn_cli_terminal_windows_args(&path, "claude", &args));
     crate::commands::cdp_mirror::note_agent_session_launched("claude", "terminal", &result);
     result
 }
@@ -911,11 +883,7 @@ pub fn launch_claude_code(
 /// the launched binary can never be attacker-controlled.
 #[cfg(windows)]
 #[tauri::command]
-pub fn launch_cli_in_terminal(
-    path: String,
-    tool: String,
-    prompt: Option<String>,
-) -> Result<(), String> {
+pub fn launch_cli_in_terminal(path: String, tool: String, prompt: Option<String>) -> Result<(), String> {
     let prompt = sanitize_terminal_prompt(prompt.as_deref());
     let result = cli_binary_for(&tool).and_then(|binary| {
         spawn_cli_terminal_windows_with_prompt(&path, binary, prompt.as_deref())
@@ -989,11 +957,7 @@ fn spawn_cli_terminal_windows(path: &str, binary: &str) -> Result<(), String> {
 /// (`args` must come from an allowlist, never the renderer's free text).
 #[cfg(windows)]
 fn spawn_cli_terminal_windows_args(path: &str, binary: &str, args: &str) -> Result<(), String> {
-    let command = if args.is_empty() {
-        binary.to_string()
-    } else {
-        format!("{binary} {args}")
-    };
+    let command = if args.is_empty() { binary.to_string() } else { format!("{binary} {args}") };
     spawn_cli_terminal_windows_command(path, binary, &command, None)
 }
 
@@ -1159,18 +1123,10 @@ mod tests {
             "claude --permission-mode bypassPermissions 'Pick up my session \"Daily brief\" (Corey'\\''s) $(rm -rf ~) `x` then continue'"
         );
         // Prompt only, no mode.
-        assert_eq!(
-            claude_command(None, Some("hello")).unwrap(),
-            "claude 'hello'"
-        );
+        assert_eq!(claude_command(None, Some("hello")).unwrap(), "claude 'hello'");
         // Windows (PowerShell) quoting doubles the single quote.
         assert_eq!(
-            claude_args(
-                Some("bypassPermissions"),
-                Some("Corey's brief"),
-                ps_single_quote
-            )
-            .unwrap(),
+            claude_args(Some("bypassPermissions"), Some("Corey's brief"), ps_single_quote).unwrap(),
             "--permission-mode bypassPermissions 'Corey''s brief'"
         );
     }
@@ -1200,19 +1156,13 @@ mod tests {
         let old = user.join("ChatGPT.app/Contents/Resources/codex");
         std::fs::create_dir_all(old.parent().unwrap()).unwrap();
         std::fs::write(&old, b"#!/bin/sh\n").unwrap();
-        assert_eq!(
-            bundled_codex_bin_in(&[system.clone(), user.clone()]),
-            Some(old.clone())
-        );
+        assert_eq!(bundled_codex_bin_in(&[system.clone(), user.clone()]), Some(old.clone()));
 
         // Current ChatGPT.app (26.928): Contents/Resources/codex-cli/bin/codex.
         let current = system.join("ChatGPT.app/Contents/Resources/codex-cli/bin/codex");
         std::fs::create_dir_all(current.parent().unwrap()).unwrap();
         std::fs::write(&current, b"#!/bin/sh\n").unwrap();
-        assert_eq!(
-            bundled_codex_bin_in(&[system.clone(), user.clone()]),
-            Some(current)
-        );
+        assert_eq!(bundled_codex_bin_in(&[system.clone(), user.clone()]), Some(current));
 
         // A standalone Codex.app with the new layout.
         let standalone_root = root.join("standalone");
@@ -1263,7 +1213,10 @@ mod tests {
     /// silently regress when someone adds a scheme parameter.
     #[test]
     fn codex_deep_link_accepts_the_install_prompt_url_shape() {
-        assert!(validate_codex_deep_link("codex://threads/new?prompt=install%20codex").is_ok());
+        assert!(validate_codex_deep_link(
+            "codex://threads/new?prompt=install%20codex"
+        )
+        .is_ok());
         assert!(validate_codex_deep_link("codex://launch").is_ok());
     }
 
