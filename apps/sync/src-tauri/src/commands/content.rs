@@ -1661,6 +1661,92 @@ fn extract_tarball_with_progress(
     )
 }
 
+/// An interrupted extraction is never accepted just because existing files were skipped.
+/// Only a complete exact template can promote the durable seed attempt.
+fn verify_seed_template_inventory(compressed: &[u8], root: &Path) -> Result<(), String> {
+    use hq_desktop_core::seed_admission::{verify_inventory, SeedEntry};
+    use sha2::{Digest, Sha256};
+    use std::collections::BTreeMap;
+    let mut expected = BTreeMap::new();
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(compressed));
+    for entry in archive.entries().map_err(|e| e.to_string())? {
+        let mut entry = entry.map_err(|e| e.to_string())?;
+        let raw = entry
+            .path()
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .into_owned();
+        let Some(relative) = map_entry_to_template_path(&raw) else {
+            continue;
+        };
+        let Some(normalized) = normalize_safe_relative_path(relative.trim_end_matches(['/', '\\']))
+        else {
+            continue;
+        };
+        let key = PathBuf::from(&normalized);
+        if key.as_os_str().is_empty() {
+            continue;
+        }
+        let value = match entry.header().entry_type() {
+            tar::EntryType::Directory => SeedEntry::Directory,
+            tar::EntryType::Regular | tar::EntryType::Continuous => {
+                let mut hash = Sha256::new();
+                let mut chunk = [0u8; 65536];
+                loop {
+                    let n = entry.read(&mut chunk).map_err(|e| e.to_string())?;
+                    if n == 0 {
+                        break;
+                    }
+                    hash.update(&chunk[..n]);
+                }
+                SeedEntry::File(
+                    hash.finalize()
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>(),
+                )
+            }
+            tar::EntryType::Symlink => {
+                let target = entry
+                    .link_name()
+                    .map_err(|e| e.to_string())?
+                    .ok_or("missing template link target")?
+                    .into_owned();
+                if !is_safe_symlink_target(&normalized, &target.to_string_lossy()) {
+                    continue;
+                }
+                SeedEntry::Symlink(target)
+            }
+            _ => continue,
+        };
+        let mut parent = key.parent();
+        while let Some(dir) = parent.filter(|p| !p.as_os_str().is_empty()) {
+            expected
+                .entry(dir.to_path_buf())
+                .or_insert(SeedEntry::Directory);
+            parent = dir.parent();
+        }
+        expected.insert(key, value);
+    }
+    verify_inventory(root, &expected, &|path| {
+        let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        let mut hash = Sha256::new();
+        let mut chunk = [0u8; 65536];
+        loop {
+            let n = file.read(&mut chunk).map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            hash.update(&chunk[..n]);
+        }
+        Ok(hash
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>())
+    })
+}
+
 /// H8 seed extraction: never creates the root, and runs `fence` before every
 /// entry (and between chunks of large files). A failed fence stops the
 /// extraction with its own error; nothing further is written.
@@ -1955,10 +2041,19 @@ where
                         record_content_io_failure(failure_scope, &e);
                         format!("failed to set file mode: {e}")
                     })?;
+                    if !create_root {
+                        file.sync_all()
+                            .map_err(|e| format!("could not persist seeded file: {e}"))?;
+                    }
                     Ok::<(), String>(())
                 })();
                 if let Err(write_error) = write_result {
                     drop(file);
+                    // A fenced partial attempt is preserved for explicit recovery. Never
+                    // unlink a path whose current bytes may have changed meanwhile.
+                    if !create_root {
+                        return Err(write_error);
+                    }
                     if let Err(cleanup_error) = std::fs::remove_file(&dest) {
                         log(
                             "content",
@@ -2056,9 +2151,6 @@ pub async fn fetch_and_extract_template(
                 Some(fence),
             )
             .await;
-            if result.is_ok() {
-                crate::commands::personal_root::mark_seeded(state_dir, &hq_root);
-            }
             result
         }
     }
@@ -2089,6 +2181,15 @@ async fn install_template_into_fenced(
     failure_scope: Option<OnboardingFailureScope>,
     fence: Option<crate::commands::personal_root::SeedFence>,
 ) -> Result<String, String> {
+    let seed_ticket = if fence.is_some() {
+        Some(
+            hq_desktop_core::work_admission::personal_work()
+                .admit()
+                .map_err(|e| e.message().to_string())?,
+        )
+    } else {
+        None
+    };
     let source = template_source_for_staging_source(staging_source_enabled());
     let token = if matches!(source.channel, TemplateChannel::StagingMain) {
         Some(get_github_token().map_err(|error| {
@@ -2112,6 +2213,9 @@ async fn install_template_into_fenced(
     })?;
     let handle = handle.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let (cancel_flag, _cancel_registration) = register_content_cancel_handle(handle.clone());
+    let _seed_cancel = seed_ticket
+        .as_ref()
+        .map(|ticket| ticket.register_cancel(cancel_flag.clone()));
     let progress = ContentProgressEmitter {
         app,
         handle: handle.clone(),
@@ -2166,14 +2270,31 @@ async fn install_template_into_fenced(
     match &fence {
         Some(fence) => {
             fence.revalidate().await?;
+            // Durable intent precedes every seed write. Partial attempts stay held.
+            fence.begin()?;
             extract_tarball_fenced(
                 &compressed,
                 Path::new(&hq_root),
                 Some(&progress),
                 Some(cancel_flag.as_ref()),
                 failure_scope.as_ref(),
-                &|| fence.check(),
+                &|| {
+                    if let Some(ticket) = &seed_ticket {
+                        ticket.check().map_err(|e| e.message().to_string())?;
+                    }
+                    fence.check()
+                },
             )?;
+            fence.revalidate().await?;
+            verify_seed_template_inventory(&compressed, Path::new(&hq_root))?;
+            hq_desktop_core::seed_admission::sync_directories(Path::new(&hq_root))?;
+            fence.check()?;
+            if let Some(ticket) = &seed_ticket {
+                ticket.check().map_err(|e| e.message().to_string())?;
+            }
+            if is_content_cancelled(Some(cancel_flag.as_ref())) {
+                return Err(content_cancelled_error(failure_scope.as_ref()));
+            }
         }
         None => extract_tarball_with_progress(
             &compressed,
@@ -2184,12 +2305,29 @@ async fn install_template_into_fenced(
         )?,
     }
 
-    // Refresh core/core.yaml checksums right after the template lands, so the
-    // integrity block reflects the freshly-installed content before git-init +
-    // sync (the hq-installer hardening — native SHA-256, no per-file forks).
-    // Advisory: a checksum failure must never fail an otherwise-good install,
-    // and the tray agent recomputes them in steady state.
-    let checksum_root = hq_root.clone();
+    complete_template_install(&hq_root, fence.as_ref().map(|fence| || fence.complete())).await?;
+
+    progress.emit("complete", None, None, false, false, "HQ template ready");
+
+    Ok(version)
+}
+
+/// The checksum refresh is advisory and steady-state maintenance recomputes it.
+/// A fenced seed must end at its verified template inventory: do not reopen a
+/// writer after publishing Seeded or mutate that inventory outside its fence.
+async fn complete_template_install<F>(
+    hq_root: &str,
+    fenced_completion: Option<F>,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Result<(), String>,
+{
+    if let Some(complete) = fenced_completion {
+        // Publishing completion is the last root-affecting step on this path.
+        complete()?;
+        return Ok(());
+    }
+    let checksum_root = hq_root.to_string();
     if let Err(e) = tokio::task::spawn_blocking(move || {
         crate::commands::checksums::compute_checksums_at(Path::new(&checksum_root))
     })
@@ -2199,10 +2337,7 @@ async fn install_template_into_fenced(
     {
         eprintln!("[content] checksum refresh after extract (non-fatal): {e}");
     }
-
-    progress.emit("complete", None, None, false, false, "HQ template ready");
-
-    Ok(version)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2210,6 +2345,58 @@ mod tests {
     use super::*;
     use crate::commands::install_stages::take_onboarding_failure_detail;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn seed_boundary_fenced_completion_does_not_reopen_checksum_writer() {
+        let root = tempdir().unwrap();
+        std::fs::create_dir(root.path().join("core")).unwrap();
+        let manifest = root.path().join("core/core.yaml");
+        let original = "version: 1\nupdatedAt: \"1970-01-01T00:00:00Z\"\nrules:\n  locked:\n    - core/core.yaml\nchecksums:\n  stale: deadbeef\n";
+        std::fs::write(&manifest, original).unwrap();
+        let completed = std::cell::Cell::new(false);
+        complete_template_install(
+            root.path().to_str().unwrap(),
+            Some(|| {
+                assert_eq!(std::fs::read_to_string(&manifest).unwrap(), original);
+                completed.set(true);
+                Ok(())
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(completed.get());
+        assert_eq!(std::fs::read_to_string(manifest).unwrap(), original);
+        assert_eq!(
+            std::fs::read_dir(root.path().join("core")).unwrap().count(),
+            1
+        );
+        // No root resolution or creation is needed for the skipped tail.
+        complete_template_install(
+            root.path().join("missing").to_str().unwrap(),
+            Some(|| Ok(())),
+        )
+        .await
+        .unwrap();
+        assert!(!root.path().join("missing").exists());
+    }
+
+    #[tokio::test]
+    async fn seed_boundary_legacy_unfenced_install_keeps_checksum_refresh() {
+        let root = tempdir().unwrap();
+        std::fs::create_dir(root.path().join("core")).unwrap();
+        let manifest = root.path().join("core/core.yaml");
+        let original = "version: 1\nupdatedAt: \"1970-01-01T00:00:00Z\"\nrules:\n  locked:\n    - core/core.yaml\nchecksums:\n  stale: deadbeef\n";
+        std::fs::write(&manifest, original).unwrap();
+        complete_template_install(
+            root.path().to_str().unwrap(),
+            None::<fn() -> Result<(), String>>,
+        )
+        .await
+        .unwrap();
+        let refreshed = std::fs::read_to_string(manifest).unwrap();
+        assert_ne!(refreshed, original);
+        assert!(!refreshed.contains("stale: deadbeef"));
+    }
 
     #[test]
     fn classifies_http_status_failures_with_a_specific_category_and_kind() {
@@ -2993,5 +3180,51 @@ mod api_free_release_fallback_tests {
             "https://github.com/indigoai-us/hq-core/archive/refs/tags/v15.0.120.tar.gz"
         );
         assert!(!u.contains("api.github.com"));
+    }
+}
+
+#[cfg(test)]
+mod seed_inventory_tests {
+    use super::*;
+    fn template() -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let bytes = b"approved template bytes";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "wrapper/core/seed.txt", &bytes[..])
+            .unwrap();
+        archive.into_inner().unwrap().finish().unwrap()
+    }
+    #[test]
+    fn seed_inventory_accepts_complete_template_and_holds_partial() {
+        let root = tempfile::tempdir().unwrap();
+        let bytes = template();
+        assert!(verify_seed_template_inventory(&bytes, root.path()).is_err());
+        std::fs::create_dir(root.path().join("core")).unwrap();
+        std::fs::write(root.path().join("core/seed.txt"), "approved template bytes").unwrap();
+        verify_seed_template_inventory(&bytes, root.path()).unwrap();
+    }
+    #[test]
+    fn seed_inventory_preserves_changed_and_extra_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let bytes = template();
+        std::fs::create_dir(root.path().join("core")).unwrap();
+        std::fs::write(root.path().join("core/seed.txt"), "changed bytes").unwrap();
+        assert!(verify_seed_template_inventory(&bytes, root.path()).is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("core/seed.txt")).unwrap(),
+            "changed bytes"
+        );
+        std::fs::write(root.path().join("core/seed.txt"), "approved template bytes").unwrap();
+        std::fs::write(root.path().join("unknown.txt"), "keep me").unwrap();
+        assert!(verify_seed_template_inventory(&bytes, root.path()).is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("unknown.txt")).unwrap(),
+            "keep me"
+        );
     }
 }

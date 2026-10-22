@@ -238,7 +238,11 @@ fn seeding_follows_the_record_and_never_repeats() {
         seed_decision_with(true, &s(&root), &fx.state),
         Ok(SeedDecision::Seed)
     );
-    mark_seeded(&fx.state, &s(&root));
+    SeedFence::for_root(&fx.state, &s(&root))
+        .unwrap()
+        .begin()
+        .unwrap();
+    mark_seeded(&fx.state, &s(&root)).unwrap();
     assert_eq!(
         seed_decision_with(true, &s(&root), &fx.state),
         Ok(SeedDecision::KeepExisting)
@@ -467,7 +471,11 @@ fn launch_holds_personal_sync_until_the_owner_is_confirmed() {
     let fake = FakeWrapper::new(vec![inspect("new_root"), initialized(&s(&root))]);
     prepare_with(&PersonalProjectionClient::new(&fake), &s(&root), &fx.state);
     std::fs::create_dir_all(&root).unwrap();
-    mark_seeded(&fx.state, &s(&root));
+    SeedFence::for_root(&fx.state, &s(&root))
+        .unwrap()
+        .begin()
+        .unwrap();
+    mark_seeded(&fx.state, &s(&root)).unwrap();
     let fake = FakeWrapper::new(vec![inspect_owner("p1")]);
     assert!(launch_check_with(
         &PersonalProjectionClient::new(&fake),
@@ -837,8 +845,12 @@ mod artifact {
             seed_decision_with(true, &s(&root), &state),
             Ok(SeedDecision::Seed)
         );
+        SeedFence::for_root(&state, &s(&root))
+            .unwrap()
+            .begin()
+            .unwrap();
         std::fs::write(root.join("README.md"), "seeded").unwrap();
-        mark_seeded(&state, &s(&root));
+        mark_seeded(&state, &s(&root)).unwrap();
         assert_eq!(
             seed_decision_with(true, &s(&root), &state),
             Ok(SeedDecision::KeepExisting)
@@ -925,4 +937,75 @@ mod artifact {
         assert!(!root.exists());
         assert!(!root.parent().unwrap().exists());
     }
+}
+
+#[test]
+fn seed_boundary_nonempty_initialize_done_is_durable_recovery() {
+    struct Nonempty;
+    impl ProjectionRunner for Nonempty {
+        fn run(&self, action: Action, stdin: &[u8]) -> RunOutput {
+            if action == Action::Inspect {
+                return inspect("new_root");
+            }
+            assert_eq!(action, Action::Initialize);
+            let request: serde_json::Value = serde_json::from_slice(stdin).unwrap();
+            let root = request["rootPath"].as_str().unwrap();
+            std::fs::create_dir(root).unwrap();
+            std::fs::write(Path::new(root).join("notes.md"), "unknown preserved bytes").unwrap();
+            initialized(root)
+        }
+    }
+    let fx = Fixture::new();
+    let root = fx.root("nonempty");
+    let view = prepare_with(
+        &PersonalProjectionClient::new(Nonempty),
+        &s(&root),
+        &fx.state,
+    );
+    assert_eq!(view.reason.as_deref(), Some("seed_recovery_required"));
+    assert!(!personal_sync_permitted(Some(&view), &root));
+    assert!(seed_decision_with(true, &s(&root), &fx.state).is_err());
+    assert_eq!(
+        std::fs::read_to_string(root.join("notes.md")).unwrap(),
+        "unknown preserved bytes"
+    );
+    assert_eq!(read_record(&fx.state).unwrap().reason, view.reason);
+}
+#[test]
+fn seed_boundary_arrival_during_download_refuses_first_write() {
+    let (fx, root) = initialized_fixture();
+    let fence = SeedFence::for_root(&fx.state, &s(&root)).unwrap();
+    std::fs::write(root.join("notes.md"), "arrived during download").unwrap();
+    assert!(fence.begin().is_err());
+    assert!(!personal_sync_permitted(
+        read_record(&fx.state).as_ref(),
+        &root
+    ));
+    assert_eq!(
+        std::fs::read_to_string(root.join("notes.md")).unwrap(),
+        "arrived during download"
+    );
+}
+#[test]
+fn seed_boundary_partial_attempt_stays_held_after_relaunch() {
+    let (fx, root) = initialized_fixture();
+    assert!(!personal_sync_permitted(
+        read_record(&fx.state).as_ref(),
+        &root
+    ));
+    SeedFence::for_root(&fx.state, &s(&root))
+        .unwrap()
+        .begin()
+        .unwrap();
+    std::fs::write(root.join("partial.md"), "own partial bytes").unwrap();
+    let fake = FakeWrapper::new(vec![inspect_owner("p1")]);
+    let view = prepare_with(&PersonalProjectionClient::new(&fake), &s(&root), &fx.state);
+    assert_eq!(view.phase, RootPhase::SeedInProgress);
+    assert_eq!(view.reason.as_deref(), Some("seed_recovery_required"));
+    assert!(seed_decision_with(true, &s(&root), &fx.state).is_err());
+    assert!(!personal_sync_permitted(Some(&view), &root));
+    assert_eq!(
+        std::fs::read_to_string(root.join("partial.md")).unwrap(),
+        "own partial bytes"
+    );
 }

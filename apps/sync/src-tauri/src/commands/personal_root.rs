@@ -91,6 +91,8 @@ pub(crate) enum RootPhase {
     InitializePending,
     /// `initialize` created the root; the first seed may run.
     Initialized,
+    /// A durable seed intent exists. Interrupted attempts require recovery, never blind reseeding.
+    SeedInProgress,
     /// The first seed finished. Later runs never re-extract the template.
     Seeded,
     /// `inspect` matched the current account. Not a lease, not a seed permit.
@@ -125,6 +127,7 @@ impl RootPhase {
             self,
             RootPhase::InitializePending
                 | RootPhase::Initialized
+                | RootPhase::SeedInProgress
                 | RootPhase::Seeded
                 | RootPhase::OwnerObserved
                 | RootPhase::ResumeAuthorized
@@ -237,7 +240,12 @@ pub(crate) fn write_record(state_dir: &Path, record: &RootRecord) -> Result<(), 
             .map_err(|e| format!("could not write the personal root record: {e}"))?;
     }
     std::fs::rename(&tmp, &target)
-        .map_err(|e| format!("could not save the personal root record: {e}"))
+        .map_err(|e| format!("could not save the personal root record: {e}"))?;
+    #[cfg(unix)]
+    std::fs::File::open(state_dir)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| format!("could not persist the personal root record: {e}"))?;
+    Ok(())
 }
 
 /// Typed name for a pause, for the record and the UI.
@@ -416,10 +424,18 @@ fn initialize_new_root<R: ProjectionRunner>(
         return RootRecord::paused(root, "state_unreadable", false);
     }
     match client.initialize(root_str) {
-        Outcome::Done(initialized) => persist(
-            state_dir,
-            initialized_record(root, initialized.projection_id),
-        ),
+        Outcome::Done(initialized) => {
+            if hq_desktop_core::seed_admission::require_empty(root).is_err() {
+                return persist(
+                    state_dir,
+                    with_reason(&pending, "seed_recovery_required", false),
+                );
+            }
+            persist(
+                state_dir,
+                initialized_record(root, initialized.projection_id),
+            )
+        }
         Outcome::Paused(pause) if pause.requires_adoption() => {
             persist(state_dir, RootRecord::new(root, RootPhase::AdoptionReview))
         }
@@ -442,10 +458,20 @@ fn owner_observed(
         // Our initialize committed but its result was lost. An empty root is
         // exactly what initialize leaves, so the first seed may still run.
         // Anything else in it is recovery, never a silent seed.
+        Some(record)
+            if record.reason.as_deref() == Some("seed_recovery_required")
+                || record.phase == RootPhase::SeedInProgress =>
+        {
+            with_reason(record, "seed_recovery_required", false)
+        }
         Some(record) if record.phase == RootPhase::InitializePending => match projection_id {
             Some(id) if root_is_empty(root) => persist(state_dir, initialized_record(root, id)),
             _ => with_reason(record, "state_changed", false),
         },
+        Some(record) if record.phase == RootPhase::Initialized && !root_is_empty(root) => persist(
+            state_dir,
+            with_reason(record, "seed_recovery_required", false),
+        ),
         // Our own root. A different projection than the recorded one is
         // recovery, never a silent reseed.
         Some(record)
@@ -665,6 +691,10 @@ pub(crate) fn seed_decision_with(
     match record.phase {
         RootPhase::Initialized => {
             check_recorded_identity(&record, &root)?;
+            if record.reason.is_some() {
+                return Err(seed_refused());
+            }
+            hq_desktop_core::seed_admission::require_empty(&root)?;
             Ok(SeedDecision::Seed)
         }
         RootPhase::Seeded | RootPhase::OwnerObserved | RootPhase::ResumeAuthorized => {
@@ -697,6 +727,7 @@ fn check_recorded_identity(record: &RootRecord, root: &Path) -> Result<(), Strin
 /// exactly the root this Desktop initialized.
 pub(crate) struct SeedFence {
     root: PathBuf,
+    state_dir: PathBuf,
     record: RootRecord,
 }
 
@@ -707,7 +738,11 @@ impl SeedFence {
         if record.phase != RootPhase::Initialized || record.root_path != root.to_string_lossy() {
             return Err(seed_refused());
         }
-        Ok(Self { root, record })
+        Ok(Self {
+            root,
+            state_dir: state_dir.to_path_buf(),
+            record,
+        })
     }
 
     /// Cheap per-write check: same folder (device and inode), not a symlink.
@@ -737,10 +772,54 @@ impl SeedFence {
         }
     }
 
+    /// Persist before the first root write. A crash never turns partial bytes into a fresh seed.
+    pub(crate) fn begin(&self) -> Result<(), String> {
+        self.check()?;
+        hq_desktop_core::seed_admission::require_empty(&self.root)?;
+        let current = read_record(&self.state_dir).ok_or_else(seed_refused)?;
+        if current.phase != RootPhase::Initialized
+            || current.reason.is_some()
+            || current.root_path != self.record.root_path
+            || current.projection_id != self.record.projection_id
+        {
+            return Err(seed_refused());
+        }
+        // One create-only durable attempt marker serializes first-seed publishers.
+        // It is never removed to retry an interrupted attempt; recovery must review it.
+        use std::io::Write;
+        let mut attempt = std::fs::OpenOptions::new().write(true).create_new(true)
+            .open(self.state_dir.join("personal-root-seed-started.json"))
+            .map_err(|_| "A first-seed attempt already exists or cannot be recorded. Recovery review is required.".to_string())?;
+        attempt
+            .write_all(
+                serde_json::to_string(&current)
+                    .map_err(|e| e.to_string())?
+                    .as_bytes(),
+            )
+            .and_then(|_| attempt.sync_all())
+            .map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        std::fs::File::open(&self.state_dir)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|e| e.to_string())?;
+        let mut pending = current;
+        pending.phase = RootPhase::SeedInProgress;
+        pending.reason = Some("seed_recovery_required".into());
+        write_record(&self.state_dir, &pending)?;
+        self.check()?;
+        hq_desktop_core::seed_admission::require_empty(&self.root)
+    }
+
+    pub(crate) fn complete(&self) -> Result<(), String> {
+        self.check()?;
+        mark_seeded(&self.state_dir, &self.record.root_path)
+    }
+
     /// Production revalidation through the pinned wrapper.
     pub(crate) async fn revalidate(&self) -> Result<(), String> {
         let fence = SeedFence {
             root: self.root.clone(),
+            state_dir: self.state_dir.clone(),
             record: self.record.clone(),
         };
         match with_client(move |client| fence.revalidate_with(client)).await? {
@@ -755,15 +834,15 @@ fn personal_root_reason_message(reason: &str) -> String {
 }
 
 /// Record that the first seed finished, so no later run re-extracts.
-pub(crate) fn mark_seeded(state_dir: &Path, root: &str) {
-    if let Some(mut record) = read_record(state_dir) {
-        if record.phase == RootPhase::Initialized && record.root_path == root {
-            record.phase = RootPhase::Seeded;
-            if let Err(error) = write_record(state_dir, &record) {
-                log("personal-root", &error);
-            }
-        }
+pub(crate) fn mark_seeded(state_dir: &Path, root: &str) -> Result<(), String> {
+    let mut record = read_record(state_dir).ok_or_else(seed_refused)?;
+    if record.phase != RootPhase::SeedInProgress || record.root_path != root {
+        return Err(seed_refused());
     }
+    check_recorded_identity(&record, Path::new(root))?;
+    record.phase = RootPhase::Seeded;
+    record.reason = None;
+    write_record(state_dir, &record)
 }
 
 /// Whether personal sync may run for the current root. Company sync is never
@@ -774,10 +853,7 @@ pub(crate) fn personal_sync_permitted(record: Option<&RootRecord>, root: &Path) 
             && record.root_path == root.to_string_lossy()
             && matches!(
                 record.phase,
-                RootPhase::Initialized
-                    | RootPhase::Seeded
-                    | RootPhase::OwnerObserved
-                    | RootPhase::ResumeAuthorized
+                RootPhase::Seeded | RootPhase::OwnerObserved | RootPhase::ResumeAuthorized
             )
     })
 }

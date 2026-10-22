@@ -62,7 +62,7 @@ describe('personal root (H8, gated)', () => {
     for (const phase of ['legacy', 'initialized', 'seeded', 'owner_observed', 'resume_authorized'] as const) {
       expect(personalRootAllowsSetup({ ...base, phase })).toBe(true);
     }
-    for (const phase of ['adoption_review', 'preserved', 'adopted', 'baseline_ready', 'paused'] as const) {
+    for (const phase of ['seed_in_progress', 'adoption_review', 'preserved', 'adopted', 'baseline_ready', 'paused'] as const) {
       expect(personalRootAllowsSetup({ ...base, phase })).toBe(false);
     }
     // A typed pause shown over an otherwise ready phase still stops setup.

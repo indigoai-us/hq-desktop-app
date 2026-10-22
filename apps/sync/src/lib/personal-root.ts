@@ -9,6 +9,7 @@ export type PersonalRootPhase =
   | 'legacy'
   | 'initialize_pending'
   | 'initialized'
+  | 'seed_in_progress'
   | 'seeded'
   | 'owner_observed'
   | 'adoption_review'
@@ -127,6 +128,7 @@ const REASON_TEXT: Record<string, string> = {
   authority_unavailable:
     'HQ cannot reach your HQ account right now. Check your connection, then try again.',
   state_unreadable: 'HQ could not read its records for this folder. Your files are untouched.',
+  seed_recovery_required: 'HQ stopped during the first setup of this folder. Your files are preserved. Personal sync stays off; review recovery before continuing. HQ will not retry or replace these files automatically.',
   state_changed:
     'The folder or HQ’s records changed while HQ was working. Your files are untouched. Review the folder again.',
   root_replaced: 'This folder was moved or replaced. Your files are untouched.',
