@@ -825,3 +825,31 @@ describe("CoreUsagePanel bar with a card on file", () => {
     expect(q("core-usage-used")?.dataset.tone).toBe("ok");
   });
 });
+
+describe("CoreUsagePanel: usage pricing switch (US-026)", () => {
+  const SWITCH = { enabled: true, switchDate: "2026-12-19T00:00:00.000Z", previewDays: 30, previewEndsAt: "2027-01-18T00:00:00.000Z" };
+
+  it("a legacy payer sees the switch date next to today's price and the estimate", async () => {
+    await render(
+      source({
+        getBillingSummary: vi.fn(async () => ok({ plan: "team", subscriptionStatus: "active", cardOnFile: true })),
+        getUsageSwitch: vi.fn(async () => ok({ ...SWITCH, phase: "scheduled", todayMonthlyCents: 5000, estimateCents: 1240, estimateComplete: false })),
+      }),
+    );
+    expect(q("core-usage-switch")?.dataset.phase).toBe("scheduled");
+    expect(q("core-usage-switch-headline")?.textContent?.trim()).toBe("Moves to usage pricing on 19 December 2026");
+    expect(q("core-usage-switch-compare")?.textContent?.trim()).toBe("Today $50.00 a month · On usage at least $12.40 a month");
+  });
+
+  it("a switched company sees the 30-day would-be bill preview", async () => {
+    await render(source({ getUsageSwitch: vi.fn(async () => ok({ ...SWITCH, phase: "preview", estimateCents: null })) }));
+    expect(q("core-usage-switch")?.dataset.phase).toBe("preview");
+    expect(q("core-usage-switch-headline")?.textContent?.trim()).toBe("Usage pricing preview until 18 January 2027");
+    expect(q("core-usage-switch-compare")?.textContent?.trim()).toBe("Your bill so far would be $0.00");
+  });
+
+  it("no switch shows nothing", async () => {
+    await render(source({ getUsageSwitch: vi.fn(async () => ok({ ...SWITCH, phase: "usage" })) }));
+    expect(q("core-usage-switch")).toBeNull();
+  });
+});
