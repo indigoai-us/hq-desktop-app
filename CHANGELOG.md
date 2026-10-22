@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Company Outpost: an owner or admin can sign a company box in to Claude from the box detail. The card shows when the sign-in link expires, replaces an expired or lost link, and takes the verification code in the card. Members see whether the box is signed in, and cannot make a new link or enter a code. If a company cannot have an Outpost yet, the card says so and offers a Contact us link instead of the sign-in steps.
 - Files: a Markdown table with many columns no longer gets squeezed into the reading column with words split across lines. Wide tables now scroll sideways in their own box while the text around them keeps its width. Words stay whole, short cells stay on one line, and a long cell such as a Notes column wraps between words. This applies to notes in Files, the file preview, and company brain documents, in light and dark themes.
 - Sign-in: while HQ finishes a website sign-in in the browser, Google and Microsoft stay on the screen. Choosing one cancels that attempt and starts the provider you picked. If the website sign-in does not finish, HQ returns to those buttons after about 90 seconds instead of waiting 5 minutes. When the website finishes near the end of that wait, you still get the full time to answer "Continue as …". Choosing Google or Microsoft while "Continue as …" is showing closes it and starts the provider you picked.
 - First-launch sign-in lets the website reuse your previous sign-in provider.
