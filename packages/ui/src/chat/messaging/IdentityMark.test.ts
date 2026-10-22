@@ -172,3 +172,27 @@ describe("IdentityMark avatar", () => {
     expect(host.querySelector(".presence")).toBeNull();
   });
 });
+
+// Moved from apps/sync/src/components/messaging/IdentityMark.test.ts when the
+// desktop copy of IdentityMark was removed in favour of this one.
+describe("IdentityMark non-person kinds", () => {
+  it("draws two stacked monograms for a group DM, without photo tiles", () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(IdentityMark, {
+      target: host,
+      props: { kind: "group", members: ["Jacob Patel", "Alan Turing"] },
+    });
+    expect(host.querySelectorAll('[data-kind="group"] .stack > span')).toHaveLength(2);
+  });
+
+  it("draws a lock for a private channel", () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(IdentityMark, {
+      target: host,
+      props: { kind: "channel", privateChannel: true },
+    });
+    expect(host.querySelector('[data-kind="channel"] .channel-lock')).not.toBeNull();
+  });
+});

@@ -12,9 +12,6 @@
 /** Production HQ console host. */
 export const HQ_CONSOLE_BASE = "https://hq.computer";
 
-/** @deprecated Use HQ_CONSOLE_BASE — console.getindigo.ai is the old host. */
-export const LEGACY_INDIGO_CONSOLE_BASE = "https://console.getindigo.ai";
-
 /**
  * A company's console home. The console namespaces every company surface under
  * `/companies/{slug}` (Next.js route `src/app/(shell)/companies/[slug]`), so the

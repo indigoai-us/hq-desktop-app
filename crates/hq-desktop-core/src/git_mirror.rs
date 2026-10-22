@@ -5485,14 +5485,75 @@ fn git_output_with_lock_tracking(
 thread_local! {
     static TEST_GIT_PROGRAM: std::cell::RefCell<Option<PathBuf>> =
         const { std::cell::RefCell::new(None) };
+    static TEST_GIT_SEARCH_PATH: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
 }
 
-fn git_program() -> std::ffi::OsString {
+/// The git a mirror command runs, with the environment it needs and the
+/// child PATH to give it. A bare `git` would be looked up on the app's PATH,
+/// where `/usr/bin/git` can be Apple's install-prompt stub, so the program is
+/// resolved through [`paths::resolve_git_program_in`] and the stub is refused
+/// before anything is spawned.
+struct GitSpawn {
+    program: std::ffi::OsString,
+    env: Vec<(String, String)>,
+    path: Option<String>,
+}
+
+#[cfg(not(target_os = "windows"))]
+fn git_spawn_in(home: Option<&Path>, path: String, stubs_active: bool) -> Result<GitSpawn, String> {
+    let resolved = match home {
+        Some(home) => paths::resolve_git_program_in(home, &path, stubs_active),
+        None => paths::resolve_git_on_path(&path, stubs_active, None),
+    }
+    .map_err(|error| format!("spawn git: {error}"))?;
+    let env = home
+        .map(|home| paths::managed_git_env_for_resolved_bin_in(home, &resolved))
+        .unwrap_or_default();
+    Ok(GitSpawn {
+        program: resolved.into_os_string(),
+        env,
+        path: Some(path),
+    })
+}
+
+fn git_spawn() -> Result<GitSpawn, String> {
     #[cfg(test)]
     if let Some(program) = TEST_GIT_PROGRAM.with(|program| program.borrow().clone()) {
-        return program.into_os_string();
+        return Ok(GitSpawn {
+            program: program.into_os_string(),
+            env: Vec::new(),
+            path: None,
+        });
     }
-    "git".into()
+    #[cfg(target_os = "windows")]
+    {
+        Ok(GitSpawn {
+            program: "git".into(),
+            env: Vec::new(),
+            path: None,
+        })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Unit tests swap HOME under a mutex in other modules; resolving
+        // against the inherited PATH alone keeps the many mirror tests that
+        // run in parallel off a fixture home's fake git.
+        #[cfg(test)]
+        return git_spawn_in(
+            None,
+            TEST_GIT_SEARCH_PATH
+                .with(|path| path.borrow().clone())
+                .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default()),
+            paths::apple_tool_stubs_active(),
+        );
+        #[cfg(not(test))]
+        return git_spawn_in(
+            paths::home_dir().as_deref(),
+            paths::child_path(),
+            paths::apple_tool_stubs_active(),
+        );
+    }
 }
 
 fn git_output_inner(
@@ -5502,8 +5563,13 @@ fn git_output_inner(
     tracked_lock: Option<(&Path, bool)>,
     killed_lock: &mut Option<IndexLockIdentity>,
 ) -> Result<Output, String> {
-    let mut cmd = Command::new(git_program());
+    let git = git_spawn()?;
+    let mut cmd = Command::new(&git.program);
     paths::no_window(&mut cmd);
+    cmd.envs(git.env);
+    if let Some(path) = git.path {
+        cmd.env("PATH", path);
+    }
     cmd.arg("-C")
         .arg(cwd)
         .args(args)
@@ -14493,6 +14559,50 @@ mod tests {
         assert!(result.unwrap_err().contains("timed out"));
         assert!(!lock_path.exists(), "HQ's killed writer left index.lock behind");
         git_ok(repo.path(), &["add", "-A"]);
+    }
+
+    // ── Mirror git never runs Apple's install-prompt stub ────────────────
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn mirror_git_refuses_the_usr_bin_stub_without_spawning_it() {
+        let repo = TempDir::new().unwrap();
+        let _stubs = paths::AppleToolStubsOverride::set(true);
+        // Only /usr/bin: Linux runners also carry a real git in /bin, which
+        // the resolver would rightly pick, while on a Mac /bin has no git.
+        TEST_GIT_SEARCH_PATH.with(|path| *path.borrow_mut() = Some("/usr/bin".into()));
+        let result = run_git(
+            repo.path().to_str().unwrap(),
+            &["--version"],
+            Duration::from_secs(5),
+        );
+        TEST_GIT_SEARCH_PATH.with(|path| *path.borrow_mut() = None);
+        assert_eq!(
+            result.unwrap_err(),
+            format!("spawn git: {}", paths::MANAGED_GIT_MISSING)
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn mirror_git_prefers_managed_git_and_gives_it_the_child_path() {
+        let home = TempDir::new().unwrap();
+        let shim = paths::managed_git_shim_dir_in(home.path()).join("git");
+        fs::create_dir_all(shim.parent().unwrap()).unwrap();
+        fs::write(&shim, "#!/bin/sh\nexit 0\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let spawn = git_spawn_in(Some(home.path()), "/usr/bin:/bin".into(), true).unwrap();
+        assert_eq!(Path::new(&spawn.program), shim);
+        assert_eq!(spawn.path.as_deref(), Some("/usr/bin:/bin"));
+
+        let empty = TempDir::new().unwrap();
+        assert_eq!(
+            git_spawn_in(Some(empty.path()), "/usr/bin".into(), true).err(),
+            Some(format!("spawn git: {}", paths::MANAGED_GIT_MISSING))
+        );
     }
 
     // ── B7: mirror commits are never gpg-signed ──────────────────────────

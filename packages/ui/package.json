@@ -13,6 +13,7 @@
     "./link-preview": "./src/common/linkPreview.ts",
     "./visible-interval": "./src/common/visible-interval.ts",
     "./link-titles": "./src/common/linkTitles.ts",
+    "./link-github": "./src/common/linkGithub.ts",
     "./meetings/past-meetings": "./src/meetings/past-meetings.ts",
     "./emoji-shortcodes": {
       "svelte": "./src/common/emojiShortcodes.ts",

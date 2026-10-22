@@ -11,6 +11,7 @@
   import MeetingsWindow from '../src/components/MeetingsWindow.svelte';
   import MeetingsShot from './MeetingsShot.svelte';
   import AccessShot from './AccessShot.svelte';
+  import CustomDomainShot from './CustomDomainShot.svelte';
   import BriefDesignStage from './BriefDesignStage.svelte';
   import ActivityShot from './ActivityShot.svelte';
   import RepairCardsShot from './RepairCardsShot.svelte';
@@ -25,6 +26,7 @@
   import GlobalErrorPreview from './GlobalErrorPreview.svelte';
   import ForwardPickerPreview from './ForwardPickerPreview.svelte';
   import ShareStackPreview from './ShareStackPreview.svelte';
+  import LinkCardPreview from './LinkCardPreview.svelte';
   import ClaudeCodePreview from './ClaudeCodePreview.svelte';
   import BotManagementPreview from './BotManagementPreview.svelte';
   import BotIntegrationsPreview from './BotIntegrationsPreview.svelte';
@@ -309,6 +311,8 @@
   <MeetingsShot />
 {:else if view === 'access-shot'}
   <AccessShot />
+{:else if view === 'custom-domain-shot'}
+  <CustomDomainShot />
 {:else if view === 'activity-shot'}
   <ActivityShot />
 {:else if view === 'repair-cards'}
@@ -382,6 +386,9 @@
   <SignInPrompt reauth={true} />
 {:else if view === 'share-stack'}
   <ShareStackPreview />
+{:else if view === 'link-card'}
+  <!-- Chat link hovercards for GitHub PRs and issues. Hover a link. -->
+  <LinkCardPreview />
 {:else if view === 'conversation'}
   <!-- The shared messaging Conversation (desktop Messages styling via
        data-window='messages'). Hover a bubble to reveal the copy-message

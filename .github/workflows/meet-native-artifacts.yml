@@ -2,6 +2,13 @@ name: Meet native test artifacts (no publication)
 
 # Initial validation is restricted to this feature branch and workflow changes.
 # No release, tag, updater, or announcement is created.
+# Runner variables (repo-level Actions variables; docs/ci/self-hosted-runners.md).
+# Every job reads its runs-on from one of these. Unset means the current hosted
+# label, so nothing queues on a pool that does not exist yet:
+#   HQ_DESKTOP_RUNNER_WINDOWS        ["self-hosted","Windows","X64","hq-windows"]         default "windows-latest"
+# Set a variable to the JSON array (or a JSON string label) to move every job
+# that reads it. Job names, and so required check names, do not change.
+
 on:
   push:
     branches: [codex/hq-meet-desktop-integration]
@@ -14,7 +21,7 @@ permissions:
 jobs:
   windows-test-package:
     name: Signed Windows x64 test package
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_WINDOWS || '"windows-latest"') }}
     timeout-minutes: 60
     permissions:
       contents: read
@@ -53,7 +60,10 @@ jobs:
         with:
           toolchain: stable
           targets: x86_64-pc-windows-msvc
+      # Self-hosted runners keep target/ between runs; restoring it from the
+      # Actions cache there only costs download time.
       - uses: Swatinem/rust-cache@v2
+        if: ${{ runner.environment == 'github-hosted' }}
         with:
           workspaces: apps/sync/src-tauri
           shared-key: meet-native-test-x64

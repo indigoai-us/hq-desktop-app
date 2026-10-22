@@ -172,6 +172,13 @@ pub(crate) fn resolve_gh_token() -> Option<String> {
     // 2. Fallback: parse oauth_token for github.com out of hosts.yml. Covers
     //    setups where `gh` isn't on the Tauri app's minimal PATH but the
     //    config file is present.
+    gh_token_from_hosts_file()
+}
+
+/// The github.com `oauth_token` from `~/.config/gh/hosts.yml`, if present.
+/// Crate-public so `link_github` can run `gh auth token` with its own timeout
+/// and still use the same file fallback.
+pub(crate) fn gh_token_from_hosts_file() -> Option<String> {
     let hosts = dirs::home_dir()?
         .join(".config")
         .join("gh")
@@ -564,7 +571,35 @@ pub(crate) fn rescue_git_version_is_supported(version: &str) -> Option<bool> {
 }
 
 pub(crate) async fn rescue_git_version_on_path(path: &str) -> Option<String> {
-    let output = tokio::process::Command::new("git")
+    #[cfg(not(target_os = "windows"))]
+    {
+        let guard = paths::home_dir().map(|home| paths::apple_tool_guard_dir_in(&home));
+        rescue_git_version_on_path_with(path, paths::apple_tool_stubs_active(), guard.as_deref())
+            .await
+    }
+    #[cfg(target_os = "windows")]
+    rescue_git_version_for_program("git", path).await
+}
+
+/// Probe the git `path` would run. The program is resolved first so Apple's
+/// install-prompt stub, and HQ's guard in front of it, are never run; with no
+/// usable git the probe reports nothing and the rescue fails on its own git
+/// call with the existing missing-git message.
+#[cfg(not(target_os = "windows"))]
+pub(crate) async fn rescue_git_version_on_path_with(
+    path: &str,
+    stubs_active: bool,
+    guard_dir: Option<&Path>,
+) -> Option<String> {
+    let git = paths::resolve_git_on_path(path, stubs_active, guard_dir).ok()?;
+    rescue_git_version_for_program(git.as_os_str(), path).await
+}
+
+async fn rescue_git_version_for_program(
+    program: impl AsRef<std::ffi::OsStr>,
+    path: &str,
+) -> Option<String> {
+    let output = tokio::process::Command::new(program)
         .arg("--version")
         .env("PATH", path)
         .stdin(std::process::Stdio::null())
@@ -1130,6 +1165,39 @@ pub(crate) fn tail_log(path: &std::path::Path, n_lines: usize) -> Result<String,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_os = "windows"))]
+    fn write_fake_git(dir: &Path, version_line: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(dir).unwrap();
+        let git = dir.join("git");
+        std::fs::write(&git, format!("#!/bin/sh\necho '{version_line}'\n")).unwrap();
+        std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn rescue_git_probe_never_runs_the_usr_bin_stub_when_stubs_are_live() {
+        assert_eq!(
+            rescue_git_version_on_path_with("/usr/bin:/bin", true, None).await,
+            None
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn rescue_git_probe_skips_the_guard_and_reads_the_next_git_on_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let guard = tmp.path().join("guard");
+        let brew = tmp.path().join("brew");
+        write_fake_git(&guard, "guard must not run");
+        write_fake_git(&brew, "git version 2.15.0");
+        let path = format!("{}:{}:/usr/bin", guard.display(), brew.display());
+        assert_eq!(
+            rescue_git_version_on_path_with(&path, true, Some(&guard)).await,
+            Some("2.15.0".to_string())
+        );
+    }
 
     #[test]
     fn rescue_git_preflight_checks_and_reports_the_minimum_version() {
