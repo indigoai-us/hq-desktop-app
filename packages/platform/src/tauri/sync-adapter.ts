@@ -6,6 +6,7 @@
  * must not grow a second fetch stack.
  */
 
+import { creatorAvatarBody } from '../creator-avatar-body.js';
 import { createPersonalAppsBridge, personalAppsBridgeUrl } from "../personal-apps-bridge.js";
 import { createPersonalAppsApi, type PersonalAppLocalCallback } from "../personal-apps.js";
 import {
@@ -39,11 +40,11 @@ import {
   normalizeNotificationsFeed,
   ok,
   unavailable,
+  withoutSecret,
   validateFetchReplyThread,
   validateSendReply,
   vaultPutIntegrityFields,
   withHttpStatus,
-  withoutSecret,
   localIanaZone,
 } from '../adapter.js';
 import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
@@ -212,6 +213,9 @@ function asChannelSummary(row: Json): ChannelSummary {
     ...(typeof unread === 'number' ? { unreadCount: unread } : {}),
   };
 }
+
+/** Server cap on a creator avatar upload (POST /v1/creators/me/avatar). */
+export { imageContentType } from '../creator-avatar-body.js';
 
 function invokeError(err: unknown): ReturnType<typeof failure> {
   return failure(
@@ -569,6 +573,19 @@ export function createSyncPlatformAdapter(
   ): AdapterPromise<T> {
     const attempted = await hqProAttemptWithRetries<T>(method, path, body);
     // A reply that was not JSON is not the server refusing: it keeps no status.
+    if (!attempted.result.ok && attempted.result.code === 'network') {
+      return attempted.result;
+    }
+    return withHttpStatus(attempted.result, attempted.status);
+  }
+
+  /**
+   * One POST with the HTTP status on a failure and no 429/503 retry. For a
+   * write that must not be repeated, such as a single-use sign-in code: a
+   * retry after the server consumed it would come back as a rejection.
+   */
+  async function hqProPostOnceWithStatus<T>(path: string, body?: unknown): AdapterPromise<T> {
+    const attempted = await hqProAttempt<T>('POST', path, body);
     if (!attempted.result.ok && attempted.result.code === 'network') {
       return attempted.result;
     }
@@ -1231,15 +1248,13 @@ export function createSyncPlatformAdapter(
           tipUrl: typeof profile.tipUrl === 'string' ? profile.tipUrl : null,
         });
       },
-      uploadCreatorAvatar: (filePath) =>
-        typeof filePath === 'string'
-          ? call('upload_creator_avatar', { filePath })
-          : Promise.resolve(
-              failure(
-                'invalid-argument',
-                'Sync avatar uploads require a file path.',
-              ),
-            ),
+      uploadCreatorAvatar: (data) => {
+        if (typeof data === 'string') return call('upload_creator_avatar', { filePath: data });
+        // Cropped photos arrive as bytes; same route and body the native command posts.
+        const avatar = creatorAvatarBody(data);
+        if (!avatar.ok) return Promise.resolve(failure('invalid-argument', avatar.message));
+        return hqProJson('POST', WEB_PATHS.creatorAvatar, avatar.body);
+      },
       requestCreatorAccess: (payload) => {
         const request = asRecord(payload) ?? {};
         return call('request_creator_access', {
@@ -1353,6 +1368,14 @@ export function createSyncPlatformAdapter(
         call('list_local_sessions', { from: range.from, to: range.to, offset: page?.offset ?? 0, limit: page?.limit ?? 50 }),
       getMyOutpostStatus: () => hqProJson('POST', OUTPOST_PATHS.status, {}),
       listMyOutpostJobs: () => hqProJson('GET', OUTPOST_PATHS.jobsStatus),
+      companyOutpostSignIn: (body) => {
+        const sent = typeof body.code === 'string' ? body.code : '';
+        // The code action is single-use, so it is sent once and never retried.
+        const request = body.action === 'code'
+          ? hqProPostOnceWithStatus<Json>(OUTPOST_PATHS.companySignIn, body)
+          : hqProRequestWithStatus<Json>('POST', OUTPOST_PATHS.companySignIn, body);
+        return sent ? request.then((result) => withoutSecret(result, sent)) : request;
+      },
       listMyGoogleAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.googleAccounts),
       listMySlackAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.slackAccounts),
     },
@@ -1412,6 +1435,8 @@ export function createSyncPlatformAdapter(
         }),
       deployAccessRequest: (scope, method, path, body) =>
         call('deploy_access_request', { scope, method, path, body: body ?? null }),
+      deployDomainRequest: (scope, method, path, body) =>
+        call('deploy_domain_request', { scope, method, path, body: body ?? null }),
       getSecrets: (slug) => call('get_company_secrets', { slug }),
       listMembers: (slug) =>
         call('list_company_members', { companyUid: slug }),
@@ -1456,6 +1481,19 @@ export function createSyncPlatformAdapter(
       getUsageStatement: (companyUid) =>
         hqProJson('GET', WEB_PATHS.companyUsageStatement(companyUid)),
       getPricing: () => hqProJson('GET', WEB_PATHS.pricing),
+      getSpendLimit: (companyUid) =>
+        hqProJson('GET', WEB_PATHS.companySpendLimit(companyUid)),
+      getPersonalBillingSummary: () => hqProJson('GET', WEB_PATHS.personalBillingSummary),
+      getPersonalUsageStatement: () => hqProJson('GET', WEB_PATHS.personalUsageStatement),
+      getPersonalSpendLimit: () => hqProJson('GET', WEB_PATHS.personalSpendLimit),
+      createPersonalBillingCheckoutSession: () =>
+        hqProJson<{ url: string }>('POST', WEB_PATHS.personalBillingCheckout, {}),
+      createPersonalBillingPortalSession: () =>
+        hqProJson<{ url: string }>('POST', WEB_PATHS.personalBillingPortal, {}),
+      getUsageSwitch: (companyUid) => hqProJson('GET', WEB_PATHS.companyUsageSwitch(companyUid)),
+      switchToUsagePricing: (companyUid) => hqProJson('POST', WEB_PATHS.usageSwitch, { companyUid }),
+      getPersonalUsageSwitch: () => hqProJson('GET', WEB_PATHS.personalUsageSwitch),
+      switchPersonalToUsagePricing: () => hqProJson('POST', WEB_PATHS.usageSwitch, { scope: 'person' }),
       ensureHomeChannel: async (companyUid) => {
         const res = await call<string>('ensure_company_home_channel', {
           companyUid,

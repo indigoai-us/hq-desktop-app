@@ -889,6 +889,7 @@ fn main() {
             commands::install_stages::start_initial_cloud_sync,
             commands::install_deps::check_dep,
             commands::install_deps::cancel_install,
+            commands::install_deps::installer_runs_active,
             #[cfg(not(windows))]
             commands::install_deps::install_homebrew,
             commands::install_deps::install_node,
@@ -1028,6 +1029,7 @@ fn main() {
             commands::desktop_alt::set_desktop_active_company,
             commands::desktop_alt::get_desktop_active_company,
             commands::cdp_mirror::web_visitor_anon_id,
+            commands::cdp_mirror::web_visitor_plan_hints,
             commands::desktop_alt::get_company_summary,
             commands::desktop_alt::get_company_board,
             commands::desktop_alt::ensure_company_home_channel,
@@ -1043,6 +1045,7 @@ fn main() {
             commands::link_title::link_page_title,
             commands::link_github::link_github_summary,
             commands::desktop_alt::deploy_access_request,
+            commands::desktop_alt::deploy_domain_request,
             commands::desktop_alt::get_company_secrets,
             commands::desktop_alt::get_company_crm_projection_vault,
             commands::desktop_alt::get_company_file_tree,
@@ -1643,6 +1646,10 @@ fn main() {
             // reads Windows ACLs and every Core update exits 23.
             #[cfg(windows)]
             commands::install_deps::setup_cwrsync_fstab_repair();
+            // An HQ-managed MinGit (no Bash) from an earlier install is
+            // upgraded to PortableGit in the background.
+            #[cfg(windows)]
+            commands::install_deps::setup_managed_git_upgrade(app.handle());
             commands::packages::setup_pack_update_checker(app.handle());
             commands::hq_core_state::setup_core_state_checker(app.handle());
 
@@ -1696,6 +1703,9 @@ fn main() {
                     util::logfile::log("recall-sdk", &format!("startup: failed to clear stale recording activity marker: {e}"));
                 }
                 let handle = app.handle().clone();
+                // Restarts the SDK if this launch skipped it or the bridge
+                // exits later; runs regardless of the launch decision below.
+                commands::recall_sdk::setup_recall_sdk_supervisor(handle.clone());
                 tauri::async_runtime::spawn(async move {
                     if !commands::recall_sdk::meeting_detect_eligible().await {
                         util::logfile::log(

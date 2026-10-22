@@ -381,14 +381,19 @@
     kind: "info" | "warn",
     text: string,
     upgradeUrl?: string,
+    consoleAction?: boolean,
   ): void {
     const revision = ++toastRevision;
     const nextToast: ToastDescriptor = {
       kind,
       text,
       ...(upgradeUrl ? { upgradeUrl } : {}),
+      ...(consoleAction ? { consoleAction } : {}),
     };
     toast = nextToast;
+    // The Console prompt stays until dismissed or Console opens, so its
+    // action button is not lost to the short auto-clear timer.
+    if (consoleAction) return;
     setTimeout(() => {
       if (toastRevision === revision) toast = null;
     }, 4000);
@@ -426,7 +431,16 @@
                 onAction: () => void openToastUpgrade(upgradeUrl),
               },
             ]
-          : [],
+          : current.consoleAction
+            ? [
+                {
+                  label: "Open Console",
+                  testId: "meetings-open-console",
+                  primary: true,
+                  onAction: () => void openIntegrationsConsole(),
+                },
+              ]
+            : [],
       });
     });
   });
@@ -454,7 +468,7 @@
   $effect(() => {
     const notice = meetingsStore.connectNotice;
     if (!notice) return;
-    flashToast(notice.kind, notice.text);
+    flashToast(notice.kind, notice.text, undefined, notice.consoleAction);
     meetingsStore.clearConnectNotice();
   });
 

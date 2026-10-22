@@ -791,17 +791,19 @@ pub fn drift_blob_sha(content: &[u8]) -> String {
     git_blob_sha(normalized.as_ref())
 }
 
-/// Compare semantic settings hashes when both exist, otherwise raw blob SHAs.
-pub fn drift_hash_matches_with_raw_fallback(
+/// Compare the local `.claude/settings.json` with the SHA the Core state
+/// check stored for the installed baseline or target tree.
+///
+/// That stored SHA is the env.PATH-stripped hash from
+/// [`drift_blob_sha_for_path`] when the upstream source could be read, or the
+/// raw blob SHA when it could not (see [`normalized_or_raw_drift_sha`]). The
+/// local file matches when either its semantic hash or its raw hash equals it.
+pub fn settings_drift_matches(
     local_raw_sha: &str,
-    upstream_raw_sha: &str,
     local_settings_sha: Option<&str>,
-    upstream_settings_sha: Option<&str>,
+    expected_sha: &str,
 ) -> bool {
-    match (local_settings_sha, upstream_settings_sha) {
-        (Some(local), Some(upstream)) => local == upstream,
-        _ => local_raw_sha == upstream_raw_sha,
-    }
+    local_raw_sha == expected_sha || local_settings_sha == Some(expected_sha)
 }
 
 /// Normalize newlines for drift hashing only.
@@ -977,9 +979,12 @@ mod tests {
     }
 
     #[test]
-    fn settings_comparison_falls_back_to_raw_shas_when_semantic_hash_is_missing() {
-        assert!(drift_hash_matches_with_raw_fallback("same", "same", Some("left"), None));
-        assert!(!drift_hash_matches_with_raw_fallback("local", "upstream", Some("same"), None));
+    fn settings_comparison_accepts_a_semantic_or_raw_match() {
+        assert!(settings_drift_matches("same", Some("left"), "same"));
+        assert!(settings_drift_matches("raw", Some("semantic"), "semantic"));
+        assert!(settings_drift_matches("same", None, "same"));
+        assert!(!settings_drift_matches("raw", None, "semantic"));
+        assert!(!settings_drift_matches("local", Some("other"), "upstream"));
     }
 
     #[test]

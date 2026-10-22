@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ok, unavailable } from "@hq/platform";
 import AccessSection from "./AccessSection.svelte";
 import AccessSectionHarness from "./AccessSectionHarness.test-support.svelte";
-import { accessCache, accessView } from "./access-model.js";
+import { accessCache, accessPrefix, accessView } from "./access-model.js";
 import type { Vault } from "./vault-model.js";
 
 const COMPANY: Vault = { id: "company:acme", kind: "company", label: "Acme", root: "companies/acme", slug: "acme" };
@@ -123,9 +123,52 @@ describe("OWNER-R17 AccessSection", () => {
     const path = `companies/acme/${uniquePath("projects")}`;
     const el = render({ vault: COMPANY, path, isDir: true, companyUid: "cmp_acme", readTree, ongrant });
     await settle();
-    expect(readTree).toHaveBeenCalledWith("cmp_acme", `${path.replace("companies/acme/", "")}/`);
+    expect(readTree).toHaveBeenCalledWith("cmp_acme", `${path.replace("companies/acme/", "")}/*`);
     (el.querySelector("[data-testid='access-grant']") as HTMLButtonElement).click();
     expect(ongrant).toHaveBeenCalledWith(path, true);
+  });
+
+  it("feedback 227937a0: a folder asks for its canonical glob, so its own row is direct, not inherited from itself", async () => {
+    // hq-pro stores folder grants at `<folder>/*` and acl/tree compares the
+    // asked prefix as-is. Asking for `projects/` put the folder's own row in
+    // `inherited` (sourcePrefix `projects/*`) and the panel said the folder
+    // inherits access from itself.
+    expect(accessPrefix(COMPANY, "companies/acme/projects", true)).toBe("projects/*");
+    expect(accessPrefix(COMPANY, "companies/acme/projects/", true)).toBe("projects/*");
+    expect(accessPrefix(COMPANY, "companies/acme/projects/launch-tasks", true)).toBe("projects/launch-tasks/*");
+    expect(accessPrefix(COMPANY, "companies/acme/projects/plan.md", false)).toBe("projects/plan.md");
+    expect(accessPrefix(PERSONAL, "knowledge", true)).toBe("knowledge/*");
+
+    const OWN_ROW_TREE = {
+      prefix: "projects/*",
+      direct: [{ granteeType: "person", granteeId: "prs_AAAAAAAA", permission: "write", grantedBy: "prs_BBBBBBBB", grantedAt: "2026-09-01T00:00:00Z" }],
+      inherited: [{ granteeType: "company-wide", granteeId: "", permission: "read", grantedBy: "prs_BBBBBBBB", grantedAt: "2026-08-01T00:00:00Z", sourcePrefix: "*" }],
+      children: [],
+      directRow: { creatorUid: "prs_BBBBBBBB", open: false, createdAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z" },
+      effectivePermission: "admin",
+      identities,
+    };
+    const readTree = vi.fn(async (_uid: string, prefix: string) => (prefix === "projects/*" ? ok(OWN_ROW_TREE) : unavailable("unexpected-prefix")));
+    const el = render({ vault: COMPANY, path: "companies/acme/projects", isDir: true, companyUid: "cmp_acme", readTree });
+    await settle();
+    expect(readTree).toHaveBeenCalledWith("cmp_acme", "projects/*");
+    const rows = [...el.querySelectorAll("[data-testid='access-row']")].map((r) => r.textContent?.replace(/\s+/g, " ").trim());
+    expect(rows).toContain("Person A a@example.com Read and write granted directly");
+    // Inherits from the vault root, never from the folder itself.
+    expect(el.querySelector("[data-testid='access-inherited']")?.textContent?.replace(/\s+/g, " ").trim()).toBe("Inherits access from Acme");
+  });
+
+  it("feedback 227937a0: a folder with no ACL rows shows default company access, not a failure", async () => {
+    // `hq files acl projects/` says no ACL record exists; acl/tree answers 200
+    // with empty sections. That is the owners-only default, not an error.
+    const EMPTY_TREE = { prefix: "projects/*", direct: [], inherited: [], children: [], directRow: null, effectivePermission: "admin", identities: {}, masking: [], coveringAclPath: null };
+    const readTree = vi.fn(async () => ok(EMPTY_TREE));
+    const el = render({ vault: COMPANY, path: `companies/acme/${uniquePath("projects")}`, isDir: true, companyUid: "cmp_acme", readTree, ongrant: vi.fn() });
+    await settle();
+    expect(el.querySelector("[data-testid='access-failed']")).toBeNull();
+    // With no row on or above the folder the panel states the default (PR 1760).
+    expect(el.querySelector("[data-testid='access-no-record']")?.textContent?.trim()).toBe("Uses the company's default access");
+    expect(el.querySelector("[data-testid='access-grant']")).not.toBeNull();
   });
 
   it("personal vault item that is not shared reads Only you", async () => {
@@ -160,6 +203,54 @@ describe("OWNER-R17 AccessSection", () => {
     await settle();
     expect(el.querySelectorAll("[data-testid='access-row']").length).toBeGreaterThan(0);
     warn.mockRestore();
+  });
+
+  // feedback 227937a0: `hq files acl projects/` printed "No ACL record exists"
+  // for these prefixes. That line is the CLI's own; it prints it when the
+  // 200 tree body below has no row, no inherited and no child grants.
+  const NO_RECORD_TREE = {
+    prefix: "projects/",
+    direct: [],
+    inherited: [],
+    children: [],
+    directRow: null,
+    effectivePermission: "admin",
+    coveringAclPath: null,
+    identities: {},
+    masking: [],
+  };
+
+  it("feedback 227937a0: a folder with no ACL record says it inherits its folder's access, not an owners-only list", async () => {
+    const readTree = vi.fn(async () => ok(NO_RECORD_TREE));
+    const el = render({ vault: COMPANY, path: `${COMPANY.root}/${uniquePath("noacl")}`, isDir: true, companyUid: "cmp_acme", readTree });
+    await settle();
+    expect(el.querySelector("[data-testid='access-failed']")).toBeNull();
+    expect(el.querySelector("[data-testid='access-no-record']")?.textContent).toBe("Uses the company's default access");
+    expect(el.querySelectorAll("[data-testid='access-row']")).toHaveLength(0);
+  });
+
+  it("feedback 227937a0: a subfolder under a parent row with no grants links to that parent", async () => {
+    const readTree = vi.fn(async () => ok({ ...NO_RECORD_TREE, prefix: "projects/launch-tasks/", coveringAclPath: "projects/" }));
+    const el = render({ vault: COMPANY, path: `${COMPANY.root}/${uniquePath("noacl-sub")}`, isDir: true, companyUid: "cmp_acme", readTree });
+    await settle();
+    expect(el.querySelector("[data-testid='access-no-record']")).toBeNull();
+    expect(el.querySelector("[data-testid='access-inherited-link']")?.textContent?.trim()).toBe("projects");
+  });
+
+  it("feedback 227937a0: a folder whose only covering row is its own lock row does not link to itself", async () => {
+    const readTree = vi.fn(async () => ok({ ...NO_RECORD_TREE, prefix: "projects/", coveringAclPath: "projects/*" }));
+    const el = render({ vault: COMPANY, path: `${COMPANY.root}/${uniquePath("noacl-self")}`, isDir: true, companyUid: "cmp_acme", readTree });
+    await settle();
+    expect(el.querySelector("[data-testid='access-inherited']")).toBeNull();
+    expect(el.querySelector("[data-testid='access-no-record']")?.textContent).toBe("Uses the company's default access");
+  });
+
+  it("feedback 227937a0: personal vault path with no ACL record reads Only you", async () => {
+    const readTree = vi.fn(async () => ok({ ...NO_RECORD_TREE, prefix: "notes/" }));
+    const el = render({ vault: PERSONAL, path: `personal/${uniquePath("noacl")}.md`, isDir: false, companyUid: "prs_SELF0000", readTree });
+    await settle();
+    expect(el.querySelector("[data-testid='access-failed']")).toBeNull();
+    expect(el.querySelector("[data-testid='access-only-you']")?.textContent).toBe("Only you");
   });
 
   it("debounces focus: arrowing through rows fires one read, for the last row; the cache paints at once", async () => {

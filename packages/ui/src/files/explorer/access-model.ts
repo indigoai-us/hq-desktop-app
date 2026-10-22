@@ -31,6 +31,14 @@ export interface AccessView {
   inheritedFrom: string | null;
   /** True when the caller can grant on this path (admin on it). */
   canGrant: boolean;
+  /**
+   * True when nothing in the tree names this path: no own row, no inherited
+   * grants and no grants below. This is the 200 body for which
+   * `hq files acl <prefix>` prints "No ACL record exists" (feedback 227937a0);
+   * that sentence is the CLI's, hq-pro never sends it. The path then uses
+   * the company's default access.
+   */
+  noRecord: boolean;
 }
 
 /** What the Access section is asked about. */
@@ -76,11 +84,18 @@ function asLevel(v: unknown): AccessLevel | null {
 /** HQ top-level folders in the personal vault that never sync. */
 const LOCAL_ONLY_TOP = new Set([".claude", ".agents", ".codex", ".obsidian", "core", "workspace", "repos", "docs", "sync-manifests"]);
 
-/** Company-relative ACL prefix for a vault path; folders end in "/". */
+/**
+ * Company-relative ACL prefix for a vault path. Folders use the canonical
+ * glob `<folder>/*`, the form hq-pro stores grants under. The acl/tree read
+ * compares the asked prefix to stored rows as-is, so asking for `<folder>/`
+ * never matched the folder's own row: its direct grants were missed and the
+ * folder was reported as inheriting access from itself (feedback 227937a0).
+ */
 export function accessPrefix(vault: Vault, path: string, isDir: boolean): string {
   const rel = vault.kind === "company" && path.startsWith(`${vault.root}/`) ? path.slice(vault.root.length + 1) : path;
-  const clean = rel.replace(/\/+$/, "");
-  return isDir ? `${clean}/` : clean;
+  const clean = rel.replace(/\/\*$/, "").replace(/\/+$/, "");
+  if (!isDir) return clean;
+  return clean ? `${clean}/*` : "*";
 }
 
 /**
@@ -225,7 +240,18 @@ export function accessView(body: unknown, groups: Map<string, string> = new Map(
     if (inheritedFrom === null || folder.length > inheritedFrom.length) inheritedFrom = folder;
   }
 
-  return { rows: [...rows.values()], inheritedFrom, canGrant: b.effectivePermission === "admin" };
+  // A parent row with no grants still governs this path: hq-pro names it as
+  // coveringAclPath. Point at it when no inherited grant did.
+  const covering = typeof b.coveringAclPath === "string" ? b.coveringAclPath : null;
+  const ownPrefix = typeof b.prefix === "string" ? b.prefix : null;
+  // The path's own "folder/*" lock row is not a parent; never link a folder to itself.
+  const ownFolder = ownPrefix === null ? null : folderOfPrefix(ownPrefix);
+  if (inheritedFrom === null && covering !== null && folderOfPrefix(covering) !== ownFolder) inheritedFrom = folderOfPrefix(covering);
+
+  const children = Array.isArray(b.children) ? b.children : [];
+  const noRecord = directRow === null && direct.length === 0 && inherited.length === 0 && children.length === 0 && inheritedFrom === null;
+
+  return { rows: [...rows.values()], inheritedFrom, canGrant: b.effectivePermission === "admin", noRecord };
 }
 
 /** HQ-relative path of an inherited source folder ("" is the vault root). */
@@ -249,3 +275,4 @@ export class AccessCache {
 }
 
 export const accessCache = new AccessCache();
+

@@ -42,12 +42,13 @@
     type CloudFileEventPayload,
 } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
-  import { resolveUsageCompany } from "../home/core-usage-model.js";
+  import { resolveUsageCompany, usageAccounts } from "../home/core-usage-model.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
   import LazyDoor from "./LazyDoor.svelte";
   import { callerRole, loadCallerRole } from "../company/company-roles.svelte.js";
+  import { domainPricesFromFeed, type DomainPrices } from "../company/files-connect/custom-domain.js";
   import {
     brainPageDoor,
     teamPageDoor,
@@ -561,7 +562,7 @@
     type TourEnterAction,
     type TourState,
   } from "../tour/guided-tour.js";
-  import { vaultsFor } from "../files/explorer/vault-model.js";
+  import { folderShareTarget, vaultsFor } from "../files/explorer/vault-model.js";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
   import LocalBotDetailPanel from "../chat/LocalBotDetailPanel.svelte";
@@ -604,6 +605,7 @@
     type NavigationEntry,
     type NavigationScrollState,
     type ProjectsFocusTab,
+    type SharedFolderFocus,
   } from "./navigation-history.js";
   import { settleThreadSidebarClose } from "./thread-sidebar-close.js";
   import { resetThreadComposerDrafts } from "../chat/messaging/thread-composer-draft.js";
@@ -639,6 +641,7 @@
     EMPTY_LIVE_SYNC,
     lastSyncLabelFromLive,
     readLiveSyncStatus,
+    retrySyncFromLive,
     syncStateFromLive,
     type LiveSyncStatus,
   } from "../settings/live-sync-status.js";
@@ -1510,6 +1513,18 @@
    */
   let syncStatus = $state<SyncStatusState>(emptySyncStatus());
 
+  async function retrySyncRecovery(): Promise<void> {
+    const before = syncStatus;
+    const retried = await retrySyncFromLive(adapter, liveSync);
+    liveSync = retried.status;
+    if (retried.error) {
+      syncStatus = reduceSyncEvent(syncStatus, "sync:error", { message: retried.error });
+    } else if (!retried.status.recoveryHoldReason && syncStatus === before) {
+      // Do not overwrite a newer native auth/error/progress event while awaiting retry.
+      syncStatus = reduceSyncEvent(emptySyncStatus(), "sync:plan", {});
+    }
+  }
+
   // OWNER-003: one "sync" toast that updates in place while files move and
   // turns into a quiet "Files up to date" when the run ends. Runs that move
   // nothing stay silent; attention states belong to the Core pill.
@@ -1961,6 +1976,8 @@
   /** Files explorer location (vault id + HQ-relative file). */
   let explorerVault = $state<string | null>(null);
   let explorerPath = $state<string | null>(null);
+  /** DM folder share the shared-files view lists remotely (company not synced here). */
+  let sharedFolderFocus = $state<SharedFolderFocus | null>(null);
   let extraPageId = $state<string | null>(null);
   let extraPageParam = $state<string | null>(null);
   /** Which pending request the Requests panel should bring into view first. */
@@ -5268,13 +5285,22 @@
     );
   });
   /**
-   * Company for the Core menu's usage panel: the company on screen, else the
-   * branded company. A local-only company shows "No usage", never another
-   * company's spend (resolveUsageCompany).
+   * Account for the Core menu's usage panel (owner decision 2026-10-19): the
+   * company on screen, else the company the rail has active, else the
+   * branded company, else the personal account. Never the first company in
+   * the list. A local-only company shows "No usage", never another
+   * account's spend (resolveUsageCompany).
    */
-  const usageCompany = $derived(
-    resolveUsageCompany(companies, selectedCompanySlug, brandState?.companySlug),
+  const tenantCompanySlug = $derived(
+    tenantCompanyId
+      ? ((companies ?? []).find((c) => (c.cloudUid ?? "").trim() === tenantCompanyId)?.slug ?? "")
+      : "",
   );
+  const usageCompany = $derived(
+    resolveUsageCompany(companies, selectedCompanySlug || tenantCompanySlug, brandState?.companySlug),
+  );
+  /** Every account the usage switcher offers: owner/admin companies, then personal. */
+  const usageAccountList = $derived(usageAccounts(companies, usageCompany));
   const activeCompanyPane = $derived.by(() => {
     if (view !== "conversation" || selectedRow?.kind !== "channel") return null;
     const scope = (selectedRow.channelScope ?? "").trim();
@@ -8588,6 +8614,8 @@
     channelActionError = null;
   });
   let selfAvatarUrl = $state<string | null>(null);
+  /** Counts photo saves so the rail's account button can point at the new photo. */
+  let selfAvatarPulse = $state(0);
   let selfDescription = $state<string | null>(null);
 
   /** personUid → presigned avatar URL, sourced from every loaded channel
@@ -10548,7 +10576,7 @@
       case "library":
         return { kind: "library", tab: libraryTab, itemId: libraryItemId };
       case "shared-files":
-        return { kind: "shared-files" };
+        return { kind: "shared-files", folder: sharedFolderFocus };
       case "explorer":
         return { kind: "explorer", vault: explorerVault, path: explorerPath };
       case "projects":
@@ -10998,6 +11026,7 @@
         extraPageParam = null;
         break;
       case "shared-files":
+        sharedFolderFocus = next.folder ?? null;
         view = "shared-files";
         settingsSection = null;
         extraPageId = null;
@@ -12389,14 +12418,46 @@
     items: FileAttachmentModel[] = [],
   ): void {
     const companyUid = attachmentCompanyUid(selectedRow);
-    const stamped = (items.length > 0 ? items : [item]).map((entry) => ({
-      ...entry,
-      companyUid: entry.companyUid || companyUid || "",
-    }));
+    if (item.kind === "folder") {
+      openFolderShare(item, companyUid);
+      return;
+    }
+    // A folder key is a folder marker, not an object the tray can fetch.
+    const stamped = (items.length > 0 ? items : [item])
+      .filter((entry) => entry.kind !== "folder")
+      .map((entry) => ({
+        ...entry,
+        companyUid: entry.companyUid || companyUid || "",
+      }));
     attachTray = {
       selectedId: item.id || item.vaultPath,
       items: stamped,
     };
+  }
+
+  /**
+   * A DM folder share ("Shared a folder with you") opens that folder in Files.
+   * Its trailing-slash key is not an object, so the attachment preview would
+   * fail with "Could not load the file" (feedback 3e124bcd). Without a local
+   * copy of the company, the shared-with-me view lists the folder from the
+   * vault (ACL-filtered) and says which company to sync to open it in Files.
+   * An unknown company lands on the plain shared-with-me list.
+   */
+  function openFolderShare(item: FileAttachmentModel, companyUid: string | null): void {
+    const target = folderShareTarget(
+      { vaultPath: item.vaultPath, companyUid: item.companyUid || companyUid || "" },
+      effectiveCompanies,
+    );
+    if (target?.local) {
+      void navigate({ kind: "explorer", vault: target.local.vault, path: target.local.path });
+      return;
+    }
+    void navigate({
+      kind: "shared-files",
+      folder: target
+        ? { companyUid: target.companyUid, companyLabel: target.companyLabel, prefix: target.prefix }
+        : null,
+    });
   }
 
   async function resolveTrayUrl(
@@ -12836,6 +12897,19 @@
   // OWNER-R24: the caller's role in the open company, from the membership
   // roster. Grants and Billing show only to owners and admins.
   const companyPaneRole = $derived(callerRole(companyPaneCompany?.uid));
+  // US-007: the global Deployments page offers the company Custom domain sheet too.
+  async function deployDomainPrices(): Promise<DomainPrices | null> {
+    const read = adapter.company?.getPricing;
+    if (!read) return null;
+    const res = await read();
+    return res.ok ? domainPricesFromFeed(res.value) : null;
+  }
+  async function deployDomainCardEntryUrl(companyUid: string): Promise<string | null> {
+    const mint = adapter.company?.createBillingCheckoutSession;
+    if (!mint) return null;
+    const res = await mint(companyUid);
+    return res.ok && typeof res.value?.url === "string" ? res.value.url : null;
+  }
   // Grants pane: the caller's other companies, grantable where they are an
   // owner or admin (hq-pro enforces the same rule).
   const grantsOpen = $derived(railPlaceholder?.id === "grants");
@@ -13696,6 +13770,10 @@
       return { label: action.label, onselect: () => openExtraPage(id, action.param()) };
     })()}
     syncState={liveSyncState}
+    errorSummary={liveSync.recoveryHoldReason}
+    syncRecoveryReason={liveSync.recoveryHoldReason}
+    errorMessage={liveSync.recoveryHoldReason}
+    onretry={liveSync.recoveryHoldReason ? retrySyncRecovery : undefined}
     {lastSyncLabel}
     uploadsPaused={liveSync.uploadsPaused ?? []}
     cloudPaused={!cloudEnabled}
@@ -13704,13 +13782,17 @@
     {cloudError}
     workspaces={syncWorkspaces}
     {usageCompany}
+    usageAccounts={usageAccountList}
     hqFolderPath={hqFolderPath ?? liveSync.hqFolderPath}
     watchedCount={watched}
     {unreadCount}
-    {syncStatus}
+    syncStatus={liveSync.recoveryHoldReason
+      ? { ...syncStatus, phase: "error", message: liveSync.recoveryHoldReason }
+      : syncStatus}
     brand={brandState}
     {brandCompanyName}
     onopenSync={() => openSettings("sync")}
+    onopenUsage={() => openSettings("usage")}
     {sidebarCollapsed}
     sidebarToggleHidden={pageHasNoSidepane}
     coreUseFixtures={coreFixtures}
@@ -13759,6 +13841,8 @@
       activeId={activeRailId}
       {unreadCount}
       youInitials={resolvedAccountInitials ?? ""}
+      youPhoto={selfAvatarUrl}
+      youPhotoPulse={selfAvatarPulse}
       onselect={selectRailItem}
       onreorderpins={reorderPinnedCompanies}
       onmore={toggleMoreCompanies}
@@ -14000,6 +14084,7 @@
       {#await loadShellSettings() then { default: ShellSettings }}
         <ShellSettings
           onnewbot={openNewBotFromSettings}
+          usageAccounts={usageAccountList}
           profile={resolvedSettingsProfile}
           {companies}
           {adapter}
@@ -14017,6 +14102,10 @@
             void navigate(companyRowDestination("general", uid));
           }}
           onback={closeSettings}
+          onavatarsaved={(src) => {
+            selfAvatarUrl = src;
+            selfAvatarPulse += 1;
+          }}
           onsignout={onsignout ? signOutWithImageCleanup : undefined}
           onopenconsole={onOpenConsole
             ? (url) => onOpenConsole(url ?? HQ_CONSOLE_BASE)
@@ -14265,6 +14354,7 @@
         {:else if view === "shared-files"}
           <SharedFilesOverlay
             {adapter}
+            folder={sharedFolderFocus}
             onback={() => {
               void leaveCurrentDestination();
             }}
@@ -14448,6 +14538,9 @@
             deployAppPreview={adapter.company?.deployAppPreview}
             deployAppSnapshot={adapter.company?.deployAppSnapshot}
             companies={memberCompanies(companies)}
+            deployDomainRequest={adapter.company?.deployDomainRequest ?? null}
+            loadDomainPrices={deployDomainPrices}
+            domainCardEntryUrl={deployDomainCardEntryUrl}
             openExternal={onopenurl}
             actions={railGate(RAIL_DEPLOYMENTS_ACTIONS_FLAG)}
           />
@@ -14464,6 +14557,7 @@
               listDeployApps: adapter.company?.listDeployApps,
               adapter,
               companyUid: companyPaneCompany.uid ?? null,
+              companyRole: companyPaneRole ?? null,
               deployActions: railGate(RAIL_DEPLOYMENTS_ACTIONS_FLAG),
               companyLabel: companyPaneCompany.label,
               vaultCloudRead: (key: string) => vaultCloudRead(companyPaneCompany?.uid ?? null, key),

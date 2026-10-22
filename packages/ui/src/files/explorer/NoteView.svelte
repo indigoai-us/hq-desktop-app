@@ -401,20 +401,31 @@
     color: var(--v4-text-2);
   }
   .markdown-body :global(hr) { margin: 2em 0; border: 0; border-top: 1px solid var(--v4-hairline); }
-  .markdown-body :global(table) {
-    width: 100%;
+  /* Wide tables scroll inside their own box; the prose keeps its reading
+     width. Cells wrap only between words (the body's overflow-wrap: anywhere
+     would let the table shrink until cells break mid-word), and a long cell
+     stops growing at 40ch so it wraps rather than running on as one line. */
+  .markdown-body :global(.markdown-table-scroll) {
+    max-width: 100%;
     margin: 0 0 1.1em;
+    overflow-x: auto;
+    scrollbar-color: var(--v4-control-border) transparent;
+  }
+  .markdown-body :global(table) {
+    width: max-content;
+    min-width: 100%;
     border-collapse: collapse;
     font-size: 13px;
-    display: block;
-    overflow-x: auto;
   }
   .markdown-body :global(th),
   .markdown-body :global(td) {
+    max-width: 40ch;
     padding: 7px 10px;
     border-bottom: 1px solid var(--v4-hairline);
     text-align: left;
     vertical-align: top;
+    overflow-wrap: normal;
+    word-break: normal;
   }
   .markdown-body :global(th) { color: var(--v4-text-2); font-weight: 500; }
   .markdown-body :global(input[type="checkbox"]) { margin-right: 6px; accent-color: var(--v4-link); }

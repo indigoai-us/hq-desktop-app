@@ -23,6 +23,8 @@ const ALLOWLIST: Record<string, string> = {
     "Sentence: \"{name} is empty\".",
   "chat/AgencyChatPanel.svelte::selected.company":
     "`company/team` path identifier, not a company label.",
+  "home/CoreUsagePanel.svelte::companyName":
+    "Sentence: \"Ask an owner or admin of {name} ...\" (US-018); the panel head renders CompanyLabel.",
   "chat/SetupFinale.svelte::company.label":
     "Button verb phrase (\"Open {name}\"), not a bare name.",
   "chat/SetupRunCard.svelte::card.scope === \"company\" ? (card.company ? `${card.company} vault` : \"company vault\") : \"your personal vault\"":
@@ -57,6 +59,8 @@ const ALLOWLIST: Record<string, string> = {
     "Sentence: \"{name} is not connected to HQ cloud\".",
   "meetings/MeetingsStatesBody.svelte::companyName":
     "Sentence: \"Join opens 10 min before \u00b7 {name}\".",
+  "inbox/SharedFilesOverlay.svelte::folder.companyLabel":
+    "Sentence: \"Sync {name} to see everything.\"; the header scope line renders CompanyLabel.",
 };
 
 /**
