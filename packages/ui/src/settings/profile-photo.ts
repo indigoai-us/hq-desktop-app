@@ -166,15 +166,34 @@ function readBlobAsDataUrl(blob: Blob): Promise<string> {
 }
 
 /**
- * Load a picked file or a locally held photo (data: or blob: URL) into a
- * drawable source. Server photos can't be read: the photo bucket sends no
- * CORS headers, and drawing one would taint the canvas.
+ * Fetch a saved photo's bytes. The photo bucket allows read-only CORS for the
+ * app origins, so this works in the desktop app and HQ Work. `no-store` skips
+ * any copy an <img> tag cached before the bucket sent CORS headers.
+ */
+async function fetchPhotoBlob(url: string): Promise<Blob> {
+  let res: Response;
+  try {
+    res = await fetch(url, { mode: "cors", credentials: "omit", cache: "no-store" });
+  } catch {
+    throw new PhotoError("Couldn't load this photo. Pick it again to edit it.");
+  }
+  if (!res.ok) throw new PhotoError("Couldn't load this photo. Pick it again to edit it.");
+  const blob = await res.blob();
+  if (!blob.type.startsWith("image/")) throw new PhotoError("That file isn't a readable image.");
+  return blob;
+}
+
+/**
+ * Load a picked file, a locally held photo (data: or blob: URL), or a saved
+ * photo (https: URL) into a drawable source. Saved photos are fetched and
+ * turned into a data: URL so drawing them never taints the canvas.
  */
 export async function loadPhotoSource(input: Blob | string): Promise<PhotoSource> {
   let url: string;
   if (typeof input === "string") {
-    if (!/^(data|blob):/i.test(input)) throw new PhotoError("Pick the photo again to edit it.");
-    url = input;
+    if (/^https:/i.test(input)) url = await readBlobAsDataUrl(await fetchPhotoBlob(input));
+    else if (/^(data|blob):/i.test(input)) url = input;
+    else throw new PhotoError("Pick the photo again to edit it.");
   } else {
     url = await readBlobAsDataUrl(input);
   }

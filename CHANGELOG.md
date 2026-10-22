@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Settings: Adjust and Undo now work on a profile photo you saved before the app restarted, and HQ again tells you when your member profile and your public creator profile show different photos. Before, these only worked for a photo picked in the same session, because HQ could not read photos stored on the server. If a saved photo still cannot be loaded, HQ asks you to pick it again. This needs the matching server update to be live.
 - Messages: opening a folder someone shared with you now works when that company is not synced on this Mac. Before, the card dropped you on the general Shared files list with no explanation. Now HQ lists the folder's contents from the cloud (names only, so nothing is downloaded), shows which company and folder it came from, and says "<Company> isn't synced on this Mac yet. Sync it to open this folder in Files." Companies already on this Mac still open the folder in Files as before.
 
 ## [0.11.16] — 2026-10-22

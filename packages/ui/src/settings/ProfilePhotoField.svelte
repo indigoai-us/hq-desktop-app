@@ -127,13 +127,13 @@
     };
   });
   const hasPhoto = $derived(Boolean(savedSrc ?? photoUrl));
-  // The photo server sends no CORS headers, so the app can only read the pixels
-  // of photos it holds locally (picked this session, or a data:/blob: URL).
-  // Adjust and Undo need those pixels; without them they stay hidden.
+  // Adjust and Undo need the photo's pixels. Local photos (data:/blob:) are
+  // read directly; saved photos (https:) are fetched from the photo bucket,
+  // which allows read-only CORS for the app origins.
   const canAdjust = $derived(Boolean(session) || readableUrl(savedSrc ?? photoUrl));
 
   function readableUrl(url: string | null | undefined): boolean {
-    return typeof url === "string" && (url.startsWith("data:") || url.startsWith("blob:"));
+    return typeof url === "string" && /^(data|blob|https):/i.test(url);
   }
   const busy = $derived(status === "saving" || editBusy);
 
@@ -289,7 +289,6 @@
         offer = { kind: "empty", state: "idle", photo, thumb: photo.previewDataUrl, otherThumb: null };
         return;
       }
-      // A server photo can't be read (no CORS), so there is nothing to compare.
       if (!readableUrl(current)) return;
       const [mine, theirs] = await Promise.all([
         photoFingerprint(await loadPhotoSource(photo.previewDataUrl)),

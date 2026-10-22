@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   CENTER_CROP,
@@ -80,11 +80,80 @@ describe("base64ToBytes", () => {
 });
 
 describe("loadPhotoSource", () => {
-  it("refuses a server photo with app-written copy and never fetches it", async () => {
+  const SAVED =
+    "https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/members/p/a.jpg?X-Amz-Signature=1";
+
+  class FakeImage {
+    naturalWidth = 640;
+    naturalHeight = 480;
+    width = 640;
+    height = 480;
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    set src(_value: string) {
+      queueMicrotask(() => this.onload?.());
+    }
+  }
+
+  class FakeReader {
+    result: string | null = null;
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    readAsDataURL(blob: Blob) {
+      void blob.arrayBuffer().then((buf) => {
+        this.result = `data:${blob.type};base64,${Buffer.from(buf).toString("base64")}`;
+        this.onload?.();
+      });
+    }
+  }
+
+  function stubDom() {
+    vi.stubGlobal("Image", FakeImage);
+    vi.stubGlobal("FileReader", FakeReader);
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("reads a saved photo from its https URL into a local data: URL", async () => {
+    stubDom();
+    const { loadPhotoSource } = await import("./profile-photo.js");
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(new Blob([new Uint8Array([0xff, 0xd8, 0xff])], { type: "image/jpeg" })));
+
+    const source = await loadPhotoSource(SAVED);
+
+    expect(fetchSpy).toHaveBeenCalledWith(SAVED, { mode: "cors", credentials: "omit", cache: "no-store" });
+    expect(source).toEqual({ url: "data:image/jpeg;base64,/9j/", width: 640, height: 480 });
+  });
+
+  it("turns a blocked or failed download into app-written copy", async () => {
+    stubDom();
+    const { loadPhotoSource, PhotoError } = await import("./profile-photo.js");
+    vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new TypeError("Load failed"));
+    const blocked = loadPhotoSource(SAVED);
+    await expect(blocked).rejects.toBeInstanceOf(PhotoError);
+    await expect(blocked).rejects.toThrow("Couldn't load this photo. Pick it again to edit it.");
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response("expired", { status: 403 }));
+    await expect(loadPhotoSource(SAVED)).rejects.toThrow("Couldn't load this photo. Pick it again to edit it.");
+  });
+
+  it("refuses a download that isn't an image", async () => {
+    stubDom();
+    const { loadPhotoSource, PhotoError } = await import("./profile-photo.js");
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(new Blob(["<html>"], { type: "text/html" })));
+    await expect(loadPhotoSource(SAVED)).rejects.toBeInstanceOf(PhotoError);
+  });
+
+  it("never fetches a non-https URL", async () => {
     const { loadPhotoSource, PhotoError } = await import("./profile-photo.js");
     const fetchSpy = vi.spyOn(globalThis, "fetch");
-    await expect(loadPhotoSource("https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/members/p/a.jpg")).rejects.toBeInstanceOf(PhotoError);
+    await expect(loadPhotoSource("http://example.com/a.jpg")).rejects.toBeInstanceOf(PhotoError);
+    await expect(loadPhotoSource("asset://localhost/a.jpg")).rejects.toBeInstanceOf(PhotoError);
     expect(fetchSpy).not.toHaveBeenCalled();
-    fetchSpy.mockRestore();
   });
 });

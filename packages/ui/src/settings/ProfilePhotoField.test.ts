@@ -216,29 +216,46 @@ describe("ProfilePhotoField", () => {
     expect(loadPhotoSource).toHaveBeenCalledWith(LOCAL_PHOTO);
   });
 
-  it("offers no Undo back to a server photo it cannot read", async () => {
-    render({ photoUrl: MEMBER_URL, save: vi.fn(async () => ({ ok: true as const, url: null })) });
+  it("Undo goes back to a saved server photo from an earlier session", async () => {
+    const save = vi.fn(async () => ({ ok: true as const, url: null }));
+    render({ photoUrl: MEMBER_URL, save });
     await pick();
-    await settle(() => expect(q("p-status")?.textContent).toContain("Photo updated"));
-    expect(q("p-undo")).toBeNull();
+    await settle(() => expect(q("p-undo")).not.toBeNull());
+    q("p-undo")!.click();
+    await settle(() => expect(save).toHaveBeenCalledTimes(2));
+    const { loadPhotoSource } = await import("./profile-photo.js");
+    expect(loadPhotoSource).toHaveBeenCalledWith(MEMBER_URL);
   });
 
-  it("hides Adjust for a server photo it cannot read; clicking the photo opens the picker", async () => {
+  it("shows Adjust for a saved server photo and opens the crop editor on it", async () => {
     render({ photoUrl: MEMBER_URL });
+    expect(q("p-adjust")).not.toBeNull();
+    q("p-adjust")!.click();
+    await settle(() => expect(q("photo-crop-editor")).not.toBeNull());
+    const { loadPhotoSource } = await import("./profile-photo.js");
+    expect(loadPhotoSource).toHaveBeenCalledWith(MEMBER_URL);
+  });
+
+  it("if a saved photo can't be loaded, says to pick it again instead of showing raw errors", async () => {
+    const { loadPhotoSource } = await import("./profile-photo.js");
+    vi.mocked(loadPhotoSource).mockRejectedValueOnce(new TypeError("Load failed"));
+    render({ photoUrl: MEMBER_URL });
+    q("p-adjust")!.click();
+    await settle(() =>
+      expect(q("p-status")?.textContent).toContain("Couldn't open this photo. Pick it again to adjust it."),
+    );
+    expect(q("p-status")?.textContent).not.toContain("Load failed");
+    expect(q("photo-crop-editor")).toBeNull();
+  });
+
+  it("keeps the picker for a photo URL it can't read", async () => {
+    render({ photoUrl: "asset://localhost/me.jpg" });
     expect(q("p-adjust")).toBeNull();
     const input = q("p-input") as HTMLInputElement;
     const click = vi.spyOn(input, "click");
     q("p-avatar")!.click();
     expect(click).toHaveBeenCalled();
     expect(q("photo-crop-editor")).toBeNull();
-    const { loadPhotoSource } = await import("./profile-photo.js");
-    expect(loadPhotoSource).not.toHaveBeenCalled();
-  });
-
-  it("shows Adjust once a photo is picked, even over a server photo", async () => {
-    render({ photoUrl: MEMBER_URL });
-    await pick();
-    await settle(() => expect(q("p-adjust")).not.toBeNull());
   });
 
   it("Adjust opens the crop in the row; Done saves the new crop, Cancel saves nothing", async () => {
@@ -301,7 +318,17 @@ describe("ProfilePhotoField", () => {
     expect(q("p-offer")).toBeNull();
   });
 
-  it("doesn't try to read the other profile's server photo (no CORS) and makes no offer", async () => {
+  it("offers an update when the other profile's saved server photo is different", async () => {
+    const current = vi.fn(async () => OTHER_URL);
+    dom.fingerprints.set(OTHER_URL, Array.from({ length: 256 }, () => 220));
+    render({ other: { current, apply: vi.fn(async () => true), copy } });
+    await pick();
+    await settle(() => expect(q("p-offer-text")?.textContent).toBe(copy.diffText));
+    const { loadPhotoSource } = await import("./profile-photo.js");
+    expect(loadPhotoSource).toHaveBeenCalledWith(OTHER_URL);
+  });
+
+  it("stays quiet when the other profile's saved server photo matches", async () => {
     const current = vi.fn(async () => OTHER_URL);
     render({ other: { current, apply: vi.fn(async () => true), copy } });
     await pick();
@@ -309,8 +336,22 @@ describe("ProfilePhotoField", () => {
     await new Promise((r) => setTimeout(r, 20));
     flushSync();
     expect(q("p-offer")).toBeNull();
+  });
+
+  it("makes no offer when the other profile's photo can't be loaded", async () => {
     const { loadPhotoSource } = await import("./profile-photo.js");
-    expect(loadPhotoSource).not.toHaveBeenCalledWith(OTHER_URL);
+    // The picked file and the new photo load; the other profile's photo doesn't.
+    vi.mocked(loadPhotoSource).mockImplementation(async (input: Blob | string) => {
+      if (input === OTHER_URL) throw new TypeError("Load failed");
+      return { url: typeof input === "string" ? input : "data:image/png;base64,PICKED", width: 800, height: 600 };
+    });
+    const current = vi.fn(async () => OTHER_URL);
+    render({ other: { current, apply: vi.fn(async () => true), copy } });
+    await pick();
+    await settle(() => expect(current).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 20));
+    flushSync();
+    expect(q("p-offer")).toBeNull();
   });
 
   it("stays quiet when there is no other profile", async () => {
