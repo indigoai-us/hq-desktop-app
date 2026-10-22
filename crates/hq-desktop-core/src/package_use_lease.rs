@@ -1910,30 +1910,16 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn linux_own_start_time_is_stable_across_samples_under_load() {
-        // Busy threads stand in for the parallel test run that used to
-        // deschedule the sampler between its clock reads.
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let spinners: Vec<_> = (0..std::thread::available_parallelism().map_or(4, |n| n.get() * 2))
-            .map(|_| {
-                let stop = stop.clone();
-                std::thread::spawn(move || {
-                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                        std::hint::spin_loop();
-                    }
-                })
-            })
-            .collect();
+    fn linux_own_start_time_is_stable_across_samples() {
+        // Sampling across several 10 ms `/proc/uptime` steps exposed the old
+        // separate reads. No load threads: they would starve other
+        // timing-sensitive tests running in parallel.
         let pid = std::process::id();
         let first = process_start_time_ms(pid).unwrap();
         let mut worst = 0;
         for _ in 0..60 {
             std::thread::sleep(Duration::from_millis(1));
             worst = worst.max(process_start_time_ms(pid).unwrap().abs_diff(first));
-        }
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        for spinner in spinners {
-            spinner.join().unwrap();
         }
         assert!(
             worst < process_start_tolerance_ms() / 4,
