@@ -765,6 +765,37 @@ impl SdkSupervisor {
         self.started_at = Some(now);
         self.next_attempt_at = None;
     }
+
+    /// One supervisor loop iteration. Returns [`SdkSupervisorStep::Exit`]
+    /// once the app is quitting, so the loop stops instead of spawning a new
+    /// sidecar while the quit path is terminating the old one.
+    pub fn step(
+        &mut self,
+        now: std::time::Instant,
+        exit_requested: bool,
+        running: bool,
+        gates_open: bool,
+    ) -> SdkSupervisorStep {
+        if exit_requested {
+            return SdkSupervisorStep::Exit;
+        }
+        if self.tick(now, running, gates_open) {
+            SdkSupervisorStep::Start
+        } else {
+            SdkSupervisorStep::Wait
+        }
+    }
+}
+
+/// What the supervisor loop should do after one [`SdkSupervisor::step`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SdkSupervisorStep {
+    /// The app is quitting: stop the loop.
+    Exit,
+    /// Start the sidecar now.
+    Start,
+    /// Do nothing this tick.
+    Wait,
 }
 
 #[cfg(test)]
@@ -782,6 +813,19 @@ mod tests {
         assert_eq!(cell.get(), None, "false must not be cached");
         store_meeting_detect_eligibility(&cell, true);
         assert_eq!(cell.get(), Some(&true));
+    }
+
+    #[test]
+    fn supervisor_exits_when_app_quit_requested() {
+        let mut s = SdkSupervisor::new();
+        let t0 = std::time::Instant::now();
+        // Not running and gates open would normally start the sidecar.
+        assert_eq!(s.step(t0, false, false, true), SdkSupervisorStep::Start);
+        s.record_start(t0);
+        // Quit lands while the quit path has just stopped the sidecar.
+        let t1 = t0 + SDK_HEALTHY_RUN + std::time::Duration::from_secs(60);
+        assert_eq!(s.step(t1, true, false, true), SdkSupervisorStep::Exit);
+        assert_eq!(s.step(t1, true, true, true), SdkSupervisorStep::Exit);
     }
 
     #[test]
@@ -824,7 +868,10 @@ mod tests {
         assert!(sup.tick(t0, false, true));
         sup.record_start(t0);
         let later = t0 + SDK_HEALTHY_RUN + SDK_SUPERVISOR_INTERVAL;
-        assert!(sup.tick(later, false, true), "restart immediately after a healthy run");
+        assert!(
+            sup.tick(later, false, true),
+            "restart immediately after a healthy run"
+        );
         assert_eq!(sup.consecutive_short_runs(), 0);
     }
 

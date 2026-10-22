@@ -95,7 +95,7 @@ pub use hq_desktop_core::recall_sdk::{
     EVENT_RECORDING_RECONCILED, FORCE_ENV, LOG_TAG, SDK_BIN,
 };
 use hq_desktop_core::recall_sdk::{
-    store_meeting_detect_eligibility, SdkSupervisor, SDK_SUPERVISOR_INTERVAL,
+    store_meeting_detect_eligibility, SdkSupervisor, SdkSupervisorStep, SDK_SUPERVISOR_INTERVAL,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -724,17 +724,28 @@ pub fn setup_recall_sdk_supervisor(app: AppHandle) {
                 recall_sdk_start_gates_open().await
             };
             let now = std::time::Instant::now();
-            if supervisor.tick(now, running, gates_open) {
-                log(
-                    LOG_TAG,
-                    &format!(
-                        "supervisor: SDK not running — starting (consecutive_short_runs={})",
-                        supervisor.consecutive_short_runs()
-                    ),
-                );
-                supervisor.record_start(now);
-                if let Err(e) = start_recall_sdk(app.clone()).await {
-                    log(LOG_TAG, &format!("supervisor: start_recall_sdk error: {e}"));
+            // Re-read the quit flag after the gate await: quit can land while
+            // the gates are being checked, and a start then would spawn a
+            // bridge the quit path is not draining.
+            let exit_requested = crate::commands::process::app_exit_requested();
+            match supervisor.step(now, exit_requested, running, gates_open) {
+                SdkSupervisorStep::Exit => {
+                    log(LOG_TAG, "supervisor: app is quitting — stopping");
+                    return;
+                }
+                SdkSupervisorStep::Wait => {}
+                SdkSupervisorStep::Start => {
+                    log(
+                        LOG_TAG,
+                        &format!(
+                            "supervisor: SDK not running — starting (consecutive_short_runs={})",
+                            supervisor.consecutive_short_runs()
+                        ),
+                    );
+                    supervisor.record_start(now);
+                    if let Err(e) = start_recall_sdk(app.clone()).await {
+                        log(LOG_TAG, &format!("supervisor: start_recall_sdk error: {e}"));
+                    }
                 }
             }
         }
