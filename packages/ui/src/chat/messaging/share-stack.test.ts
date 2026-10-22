@@ -42,6 +42,33 @@ describe("isStackableShare", () => {
     expect(isStackableShare({ ...base, body: "", messageKind: "file_share" })).toBe(true);
   });
 
+  it("accepts the named share bodies hq-pro sends (feedback_7c7daa44)", () => {
+    const plain = { ...base, messageKind: undefined };
+    for (const body of [
+      "Shared a folder with you: outpost-autoscale (in HQ at projects/outpost-autoscale/).",
+      "Shared a file with you: q3.pdf (in HQ at reports/q3.pdf).",
+      "Shared 2 files with you: q1.csv, q3.pdf.",
+      "Shared 5 files with you: a.md, b.md, c.md and 2 more.",
+      "Shared a folder with you: the whole vault (in HQ at /).",
+    ]) {
+      expect(isStackableShare({ ...plain, body })).toBe(true);
+    }
+  });
+
+  it("still rejects a share line followed by a second line of text", () => {
+    expect(
+      isStackableShare({ ...base, body: "Shared a file with you: q3.pdf.\nPlease review by Friday" }),
+    ).toBe(false);
+    expect(isStackableShare({ ...base, body: "Shared a file with you and here is why" })).toBe(false);
+  });
+
+  it("does not throw on missing or very long bodies", () => {
+    expect(isStackableShare({ ...base, body: undefined, messageKind: undefined })).toBe(true);
+    const long = `Shared a file with you: ${"x".repeat(50_000)}`;
+    expect(isStackableShare({ ...base, body: `${long}\nmore`, messageKind: undefined })).toBe(false);
+    expect(isStackableShare({ ...base, body: long, messageKind: undefined })).toBe(true);
+  });
+
   it("rejects a message that says something else", () => {
     expect(isStackableShare({ ...base, body: "Here is the folder for tomorrow" })).toBe(false);
   });

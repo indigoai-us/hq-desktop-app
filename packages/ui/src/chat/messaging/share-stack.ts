@@ -2,8 +2,14 @@ import type { ConversationMessageWire } from "../chat-api";
 import type { FileAttachmentModel } from "./channelMessageModels";
 import { parseMessageAttachments } from "./channelMessageModels";
 
-/** Bodies the share and delegate flows send next to a shared vault path. */
-const SHARE_BODY = /^shared\s+(?:a|an|one|\d+)\s+(?:folder|file|item)(?:\(s\)|s)?\s+with\s+you\.?$/i;
+/**
+ * Bodies the share and delegate flows send next to a shared vault path. Accepts
+ * the bare line ("Shared a file with you.") and the named form hq-pro sends
+ * since feedback_7c7daa44 ("Shared a file with you: q3.pdf (in HQ at
+ * reports/q3.pdf)." / "Shared 5 files with you: a, b, c and 2 more.").
+ */
+const SHARE_BODY =
+  /^shared\s+(?:a|an|one|\d+)\s+(?:folder|file|item)(?:\(s\)|s)?\s+with\s+you(?::\s+[^\n]+)?\.?$/i;
 
 /**
  * A message that only announces a shared file or folder: nothing in it but the
