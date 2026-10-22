@@ -152,6 +152,8 @@ export interface ToastDescriptor {
   kind: "info" | "warn";
   text: string;
   upgradeUrl?: string;
+  /** Show an "Open Console" action (HQ Console integrations page). */
+  consoleAction?: boolean;
 }
 
 function planRequiredToast(err: unknown): ToastDescriptor {
@@ -1192,6 +1194,30 @@ function finishCalendarConnect(notice: ToastDescriptor | null): void {
   if (notice) connectNotice = notice;
 }
 
+export const CHOOSE_CALENDARS_IN_CONSOLE_TEXT =
+  "Connected. Choose your calendars in Console to finish setup";
+
+/** True when any newly linked account has no saved calendar selection. A
+ *  failed lookup counts as "unknown" and keeps the plain connected message. */
+async function newAccountsNeedSelection(
+  accounts: GoogleAccount[],
+): Promise<boolean> {
+  const results = await Promise.all(
+    accounts.map(async (a) => {
+      try {
+        const resp = parseAccountCalendars(
+          unwrap(await requireApi().meetings.listCalendars(a.accountId)),
+        );
+        return resp.selectedCalendarIds.length === 0;
+      } catch (err) {
+        console.error(`meetings connect listCalendars failed for ${a.accountId}:`, err);
+        return false;
+      }
+    }),
+  );
+  return results.some(Boolean);
+}
+
 async function pollForConnectedAccount(): Promise<void> {
   if (!connectPending) return;
   const gen = connectWatchGeneration;
@@ -1207,14 +1233,29 @@ async function pollForConnectedAccount(): Promise<void> {
       !isCurrentTenantSession(epoch)
     )
       return;
-    const hasNew = (accts ?? []).some(
+    const newAccounts = (accts ?? []).filter(
       (a) => a.accountId && !connectBaselineIds.has(a.accountId),
     );
-    if (!hasNew) return;
-    finishCalendarConnect({
-      kind: "info",
-      text: "Calendar connected.",
-    });
+    if (newAccounts.length === 0) return;
+    // Calendar selection is saved in HQ Console; the desktop app has no
+    // selection panel yet. A new account with nothing selected syncs no
+    // events, so point people to Console instead of claiming setup is done.
+    const needsSelection = await newAccountsNeedSelection(newAccounts);
+    if (
+      !connectPending ||
+      gen !== connectWatchGeneration ||
+      !isCurrentTenantSession(epoch)
+    )
+      return;
+    finishCalendarConnect(
+      needsSelection
+        ? {
+            kind: "info",
+            text: CHOOSE_CALENDARS_IN_CONSOLE_TEXT,
+            consoleAction: true,
+          }
+        : { kind: "info", text: "Calendar connected." },
+    );
     markMutationCommitted();
     void refresh(true);
   } catch (err) {

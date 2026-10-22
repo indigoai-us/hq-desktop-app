@@ -381,12 +381,14 @@
     kind: "info" | "warn",
     text: string,
     upgradeUrl?: string,
+    consoleAction?: boolean,
   ): void {
     const revision = ++toastRevision;
     const nextToast: ToastDescriptor = {
       kind,
       text,
       ...(upgradeUrl ? { upgradeUrl } : {}),
+      ...(consoleAction ? { consoleAction } : {}),
     };
     toast = nextToast;
     setTimeout(() => {
@@ -426,7 +428,16 @@
                 onAction: () => void openToastUpgrade(upgradeUrl),
               },
             ]
-          : [],
+          : current.consoleAction
+            ? [
+                {
+                  label: "Open Console",
+                  testId: "meetings-open-console",
+                  primary: true,
+                  onAction: () => void openIntegrationsConsole(),
+                },
+              ]
+            : [],
       });
     });
   });
@@ -454,7 +465,7 @@
   $effect(() => {
     const notice = meetingsStore.connectNotice;
     if (!notice) return;
-    flashToast(notice.kind, notice.text);
+    flashToast(notice.kind, notice.text, undefined, notice.consoleAction);
     meetingsStore.clearConnectNotice();
   });
 
