@@ -228,6 +228,23 @@ describe("ChatSidebar company / email labels", () => {
     expect(option?.textContent).not.toContain("XY");
   });
 
+  it("marks All companies in the menu with the scope button's icon, not initials", async () => {
+    // Owner, 2026-10-22: the button showed a squares mark for All while its
+    // menu row showed "AL".
+    component = mountSidebar();
+    const pill = host.querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]');
+    const buttonIcon = pill?.querySelector("svg[data-rail-icon]")?.getAttribute("data-rail-icon");
+    expect(buttonIcon).toBe("squares-four");
+    pill?.click();
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="chat-scope-menu"]')).toBeTruthy();
+    });
+    const all = host.querySelector<HTMLElement>('[data-testid="chat-scope-option"][data-scope="all"]');
+    const avatar = all?.querySelector(".chat-scope-avatar");
+    expect(avatar?.textContent?.trim()).toBe("");
+    expect(avatar?.querySelector("svg")?.getAttribute("data-rail-icon")).toBe(buttonIcon);
+  });
+
   it("agent DMs in All scope show the company name", async () => {
     component = mountSidebar();
     await vi.waitFor(() => {

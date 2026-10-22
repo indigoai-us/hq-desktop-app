@@ -3061,7 +3061,6 @@
   }
 
   function scopeAvatarLabel(option: { id: string; label: string }): string {
-    if (option.id === "all") return "AL";
     if (option.id === "personal") return "PE";
     return initialsFor(option.label);
   }
@@ -4047,35 +4046,7 @@
       >
         {#if scope === "all"}
           <span class="chat-scope-tile all" aria-hidden="true">
-            <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
-              <rect
-                x="1.75"
-                y="8.25"
-                width="5.5"
-                height="5.5"
-                rx="1"
-                stroke="currentColor"
-                stroke-width="1.3"
-              />
-              <rect
-                x="8.75"
-                y="8.25"
-                width="5.5"
-                height="5.5"
-                rx="1"
-                stroke="currentColor"
-                stroke-width="1.3"
-              />
-              <rect
-                x="5.25"
-                y="2.25"
-                width="5.5"
-                height="5.5"
-                rx="1"
-                stroke="currentColor"
-                stroke-width="1.3"
-              />
-            </svg>
+            <RailIcon name="squares-four" size={13} />
           </span>
         {:else}
           <span class="chat-scope-tile" aria-hidden="true"
@@ -4110,6 +4081,12 @@
               {#if scopeOptionIcon(option.id)}
                 <!-- Real company favicon in place of the initials tile. -->
                 <CompanyIcon iconUrl={scopeOptionIcon(option.id)} size={24} />
+              {:else if option.id === "all"}
+                <!-- The same mark the scope button shows for All, not "AL"
+                     initials (owner, 2026-10-22). -->
+                <span class="chat-scope-avatar is-all" aria-hidden="true">
+                  <RailIcon name="squares-four" size={14} />
+                </span>
               {:else}
                 <span
                   class={`chat-scope-avatar tone-${scopeAvatarTone(option.label)}`}
