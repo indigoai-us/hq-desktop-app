@@ -28,7 +28,9 @@
 //   - Enforces `state` match between what the listener was started with and
 //     what comes back on the callback, defending against CSRF/code injection.
 //   - Single-use: accepts at most one request, closes listener afterwards.
-//   - 5-minute timeout so a stalled/abandoned flow doesn't leak a socket.
+//   - A timeout so a stalled flow cannot leak a socket. Named-provider
+//     sign-in waits 5 minutes. A provider-less continuation waits the
+//     continuation callback window (90 seconds); see `listen_timeout_for`.
 //   - PKCE (S256) prevents authorization code interception.
 //
 // Error contract with the frontend (see `onboarding-signin.ts::mapSignInError`):
@@ -73,6 +75,20 @@ fn set_oauth_flow_active(active: bool) {
 // static Cognito client. Never choose an unregistered ephemeral redirect URI.
 const REGISTERED_LOOPBACK_PORTS: [u16; 3] = [53682, 8765, 3000];
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How long the loopback listener waits for the browser.
+///
+/// A named provider goes straight to that provider and keeps the 5-minute
+/// wait. A provider-less request goes through the website, so a broken page
+/// there gives up after the continuation callback window (90 seconds). The
+/// "Continue as …" confirmation that follows the callback has its own window
+/// and is not bounded by this one.
+fn listen_timeout_for(identity_provider: Option<&str>) -> Duration {
+    match identity_provider {
+        Some(_) => IDLE_TIMEOUT,
+        None => hq_desktop_core::session_continuation::CALLBACK_WINDOW,
+    }
+}
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 // ── PKCE verifier storage ──────────────────────────────────────────────
@@ -169,10 +185,26 @@ fn read_request_line(stream: &mut TcpStream, cancelled: &AtomicBool) -> std::io:
     }
 }
 
+fn listen_timeout_message(timeout: Duration) -> String {
+    let seconds = timeout.as_secs();
+    if seconds >= 60 && seconds % 60 == 0 {
+        let minutes = seconds / 60;
+        if minutes == 1 {
+            return "Timed out waiting for sign-in (1 minute).".to_string();
+        }
+        return format!("Timed out waiting for sign-in ({minutes} minutes).");
+    }
+    format!(
+        "Timed out waiting for sign-in ({} seconds).",
+        seconds.max(1)
+    )
+}
+
 fn receive_loopback_callback(
     listeners: Vec<TcpListener>,
     expected_state: String,
     cancelled: Arc<AtomicBool>,
+    idle_timeout: Duration,
 ) -> Result<OAuthResult, String> {
     // Non-blocking accept on every bound listener (IPv4 + IPv6) so the
     // deadline check below actually runs. A blocking accept() on a single
@@ -185,7 +217,7 @@ fn receive_loopback_callback(
             .map_err(|e| format!("set_nonblocking: {e}"))?;
     }
 
-    let deadline = std::time::Instant::now() + IDLE_TIMEOUT;
+    let deadline = std::time::Instant::now() + idle_timeout;
 
     loop {
         if cancelled.load(Ordering::SeqCst) {
@@ -195,7 +227,7 @@ fn receive_loopback_callback(
 
         if std::time::Instant::now() > deadline {
             eprintln!("[oauth] listener timed out waiting for callback");
-            return Err("Timed out waiting for sign-in (5 minutes).".into());
+            return Err(listen_timeout_message(idle_timeout));
         }
 
         for listener in &listeners {
@@ -276,7 +308,11 @@ fn receive_loopback_callback(
     }
 }
 
-fn start_loopback_listener(listeners: Vec<TcpListener>, state: String) -> PendingListener {
+fn start_loopback_listener(
+    listeners: Vec<TcpListener>,
+    state: String,
+    idle_timeout: Duration,
+) -> PendingListener {
     let cancelled = Arc::new(AtomicBool::new(false));
     let listener_cancelled = Arc::clone(&cancelled);
     let listener_state = state.clone();
@@ -286,6 +322,7 @@ fn start_loopback_listener(listeners: Vec<TcpListener>, state: String) -> Pendin
             listeners,
             listener_state,
             listener_cancelled,
+            idle_timeout,
         ));
     });
 
@@ -504,13 +541,17 @@ pub(crate) struct ExchangedOAuthCode {
 /// listener that is already accepting before the browser opens — binding after
 /// would leave a window where a very fast provider redirect hits a closed port
 /// — and both need a state and verifier that belong to exactly one attempt.
-/// They differ only in whether an identity provider is named and whether a
-/// nonce is sent, which is why those are the two parameters.
+/// A missing provider is allowed only through signin-start, which selects it.
+/// Callers must validate the final browser URL before it leaves native code.
+/// Continuation also sends a nonce to bind the browser result to its attempt.
 pub(crate) fn arm_oauth_flow(
     app: &AppHandle,
     identity_provider: Option<&str>,
     nonce: Option<&str>,
 ) -> Result<ArmedOAuthFlow, String> {
+    if identity_provider.is_some_and(|provider| provider.trim().is_empty()) {
+        return Err("A sign-in provider is required.".to_string());
+    }
     let state = uuid::Uuid::new_v4().to_string();
     let verifier = generate_code_verifier();
     let challenge = compute_code_challenge(&verifier);
@@ -563,7 +604,11 @@ pub(crate) fn arm_oauth_flow(
         let mut guard = listener_store()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *guard = Some(start_loopback_listener(listeners, state.clone()));
+        *guard = Some(start_loopback_listener(
+            listeners,
+            state.clone(),
+            listen_timeout_for(identity_provider),
+        ));
     }
     set_oauth_flow_active(true);
     eprintln!("[oauth] listener ready; opening provider is now safe");
@@ -977,7 +1022,8 @@ mod tests {
         // oauth_listen_for_code use, on an OS-assigned ephemeral port so this
         // test can't collide with a real running app on 53682.
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let pending = start_loopback_listener(vec![listener], "roundtrip".to_string());
+        let pending =
+            start_loopback_listener(vec![listener], "roundtrip".to_string(), IDLE_TIMEOUT);
 
         {
             let mut guard = listener_store().lock().unwrap();
@@ -1026,12 +1072,20 @@ mod tests {
 
         {
             let mut guard = listener_store().lock().unwrap();
-            *guard = Some(start_loopback_listener(vec![first], "first".to_string()));
+            *guard = Some(start_loopback_listener(
+                vec![first],
+                "first".to_string(),
+                IDLE_TIMEOUT,
+            ));
         }
         cancel_pending_listener(None).unwrap();
         {
             let mut guard = listener_store().lock().unwrap();
-            *guard = Some(start_loopback_listener(vec![second], "second".to_string()));
+            *guard = Some(start_loopback_listener(
+                vec![second],
+                "second".to_string(),
+                IDLE_TIMEOUT,
+            ));
         }
         {
             let guard = listener_store().lock().unwrap();
@@ -1078,7 +1132,8 @@ mod tests {
         // be accepted even when oauth_listen_for_code has not run yet.
         let listeners = bind_loopback_listeners(&[0]).expect("bind loopback listeners");
         let port = listeners[0].local_addr().unwrap().port();
-        let mut pending = start_loopback_listener(listeners, "test-state".to_string());
+        let mut pending =
+            start_loopback_listener(listeners, "test-state".to_string(), IDLE_TIMEOUT);
 
         let mut callback = TcpStream::connect((LOOPBACK_HOST, port))
             .expect("the callback listener is ready before opening the provider");
@@ -1102,7 +1157,7 @@ mod tests {
         use std::io::Read;
         let listeners = bind_loopback_listeners(&[0]).expect("bind loopback listeners");
         let port = listeners[0].local_addr().unwrap().port();
-        let mut pending = start_loopback_listener(listeners, state.to_string());
+        let mut pending = start_loopback_listener(listeners, state.to_string(), IDLE_TIMEOUT);
         let mut callback = TcpStream::connect((LOOPBACK_HOST, port)).expect("connect");
         callback.write_all(request).unwrap();
         let mut response = String::new();
@@ -1202,5 +1257,58 @@ mod tests {
                     .find("*guard = Some(PendingPkce")
                     .expect("PKCE replacement")
         );
+    }
+
+    #[test]
+    fn a_named_provider_waits_five_minutes_and_a_website_sign_in_waits_ninety_seconds() {
+        assert_eq!(listen_timeout_for(Some("Google")), Duration::from_secs(300));
+        assert_eq!(
+            listen_timeout_for(Some("MicrosoftPersonal")),
+            Duration::from_secs(300)
+        );
+        assert_eq!(listen_timeout_for(None), Duration::from_secs(90));
+        // The browser wait is shorter than the attempt, so tokens that arrive
+        // at the end of it still get a full "Continue as …" window.
+        use hq_desktop_core::session_continuation::{ATTEMPT_LIFETIME, CONFIRMATION_WINDOW};
+        assert!(listen_timeout_for(None) + CONFIRMATION_WINDOW <= ATTEMPT_LIFETIME);
+    }
+
+    #[test]
+    fn listen_timeout_message_names_five_minutes_and_ninety_seconds() {
+        assert_eq!(
+            listen_timeout_message(Duration::from_secs(300)),
+            "Timed out waiting for sign-in (5 minutes)."
+        );
+        assert_eq!(
+            listen_timeout_message(Duration::from_secs(90)),
+            "Timed out waiting for sign-in (90 seconds)."
+        );
+    }
+
+    #[test]
+    fn listener_timeout_ends_the_attempt_when_no_callback_arrives() {
+        let _serialize = STORE_TEST_LOCK.lock().unwrap();
+        let listeners = bind_loopback_listeners(&[0]).expect("bind loopback listeners");
+        let mut pending = start_loopback_listener(
+            listeners,
+            "timeout-state".to_string(),
+            Duration::from_millis(120),
+        );
+        let result = pending
+            .result
+            .take()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(2))
+            .expect("listener finished");
+        let message = match result {
+            Err(message) => message,
+            Ok(_) => panic!("a missed callback is a timeout"),
+        };
+        assert!(
+            message.starts_with("Timed out waiting for sign-in"),
+            "{message}"
+        );
+        pending.cancelled.store(true, Ordering::SeqCst);
+        pending.thread.take().unwrap().join().unwrap();
     }
 }

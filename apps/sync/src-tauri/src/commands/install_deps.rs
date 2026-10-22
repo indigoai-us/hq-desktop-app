@@ -25,7 +25,7 @@ use std::time::Duration;
 #[cfg(not(windows))]
 use std::time::Instant;
 
-use futures_util::future::join_all;
+use futures_util::future::{join_all, BoxFuture, FutureExt, Shared};
 #[cfg(unix)]
 use nix::sys::signal::{self, Signal};
 #[cfg(unix)]
@@ -492,6 +492,8 @@ static CANCEL_REGISTRY: std::sync::OnceLock<Arc<Mutex<HashMap<String, CancelStat
 #[derive(Default)]
 struct CancelState {
     cancelled: bool,
+    /// The handle runs an installer, which only a person's cancel may stop.
+    installer: bool,
     cleanup_failure: Option<CancellationCleanupFailure>,
     #[cfg(unix)]
     pgid: Option<i32>,
@@ -519,6 +521,20 @@ fn is_cancelled(handle: &str) -> bool {
 
 fn deregister_handle(handle: &str) {
     recover_lock(cancel_registry()).remove(handle);
+}
+
+/// Marks a handle as an installer run, so only a person's cancel stops it.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn mark_installer_handle(handle: &str) {
+    if let Some(state) = recover_lock(cancel_registry()).get_mut(handle) {
+        state.installer = true;
+    }
+}
+
+/// An installer stops only on a person's explicit cancel (`user`). A step
+/// timeout, a closing window or a reloaded page never stops one.
+fn cancel_allowed(installer: bool, user: Option<bool>) -> bool {
+    !installer || user == Some(true)
 }
 
 /// A non-process phase (such as waiting for the CLI update lock) still needs a
@@ -2327,27 +2343,33 @@ pub fn settings_json_with_env_path(settings_json: &str, new_path: &str) -> Resul
     Ok(rendered)
 }
 
-/// The result of writing the composed managed-toolchain PATH into the winning
-/// `.claude` settings file.
+/// The result of writing the composed managed-toolchain PATH into the
+/// `.claude` local settings file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SettingsPathWriteOutcome {
     /// Wrote the composed PATH into this settings file.
     Wrote(PathBuf),
-    /// No settings file to write into (the target file is absent). A skip, not an
-    /// error, so an already-installed machine without a base settings.json is not
-    /// treated as a failure.
+    /// Nothing to write into: the HQ folder has no `.claude` folder yet, or
+    /// settings.local.json exists but cannot be read. A skip, not an error, so a
+    /// machine where HQ is not installed is not treated as a failure.
     Skipped(String),
 }
 
-/// Compose the managed-toolchain-first PATH and write it into the `.claude`
-/// settings file the resolver actually READS for `hq_root` — settings.local.json
-/// when it defines a non-empty `env.PATH`, else settings.json — resolved through
-/// the single source of truth [`hq_desktop_core::paths::winning_settings_path_file`].
+/// The `.claude` settings file the managed PATH is written into.
+pub(crate) const MANAGED_SETTINGS_PATH_FILE: &str = "settings.local.json";
+
+/// Compose the managed-toolchain-first PATH and write it into
+/// `.claude/settings.local.json`, creating that file when it is missing. The
+/// released `.claude/settings.json` is never written (feedback 4ff48409). A
+/// local `env.PATH` overrides the base one, so after this write
+/// [`hq_desktop_core::paths::winning_settings_path_file`] reports `Local` and the
+/// resolver reads the file written here.
 ///
 /// Unix composes the managed dirs, login-shell PATH and existing entries;
 /// Windows composes its managed toolchain dirs with the native `;` separator.
-/// Both paths update only the file selected by the resolver's shared winning-file
-/// rule, so a stale foreign copy cannot continue shadowing the managed CLI.
+/// Existing entries come from the local file's PATH, or from the base file's
+/// PATH when the local file has none, so no directory the person relied on
+/// drops out.
 ///
 /// Reuses the existing staged-sibling + [`atomic_replace_file`] so a partial
 /// write is impossible, and canonicalizes the resolved file to require it stay
@@ -2362,43 +2384,78 @@ pub(crate) fn write_managed_toolchain_settings_path(
     #[cfg(windows)]
     let _ = (home, login_path);
 
-    let file = match hq_desktop_core::paths::winning_settings_path_file(hq_root) {
-        hq_desktop_core::paths::SettingsPathFile::Local => "settings.local.json",
-        // Base or None both write the generated base file, exactly as before the
-        // fix: the reader consults settings.json in both cases.
-        hq_desktop_core::paths::SettingsPathFile::Base
-        | hq_desktop_core::paths::SettingsPathFile::None => "settings.json",
-    };
-    let settings_path = hq_root.join(".claude").join(file);
+    // The machine PATH always goes into settings.local.json (feedback 4ff48409).
+    // settings.json is the released, locked file: writing env.PATH into it showed
+    // up as Core Drift after every setup pass. Claude Code lets a local env.PATH
+    // override the base one, so writing the local file is enough for sessions,
+    // and the resolver then reads the same file.
+    let claude_dir = hq_root.join(".claude");
+    let settings_path = claude_dir.join(MANAGED_SETTINGS_PATH_FILE);
+    let base_settings_path = claude_dir.join("settings.json");
     let contents = match std::fs::read_to_string(&settings_path) {
-        Ok(c) => c,
+        Ok(c) => Some(c),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // A dangling symlink also reads as NotFound. Refuse it rather than
+            // create a file wherever it points.
+            if std::fs::symlink_metadata(&settings_path).is_ok() {
+                return Err(format!(
+                    "refusing to write settings PATH through a dangling link at {}",
+                    settings_path.display()
+                ));
+            }
+            if !claude_dir.is_dir() {
+                return Ok(SettingsPathWriteOutcome::Skipped(format!(
+                    "no .claude folder at {} - skipped",
+                    claude_dir.display()
+                )));
+            }
+            None
+        }
+        // Unreadable for another reason (permissions, not a file): skip, as
+        // before, rather than fail the setup pass over it.
         Err(e) => {
             return Ok(SettingsPathWriteOutcome::Skipped(format!(
-                "no {file} at {} - skipped ({e})",
+                "cannot read {} - skipped ({e})",
                 settings_path.display()
             )));
         }
     };
 
-    // Canonicalization guard: the file exists (we just read it), so canonicalize
-    // it — a symlink resolves to its true location — and require it to stay inside
-    // the resolved HQ folder. A settings file symlinked out of the HQ tree is
-    // refused rather than followed, so the write cannot clobber an unrelated file.
+    // Canonicalization guard: canonicalize the existing file (or, when it is about
+    // to be created, its .claude folder) so a symlink resolves to its true
+    // location, and require it to stay inside the resolved HQ folder. A settings
+    // file or .claude folder linked out of the HQ tree is refused rather than
+    // followed, so the write cannot clobber an unrelated file.
     let canonical_root = std::fs::canonicalize(hq_root)
         .map_err(|e| format!("cannot canonicalize HQ folder {}: {e}", hq_root.display()))?;
-    let canonical_file = std::fs::canonicalize(&settings_path)
-        .map_err(|e| format!("cannot canonicalize {}: {e}", settings_path.display()))?;
-    if !canonical_file.starts_with(&canonical_root) {
+    let guarded = if contents.is_some() { &settings_path } else { &claude_dir };
+    let canonical_target = std::fs::canonicalize(guarded)
+        .map_err(|e| format!("cannot canonicalize {}: {e}", guarded.display()))?;
+    if !canonical_target.starts_with(&canonical_root) {
         return Err(format!(
             "refusing to write settings PATH outside the HQ folder: {} is not within {}",
-            canonical_file.display(),
+            canonical_target.display(),
             canonical_root.display()
         ));
     }
 
-    let existing_env_path = serde_json::from_str::<serde_json::Value>(&contents)
-        .ok()
-        .and_then(|v| v.get("env")?.get("PATH")?.as_str().map(|s| s.to_string()));
+    let env_path_of = |raw: &str| {
+        serde_json::from_str::<serde_json::Value>(raw)
+            .ok()
+            .and_then(|v| v.get("env")?.get("PATH")?.as_str().map(|s| s.to_string()))
+            .filter(|s| !s.is_empty())
+    };
+    // Keep the entries the person already had. The local PATH comes first; when
+    // it has none, seed from the base file's PATH, because the new local value
+    // overrides that one and its entries would otherwise drop out of sessions.
+    // The base file itself is only read, never written.
+    let existing_env_path = contents.as_deref().and_then(env_path_of).or_else(|| {
+        std::fs::read_to_string(&base_settings_path)
+            .ok()
+            .as_deref()
+            .and_then(env_path_of)
+    });
+    let contents = contents.unwrap_or_else(|| "{}".to_string());
     #[cfg(not(windows))]
     let composed = composed_settings_env_path(home, login_path, existing_env_path.as_deref());
     #[cfg(windows)]
@@ -2418,8 +2475,8 @@ pub(crate) fn write_managed_toolchain_settings_path(
     Ok(SettingsPathWriteOutcome::Wrote(settings_path))
 }
 
-/// Write the composed toolchain PATH into the winning `.claude` settings file
-/// (settings.local.json when it defines env.PATH, else settings.json) and
+/// Write the composed toolchain PATH into `.claude/settings.local.json` (never
+/// the released settings.json) and
 /// re-ensure the shell-profile PATH block.
 ///
 /// Invoked by the setup orchestrator after the deps stage on every installer
@@ -2606,13 +2663,17 @@ pub fn check_dep_in(tool: &str, path_dirs: &str) -> DepStatus {
 /// Set the cancel flag for the given handle.
 ///
 /// Returns `true` if the handle was registered (i.e. an install was in
-/// progress), `false` otherwise.
+/// progress) and was cancelled, `false` otherwise. A running installer is
+/// only cancelled when `user` is `Some(true)`: the person chose to stop it.
 #[tauri::command]
-pub fn cancel_install(handle: String) -> bool {
+pub fn cancel_install(handle: String, user: Option<bool>) -> bool {
     let mut reg = recover_lock(cancel_registry());
     let Some(state) = reg.get_mut(&handle) else {
         return false;
     };
+    if !cancel_allowed(state.installer, user) {
+        return false;
+    }
     state.cancelled = true;
     drop(reg);
 
@@ -5627,7 +5688,26 @@ fn write_user_path_value(env: &RegKey, value: &UserPathValue) -> Result<(), Stri
 
 #[cfg(windows)]
 pub fn append_user_path(new_dir: &Path) -> Result<(), String> {
-    let result = (|| {
+    let result = append_user_path_unrecorded(new_dir);
+    if result.is_err() {
+        let failure_scope = ACTIVE_ONBOARDING_FAILURE_SCOPE
+            .try_with(|scope| scope.clone())
+            .ok();
+        record_onboarding_failure_detail(
+            "deps",
+            failure_scope.as_ref(),
+            Some("path-write"),
+            OnboardingErrorCategory::Unknown,
+        );
+    }
+    result
+}
+
+/// [`append_user_path`] without marking the deps step failed. Registry
+/// errors go to the log; the caller gets plain copy.
+#[cfg(windows)]
+fn append_user_path_unrecorded(new_dir: &Path) -> Result<(), String> {
+    let result = (|| -> Result<(), String> {
         let dir_str = new_dir.to_string_lossy().to_string();
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
@@ -5666,18 +5746,7 @@ pub fn append_user_path(new_dir: &Path) -> Result<(), String> {
         Ok(())
     })();
 
-    if result.is_err() {
-        let failure_scope = ACTIVE_ONBOARDING_FAILURE_SCOPE
-            .try_with(|scope| scope.clone())
-            .ok();
-        record_onboarding_failure_detail(
-            "deps",
-            failure_scope.as_ref(),
-            Some("path-write"),
-            OnboardingErrorCategory::Unknown,
-        );
-    }
-    result
+    result.map_err(|error| plain_path_write_error(&error))
 }
 
 /// Remove `dir` from the user's persistent PATH. Idempotent.
@@ -5824,7 +5893,48 @@ async fn run_streaming<R: tauri::Runtime>(
     program: &str,
     args: &[&str],
 ) -> Result<String, String> {
-    run_streaming_with_npm_cache_blocking(app, program, args, None)
+    // The streaming runner waits on its child without yielding, so it runs on
+    // the blocking pool: on the async task it would stall the executor (and
+    // every sibling dep in the same `join_all` wave) until the child exits.
+    let app = app.clone();
+    let program = program.to_string();
+    let label = program.clone();
+    let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+    let locals = SetupTaskLocals::capture();
+    tokio::task::spawn_blocking(move || {
+        locals.run(move || {
+            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            // Installer executions (winget, scoop installs, msiexec, .msi or
+            // setup .exe) stay strictly serial: Windows allows one MSI
+            // install at a time and concurrent winget runs fail or queue.
+            // The lock is held until the install process exits.
+            let dependency = ACTIVE_SETUP_DEPENDENCY.try_with(|id| *id).ok();
+            let queued = std::cell::Cell::new(false);
+            run_installer_serialized(
+                &INSTALLER_EXECUTION_LOCK,
+                &program,
+                &arg_refs,
+                || {
+                    queued.set(true);
+                    if let Some(id) = dependency {
+                        emit_deps_tool(&app, id, DepsToolState::Queued);
+                    }
+                },
+                |state| emit_installer_run(&app, dependency, state),
+                || {
+                    if let (true, Some(id)) = (queued.get(), dependency) {
+                        emit_deps_tool(&app, id, DepsToolState::Installing);
+                    }
+                    run_streaming_with_npm_cache_blocking(&app, &program, &arg_refs, None)
+                },
+            )
+        })
+    })
+    .await
+    .unwrap_or_else(|error| {
+        eprintln!("[hq-deps] '{label}' runner stopped: {error}");
+        Err(INSTALL_STOPPED_ERROR.to_string())
+    })
 }
 
 #[cfg(windows)]
@@ -5837,6 +5947,9 @@ fn run_streaming_with_npm_cache_blocking<R: tauri::Runtime>(
     let setup_run_id = current_setup_run_id();
     let handle_id = Uuid::new_v4().to_string();
     register_cancel_handle(handle_id.clone());
+    if is_installer_program(program, args) {
+        mark_installer_handle(&handle_id);
+    }
 
     let search_path = extended_search_path();
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -6028,6 +6141,9 @@ fn run_streaming_with_npm_cache_blocking<R: tauri::Runtime>(
     let mut first_stream_err: Option<String> = None;
     let mut status = None;
     let mut cancel_signal_sent = false;
+    let started = std::time::Instant::now();
+    let wait_notice_after = install_wait_notice_after(program, args);
+    let mut wait_notice_sent = false;
 
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
@@ -6056,11 +6172,28 @@ fn run_streaming_with_npm_cache_blocking<R: tauri::Runtime>(
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
-        if is_cancelled(&handle_id) && !cancel_signal_sent {
+        let tick = runner_tick(
+            is_cancelled(&handle_id),
+            cancel_signal_sent,
+            started.elapsed(),
+            wait_notice_after,
+            wait_notice_sent,
+        );
+        if tick.terminate {
             if let Err(e) = terminate_process_tree(&handle_id) {
                 record_cleanup_failure(&handle_id, e);
             }
             cancel_signal_sent = true;
+        }
+
+        if tick.wait_notice {
+            // Never stop a slow install: Windows may be waiting on a
+            // permission prompt. Say so, and keep waiting for it to exit.
+            emit_install_wait(
+                app,
+                install_wait_signal(ACTIVE_SETUP_DEPENDENCY.try_with(|id| *id).ok()),
+            );
+            wait_notice_sent = true;
         }
 
         if is_cancelled(&handle_id) {
@@ -6661,10 +6794,23 @@ async fn install_git_windows(app: AppHandle) -> Result<String, String> {
     match pm {
         PackageManager::Winget => {
             emit_progress(&app, "Installing Git via winget...");
-            match winget_install(&app, "Git.Git").await {
+            // Git for Windows is a machine-wide installer, so Windows shows a
+            // UAC prompt. Tell the onboarding window before it appears.
+            emit_git_permission(&app, GitPermissionState::Requesting);
+            let install = winget_install(&app, "Git.Git").await;
+            emit_git_permission(&app, GitPermissionState::Done);
+            match install {
                 Ok(_) => {
-                    append_user_path(&program_files().join("Git").join("cmd"))?;
+                    // winget's exit code does not prove Git landed: run
+                    // `git --version` from the Git folder it installs to.
+                    let folder = verify_git_install(&winget_git_cmd_folders(), |folder| {
+                        check_dep_in("git", folder)
+                    })?;
+                    append_user_path(Path::new(&folder))?;
                     Ok("git installed via winget".to_string())
+                }
+                Err(error) if git_winget_failure_is_permission_declined(&error) => {
+                    Err(git_permission_declined_error())
                 }
                 Err(error) => resolve_git_winget_install_failure(error, || {
                     dependency_defs()
@@ -6687,6 +6833,41 @@ async fn install_git_windows(app: AppHandle) -> Result<String, String> {
             );
             install_managed_git(&app).await
         }
+    }
+}
+
+/// The `cmd` folders a winget Git for Windows install can land in: the
+/// machine-wide install, then the per-user one.
+#[cfg(windows)]
+fn winget_git_cmd_folders() -> Vec<String> {
+    [
+        program_files().join("Git").join("cmd"),
+        local_app_data().join("Programs").join("Git").join("cmd"),
+    ]
+    .iter()
+    .map(|folder| folder.to_string_lossy().into_owned())
+    .collect()
+}
+
+/// Puts the folder of the Git that runs now on the user PATH, so new
+/// terminals find it, unless the PATH they get already has it. Only
+/// `record_failure` runs (after an install) mark the deps step failed.
+#[cfg(windows)]
+fn ensure_git_on_user_path(record_failure: bool) -> Result<(), String> {
+    let status = check_dep_impl("git", None);
+    let Some(path) = status.path.filter(|_| status.installed) else {
+        return Err(GIT_DID_NOT_START_ERROR.to_string());
+    };
+    let effective_path = std::env::var("PATH").unwrap_or_default();
+    let Some(folder) = git_user_path_addition(&path.to_string_lossy(), &effective_path, |file| {
+        Path::new(file).is_file()
+    }) else {
+        return Ok(());
+    };
+    if record_failure {
+        append_user_path(Path::new(&folder))
+    } else {
+        append_user_path_unrecorded(Path::new(&folder))
     }
 }
 
@@ -7971,6 +8152,555 @@ fn is_concurrent_install_skip_result(result: &DepInstallResult) -> bool {
 }
 
 const WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE: i32 = 0x8A15_005E_u32 as i32;
+
+/// Windows runs one MSI install at a time (the `_MSIExecute` mutex) and
+/// concurrent winget runs fail or queue, so every installer execution holds
+/// this process-wide lock. Downloads, npm, and version probes do not.
+#[cfg_attr(not(windows), allow(dead_code))]
+static INSTALLER_EXECUTION_LOCK: Mutex<()> = Mutex::new(());
+
+/// Lowercased file name of `program`, accepting `\` and `/` separators.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn program_file_name(program: &str) -> String {
+    program
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase()
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn program_stem(file_name: &str) -> &str {
+    for ext in [".exe", ".cmd", ".bat", ".ps1"] {
+        if let Some(stem) = file_name.strip_suffix(ext) {
+            return stem;
+        }
+    }
+    file_name
+}
+
+/// True when running `program args` executes an installer (winget, a scoop
+/// install/update, msiexec, or a downloaded `.msi` / setup `.exe`). Those
+/// runs are serialized by [`INSTALLER_EXECUTION_LOCK`].
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_installer_program(program: &str, args: &[&str]) -> bool {
+    let file_name = program_file_name(program);
+    let stem = program_stem(&file_name);
+    match stem {
+        "winget" | "msiexec" => true,
+        "scoop" => args.first().is_some_and(|sub| {
+            matches!(
+                sub.to_ascii_lowercase().as_str(),
+                "install" | "update" | "uninstall" | "reset"
+            )
+        }),
+        _ => {
+            file_name.ends_with(".msi")
+                || (file_name.ends_with(".exe")
+                    && (stem.contains("setup") || stem.contains("installer")))
+        }
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+const GIT_PERMISSION_DECLINED_MARKER: &str = "[git-permission-declined]";
+
+/// Runs `run` (one streamed command, from spawn until the child exits) while
+/// holding `lock` when the command is an installer. The guard lives until
+/// `run` returns, so a winget install keeps the lock until winget and the
+/// installer it waits on have exited. `on_wait` fires once when another
+/// installer already holds the lock. `on_run` gets `Running` once the lock is
+/// taken and `Done` when the run ends, panics included, so the setup screen
+/// knows an installer is still running and never times it out.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn run_installer_serialized<T>(
+    lock: &Mutex<()>,
+    program: &str,
+    args: &[&str],
+    on_wait: impl FnOnce(),
+    on_run: impl Fn(InstallerRunState),
+    run: impl FnOnce() -> T,
+) -> T {
+    let _guard = is_installer_program(program, args).then(|| match lock.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            on_wait();
+            recover_lock(lock)
+        }
+    });
+    // Declared after the lock guard, so it drops first: `Done` is reported
+    // while the lock is still held.
+    let _run_end = _guard.is_some().then(|| {
+        on_run(InstallerRunState::Running);
+        InstallerRunEnd(&on_run)
+    });
+    run()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+enum InstallerRunState {
+    Running,
+    Done,
+}
+
+/// Reports `Done` when dropped, so an installer run that panics still ends.
+struct InstallerRunEnd<'a>(&'a dyn Fn(InstallerRunState));
+
+impl Drop for InstallerRunEnd<'_> {
+    fn drop(&mut self) {
+        (self.0)(InstallerRunState::Done);
+    }
+}
+
+/// A winget install still running after this long gets a waiting notice
+/// (Windows may be showing a permission prompt). It is never stopped.
+#[cfg_attr(not(windows), allow(dead_code))]
+const WINGET_WAIT_NOTICE_AFTER: Duration = Duration::from_secs(10 * 60);
+
+/// When to show the waiting notice for one streamed command, or `None`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn install_wait_notice_after(program: &str, args: &[&str]) -> Option<Duration> {
+    let file_name = program_file_name(program);
+    let is_winget = program_stem(&file_name) == "winget";
+    let is_install = args
+        .first()
+        .is_some_and(|sub| matches!(sub.to_ascii_lowercase().as_str(), "install" | "upgrade"));
+    (is_winget && is_install).then_some(WINGET_WAIT_NOTICE_AFTER)
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn install_wait_notice_due(elapsed: Duration, after: Option<Duration>) -> bool {
+    after.is_some_and(|after| elapsed > after)
+}
+
+/// What the Windows runner does on one pass of its wait loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+struct RunnerTick {
+    terminate: bool,
+    wait_notice: bool,
+}
+
+/// The runner stops a child only when the person cancelled. Time alone only
+/// brings up the waiting notice, once.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn runner_tick(
+    cancelled: bool,
+    cancel_signal_sent: bool,
+    elapsed: Duration,
+    wait_notice_after: Option<Duration>,
+    wait_notice_sent: bool,
+) -> RunnerTick {
+    RunnerTick {
+        terminate: cancelled && !cancel_signal_sent,
+        wait_notice: !wait_notice_sent && install_wait_notice_due(elapsed, wait_notice_after),
+    }
+}
+
+// "[install-retry]" tells the setup screen to show its Try again button and
+// the text after the marker (onboarding-setup.ts `depsFailureRecovery`).
+#[cfg_attr(not(windows), allow(dead_code))]
+const INSTALL_STOPPED_ERROR: &str =
+    "[install-retry] An install stopped before it finished. Select Try again.";
+#[cfg_attr(not(windows), allow(dead_code))]
+const GIT_DID_NOT_START_ERROR: &str =
+    "[install-retry] Git could not be started after installing. Select Try again.";
+#[cfg_attr(not(windows), allow(dead_code))]
+const PATH_WRITE_ERROR: &str = "HQ could not update the Windows PATH setting.";
+/// The setup step's form of [`PATH_WRITE_ERROR`], where the Try again button shows.
+#[cfg_attr(not(windows), allow(dead_code))]
+const PATH_WRITE_RETRY_ERROR: &str =
+    "[install-retry] HQ could not update the Windows PATH setting. Select Try again.";
+
+/// Adds the Try again tag to a PATH write error on the setup step only. Other
+/// callers keep the plain copy.
+fn deps_step_error(error: String) -> String {
+    if error == PATH_WRITE_ERROR {
+        PATH_WRITE_RETRY_ERROR.to_string()
+    } else {
+        error
+    }
+}
+
+/// Logs a raw registry error and returns the copy the setup screen shows.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn plain_path_write_error(raw: &str) -> String {
+    eprintln!("[hq-deps] user PATH update failed: {raw}");
+    PATH_WRITE_ERROR.to_string()
+}
+
+/// Where the waiting notice goes: the Git permission notice for Git, the
+/// tool line for any other dependency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+enum InstallWaitSignal {
+    GitPermission,
+    Tool(&'static str),
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn install_wait_signal(dependency: Option<&'static str>) -> Option<InstallWaitSignal> {
+    match dependency? {
+        "git" => Some(InstallWaitSignal::GitPermission),
+        // Downloaded, never run through a Windows installer.
+        "jq" | "yq" => None,
+        id => Some(InstallWaitSignal::Tool(id)),
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn emit_install_wait<R: tauri::Runtime>(app: &AppHandle<R>, signal: Option<InstallWaitSignal>) {
+    match signal {
+        Some(InstallWaitSignal::GitPermission) => {
+            emit_git_permission(app, GitPermissionState::Waiting)
+        }
+        Some(InstallWaitSignal::Tool(id)) => emit_deps_tool(app, id, DepsToolState::Waiting),
+        None => {}
+    }
+}
+
+/// The PATH folder for a resolved `git.exe`. Git for Windows' `bin` and
+/// `mingw64\bin` copies map to its `cmd` folder, but only when
+/// `cmd\git.exe` exists there; Chocolatey, Cygwin and MSYS2 keep their
+/// `bin` folder. `None` unless the folder returned holds a `git.exe`
+/// (`is_file` is asked about full file paths).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn git_path_entry_for(git_exe: &str, is_file: impl Fn(&str) -> bool) -> Option<String> {
+    let parts: Vec<&str> = git_exe.split(['\\', '/']).collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let folder = &parts[..parts.len() - 1];
+    let mut entry = folder.join("\\");
+    if folder
+        .last()
+        .is_some_and(|name| name.eq_ignore_ascii_case("bin"))
+        && folder.len() >= 2
+    {
+        let mut root = &folder[..folder.len() - 1];
+        if root
+            .last()
+            .is_some_and(|name| name.eq_ignore_ascii_case("mingw64"))
+        {
+            root = &root[..root.len() - 1];
+        }
+        let cmd = format!("{}\\cmd", root.join("\\"));
+        if is_file(&format!("{cmd}\\git.exe")) {
+            entry = cmd;
+        }
+    }
+    is_file(&format!("{entry}\\git.exe")).then_some(entry)
+}
+
+/// True when `folder` is already one of the `;`-separated `path` entries
+/// (case and trailing `\` ignored).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn path_list_contains(path: &str, folder: &str) -> bool {
+    let normalize = |entry: &str| {
+        entry
+            .trim()
+            .trim_end_matches(['\\', '/'])
+            .to_ascii_lowercase()
+    };
+    let folder = normalize(folder);
+    !folder.is_empty() && path.split(';').any(|entry| normalize(entry) == folder)
+}
+
+/// The folder to add to the user PATH for the Git at `git_exe`, or `None`
+/// when there is nothing to add: no usable folder, or new terminals already
+/// find it through `effective_path`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn git_user_path_addition(
+    git_exe: &str,
+    effective_path: &str,
+    is_file: impl Fn(&str) -> bool,
+) -> Option<String> {
+    git_path_entry_for(git_exe, is_file)
+        .filter(|folder| !path_list_contains(effective_path, folder))
+}
+
+/// After a Git install, runs `git --version` from each expected Git folder
+/// and returns the first folder where it works. That folder goes on PATH.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn verify_git_install(
+    folders: &[String],
+    probe: impl Fn(&str) -> DepStatus,
+) -> Result<String, String> {
+    folders
+        .iter()
+        .find(|folder| {
+            let status = probe(folder);
+            status.installed
+                && status
+                    .version
+                    .as_deref()
+                    .is_some_and(|version| version.trim_start().starts_with("git version"))
+        })
+        .cloned()
+        .ok_or_else(|| GIT_DID_NOT_START_ERROR.to_string())
+}
+
+/// ERROR_CANCELLED: the user answered No at the UAC prompt.
+#[cfg_attr(not(windows), allow(dead_code))]
+const WINDOWS_ERROR_CANCELLED: i32 = 1223;
+#[cfg_attr(not(windows), allow(dead_code))]
+const HRESULT_ERROR_CANCELLED: i32 = 0x8007_04C7_u32 as i32;
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn winget_output_indicates_permission_declined(exit_code: Option<i32>, output: &str) -> bool {
+    if matches!(
+        exit_code,
+        Some(WINDOWS_ERROR_CANCELLED) | Some(HRESULT_ERROR_CANCELLED)
+    ) {
+        return true;
+    }
+    let lower = output.to_ascii_lowercase();
+    if lower.contains("0x800704c7")
+        || lower.contains("canceled by the user")
+        || lower.contains("cancelled by the user")
+    {
+        return true;
+    }
+    // "1223" as a whole number, not a substring of a larger one.
+    lower
+        .split(|c: char| !c.is_ascii_digit())
+        .any(|token| token == "1223")
+}
+
+/// Classifies a failed Git winget run from its error string and the streamed
+/// command's recorded diagnostic (winget prints the installer result on
+/// stdout, which the error string does not carry).
+#[cfg(any(test, windows))]
+fn git_winget_failure_indicates_permission_declined(
+    error: &str,
+    diagnostic: Option<&SetupCommandDiagnostic>,
+) -> bool {
+    let exit_code = diagnostic
+        .and_then(|diagnostic| diagnostic.exit_code)
+        .or_else(|| winget_exit_code_from_error(error));
+    let mut output = error.to_string();
+    if let Some(diagnostic) = diagnostic {
+        output.push('\n');
+        output.push_str(&diagnostic.stdout);
+        output.push('\n');
+        output.push_str(&diagnostic.stderr);
+    }
+    winget_output_indicates_permission_declined(exit_code, &output)
+}
+
+#[cfg(windows)]
+#[cfg_attr(not(windows), allow(dead_code))]
+fn git_winget_failure_is_permission_declined(error: &str) -> bool {
+    let diagnostic = ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR
+        .try_with(|collector| collector.current())
+        .ok()
+        .flatten();
+    git_winget_failure_indicates_permission_declined(error, diagnostic.as_ref())
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn git_permission_declined_error() -> String {
+    format!("{GIT_PERMISSION_DECLINED_MARKER} Windows permission to install Git was declined.")
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+const GIT_PERMISSION_EVENT: &str = "setup:git-permission";
+#[cfg_attr(not(windows), allow(dead_code))]
+const DEPS_TOOL_EVENT: &str = "setup:deps-tool";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+enum GitPermissionState {
+    Requesting,
+    /// Git is still installing after the wait budget; Windows may be waiting
+    /// on a permission prompt the person has not seen.
+    Waiting,
+    Done,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn git_permission_payload(state: GitPermissionState) -> serde_json::Value {
+    let state = match state {
+        GitPermissionState::Requesting => "requesting",
+        GitPermissionState::Waiting => "waiting",
+        GitPermissionState::Done => "done",
+    };
+    serde_json::json!({ "state": state })
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn emit_git_permission<R: tauri::Runtime>(app: &AppHandle<R>, state: GitPermissionState) {
+    let _ = app.emit_to("main", GIT_PERMISSION_EVENT, git_permission_payload(state));
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DepsToolState {
+    Installing,
+    /// Waiting for another installer to finish (Windows runs one at a time).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Queued,
+    /// Still installing after the wait budget.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Waiting,
+    Done,
+    Failed,
+}
+
+fn deps_tool_payload(id: &str, state: DepsToolState) -> serde_json::Value {
+    let state = match state {
+        DepsToolState::Installing => "installing",
+        DepsToolState::Queued => "queued",
+        DepsToolState::Waiting => "waiting",
+        DepsToolState::Done => "done",
+        DepsToolState::Failed => "failed",
+    };
+    serde_json::json!({ "id": id, "state": state })
+}
+
+fn deps_tool_settled_state(status: &DepInstallStatus) -> DepsToolState {
+    match status {
+        DepInstallStatus::Ok | DepInstallStatus::Skipped => DepsToolState::Done,
+        DepInstallStatus::Cancelled | DepInstallStatus::Failed => DepsToolState::Failed,
+    }
+}
+
+fn emit_deps_tool<R: tauri::Runtime>(app: &AppHandle<R>, id: &str, state: DepsToolState) {
+    let _ = app.emit_to("main", DEPS_TOOL_EVENT, deps_tool_payload(id, state));
+}
+
+/// Tells the setup screen an installer is running (or has ended). While one
+/// runs, the screen's step timeout only changes what it says.
+#[cfg_attr(not(windows), allow(dead_code))]
+const INSTALLER_RUN_EVENT: &str = "setup:installer-run";
+
+/// The installers running now, by dependency id (`None` when the installer
+/// is not tied to a known tool). `seq` goes up on every change, so the setup
+/// screen can drop an event older than the snapshot it already has.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct InstallerRunsSnapshot {
+    seq: u64,
+    running: Vec<Option<String>>,
+}
+
+/// Kept in the backend so a reloaded setup screen still knows an installer
+/// is running and never times it out.
+#[derive(Debug, Default)]
+struct InstallerRuns {
+    seq: u64,
+    running: Vec<Option<String>>,
+}
+
+impl InstallerRuns {
+    const fn new() -> Self {
+        Self {
+            seq: 0,
+            running: Vec::new(),
+        }
+    }
+
+    fn apply(&mut self, id: Option<&str>, state: InstallerRunState) -> InstallerRunsSnapshot {
+        self.seq += 1;
+        match state {
+            InstallerRunState::Running => self.running.push(id.map(str::to_string)),
+            InstallerRunState::Done => {
+                if let Some(index) = self.running.iter().position(|run| run.as_deref() == id) {
+                    self.running.remove(index);
+                }
+            }
+        }
+        self.snapshot()
+    }
+
+    fn snapshot(&self) -> InstallerRunsSnapshot {
+        InstallerRunsSnapshot {
+            seq: self.seq,
+            running: self.running.clone(),
+        }
+    }
+}
+
+static INSTALLER_RUNS: Mutex<InstallerRuns> = Mutex::new(InstallerRuns::new());
+
+/// The installers running now. The setup screen reads this when it opens,
+/// including after a reload in the middle of an install.
+#[tauri::command]
+pub fn installer_runs_active() -> InstallerRunsSnapshot {
+    recover_lock(&INSTALLER_RUNS).snapshot()
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn installer_run_payload(
+    id: Option<&str>,
+    state: InstallerRunState,
+    runs: &InstallerRunsSnapshot,
+) -> serde_json::Value {
+    let state = match state {
+        InstallerRunState::Running => "running",
+        InstallerRunState::Done => "done",
+    };
+    serde_json::json!({ "id": id, "state": state, "seq": runs.seq, "running": runs.running })
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn emit_installer_run<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    id: Option<&str>,
+    state: InstallerRunState,
+) {
+    let runs = recover_lock(&INSTALLER_RUNS).apply(id, state);
+    let _ = app.emit_to(
+        "main",
+        INSTALLER_RUN_EVENT,
+        installer_run_payload(id, state, &runs),
+    );
+}
+
+/// Runs one future at a time. A call made while one is running joins it and
+/// gets the same result. A call after it finished starts a new one.
+struct SingleFlight<T: Clone> {
+    current: Mutex<Option<Shared<BoxFuture<'static, T>>>>,
+}
+
+impl<T: Clone + Send + Sync + 'static> SingleFlight<T> {
+    const fn new() -> Self {
+        Self {
+            current: Mutex::new(None),
+        }
+    }
+
+    fn run(&self, start: impl FnOnce() -> BoxFuture<'static, T>) -> Shared<BoxFuture<'static, T>> {
+        let mut current = recover_lock(&self.current);
+        if let Some(running) = current.as_ref().filter(|future| future.peek().is_none()) {
+            return running.clone();
+        }
+        let future = start().shared();
+        *current = Some(future.clone());
+        future
+    }
+
+    fn in_flight(&self) -> bool {
+        recover_lock(&self.current)
+            .as_ref()
+            .is_some_and(|future| future.peek().is_none())
+    }
+}
+
+static INSTALL_DEPS_FLIGHT: SingleFlight<Result<(), String>> = SingleFlight::new();
+
+fn setup_installing_from(deps_in_flight: bool, running_installers: usize) -> bool {
+    deps_in_flight || running_installers > 0
+}
+
+/// True while setup is installing tools. A hot UI reload waits until it ends,
+/// so a reload never lands in the middle of an install.
+pub fn setup_installing() -> bool {
+    setup_installing_from(
+        INSTALL_DEPS_FLIGHT.in_flight(),
+        recover_lock(&INSTALLER_RUNS).running.len(),
+    )
+}
 const QMD_POST_INSTALL_PROBE_COMMAND: &str = "qmd post-install probe";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8706,11 +9436,36 @@ fn finish_orchestrated_dep_install(
     }
 }
 
+/// Says a tool is installing only once it is known to be missing, so a tool
+/// that is already present never shows on the running-tools line. Returns
+/// whether the tool needs installing.
+fn announce_install_if_missing(satisfied: bool, announce: impl FnOnce()) -> bool {
+    if satisfied {
+        return false;
+    }
+    announce();
+    true
+}
+
 async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), String> {
-    if dep_is_satisfied(app, dep) {
+    if !announce_install_if_missing(dep_is_satisfied(app, dep), || {
+        emit_deps_tool(app, dep.id, DepsToolState::Installing)
+    }) {
+        // A Git that already works only gets its folder on the user PATH when
+        // new terminals would not find it. That is not worth failing setup for.
+        #[cfg(windows)]
+        if dep.id == "git" {
+            if let Err(error) = ensure_git_on_user_path(false) {
+                eprintln!("[hq-deps] git PATH update skipped: {error}");
+            }
+        }
         return Ok(());
     }
 
+    install_orchestrated_dep_unmapped(app, dep).await.map_err(deps_step_error)
+}
+
+async fn install_orchestrated_dep_unmapped(app: &AppHandle, dep: &DepDef) -> Result<(), String> {
     let install_result = match dep.id {
         #[cfg(not(windows))]
         "homebrew" => install_homebrew(app.clone()).await,
@@ -8743,11 +9498,28 @@ async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), S
         };
     }
 
-    finish_orchestrated_dep_install(dep.label, install_result, dep_is_satisfied(app, dep))
+    finish_orchestrated_dep_install(dep.label, install_result, dep_is_satisfied(app, dep))?;
+    #[cfg(windows)]
+    if dep.id == "git" {
+        ensure_git_on_user_path(true)?;
+    }
+    Ok(())
 }
 
+/// Installs the setup dependencies. A call made while an install is already
+/// running (a reloaded setup screen) joins that install instead of starting
+/// a second one.
 #[tauri::command]
 pub async fn install_deps(
+    app: AppHandle,
+    failure_scope: Option<crate::commands::install_stages::OnboardingFailureScope>,
+) -> Result<(), String> {
+    INSTALL_DEPS_FLIGHT
+        .run(|| install_deps_inner(app, failure_scope).boxed())
+        .await
+}
+
+async fn install_deps_inner(
     app: AppHandle,
     failure_scope: Option<crate::commands::install_stages::OnboardingFailureScope>,
 ) -> Result<(), String> {
@@ -8812,12 +9584,9 @@ pub async fn install_deps(
                     .await;
                 let cancellation = cancellation_collector.take();
                 let cleanup_reported = cancellation_collector.cleanup_failure_reported();
-                (
-                    result_from_install(dep, install_result, cancellation.as_ref()),
-                    collector.take(),
-                    cancellation,
-                    cleanup_reported,
-                )
+                let result = result_from_install(dep, install_result, cancellation.as_ref());
+                emit_deps_tool(&app, dep.id, deps_tool_settled_state(&result.status));
+                (result, collector.take(), cancellation, cleanup_reported)
             }
         }))
         .await;
@@ -10373,18 +11142,22 @@ mod install_deps_tests {
         );
     }
 
-    /// When only the base settings.json defines env.PATH the writer targets it,
-    /// exactly as before the fix — and the rewrite is idempotent.
+    /// Feedback 4ff48409: when only the released settings.json defines env.PATH,
+    /// the writer must leave that file byte-for-byte alone and put the composed
+    /// PATH in settings.local.json instead, keeping the base PATH's entries and
+    /// every existing local key. The rewrite is idempotent.
     #[cfg(not(windows))]
     #[test]
-    fn write_managed_settings_path_falls_back_to_base_and_is_idempotent() {
+    fn write_managed_settings_path_writes_local_not_base_and_is_idempotent() {
         let hq = tempfile::TempDir::new().unwrap();
         let home = tempfile::TempDir::new().unwrap();
         let claude = hq.path().join(".claude");
         std::fs::create_dir_all(&claude).unwrap();
+        let base = "{\"model\":\"x\",\"env\":{\"PATH\":\"/opt/homebrew/bin:/custom/tools\"}}";
+        std::fs::write(claude.join("settings.json"), base).unwrap();
         std::fs::write(
-            claude.join("settings.json"),
-            "{\"model\":\"x\",\"env\":{\"PATH\":\"/opt/homebrew/bin\"}}",
+            claude.join("settings.local.json"),
+            "{\"permissions\":{\"allow\":[\"Bash(ls)\"]},\"env\":{\"HQ_FOO\":\"1\"}}",
         )
         .unwrap();
 
@@ -10392,32 +11165,126 @@ mod install_deps_tests {
             write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin:/bin").unwrap();
         assert_eq!(
             first,
-            SettingsPathWriteOutcome::Wrote(claude.join("settings.json"))
+            SettingsPathWriteOutcome::Wrote(claude.join("settings.local.json"))
         );
-        let after_first = std::fs::read_to_string(claude.join("settings.json")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(claude.join("settings.json")).unwrap(),
+            base,
+            "the released settings.json must not be rewritten"
+        );
+        let after_first = std::fs::read_to_string(claude.join("settings.local.json")).unwrap();
 
         let second =
             write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin:/bin").unwrap();
         assert_eq!(
             second,
-            SettingsPathWriteOutcome::Wrote(claude.join("settings.json"))
+            SettingsPathWriteOutcome::Wrote(claude.join("settings.local.json"))
         );
-        let after_second = std::fs::read_to_string(claude.join("settings.json")).unwrap();
+        let after_second = std::fs::read_to_string(claude.join("settings.local.json")).unwrap();
         assert_eq!(after_first, after_second, "the rewrite must be idempotent");
+        assert_eq!(std::fs::read_to_string(claude.join("settings.json")).unwrap(), base);
+
         let doc: serde_json::Value = serde_json::from_str(&after_second).unwrap();
-        assert_eq!(doc["model"].as_str(), Some("x"));
+        let path = doc["env"]["PATH"].as_str().unwrap();
+        let managed = managed_tool_paths_in(home.path());
+        assert!(path.starts_with(&managed[0]), "managed node bin must be first: {path}");
+        // Entries the person had in the base PATH survive in the local PATH.
+        assert!(path.split(':').any(|seg| seg == "/custom/tools"), "{path}");
+        // Existing local values are preserved.
+        assert_eq!(doc["env"]["HQ_FOO"].as_str(), Some("1"));
+        assert_eq!(doc["permissions"]["allow"][0].as_str(), Some("Bash(ls)"));
+        // The resolver now reads the file the writer wrote.
+        assert_eq!(
+            hq_desktop_core::paths::winning_settings_path_file(hq.path()),
+            hq_desktop_core::paths::SettingsPathFile::Local
+        );
     }
 
-    /// A missing target settings file is a skip, not an error.
+    /// Feedback 4ff48409: with no PATH anywhere and no local file, the writer
+    /// creates settings.local.json and never touches settings.json.
     #[cfg(not(windows))]
     #[test]
-    fn write_managed_settings_path_skips_when_no_settings_file() {
+    fn write_managed_settings_path_creates_local_file_and_leaves_base_alone() {
         let hq = tempfile::TempDir::new().unwrap();
         let home = tempfile::TempDir::new().unwrap();
-        std::fs::create_dir_all(hq.path().join(".claude")).unwrap();
+        let claude = hq.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        let base = "{\"model\":\"x\"}";
+        std::fs::write(claude.join("settings.json"), base).unwrap();
+
+        let outcome =
+            write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin:/bin").unwrap();
+        assert_eq!(
+            outcome,
+            SettingsPathWriteOutcome::Wrote(claude.join("settings.local.json"))
+        );
+        assert_eq!(std::fs::read_to_string(claude.join("settings.json")).unwrap(), base);
+        let doc: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(claude.join("settings.local.json")).unwrap(),
+        )
+        .unwrap();
+        let path = doc["env"]["PATH"].as_str().unwrap();
+        assert!(path.split(':').any(|seg| seg == "/usr/bin"), "{path}");
+        assert_eq!(doc.as_object().unwrap().len(), 1, "only env is added: {doc}");
+
+        // Same with no settings.json at all.
+        let hq2 = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(hq2.path().join(".claude")).unwrap();
+        let outcome =
+            write_managed_toolchain_settings_path(hq2.path(), home.path(), "/usr/bin").unwrap();
+        assert_eq!(
+            outcome,
+            SettingsPathWriteOutcome::Wrote(hq2.path().join(".claude/settings.local.json"))
+        );
+        assert!(!hq2.path().join(".claude/settings.json").exists());
+    }
+
+    /// No .claude folder means HQ is not installed there yet: a skip, not an
+    /// error, and nothing is created.
+    #[cfg(not(windows))]
+    #[test]
+    fn write_managed_settings_path_skips_when_no_claude_folder() {
+        let hq = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
         let outcome =
             write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin").unwrap();
         assert!(matches!(outcome, SettingsPathWriteOutcome::Skipped(_)));
+        assert!(!hq.path().join(".claude").exists());
+    }
+
+    /// A dangling settings.local.json link is refused rather than followed to
+    /// create a file wherever it points.
+    #[cfg(not(windows))]
+    #[test]
+    fn write_managed_settings_path_refuses_a_dangling_local_link() {
+        let hq = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        let claude = hq.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        let target = outside.path().join("not-yet.json");
+        std::os::unix::fs::symlink(&target, claude.join("settings.local.json")).unwrap();
+
+        let err =
+            write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin").unwrap_err();
+        assert!(err.contains("dangling link"), "unexpected error: {err}");
+        assert!(!target.exists());
+    }
+
+    /// A .claude folder linked out of the HQ folder is refused when the local
+    /// file would be created inside it.
+    #[cfg(not(windows))]
+    #[test]
+    fn write_managed_settings_path_refuses_a_claude_folder_outside_the_hq_folder() {
+        let hq = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        std::os::unix::fs::symlink(outside.path(), hq.path().join(".claude")).unwrap();
+
+        let err =
+            write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin").unwrap_err();
+        assert!(err.contains("outside the HQ folder"), "unexpected error: {err}");
+        assert!(!outside.path().join("settings.local.json").exists());
     }
 
     /// A settings file symlinked OUT of the HQ folder is refused, so the write
@@ -10452,9 +11319,9 @@ mod install_deps_tests {
         let home = tempfile::TempDir::new().unwrap();
         let claude = hq.path().join(".claude");
         std::fs::create_dir_all(&claude).unwrap();
-        // No file defines env.PATH -> target is settings.json; it exists but is a
-        // JSON array, so the composer refuses it as a non-object.
-        std::fs::write(claude.join("settings.json"), "[]").unwrap();
+        // The target settings.local.json exists but is a JSON array, so the
+        // composer refuses it as a non-object instead of replacing it.
+        std::fs::write(claude.join("settings.local.json"), "[]").unwrap();
         let err =
             write_managed_toolchain_settings_path(hq.path(), home.path(), "/usr/bin").unwrap_err();
         assert!(err.contains("not an object"), "unexpected error: {err}");
@@ -10502,7 +11369,7 @@ mod install_deps_tests {
 
     #[test]
     fn test_cancel_install_unknown_handle_returns_false() {
-        let result = cancel_install("handle-that-does-not-exist-abc999".to_string());
+        let result = cancel_install("handle-that-does-not-exist-abc999".to_string(), None);
         assert!(!result);
     }
 
@@ -10511,7 +11378,7 @@ mod install_deps_tests {
         let handle = "test-handle-registered-001".to_string();
 
         register_cancel_handle(handle.clone());
-        let result = cancel_install(handle);
+        let result = cancel_install(handle, None);
 
         assert!(result);
     }
@@ -10521,7 +11388,7 @@ mod install_deps_tests {
         let handle = Uuid::new_v4().to_string();
         register_cancel_handle(handle.clone());
 
-        assert!(cancel_install(handle.clone()));
+        assert!(cancel_install(handle.clone(), None));
         assert!(cancel_registry().lock().unwrap()[&handle].cancelled);
     }
 
@@ -14141,7 +15008,7 @@ mod cancellation_reporting_tests {
             handle: Uuid::new_v4().to_string(),
         };
         register_cancel_handle(registration.handle.clone());
-        assert!(cancel_install(registration.handle.clone()));
+        assert!(cancel_install(registration.handle.clone(), None));
 
         let collector = InstallCancellationCollector::new();
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -14514,5 +15381,741 @@ mod cwrsync_fstab_tests {
         let toolchain = tempfile::tempdir().unwrap();
         assert!(!repair_managed_cwrsync_fstab_in(toolchain.path()).unwrap());
         assert!(!toolchain.path().join("etc").exists());
+    }
+}
+
+#[cfg(test)]
+mod install_deps_windows_onboarding_tests {
+    use super::*;
+
+    #[test]
+    fn installer_programs_are_serialized() {
+        assert!(is_installer_program(
+            "winget",
+            &["install", "--id", "Git.Git"]
+        ));
+        assert!(is_installer_program(
+            r"C:\Users\me\AppData\Local\Microsoft\WindowsApps\winget.exe",
+            &["install"]
+        ));
+        assert!(is_installer_program(
+            "WINGET.EXE",
+            &["upgrade", "--id", "Git.Git"]
+        ));
+        assert!(is_installer_program("scoop", &["install", "git"]));
+        assert!(is_installer_program("scoop.cmd", &["update", "gh"]));
+        assert!(is_installer_program("msiexec", &["/i", "node.msi", "/qn"]));
+        assert!(is_installer_program(
+            r"C:\Windows\System32\msiexec.exe",
+            &["/i", "x.msi"]
+        ));
+        assert!(is_installer_program(r"C:\Temp\hq\node-v22-x64.msi", &[]));
+        assert!(is_installer_program(
+            r"C:\Temp\hq\Git-2.47.0-64-bit-setup.exe",
+            &["/VERYSILENT"]
+        ));
+        assert!(is_installer_program(
+            r"C:\Temp\hq\GitHubCLI-installer.exe",
+            &[]
+        ));
+    }
+
+    #[test]
+    fn non_installer_programs_are_not_serialized() {
+        assert!(!is_installer_program(
+            "npm",
+            &["install", "-g", "@indigoai-us/hq-cli"]
+        ));
+        assert!(!is_installer_program("npm.cmd", &["install", "-g", "qmd"]));
+        assert!(!is_installer_program("node", &["--version"]));
+        assert!(!is_installer_program("git", &["--version"]));
+        assert!(!is_installer_program("scoop", &["list"]));
+        assert!(!is_installer_program("scoop", &[]));
+        assert!(!is_installer_program("/usr/local/bin/brew", &["--version"]));
+    }
+
+    #[test]
+    fn winget_wait_notice_is_due_after_ten_minutes_for_winget_installs_only() {
+        assert_eq!(WINGET_WAIT_NOTICE_AFTER, Duration::from_secs(600));
+        assert_eq!(
+            install_wait_notice_after("winget", &["install", "--id", "Git.Git"]),
+            Some(WINGET_WAIT_NOTICE_AFTER)
+        );
+        assert_eq!(
+            install_wait_notice_after(r"C:\x\winget.exe", &["upgrade", "--id", "Git.Git"]),
+            Some(WINGET_WAIT_NOTICE_AFTER)
+        );
+        assert_eq!(install_wait_notice_after("winget", &["--version"]), None);
+        assert_eq!(
+            install_wait_notice_after("npm", &["install", "-g", "qmd"]),
+            None
+        );
+        assert_eq!(
+            install_wait_notice_after("scoop", &["install", "git"]),
+            None
+        );
+    }
+
+    #[test]
+    fn install_wait_notice_is_due_only_after_the_budget() {
+        let after = Some(WINGET_WAIT_NOTICE_AFTER);
+        assert!(!install_wait_notice_due(Duration::ZERO, after));
+        assert!(!install_wait_notice_due(Duration::from_secs(600), after));
+        assert!(install_wait_notice_due(Duration::from_secs(601), after));
+        assert!(!install_wait_notice_due(Duration::from_secs(100_000), None));
+    }
+
+    #[test]
+    fn install_wait_notice_targets_the_git_permission_notice_for_git() {
+        assert_eq!(
+            install_wait_signal(Some("git")),
+            Some(InstallWaitSignal::GitPermission)
+        );
+        assert_eq!(
+            install_wait_signal(Some("gh")),
+            Some(InstallWaitSignal::Tool("gh"))
+        );
+        assert_eq!(install_wait_signal(None), None);
+        // Gate 2 NEW-4: jq and yq are downloaded, never installed by a Windows
+        // installer, so they never get the permission wording.
+        assert_eq!(install_wait_signal(Some("jq")), None);
+        assert_eq!(install_wait_signal(Some("yq")), None);
+        assert_eq!(
+            git_permission_payload(GitPermissionState::Waiting),
+            serde_json::json!({ "state": "waiting" })
+        );
+        assert_eq!(
+            deps_tool_payload("gh", DepsToolState::Waiting),
+            serde_json::json!({ "id": "gh", "state": "waiting" })
+        );
+        assert_eq!(
+            deps_tool_payload("jq", DepsToolState::Queued),
+            serde_json::json!({ "id": "jq", "state": "queued" })
+        );
+    }
+
+    #[test]
+    fn the_runner_never_stops_a_slow_install_on_its_own() {
+        // Gate 2 F1/N7: walk a winget install through a day of silence, one
+        // runner pass every 100 ms. Time never stops it; it gets one waiting
+        // notice, after 10 minutes.
+        let after = install_wait_notice_after("winget", &["install", "--id", "Git.Git"]);
+        let mut notice_sent = false;
+        let mut notices = Vec::new();
+        let mut elapsed = Duration::ZERO;
+        while elapsed <= Duration::from_secs(24 * 60 * 60) {
+            let tick = runner_tick(false, false, elapsed, after, notice_sent);
+            assert!(!tick.terminate, "stopped at {elapsed:?}");
+            if tick.wait_notice {
+                notices.push(elapsed);
+                notice_sent = true;
+            }
+            elapsed += Duration::from_millis(100);
+        }
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0] > WINGET_WAIT_NOTICE_AFTER);
+        assert!(notices[0] <= WINGET_WAIT_NOTICE_AFTER + Duration::from_millis(100));
+    }
+
+    #[test]
+    fn the_runner_stops_a_child_once_when_the_person_cancels() {
+        let after = install_wait_notice_after("winget", &["install", "--id", "Git.Git"]);
+        let first = runner_tick(true, false, Duration::from_secs(5), after, false);
+        assert!(first.terminate);
+        let again = runner_tick(true, true, Duration::from_secs(6), after, false);
+        assert!(!again.terminate);
+    }
+
+    #[test]
+    fn permission_declined_detects_uac_cancellation() {
+        assert!(winget_output_indicates_permission_declined(Some(1223), ""));
+        assert!(winget_output_indicates_permission_declined(
+            Some(0x8007_04C7_u32 as i32),
+            ""
+        ));
+        assert!(winget_output_indicates_permission_declined(
+            Some(-1978335226),
+            "Installer failed with exit code: 1223"
+        ));
+        assert!(winget_output_indicates_permission_declined(
+            None,
+            "Error 0x800704C7: The operation was canceled by the user."
+        ));
+        assert!(winget_output_indicates_permission_declined(
+            Some(1),
+            "The operation was Cancelled by the user"
+        ));
+    }
+
+    #[test]
+    fn permission_declined_ignores_other_failures() {
+        assert!(!winget_output_indicates_permission_declined(Some(0), ""));
+        assert!(!winget_output_indicates_permission_declined(
+            Some(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE),
+            "Process exited with code -1978335138"
+        ));
+        assert!(!winget_output_indicates_permission_declined(
+            Some(1),
+            "No package found matching input criteria."
+        ));
+        assert!(!winget_output_indicates_permission_declined(None, ""));
+        // A number that merely contains 1223 as a substring is not a cancellation.
+        assert!(!winget_output_indicates_permission_declined(
+            Some(1),
+            "Downloading 12234 bytes"
+        ));
+    }
+
+    #[test]
+    fn git_winget_failure_reads_installer_result_from_diagnostic_stdout() {
+        let diagnostic = SetupCommandDiagnostic {
+            command: "winget install --id Git.Git".to_string(),
+            exit_code: Some(-1978335226),
+            stdout: "Starting package install...\nInstaller failed with exit code: 1223"
+                .to_string(),
+            stderr: String::new(),
+            error: "Process exited with code -1978335226".to_string(),
+        };
+        assert!(git_winget_failure_indicates_permission_declined(
+            "Process exited with code -1978335226",
+            Some(&diagnostic)
+        ));
+        assert!(git_winget_failure_indicates_permission_declined(
+            "Process exited with code 1223",
+            None
+        ));
+        assert!(!git_winget_failure_indicates_permission_declined(
+            "Process exited with code -1978335138",
+            None
+        ));
+    }
+
+    #[test]
+    fn git_permission_declined_error_has_stable_marker() {
+        assert_eq!(
+            git_permission_declined_error(),
+            "[git-permission-declined] Windows permission to install Git was declined."
+        );
+    }
+
+    #[test]
+    fn git_permission_payload_shape() {
+        assert_eq!(GIT_PERMISSION_EVENT, "setup:git-permission");
+        assert_eq!(
+            git_permission_payload(GitPermissionState::Requesting),
+            serde_json::json!({ "state": "requesting" })
+        );
+        assert_eq!(
+            git_permission_payload(GitPermissionState::Done),
+            serde_json::json!({ "state": "done" })
+        );
+    }
+
+    #[test]
+    fn deps_tool_payload_shape() {
+        assert_eq!(DEPS_TOOL_EVENT, "setup:deps-tool");
+        assert_eq!(
+            deps_tool_payload("git", DepsToolState::Installing),
+            serde_json::json!({ "id": "git", "state": "installing" })
+        );
+        assert_eq!(
+            deps_tool_payload("node", DepsToolState::Done),
+            serde_json::json!({ "id": "node", "state": "done" })
+        );
+        assert_eq!(
+            deps_tool_payload("qmd", DepsToolState::Failed),
+            serde_json::json!({ "id": "qmd", "state": "failed" })
+        );
+    }
+
+    #[test]
+    fn deps_tool_settled_state_maps_install_status() {
+        assert_eq!(
+            deps_tool_settled_state(&DepInstallStatus::Ok),
+            DepsToolState::Done
+        );
+        assert_eq!(
+            deps_tool_settled_state(&DepInstallStatus::Skipped),
+            DepsToolState::Done
+        );
+        assert_eq!(
+            deps_tool_settled_state(&DepInstallStatus::Failed),
+            DepsToolState::Failed
+        );
+        assert_eq!(
+            deps_tool_settled_state(&DepInstallStatus::Cancelled),
+            DepsToolState::Failed
+        );
+    }
+
+    /// Runs `program args` through the serializer on its own thread. The run
+    /// reports when it starts, then blocks until `release` fires, standing in
+    /// for an install process tree that has not exited yet.
+    fn spawn_serialized_run(
+        lock: &'static Mutex<()>,
+        program: &'static str,
+        args: &'static [&'static str],
+        started: mpsc::Sender<&'static str>,
+        release: mpsc::Receiver<()>,
+    ) -> std::thread::JoinHandle<bool> {
+        std::thread::spawn(move || {
+            let waited = std::cell::Cell::new(false);
+            run_installer_serialized(
+                lock,
+                program,
+                args,
+                || waited.set(true),
+                |_| {},
+                || {
+                    started.send(program).unwrap();
+                    release.recv().unwrap();
+                },
+            );
+            waited.get()
+        })
+    }
+
+    #[test]
+    fn installer_runs_take_the_lock_and_hold_it_until_the_install_exits() {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_git_tx, release_git_rx) = mpsc::channel();
+        let (release_node_tx, release_node_rx) = mpsc::channel();
+
+        let git = spawn_serialized_run(
+            &LOCK,
+            "winget",
+            &["install", "--id", "Git.Git"],
+            started_tx.clone(),
+            release_git_rx,
+        );
+        assert_eq!(
+            started_rx.recv_timeout(Duration::from_secs(5)),
+            Ok("winget")
+        );
+        // The Git install is still running, so the lock is held.
+        assert!(LOCK.try_lock().is_err());
+
+        let node = spawn_serialized_run(
+            &LOCK,
+            "msiexec",
+            &["/i", "node.msi", "/qn"],
+            started_tx,
+            release_node_rx,
+        );
+        // A second installer waits for the first one to exit.
+        assert!(started_rx.recv_timeout(Duration::from_millis(300)).is_err());
+        assert!(LOCK.try_lock().is_err());
+
+        release_git_tx.send(()).unwrap();
+        assert!(!git.join().unwrap(), "the first installer never waits");
+        assert_eq!(
+            started_rx.recv_timeout(Duration::from_secs(5)),
+            Ok("msiexec")
+        );
+        assert!(LOCK.try_lock().is_err());
+
+        release_node_tx.send(()).unwrap();
+        assert!(
+            node.join().unwrap(),
+            "the second installer reports that it waited"
+        );
+        assert!(LOCK.try_lock().is_ok());
+    }
+
+    #[test]
+    fn non_installer_runs_overlap_a_running_install() {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_git_tx, release_git_rx) = mpsc::channel();
+        let (release_npm_tx, release_npm_rx) = mpsc::channel();
+
+        let git = spawn_serialized_run(
+            &LOCK,
+            "winget",
+            &["install", "--id", "Git.Git"],
+            started_tx.clone(),
+            release_git_rx,
+        );
+        assert_eq!(
+            started_rx.recv_timeout(Duration::from_secs(5)),
+            Ok("winget")
+        );
+
+        let npm = spawn_serialized_run(
+            &LOCK,
+            "npm",
+            &["install", "-g", "qmd"],
+            started_tx,
+            release_npm_rx,
+        );
+        assert_eq!(started_rx.recv_timeout(Duration::from_secs(5)), Ok("npm"));
+
+        release_npm_tx.send(()).unwrap();
+        assert!(!npm.join().unwrap());
+        release_git_tx.send(()).unwrap();
+        assert!(!git.join().unwrap());
+    }
+
+    /// A file probe that knows only `files` (compared case-insensitively).
+    fn files_exist(files: &'static [&'static str]) -> impl Fn(&str) -> bool {
+        move |file| files.iter().any(|known| known.eq_ignore_ascii_case(file))
+    }
+
+    #[test]
+    fn git_path_entry_is_the_git_cmd_folder() {
+        let git_for_windows = files_exist(&[
+            r"C:\Program Files\Git\cmd\git.exe",
+            r"C:\Program Files\Git\bin\git.exe",
+            r"C:\Program Files\Git\mingw64\bin\git.exe",
+        ]);
+        for exe in [
+            r"C:\Program Files\Git\cmd\git.exe",
+            r"C:\Program Files\Git\bin\git.exe",
+            r"C:\Program Files\Git\mingw64\bin\git.exe",
+        ] {
+            assert_eq!(
+                git_path_entry_for(exe, &git_for_windows).as_deref(),
+                Some(r"C:\Program Files\Git\cmd"),
+                "{exe}"
+            );
+        }
+        assert_eq!(
+            git_path_entry_for(
+                r"C:\Users\me\scoop\shims\git.exe",
+                files_exist(&[r"C:\Users\me\scoop\shims\git.exe"])
+            )
+            .as_deref(),
+            Some(r"C:\Users\me\scoop\shims")
+        );
+        assert_eq!(git_path_entry_for("git.exe", |_| true), None);
+    }
+
+    #[test]
+    fn git_path_entry_keeps_bin_folders_that_have_no_git_cmd_folder() {
+        // Gate 2 N2: Chocolatey, Cygwin and MSYS2 have no `cmd\git.exe`.
+        for (exe, folder) in [
+            (
+                r"C:\ProgramData\chocolatey\bin\git.exe",
+                r"C:\ProgramData\chocolatey\bin",
+            ),
+            (r"C:\cygwin64\bin\git.exe", r"C:\cygwin64\bin"),
+            (r"C:\msys64\usr\bin\git.exe", r"C:\msys64\usr\bin"),
+        ] {
+            let exists = |file: &str| file.eq_ignore_ascii_case(exe);
+            assert_eq!(
+                git_path_entry_for(exe, exists).as_deref(),
+                Some(folder),
+                "{exe}"
+            );
+        }
+    }
+
+    #[test]
+    fn git_path_entry_is_none_when_the_folder_has_no_git() {
+        assert_eq!(git_path_entry_for(r"C:\Gone\bin\git.exe", |_| false), None);
+    }
+
+    #[test]
+    fn git_already_on_the_path_is_not_written_again() {
+        // Gate 2 N3: a Git that new terminals already find leaves the user
+        // PATH alone, whatever the case or trailing slash.
+        let exists = files_exist(&[r"C:\Program Files\Git\cmd\git.exe"]);
+        let exe = r"C:\Program Files\Git\cmd\git.exe";
+        assert_eq!(
+            git_user_path_addition(
+                exe,
+                r"C:\Windows\system32;c:\program files\git\CMD\",
+                &exists
+            ),
+            None
+        );
+        assert_eq!(
+            git_user_path_addition(exe, r"C:\Windows\system32", &exists).as_deref(),
+            Some(r"C:\Program Files\Git\cmd")
+        );
+        assert!(!path_list_contains(r"C:\Windows;;", ""));
+    }
+
+    #[test]
+    fn path_write_errors_use_plain_copy() {
+        // Gate 2 NEW-2: the shared PATH error never carries the internal tag.
+        let message = plain_path_write_error(r"HKCU\Environment open failed: Access is denied.");
+        assert_eq!(message, "HQ could not update the Windows PATH setting.");
+        assert!(!message.contains("HKCU"));
+        assert!(!message.contains("[install-retry]"));
+        assert!(!message.contains("Try again"));
+    }
+
+    #[test]
+    fn the_setup_step_offers_try_again_for_a_path_write_error() {
+        assert_eq!(
+            deps_step_error(PATH_WRITE_ERROR.to_string()),
+            "[install-retry] HQ could not update the Windows PATH setting. Select Try again."
+        );
+        assert_eq!(deps_step_error("jq failed".to_string()), "jq failed");
+        assert_eq!(
+            deps_step_error(GIT_DID_NOT_START_ERROR.to_string()),
+            GIT_DID_NOT_START_ERROR
+        );
+    }
+
+    #[test]
+    fn a_tool_that_is_already_present_is_never_announced_as_installing() {
+        // Gate 2 N4.
+        let announced = std::cell::Cell::new(false);
+        assert!(!announce_install_if_missing(true, || announced.set(true)));
+        assert!(!announced.get());
+        assert!(announce_install_if_missing(false, || announced.set(true)));
+        assert!(announced.get());
+    }
+
+    #[test]
+    fn installer_runs_report_running_then_done_while_holding_the_lock() {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let states = std::cell::RefCell::new(Vec::new());
+        run_installer_serialized(
+            &LOCK,
+            "winget",
+            &["install", "--id", "Git.Git"],
+            || {},
+            |state| states.borrow_mut().push((state, LOCK.try_lock().is_err())),
+            || {
+                assert_eq!(
+                    states.borrow().len(),
+                    1,
+                    "Running comes before the install starts"
+                )
+            },
+        );
+        // Both reports happen while the lock is held.
+        assert_eq!(
+            *states.borrow(),
+            vec![
+                (InstallerRunState::Running, true),
+                (InstallerRunState::Done, true)
+            ]
+        );
+        assert!(LOCK.try_lock().is_ok());
+    }
+
+    #[test]
+    fn installer_runs_report_done_when_the_run_panics() {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let states = std::sync::Mutex::new(Vec::new());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_installer_serialized(
+                &LOCK,
+                "msiexec",
+                &["/i", "node.msi"],
+                || {},
+                |state| states.lock().unwrap().push(state),
+                || panic!("runner stopped"),
+            )
+        }));
+        assert!(result.is_err());
+        assert_eq!(
+            *states.lock().unwrap(),
+            vec![InstallerRunState::Running, InstallerRunState::Done]
+        );
+    }
+
+    #[test]
+    fn non_installer_runs_report_nothing() {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let reported = std::cell::Cell::new(false);
+        run_installer_serialized(
+            &LOCK,
+            "npm",
+            &["install", "-g", "qmd"],
+            || {},
+            |_| reported.set(true),
+            || {},
+        );
+        assert!(!reported.get());
+    }
+
+    #[test]
+    fn installer_run_payload_names_the_tool() {
+        // Gate 2 NEW-3: an installer with no known tool has a null id, so the
+        // setup screen never names a tool called "Installer".
+        assert_eq!(INSTALLER_RUN_EVENT, "setup:installer-run");
+        let mut runs = InstallerRuns::default();
+        let running = runs.apply(Some("git"), InstallerRunState::Running);
+        assert_eq!(
+            installer_run_payload(Some("git"), InstallerRunState::Running, &running),
+            serde_json::json!({ "id": "git", "state": "running", "seq": 1, "running": ["git"] })
+        );
+        let unnamed = runs.apply(None, InstallerRunState::Running);
+        assert_eq!(
+            installer_run_payload(None, InstallerRunState::Running, &unnamed),
+            serde_json::json!({ "id": null, "state": "running", "seq": 2, "running": ["git", null] })
+        );
+    }
+
+    #[test]
+    fn installer_runs_are_kept_in_the_backend_for_a_reloaded_window() {
+        // Gate 2 NEW-1: a reloaded setup screen reads which installers are
+        // still running instead of starting from an empty page.
+        let mut runs = InstallerRuns::default();
+        assert_eq!(runs.snapshot(), InstallerRunsSnapshot { seq: 0, running: vec![] });
+        runs.apply(Some("git"), InstallerRunState::Running);
+        runs.apply(Some("node"), InstallerRunState::Running);
+        let after_git = runs.apply(Some("git"), InstallerRunState::Done);
+        assert_eq!(
+            after_git,
+            InstallerRunsSnapshot { seq: 3, running: vec![Some("node".to_string())] }
+        );
+        assert_eq!(runs.snapshot(), after_git);
+        let after_node = runs.apply(Some("node"), InstallerRunState::Done);
+        assert_eq!(after_node, InstallerRunsSnapshot { seq: 4, running: vec![] });
+        // A Done with no matching run changes nothing but the sequence.
+        assert_eq!(
+            runs.apply(Some("gh"), InstallerRunState::Done),
+            InstallerRunsSnapshot { seq: 5, running: vec![] }
+        );
+    }
+
+    #[test]
+    fn installer_runs_active_reports_the_process_wide_snapshot() {
+        let snapshot = installer_runs_active();
+        assert_eq!(snapshot, recover_lock(&INSTALLER_RUNS).snapshot());
+        assert_eq!(
+            serde_json::to_value(InstallerRunsSnapshot { seq: 7, running: vec![None] }).unwrap(),
+            serde_json::json!({ "seq": 7, "running": [null] })
+        );
+    }
+
+    #[test]
+    fn only_a_person_can_stop_a_running_installer() {
+        // Gate 2 NEW-1: a timeout or a reloaded page never stops an installer.
+        assert!(cancel_allowed(false, None));
+        assert!(cancel_allowed(false, Some(false)));
+        assert!(cancel_allowed(true, Some(true)));
+        assert!(!cancel_allowed(true, None));
+        assert!(!cancel_allowed(true, Some(false)));
+
+        let handle = Uuid::new_v4().to_string();
+        register_cancel_handle(handle.clone());
+        mark_installer_handle(&handle);
+        assert!(!cancel_install(handle.clone(), None));
+        assert!(!cancel_install(handle.clone(), Some(false)));
+        assert!(!recover_lock(cancel_registry())[&handle].cancelled);
+        assert!(cancel_install(handle.clone(), Some(true)));
+        assert!(recover_lock(cancel_registry())[&handle].cancelled);
+        deregister_handle(&handle);
+    }
+
+    #[test]
+    fn a_second_install_call_joins_the_one_already_running() {
+        // Gate 2 NEW-1: a reloaded setup screen that calls install_deps again
+        // gets the running install's result instead of a second install.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime builds");
+        runtime.block_on(async {
+            let flight: SingleFlight<Result<u32, String>> = SingleFlight::new();
+            let starts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let (release, gate) = tokio::sync::oneshot::channel::<()>();
+            let start = |starts: Arc<std::sync::atomic::AtomicUsize>, gate| {
+                move || {
+                    starts.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        let _ = gate.await;
+                        Ok::<u32, String>(7)
+                    }
+                    .boxed()
+                }
+            };
+            assert!(!flight.in_flight());
+            let first = flight.run(start(starts.clone(), gate));
+            assert!(flight.in_flight());
+            let (_unused, unused_gate) = tokio::sync::oneshot::channel::<()>();
+            let second = flight.run(start(starts.clone(), unused_gate));
+            assert_eq!(starts.load(Ordering::SeqCst), 1, "the second call starts nothing");
+            release.send(()).unwrap();
+            let (first, second) = tokio::join!(first, second);
+            assert_eq!(first, Ok(7));
+            assert_eq!(second, Ok(7));
+            assert!(!flight.in_flight());
+
+            let (later_release, later_gate) = tokio::sync::oneshot::channel::<()>();
+            later_release.send(()).unwrap();
+            assert_eq!(flight.run(start(starts.clone(), later_gate)).await, Ok(7));
+            assert_eq!(starts.load(Ordering::SeqCst), 2, "a later call starts a new install");
+        });
+    }
+
+    #[test]
+    fn hot_reloads_wait_while_setup_is_installing() {
+        assert!(!setup_installing_from(false, 0));
+        assert!(setup_installing_from(true, 0));
+        assert!(setup_installing_from(false, 1));
+    }
+
+    #[test]
+    fn install_errors_that_say_try_again_show_the_try_again_button() {
+        // Gate 2 N5: "Select Try again" only where the button shows. The
+        // setup screen shows Try again for errors tagged [install-retry].
+        assert_eq!(
+            INSTALL_STOPPED_ERROR,
+            "[install-retry] An install stopped before it finished. Select Try again."
+        );
+        assert_eq!(
+            GIT_DID_NOT_START_ERROR,
+            "[install-retry] Git could not be started after installing. Select Try again."
+        );
+        for message in [
+            INSTALL_STOPPED_ERROR,
+            GIT_DID_NOT_START_ERROR,
+            PATH_WRITE_RETRY_ERROR,
+        ] {
+            assert!(message.starts_with("[install-retry] "), "{message}");
+            assert!(message.ends_with("Select Try again."), "{message}");
+            assert!(!message.contains("Git was installed"), "{message}");
+        }
+    }
+
+    fn git_status(installed: bool, version: Option<&str>) -> DepStatus {
+        DepStatus {
+            installed,
+            version: version.map(str::to_string),
+            path: None,
+        }
+    }
+
+    #[test]
+    fn git_install_is_verified_by_running_git_from_an_expected_folder() {
+        let folders = [
+            r"C:\Program Files\Git\cmd".to_string(),
+            r"C:\Users\me\AppData\Local\Programs\Git\cmd".to_string(),
+        ];
+        let probed = std::cell::RefCell::new(Vec::new());
+        let verified = verify_git_install(&folders, |folder| {
+            probed.borrow_mut().push(folder.to_string());
+            if folder.contains("Programs") {
+                git_status(true, Some("git version 2.47.0.windows.1"))
+            } else {
+                git_status(false, None)
+            }
+        });
+        assert_eq!(
+            verified.as_deref(),
+            Ok(r"C:\Users\me\AppData\Local\Programs\Git\cmd")
+        );
+        assert_eq!(probed.borrow().len(), 2);
+    }
+
+    #[test]
+    fn git_install_fails_verification_when_git_does_not_run() {
+        let folders = [r"C:\Program Files\Git\cmd".to_string()];
+        let not_found = verify_git_install(&folders, |_| git_status(false, None));
+        let wrong_output = verify_git_install(&folders, |_| git_status(true, Some("")));
+        for result in [not_found, wrong_output] {
+            let error = result.unwrap_err();
+            assert_eq!(error, GIT_DID_NOT_START_ERROR);
+            assert!(!error.contains("Git.Git"));
+        }
     }
 }

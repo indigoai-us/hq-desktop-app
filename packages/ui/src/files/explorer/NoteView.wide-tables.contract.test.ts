@@ -28,9 +28,14 @@ function rule(selector: string): string {
 
 describe("NoteView wide markdown tables", () => {
   it("lets the table scroll horizontally instead of squeezing into the column", () => {
+    // The shared renderer wraps each table in .markdown-table-scroll; that box
+    // scrolls, and the table sizes to its content so it can grow past it.
+    const scroll = rule(".markdown-body :global(.markdown-table-scroll)");
+    expect(scroll).toMatch(/overflow-x:\s*auto/);
+    expect(scroll).toMatch(/max-width:\s*100%/);
     const table = rule(".markdown-body :global(table)");
-    expect(table).toMatch(/display:\s*block/);
-    expect(table).toMatch(/overflow-x:\s*auto/);
+    expect(table).toMatch(/width:\s*max-content/);
+    expect(table).toMatch(/min-width:\s*100%/);
   });
 
   it("does not break table cells inside words", () => {

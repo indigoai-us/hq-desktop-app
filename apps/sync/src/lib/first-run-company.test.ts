@@ -517,4 +517,54 @@ describe('plan already picked on the website', () => {
     });
     expect(priorPlanOf(none)).toBeNull();
   });
+
+  const hintInvoke = (hints: unknown) =>
+    (async (command: string) =>
+      command === 'web_visitor_plan_hints' ? hints : { workspaces: [] }) as unknown as InvokeFn;
+
+  it('falls back to the sign-in link planIntent when /membership/me sent no plan', async () => {
+    const result = await resolveFirstRunCompanyRoute({
+      hqProJson: async (_method, url) => (url === '/membership/me' ? { memberships: [] } : { invites: [] }),
+      invoke: hintInvoke({ signinPlanIntent: 'just-me', downloadPlan: 'team' }),
+    });
+    expect(priorPlanOf(result)).toBe('free');
+  });
+
+  it('falls back to the download URL plan after the sign-in link', async () => {
+    const result = await resolveFirstRunCompanyRoute({
+      hqProJson: async (_method, url) => (url === '/membership/me' ? { memberships: [] } : { invites: [] }),
+      invoke: hintInvoke({ signinPlanIntent: 'workforce', downloadPlan: 'solo' }),
+    });
+    expect(priorPlanOf(result)).toBe('free');
+  });
+
+  it('keeps asking when the hints carry only rejected or unknown plans', async () => {
+    const result = await resolveFirstRunCompanyRoute({
+      hqProJson: async (_method, url) => (url === '/membership/me' ? { memberships: [] } : { invites: [] }),
+      invoke: hintInvoke({ signinPlanIntent: 'team', downloadPlan: 'workforce' }),
+    });
+    expect(priorPlanOf(result)).toBeNull();
+    const failing = await resolveFirstRunCompanyRoute({
+      hqProJson: async (_method, url) => (url === '/membership/me' ? { memberships: [] } : { invites: [] }),
+      invoke: (async (command: string) => {
+        if (command === 'web_visitor_plan_hints') throw new Error('no command');
+        return { workspaces: [] };
+      }) as unknown as InvokeFn,
+    });
+    expect(priorPlanOf(failing)).toBeNull();
+  });
+
+  it('lets /membership/me win and does not read the hints then', async () => {
+    const seen: string[] = [];
+    const result = await resolveFirstRunCompanyRoute({
+      hqProJson: async (_method, url) =>
+        url === '/membership/me' ? { memberships: [], planIntent: 'free' } : { invites: [] },
+      invoke: (async (command: string) => {
+        seen.push(command);
+        return command === 'web_visitor_plan_hints' ? { signinPlanIntent: 'team' } : { workspaces: [] };
+      }) as unknown as InvokeFn,
+    });
+    expect(priorPlanOf(result)).toBe('free');
+    expect(seen).not.toContain('web_visitor_plan_hints');
+  });
 });
