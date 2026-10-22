@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Marketplace: the ShipHero pack now shows as "ShipHero" on its card, its detail page and in your installed packs. Before, it read "Shiphero".
 - First-run setup: the link next to "Sign up free" now reads "Book a setup call" instead of "Request an enterprise demo". It still opens the booking page in your browser.
 - Settings › Sync now has one place to turn cloud sync off on this computer, so its syncs stop counting toward your bill (storage and vault fees still apply, and teammates who sync still add usage): a switch for your personal vault, a switch for each company vault you belong to, and one "Turn off all cloud sync" switch. Each switch says what turning it off does. An off vault shows "Sync is off for <vault>" and how to turn it back on, and other vaults keep syncing. The choice applies only to this computer, survives restarts and app updates, and the `hq sync` command honours it. Sign-in, messages, deploys and local HQ keep working. The Core menu's usage panel and the account menu open this section in one click.
 - Badges: Indigo staff can replay the accomplishments announcement from the command palette ("Replay accomplishments announcement") to see it as a first-time user would. It is offered only to @getindigo.ai accounts with badges turned on, and it does not reset the record that the announcement was shown.

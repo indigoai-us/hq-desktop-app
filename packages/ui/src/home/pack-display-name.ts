@@ -21,6 +21,8 @@ export const PACK_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   crm: "CRM",
   // Brand casing: the generic prettifier would produce "Imessage".
   imessage: "iMessage",
+  // Brand casing: the generic prettifier would produce "Shiphero".
+  shiphero: "ShipHero",
   // Product name keeps its "HQ" prefix; the prettifier strips it to "Capture".
   "hq-capture": "HQ Capture",
 };
