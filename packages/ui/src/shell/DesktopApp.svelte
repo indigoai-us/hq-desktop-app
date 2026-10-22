@@ -16576,6 +16576,13 @@
     min-width: 0;
   }
 
+  /* The title row aligns text on its baseline, and a baseline-aligned icon
+     box sits its bottom edge on that baseline, so the company mark rode
+     about 5px above the title's middle (owner, 2026-10-22). Centre it. */
+  .channel-title > :global(.company-icon) {
+    align-self: center;
+  }
+
   .channel-header-avatar {
     display: inline-flex;
     flex: 0 0 auto;
