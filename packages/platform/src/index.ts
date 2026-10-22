@@ -10,6 +10,7 @@ export * from "./setup-tool-offer-telemetry.js";
 export * from "./library-shelf.js";
 // Plan-limit refusal parsing + upgrade-link allowlist (hard-stop-readiness).
 export * from "./plan-limit.js";
+export * from "./billing-state.js";
 // Plain-language API error copy (QA-080).
 export * from "./api-error.js";
 // Local test bridge for cloud bots' personal apps (dev builds only).
@@ -44,7 +45,6 @@ export {
   RAIL_OUTPOST_FLAG,
   RAIL_SHORTCUT_EDITING_FLAG,
   RAIL_TELEMETRY_FLAG,
-  RAIL_WORKFORCE_LIMITS_FLAG,
 } from "./flags.js";
 export {
   ensureHqAnywhereGlobalRuntime,

@@ -10,16 +10,33 @@
  */
 
 /** A non-2xx hq-pro answer, with the status and the server's error code. */
+import { parseUsagePause, usagePauseAction, type UsagePause, type UsagePauseAction } from '@hq/platform';
+
 export class HqProRequestError extends Error {
   readonly status: number;
   /** The body's `code` field when it is a safe label, else null. */
   readonly code: string | null;
+  /** A usage pause the body carried (US-024), already validated. */
+  readonly usagePause: UsagePause | null;
 
-  constructor(status: number, code: string | null) {
+  constructor(status: number, code: string | null, usagePause: UsagePause | null = null) {
     super(`hq-pro request failed with status ${status}`);
     this.name = 'HqProRequestError';
     this.status = status;
     this.code = code;
+    this.usagePause = usagePause;
+  }
+}
+
+/** The validated `usagePause` block of an error body, or null. */
+export function hqProUsagePause(body: unknown): UsagePause | null {
+  if (typeof body !== 'string' || !body.trim()) return null;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    return parseUsagePause((parsed as { usagePause?: unknown }).usagePause);
+  } catch {
+    return null;
   }
 }
 
@@ -66,6 +83,8 @@ export function normalizeHttpStatus(value: unknown): number | undefined {
 export interface InviteFailure {
   kind: InviteErrorKind;
   httpStatus?: number;
+  /** Present when a usage pause refused the invite (kind stays `plan_limit`). */
+  usagePause?: UsagePause;
 }
 
 /** The 409 hq-pro returns when the address already has an invite or a seat. */
@@ -95,7 +114,12 @@ export function classifyInviteError(error: unknown): InviteFailure {
     else if (status === 429) kind = 'rate_limited';
     else if (status >= 500) kind = 'server_error';
     else kind = 'request_failed';
-    return httpStatus === undefined ? { kind } : { kind, httpStatus };
+    if (error.usagePause) kind = 'plan_limit';
+    return {
+      kind,
+      ...(httpStatus === undefined ? {} : { httpStatus }),
+      ...(error.usagePause ? { usagePause: error.usagePause } : {}),
+    };
   }
   // `hq_pro_fetch` rejects with a network-error or not-signed-in message before
   // any status exists.
@@ -128,4 +152,18 @@ export function inviteErrorMessage(kind: InviteErrorKind): string {
     case 'request_failed':
       return 'HQ could not send the invitation. You can try again or skip for now.';
   }
+}
+
+/**
+ * What the step shows for a failure. A usage pause shows the server's usage
+ * message (no plan wording) with the action for the inviter's role.
+ */
+export function inviteFailureView(
+  failure: Pick<InviteFailure, 'kind' | 'usagePause'>,
+  role: string | null = 'owner',
+): { message: string; action: UsagePauseAction | null } {
+  if (failure.usagePause) {
+    return { message: failure.usagePause.message, action: usagePauseAction(failure.usagePause, role) };
+  }
+  return { message: inviteErrorMessage(failure.kind), action: null };
 }

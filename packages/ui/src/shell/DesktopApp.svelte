@@ -80,7 +80,6 @@
     RAIL_DEPLOYMENTS_ACTIONS_FLAG,
     RAIL_OUTPOST_FLAG,
     RAIL_TELEMETRY_FLAG,
-    RAIL_WORKFORCE_LIMITS_FLAG,
     isIndigoCompany,
     isIndigoOnlySurface,
     watchIndigoOnlyGates,
@@ -12897,6 +12896,12 @@
   // OWNER-R24: the caller's role in the open company, from the membership
   // roster. Grants and Billing show only to owners and admins.
   const companyPaneRole = $derived(callerRole(companyPaneCompany?.uid));
+  // US-024: the open company's plan status from the membership row, for the
+  // Billing pane (non-owners) and the Team seat chip.
+  const companyPaneWorkspace = $derived(
+    companyPaneCompany?.uid ? (companies ?? []).find((c) => (c.cloudUid ?? "").trim() === companyPaneCompany?.uid) : undefined,
+  );
+  const companyPaneBillingState = $derived(companyPaneWorkspace?.billingState ?? null);
   // US-007: the global Deployments page offers the company Custom domain sheet too.
   async function deployDomainPrices(): Promise<DomainPrices | null> {
     const read = adapter.company?.getPricing;
@@ -14417,6 +14422,7 @@
               selfEmail: self?.email ?? null,
               companyLabel: companyPaneCompany.label,
               avatarByUid,
+              usagePriced: companyPaneWorkspace?.usagePriced === true,
             }}
           >
             {#snippet skeleton()}
@@ -14452,7 +14458,7 @@
             companyUid={companyPaneCompany.uid}
             company={adapter.company ?? null}
             messaging={adapter.messaging ?? null}
-            seatLimit={railGate(RAIL_WORKFORCE_LIMITS_FLAG)}
+            billingState={companyPaneBillingState}
             files={adapter.files ?? null}
             targets={grantTargets}
           />

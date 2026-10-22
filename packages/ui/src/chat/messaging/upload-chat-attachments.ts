@@ -2,7 +2,9 @@ import {
   approvedPlanUpgradeUrl,
   hqProErrorFromRecord,
   isPlanLimitCode,
+  parseUsagePause,
   type AdapterResult,
+  type UsagePause,
   type Json,
   type VaultPutIntegrity,
 } from "@hq/platform";
@@ -76,23 +78,34 @@ export function presignUrlFromResult(raw: unknown): {
 
 /**
  * An attachment upload the server refused. A plan-limit refusal carries the
- * server's upgrade link so the composer can render it next to the sentence.
+ * server's link so the composer can render it next to the sentence; a usage
+ * pause (US-024) also carries its `usagePause` block, so the composer shows
+ * the server message with a Billing link or an ask-an-owner line by role.
  * This is an expected product state: it is shown, never reported to Sentry.
  */
 export class ChatAttachmentUploadError extends Error {
   readonly upgradeUrl?: string;
   readonly planLimit: boolean;
+  readonly usagePause?: UsagePause;
 
   constructor(
     message: string,
-    options: { upgradeUrl?: string | null; planLimit?: boolean } = {},
+    options: { upgradeUrl?: string | null; planLimit?: boolean; usagePause?: UsagePause | null } = {},
   ) {
     super(message);
     this.name = "ChatAttachmentUploadError";
     const upgradeUrl = approvedPlanUpgradeUrl(options.upgradeUrl);
     if (upgradeUrl) this.upgradeUrl = upgradeUrl;
     this.planLimit = Boolean(options.planLimit);
+    const usagePause = options.usagePause ? parseUsagePause(options.usagePause) : null;
+    if (usagePause) this.usagePause = usagePause;
   }
+}
+
+/** The usage pause carried by a failed upload or send, or null. Duck-typed like the link. */
+export function uploadErrorUsagePause(err: unknown): UsagePause | null {
+  if (!err || typeof err !== "object") return null;
+  return parseUsagePause((err as { usagePause?: unknown }).usagePause);
 }
 
 /**
@@ -114,6 +127,7 @@ export function presignItemRefusal(raw: unknown): {
   message: string;
   upgradeUrl?: string;
   planLimit: boolean;
+  usagePause?: UsagePause;
 } | null {
   const body = asRecord(raw);
   const results = Array.isArray(body?.results) ? body.results : [];
@@ -130,6 +144,7 @@ export function presignItemRefusal(raw: unknown): {
     message: parsed.message,
     planLimit: parsed.planLimit,
     ...(parsed.upgradeUrl ? { upgradeUrl: parsed.upgradeUrl } : {}),
+    ...(parsed.usagePause ? { usagePause: parsed.usagePause } : {}),
   };
 }
 
@@ -199,9 +214,12 @@ function uploadFailureMessage(err: unknown, fileName: string): string {
 export function formatUploadServerError(
   serverMessage: string,
   fileName: string,
-  opts: { planLimit?: boolean } = {},
+  opts: { planLimit?: boolean; usagePause?: boolean } = {},
 ): string {
   const text = serverMessage.trim();
+  // A usage pause message is the server's whole sentence about the company,
+  // not about this file: show it as is.
+  if (opts.usagePause && text) return text;
   if (!text || /failed to fetch|networkerror|^load failed$/i.test(text)) {
     return `Could not upload ${fileName}`;
   }
@@ -249,9 +267,9 @@ export async function uploadChatAttachments(opts: {
         formatUploadServerError(
           signed.message || "Could not prepare the upload",
           file.name,
-          { planLimit: isPlanLimitCode(signed.code) },
+          { planLimit: isPlanLimitCode(signed.code), usagePause: Boolean(signed.usagePause) },
         ),
-        { upgradeUrl: signed.upgradeUrl, planLimit: isPlanLimitCode(signed.code) },
+        { upgradeUrl: signed.upgradeUrl, planLimit: isPlanLimitCode(signed.code), usagePause: signed.usagePause ?? null },
       );
     }
     const target = presignUrlFromResult(signed.value);
@@ -261,6 +279,7 @@ export async function uploadChatAttachments(opts: {
         throw new ChatAttachmentUploadError(
           formatUploadServerError(refusal.message, file.name, {
             planLimit: refusal.planLimit,
+            usagePause: Boolean(refusal.usagePause),
           }),
           refusal,
         );

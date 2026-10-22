@@ -273,3 +273,40 @@ describe("cloudUnavailableCopy", () => {
     });
   });
 });
+
+describe("usage pause on a cloud bot create (US-024)", () => {
+  const ACTION_URL = "https://hq.computer/companies/acme/billing";
+  const MESSAGE =
+    "Cloud sync is paused. Acme used its $10.00 monthly allowance. Add a card on the Billing page to resume. Files on this computer are not affected.";
+  const body = JSON.stringify({
+    error: "plan_limit_reached",
+    code: "PLAN_LIMIT_EXCEEDED",
+    message: "Your plan limit is reached.",
+    upgradeUrl: ACTION_URL,
+    usagePause: { code: "usage_paused", reason: "usage_card_required", message: MESSAGE, actionUrl: ACTION_URL },
+  });
+
+  it("classifies the block ahead of the legacy plan-limit fields", () => {
+    const error = classifyAgentsError(402, body);
+    expect(error).toMatchObject({ kind: "usage_paused", serverMessage: MESSAGE, actionUrl: ACTION_URL, pauseReason: "usage_card_required" });
+  });
+
+  it("gives an owner or admin the Billing link with the server message", () => {
+    const copy = createErrorCopy(classifyAgentsError(402, body), { companyLabel: "Acme" });
+    expect(copy).toEqual({ message: MESSAGE, fix: { kind: "checkout", url: ACTION_URL, label: "Open Billing" } });
+  });
+
+  it("asks a member to contact an owner, with no link", () => {
+    const copy = createErrorCopy(classifyAgentsError(402, body), { companyLabel: "Acme", canManageBilling: false });
+    expect(copy.message).toBe(`${MESSAGE} Ask a company owner or admin to add a card on the Billing page.`);
+    expect(copy.fix).toEqual({ kind: "ask_admin" });
+    expect(copy.message).not.toMatch(/plan|Upgrade|Starter|Workforce|Individual/);
+  });
+
+  it("ignores an invalid block", () => {
+    const bad = JSON.stringify({ code: "AGENT_PLAN_LIMIT", usagePause: { code: "usage_paused", reason: "x", message: "m", actionUrl: ACTION_URL } });
+    expect(classifyAgentsError(403, bad).kind).toBe("plan_limit");
+    const offHost = JSON.stringify({ usagePause: { code: "usage_paused", reason: "usage_spend_limit", message: "m", actionUrl: "https://evil.example/b" } });
+    expect(classifyAgentsError(402, offHost).kind).toBe("invalid");
+  });
+});

@@ -262,3 +262,48 @@ describe("newWizardIdempotencyKey", () => {
     expect(globalThis.crypto.randomUUID).toBe(original);
   });
 });
+
+describe("runDirectCloudCreate usage pause (US-024)", () => {
+  const ACTION_URL = "https://hq.computer/companies/indigo/billing";
+  const MESSAGE =
+    "Cloud sync is paused. Indigo reached its monthly spend limit of $50.00. Raise the limit on the Billing page to resume. Files on this computer are not affected.";
+  const refusal = {
+    status: 402,
+    body: {
+      error: "plan_limit_reached",
+      code: "PLAN_LIMIT_EXCEEDED",
+      message: "Your plan limit is reached.",
+      upgradeUrl: ACTION_URL,
+      usagePause: { code: "usage_paused", reason: "usage_spend_limit", message: MESSAGE, actionUrl: ACTION_URL },
+    },
+  };
+
+  it("an owner or admin gets the server message and Open Billing", async () => {
+    const { adapter } = webAdapter(() => refusal);
+    const result = await runDirectCloudCreate(createDirectCloudCreate(adapter)!.client, INDIGO, DRAFT, {
+      companyLabel: "Indigo",
+      role: "Admin",
+    });
+    expect(result).toEqual({
+      ok: false,
+      reason: MESSAGE,
+      blocked: true,
+      fix: { kind: "checkout", url: ACTION_URL, label: "Open Billing" },
+    });
+  });
+
+  it("a member is asked to contact an owner", async () => {
+    const { adapter } = webAdapter(() => refusal);
+    const result = await runDirectCloudCreate(createDirectCloudCreate(adapter)!.client, INDIGO, DRAFT, {
+      companyLabel: "Indigo",
+      role: "Member",
+    });
+    expect(result).toEqual({
+      ok: false,
+      reason: `${MESSAGE} Ask a company owner or admin to raise the spend limit.`,
+      blocked: true,
+      fix: { kind: "ask_admin" },
+    });
+    expect(result.ok === false && result.reason).not.toMatch(/plan|Upgrade|Starter|Workforce|Individual/);
+  });
+});
