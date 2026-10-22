@@ -1371,10 +1371,23 @@
                 </button>
               {/if}
             </div>
-            <span class="reply-root-label">
-              {replyCount}
-              {replyCount === 1 ? "reply" : "replies"}
-            </span>
+            {#if replyCount > 0 || visibleReplies.length > 0}
+              <span class="reply-root-label">
+                {replyCount}
+                {replyCount === 1 ? "reply" : "replies"}
+              </span>
+            {:else if !loading && !loadError}
+              <!-- One line for an empty thread, where the count's divider
+                   would be. "0 REPLIES" over "No replies yet" said the same
+                   thing twice (owner, 2026-10-22). -->
+              <p
+                class="reply-root-empty"
+                data-testid="reply-panel-empty"
+                role="status"
+              >
+                No replies yet. Reply below to start the thread.
+              </p>
+            {/if}
           </div>
         {:else if loading}
           <p class="reply-status" role="status">Loading replies…</p>
@@ -1386,7 +1399,7 @@
         <p class="reply-status" role="status">Loading replies…</p>
       {:else if loadError && replies.length === 0 && root}
         <p class="reply-status reply-error" role="alert">{loadError}</p>
-      {:else if visibleReplies.length === 0}
+      {:else if visibleReplies.length === 0 && !root}
         <p class="reply-status" data-testid="reply-panel-empty" role="status">
           No replies yet
         </p>
@@ -1974,6 +1987,16 @@
     letter-spacing: 0.04em;
     color: var(--t3);
     text-transform: uppercase;
+  }
+
+  /* Sits on the count's divider line, in the UI font: it is a sentence, not
+     a label. */
+  .reply-root-empty {
+    margin: 8px 0 0;
+    padding-top: 8px;
+    border-top: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+    color: var(--t3);
+    font: 400 13px/1.4 var(--font-ui);
   }
 
   .reply-status {
