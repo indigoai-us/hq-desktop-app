@@ -7770,6 +7770,31 @@ fn supervisor_tick_may_run(
     crate::commands::hq_daemon_host::legacy_services_enabled(phase) && !held_for_setup
 }
 
+/// The supervisor's respawn decision for one tick, read from the live
+/// settings: auto-sync and autostart on, no live watcher, and sync not paused.
+/// Both the owner preflight and the normal respawn branch of
+/// [`setup_daemon_supervisor`] call this, so a test of this function covers
+/// the decision the loop makes (feedback 682e9187).
+pub(crate) fn supervisor_respawn_wanted(daemon_alive: bool) -> bool {
+    should_respawn_daemon_gated(
+        is_realtime_sync_enabled(),
+        is_autostart_enabled(),
+        daemon_alive,
+        hq_desktop_core::daemon::is_cloud_paused(),
+    )
+}
+
+/// The single respawn after a watch-owner orphan takeover, gated like
+/// [`supervisor_respawn_wanted`], including on a paused sync.
+pub(crate) fn orphan_takeover_respawn_wanted(daemon_alive: bool) -> bool {
+    hq_desktop_core::watch_owner::takeover_respawn_should_run(
+        is_realtime_sync_enabled(),
+        is_autostart_enabled(),
+        daemon_alive,
+        hq_desktop_core::daemon::is_cloud_paused(),
+    )
+}
+
 /// Background supervisor: every `SUPERVISOR_INTERVAL`, ensure the watch daemon
 /// is running whenever auto-sync is enabled — respawning it if it died (crash,
 /// OOM, external kill, or a failed initial spawn). Without this a dead daemon
@@ -7799,14 +7824,7 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                 observe_daemon_liveness();
             let owner_preflight = hq_desktop_core::watch_owner::inspect_owner_before_respawn(
                 daemon_alive,
-                || {
-                    should_respawn_daemon_gated(
-                        is_realtime_sync_enabled(),
-                        is_autostart_enabled(),
-                        daemon_alive,
-                        hq_desktop_core::daemon::is_cloud_paused(),
-                    )
-                },
+                || supervisor_respawn_wanted(daemon_alive),
                 || {
                     let Ok(hq_root) = resolve_hq_folder_path() else {
                         return Ok(None);
@@ -7834,12 +7852,7 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                 ),
             }
             if ORPHAN_TAKEOVER_PENDING.swap(false, Ordering::AcqRel) {
-                let should_respawn = hq_desktop_core::watch_owner::takeover_respawn_should_run(
-                    is_realtime_sync_enabled(),
-                    is_autostart_enabled(),
-                    daemon_alive,
-                    hq_desktop_core::daemon::is_cloud_paused(),
-                );
+                let should_respawn = orphan_takeover_respawn_wanted(daemon_alive);
                 if should_respawn {
                     log(
                         "daemon.supervisor",
@@ -7904,12 +7917,7 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                 // terminal sleep rather than sleeping the interval twice.
                 supervise_watcher_footprint_for_tick(sample_pid);
                 continue;
-            } else if should_respawn_daemon_gated(
-                is_realtime_sync_enabled(),
-                is_autostart_enabled(),
-                daemon_alive,
-                hq_desktop_core::daemon::is_cloud_paused(),
-            ) {
+            } else if supervisor_respawn_wanted(daemon_alive) {
                 // Crash-loop dampening: hold off respawning a watcher that just
                 // crashed until its exponential backoff elapses, instead of
                 // hot-respawning every 30s (HQ-SYNC-4).
