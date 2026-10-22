@@ -105,16 +105,39 @@ function provisioningField(row: Record<string, unknown>): MembershipCompany['pro
  */
 export type PriorPlanChoice = 'free';
 
-/** Names the website has used for the free start: Starter before 2026-10-16, `free`/`usage` after. */
-const FREE_PLAN_NAMES = new Set(['starter', 'free', 'usage', 'usage-only']);
+/**
+ * Names the website has used for the free start: Starter before 2026-10-16,
+ * `free`/`usage` after, and the "Just me" pick ("Sign up free" for one person)
+ * under each alias it has been sent as.
+ */
+const FREE_PLAN_NAMES = new Set([
+  'starter',
+  'free',
+  'usage',
+  'usage-only',
+  'solo',
+  'just-me',
+  'just_me',
+  'justme',
+  'individual',
+  'personal',
+]);
 
 function planChoiceFrom(value: unknown): PriorPlanChoice | null {
   if (typeof value !== 'string') return null;
   const key = value.trim().toLowerCase();
   if (FREE_PLAN_NAMES.has(key)) return 'free';
   // `workforce` / `team` closed to new signups: no checkout here, so the step
-  // shows the usage card instead. Individual plans are not company plans.
+  // shows the usage card instead.
   return null;
+}
+
+/**
+ * A plan hint the desktop kept itself (the sign-in link reply's `planIntent`,
+ * or the download URL's `plan`), checked with the same rule as the server's.
+ */
+export function priorPlanFromHint(value: unknown): PriorPlanChoice | null {
+  return planChoiceFrom(value);
 }
 
 /**

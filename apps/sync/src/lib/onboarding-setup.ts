@@ -1,3 +1,5 @@
+import { thisComputerNounFor, type OnboardingHostOs } from './onboarding-platform';
+
 export const DEPS_OPERATIONS = [
   'node',
   'yq',
@@ -1004,19 +1006,39 @@ function settlesWithin(
   });
 }
 
+export interface ProgressTimeoutHold {
+  /** True while work that must never be stopped on a timer is running. */
+  active(): boolean;
+  /** Called each time the timeout comes due while held. */
+  onHold?(): void;
+}
+
+export interface ProgressTimeoutProgressOptions {
+  /** Also give the run a full window past the ceiling, e.g. once held work ends. */
+  extendCeiling?: boolean;
+}
+
+/**
+ * Rejects `promise` after `ms` without progress, or at `maxElapsedMs`. While
+ * `hold.active()` is true the timeout never fires: it calls `hold.onHold` so
+ * the screen can say what it is waiting on, and checks again after `ms`.
+ */
 export function withProgressTimeout<T>(
   promise: Promise<T>,
   ms: number,
   onTimeout: (timeoutMs?: number) => Error,
-  subscribeToProgress: (onProgress: () => void) => () => void,
+  subscribeToProgress: (
+    onProgress: (options?: ProgressTimeoutProgressOptions) => void,
+  ) => () => void,
   onTimeoutCancel?: () => void | Promise<void>,
   maxElapsedMs?: number,
   awaitTimeoutCancel = false,
   awaitTimeoutOperationMs = 0,
+  hold?: ProgressTimeoutHold,
 ): Promise<T> {
   if (!(ms > 0)) return promise;
   return new Promise<T>((resolve, reject) => {
-    const maxDeadline =
+    let maxDeadline =
       maxElapsedMs != null && maxElapsedMs > 0
         ? Date.now() + maxElapsedMs
         : null;
@@ -1027,14 +1049,23 @@ export function withProgressTimeout<T>(
       clearTimeout(timer);
       unlisten();
     };
-    const reset = () => {
+    const extendCeiling = () => {
+      if (maxDeadline != null) maxDeadline = Math.max(maxDeadline, Date.now() + ms);
+    };
+    const reset = (options?: ProgressTimeoutProgressOptions) => {
       clearTimeout(timer);
+      if (options?.extendCeiling) extendCeiling();
       const remainingMs =
         maxDeadline == null ? ms : Math.max(0, maxDeadline - Date.now());
       const timeoutMs = Math.min(ms, remainingMs);
       const reachedMaxElapsed = maxDeadline != null && remainingMs <= ms;
       timer = setTimeout(() => {
         if (settled) return;
+        if (hold?.active()) {
+          hold.onHold?.();
+          reset({ extendCeiling: true });
+          return;
+        }
         settled = true;
         const timeoutError = onTimeout(reachedMaxElapsed ? maxElapsedMs : ms);
         if (awaitTimeoutCancel && onTimeoutCancel) {
@@ -1291,4 +1322,262 @@ export function stageCreepAt(elapsedMs: number): number {
     (STAGE_CREEP_CEILING - STAGE_CREEP_FAST_CEILING) *
     Math.min(1, elapsed / STAGE_CREEP_TAIL_MS);
   return Math.min(STAGE_CREEP_CEILING, fast + tail);
+}
+
+// ─── Windows onboarding run 006 ───────────────────────────────────────
+
+/**
+ * Elapsed time for the running stage, read from a monotonic source and
+ * clamped so it never goes down. The wall clock can step back when Windows
+ * corrects the time on a fresh PC, which made the cue read 7m 31s and then
+ * 7m 25s.
+ */
+export interface StageClock {
+  elapsed(): number;
+}
+
+export function createStageClock(
+  now: () => number = () =>
+    typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now(),
+): StageClock {
+  const startedAt = now();
+  let shown = 0;
+  return {
+    elapsed() {
+      shown = Math.max(shown, now() - startedAt);
+      return shown;
+    },
+  };
+}
+
+/** The ready screen heading while setup runs: it follows the setup step. */
+export function setupHeading(input: {
+  installPending: boolean;
+  step: SetupStepSummary;
+}): string {
+  if (!input.installPending) return 'HQ is ready.';
+  return input.step.step >= input.step.total ? 'Almost ready.' : 'Setting up HQ';
+}
+
+/** Plain names for the tools the deps stage installs. */
+const DEPS_TOOL_NAMES: Record<string, string> = {
+  git: 'Git',
+  node: 'Node.js',
+  yq: 'yq',
+  jq: 'jq',
+  gh: 'GitHub CLI',
+  qmd: 'HQ search',
+  'hq-cli': 'the HQ command line tool',
+  'claude-code': 'Claude Code',
+  homebrew: 'Homebrew',
+};
+
+/** True for a tool the deps stage installs and has a plain name for. */
+export function isKnownDepsTool(id: unknown): id is string {
+  return typeof id === 'string' && Object.prototype.hasOwnProperty.call(DEPS_TOOL_NAMES, id);
+}
+
+/** Downloaded rather than installed, so Windows never asks permission for them. */
+const DOWNLOADED_DEPS_TOOLS = new Set(['jq', 'yq']);
+
+function depsToolName(id: string): string {
+  return DEPS_TOOL_NAMES[id];
+}
+
+export interface DepsToolTracker {
+  /** Apply one `setup:deps-tool` event. */
+  apply(payload: { id?: unknown; state?: unknown } | null | undefined): void;
+  /** The deps sub-status line for the installs running now, or null. */
+  detail(): string | null;
+  /** Shown while a running install has passed its time budget, or null. */
+  waitingNotice(): string | null;
+  reset(): void;
+}
+
+/**
+ * Tracks which tools are installing right now, so the deps line names the
+ * installs that are actually running and never one that already finished or
+ * is queued behind another installer.
+ */
+export function createDepsToolTracker(): DepsToolTracker {
+  const running: string[] = [];
+  let waiting: string | null = null;
+  const remove = (id: string) => {
+    const index = running.indexOf(id);
+    if (index >= 0) running.splice(index, 1);
+    if (waiting === id) waiting = null;
+  };
+  return {
+    apply(payload) {
+      if (!payload) return;
+      const id = typeof payload.id === 'string' ? payload.id.trim() : '';
+      // An installer that is not tied to a known tool is never named.
+      if (!isKnownDepsTool(id)) return;
+      switch (payload.state) {
+        case 'installing':
+          if (!running.includes(id)) running.push(id);
+          break;
+        case 'waiting':
+          if (!running.includes(id)) running.push(id);
+          if (!DOWNLOADED_DEPS_TOOLS.has(id)) waiting = id;
+          break;
+        case 'queued':
+        case 'done':
+        case 'failed':
+          remove(id);
+          break;
+      }
+    },
+    detail() {
+      if (running.length === 0) return null;
+      const first = depsToolName(running[0]);
+      if (running.length === 1) return `Installing ${first}…`;
+      if (running.length === 2) return `Installing ${first} and ${depsToolName(running[1])}…`;
+      return `Installing ${first} and ${running.length - 1} other tools…`;
+    },
+    waitingNotice() {
+      if (!waiting) return null;
+      // Only a Windows installer run reports 'waiting', and any of them can
+      // be sitting on a permission prompt.
+      return `Windows may be waiting for your permission to install ${depsToolName(waiting)}. Look for a permission prompt on the taskbar.`;
+    },
+    reset() {
+      running.length = 0;
+      waiting = null;
+    },
+  };
+}
+
+/** The installers running now, as the backend reports them (gate 2 NEW-1). */
+export interface InstallerRunsSnapshot {
+  seq: number;
+  /** Tool ids; null for an installer that is not tied to a known tool. */
+  running: Array<string | null>;
+}
+
+/** Reads an `installer_runs_active` reply or `setup:installer-run` payload. */
+export function readInstallerRunsSnapshot(value: unknown): InstallerRunsSnapshot | null {
+  if (!value || typeof value !== 'object') return null;
+  const { seq, running } = value as { seq?: unknown; running?: unknown };
+  if (typeof seq !== 'number' || !Number.isFinite(seq) || !Array.isArray(running)) return null;
+  return {
+    seq,
+    running: running.map((id) => (typeof id === 'string' && id ? id : null)),
+  };
+}
+
+/** Shown once Windows is about to ask for permission to install Git. */
+export const GIT_PERMISSION_NOTICE =
+  'Windows will ask for permission to install Git. Choose Yes to continue.';
+
+/** Shown when the Git install passes its time budget, likely on the prompt. */
+export const GIT_WAITING_NOTICE =
+  'Windows may be waiting for your permission to install Git. Look for a permission prompt on the taskbar.';
+
+export type DepsFailureRecoveryKind = 'git-permission-declined' | 'install-retry';
+
+/** Tags a Windows install error whose copy tells the user to select Try again. */
+const INSTALL_RETRY_MARKER = '[install-retry]';
+
+export interface DepsFailureRecovery {
+  kind: DepsFailureRecoveryKind;
+  message: string;
+}
+
+/**
+ * A deps failure the user can fix by trying again, read from the tagged
+ * error the Windows installer returns; null for any other failure.
+ */
+export function depsFailureRecovery(error: string | null | undefined): DepsFailureRecovery | null {
+  if (!error) return null;
+  if (error.includes('[git-permission-declined]')) {
+    return {
+      kind: 'git-permission-declined',
+      message:
+        'Git was not installed because permission was declined. Select Try again and choose Yes when Windows asks.',
+    };
+  }
+  const marker = error.indexOf(INSTALL_RETRY_MARKER);
+  if (marker >= 0) {
+    // The backend joins per-tool errors with "; ", so stop at the next one.
+    const rest = error.slice(marker + INSTALL_RETRY_MARKER.length);
+    const end = rest.indexOf('; ');
+    const message = (end >= 0 ? rest.slice(0, end) : rest).trim();
+    if (message) return { kind: 'install-retry', message };
+  }
+  return null;
+}
+
+/** The deps error text to show: the plain recovery message, never the marker. */
+export function depsStageErrorText(error: string): string {
+  return depsFailureRecovery(error)?.message ?? error;
+}
+
+// ─── Windows onboarding run 007 ─────────────────────────────────────
+
+/** How long each setup step stays on screen before the next one shows. */
+export const SETUP_BAND_DWELL_MS = 1500;
+
+export interface SetupBandPacer {
+  /** The percent to show for `target` at time `now` (ms). */
+  pace(target: number, now: number): number;
+}
+
+/**
+ * Shows every setup step (20% per step) for at least `dwellMs`, so a jump
+ * from step 3 to step 5 in one tick still shows step 4 (run 007 note-0022).
+ * Progress inside the current step passes through unchanged. A clock that
+ * moves back restarts the dwell rather than stalling it.
+ */
+export function createSetupBandPacer(dwellMs = SETUP_BAND_DWELL_MS): SetupBandPacer {
+  let band: number | null = null;
+  let changedAt = 0;
+  const bandOf = (p: number) => Math.min(5, Math.floor(Math.max(0, p) / 20));
+  return {
+    pace(target, now) {
+      const targetBand = bandOf(target);
+      if (band === null || targetBand <= band) {
+        if (band !== targetBand) changedAt = now;
+        band = targetBand;
+        return target;
+      }
+      if (now < changedAt) changedAt = now;
+      if (now - changedAt >= dwellMs) {
+        band += 1;
+        changedAt = now;
+      }
+      return band === targetBand ? target : Math.min(target, band * 20 + 19.9);
+    },
+  };
+}
+
+/**
+ * Body copy on the ready screen. While setup runs it must not say HQ is
+ * already in the tray or ask the person to open it (run 007).
+ */
+export function readyBodyCopy({
+  installPending,
+  os,
+}: {
+  installPending: boolean;
+  os: OnboardingHostOs;
+}): string {
+  if (installPending) {
+    return `HQ is still setting up on ${thisComputerNounFor(os)}. You can open HQ Desktop when setup finishes.`;
+  }
+  const place = os === 'macos' ? 'menu bar' : 'system tray';
+  return [
+    `HQ lives in your ${place} now and keeps everything in sync.`,
+    'Open HQ Desktop and your setup bot will walk you through the rest.',
+  ].join('\n');
+}
+
+/** Why the AI tool buttons wait while setup runs (run 007 note-0018). */
+export function toolsWaitHint(names: readonly string[]): string | null {
+  if (names.length === 0) return null;
+  const list =
+    names.length > 1 ? `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}` : names[0];
+  return `You can open ${list} when setup finishes.`;
 }
