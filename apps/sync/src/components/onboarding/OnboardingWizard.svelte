@@ -5,6 +5,7 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getVersion } from '@tauri-apps/api/app';
   import { safeUnlisten } from '../../lib/listener-registry';
+  import type { UsagePause } from '@hq/platform';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import { onDestroy, onMount, tick } from 'svelte';
   import '../../styles/design-system.css';
@@ -231,6 +232,8 @@
     hqProErrorCode,
     HqProRequestError,
     inviteErrorMessage,
+    inviteFailureView,
+    hqProUsagePause,
     isAlreadyExists,
     type InviteErrorKind,
     type InviteFailure,
@@ -560,6 +563,9 @@
   let inviteSending = $state(false);
   let inviteSent = $state(false);
   let inviteErrorKind = $state<InviteErrorKind | null>(null);
+  /** US-024: the usage pause behind the last invite refusal, shown instead of plan copy. */
+  let inviteUsagePause = $state<UsagePause | null>(null);
+  const inviteFailure = $derived(inviteErrorKind ? inviteFailureView({ kind: inviteErrorKind, usagePause: inviteUsagePause ?? undefined }) : null);
   /** Set when the address was already invited and HQ resent that invite. */
   let inviteResent = $state(false);
   let firstFolderSyncFlagResolution: Promise<boolean> | null = null;
@@ -1672,7 +1678,7 @@
       throw new Error('hq-pro returned an invalid response');
     }
     if (response.status < 200 || response.status >= 300) {
-      throw new HqProRequestError(response.status, hqProErrorCode(response.body));
+      throw new HqProRequestError(response.status, hqProErrorCode(response.body), hqProUsagePause(response.body));
     }
     const payload =
       typeof response.body === 'string' && response.body.trim()
@@ -1950,6 +1956,7 @@
 
   function recordInviteFailure(failure: InviteFailure): void {
     inviteErrorKind = failure.kind;
+    inviteUsagePause = failure.usagePause ?? null;
     void emitDesktopOperationalTelemetry(inviteFailedEvent(failure.kind));
     recordStep(INVITE_TEAMMATE_STEP_INDEX, 'failed', {
       errorKind: failure.kind,
@@ -1979,6 +1986,7 @@
 
     inviteSending = true;
     inviteErrorKind = null;
+    inviteUsagePause = null;
     inviteResent = false;
     try {
       let resend = inviteCreatedForEmail === inviteeEmail;
@@ -5092,7 +5100,18 @@
                 data-testid="onboarding-invite-error"
                 data-error-kind={inviteErrorKind}
                 role="alert"
-              >{inviteErrorMessage(inviteErrorKind)}</p>
+              >{inviteFailure?.message ?? inviteErrorMessage(inviteErrorKind)}</p>
+              {#if inviteFailure?.action?.kind === 'billing'}
+                {@const billingUrl = inviteFailure.action.url}
+                <button
+                  type="button"
+                  class="btn btn-secondary"
+                  data-testid="onboarding-invite-billing"
+                  onclick={() => void openExternal(billingUrl)}
+                >{inviteFailure.action.label}</button>
+              {:else if inviteFailure?.action?.kind === 'ask-owner'}
+                <p class="note inline-note" data-testid="onboarding-invite-ask-owner">{inviteFailure.action.hint}</p>
+              {/if}
             {/if}
             <form
               class="invite-form"

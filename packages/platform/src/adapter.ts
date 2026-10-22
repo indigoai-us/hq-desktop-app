@@ -22,6 +22,7 @@
  * error (bad arguments).
  */
 
+import type { UsagePause } from "./billing-state.js";
 import type { Capabilities, Capability } from "./capabilities.js";
 import type { BadgesPayload } from "./badges.js";
 import type {
@@ -44,6 +45,12 @@ export interface AdapterFailure {
    * every other failure.
    */
   upgradeUrl?: string;
+  /**
+   * Usage pause carried by a refusal (usage-only-pricing US-024): the server
+   * message, reason and Billing link. Surfaces show the message and an action
+   * for the reader's role (`usagePauseAction`) instead of a plan upgrade.
+   */
+  usagePause?: UsagePause;
   /**
    * The running machine named by a refused bot removal (code
    * `AGENTS_V2_BOX_PROTECTED`). The server removes the bot only when the

@@ -26,6 +26,11 @@ export type AgentsFetch = (
 
 /** Which way a refused or failed call went, in terms the UI can act on. */
 export type AgentsErrorKind =
+  /**
+   * A usage pause (trial cap, card required, spend limit) refused the create
+   * (usage-only-pricing US-024): the body carried a valid `usagePause`.
+   */
+  | "usage_paused"
   /** 403 AGENT_PLAN_LIMIT: the company's plan cannot host another bot. */
   | "plan_limit"
   /** 403 without a plan code: the caller lacks the `createAgents` capability. */
@@ -55,6 +60,10 @@ export interface AgentsError {
   code?: string;
   /** The server's own sentence, when it sent one. */
   serverMessage?: string;
+  /** usage_paused only: the server's Billing page for the company. */
+  actionUrl?: string;
+  /** usage_paused only: `usage_trial_cap` | `usage_card_required` | `usage_spend_limit`. */
+  pauseReason?: string;
   /** plan_limit only. */
   requiredPlan?: string;
   checkoutUrl?: string;
@@ -187,6 +196,29 @@ function str(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+const USAGE_PAUSE_REASONS = new Set(["usage_trial_cap", "usage_card_required", "usage_spend_limit"]);
+
+/**
+ * A valid `usagePause` block: code `usage_paused`, a known reason, a message
+ * and a credential-free https link on hq.computer. Mirrors
+ * `parseUsagePause` in @hq/platform (this package has no dependency on it).
+ */
+function usagePauseOf(value: unknown): { reason: string; message: string; actionUrl: string } | null {
+  const rec = asRecord(value);
+  if (!rec || rec.code !== "usage_paused") return null;
+  const reason = str(rec.reason);
+  const message = str(rec.message);
+  const actionUrl = str(rec.actionUrl);
+  if (!reason || !USAGE_PAUSE_REASONS.has(reason) || !message || !actionUrl) return null;
+  try {
+    const url = new URL(actionUrl);
+    if (url.protocol !== "https:" || url.username || url.password || url.port || url.hostname !== "hq.computer") return null;
+    return { reason, message, actionUrl: url.toString() };
+  } catch {
+    return null;
+  }
+}
+
 /** Map a non-2xx answer onto an {@link AgentsError}. */
 export function classifyAgentsError(status: number, bodyText: string): AgentsError {
   let parsed: Record<string, unknown> | null = null;
@@ -202,6 +234,18 @@ export function classifyAgentsError(status: number, bodyText: string): AgentsErr
     ...(code ? { code } : {}),
     ...(serverMessage ? { serverMessage } : {}),
   };
+  // A usage pause carries legacy plan-limit fields for older clients; its
+  // own block wins so no plan offer is shown.
+  const usagePause = usagePauseOf(parsed?.usagePause);
+  if (usagePause) {
+    return {
+      kind: "usage_paused",
+      ...base,
+      serverMessage: usagePause.message,
+      actionUrl: usagePause.actionUrl,
+      pauseReason: usagePause.reason,
+    };
+  }
   if (status === 403 && code === "AGENT_PLAN_LIMIT") {
     const amountMinor = parsed?.amountMinor;
     return {

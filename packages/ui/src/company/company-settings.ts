@@ -3,8 +3,8 @@
  *
  * Pure data. The page paints the last snapshot for this slug on the first
  * frame and refreshes hosted-agent rows in the background. Nothing here runs
- * before shell-ready. Grant levels are read or write. Purchases and payment
- * management leave the desktop for Stripe.
+ * before shell-ready. Grant levels are read or write. Payment management
+ * leaves the desktop for a Stripe session hq-pro mints.
  */
 
 export const metadata = {
@@ -37,17 +37,10 @@ export type GrantFilter = (typeof GRANT_FILTERS)[number];
 export const GRANT_LEVELS = ["read", "write"] as const;
 export type GrantLevel = (typeof GRANT_LEVELS)[number];
 
-// The seats-view Upgrade for companies on a current (pre-2026-10-16) plan.
-// Usage-priced companies never reach it: their Billing pane shows usage and
-// has no Upgrade button (CompanySettingsPage, `readUsageBilling`), and new
-// companies have no Workforce choice (new-company.ts).
-export const WORKFORCE_CHECKOUT_URL = "https://checkout.stripe.com/c/pay/hq-workforce";
-// The customer portal has no fixed URL: hq-pro mints a session per company
-// (see ../account/billing-portal.ts). A constant portal link 404'd for everyone.
-
-const STRIPE_HOSTS: Record<"upgrade", string> = {
-  upgrade: "checkout.stripe.com",
-};
+// The Billing pane has no plan checkout (US-024): payment goes through a
+// customer portal session hq-pro mints per company, and card capture through
+// a Checkout session it mints per request (see ../account/billing-portal.ts).
+// No Stripe link is fixed in the app; a constant portal link 404'd for everyone.
 
 /** Only Stripe-hosted https pages are opened in the system browser. */
 export function approvedStripeUrl(raw: unknown): string | null {
@@ -61,16 +54,6 @@ export function approvedStripeUrl(raw: unknown): string | null {
   } catch {
     return null;
   }
-}
-
-/** Checkout for plan changes. Manage payment goes through openBillingPortal. */
-export function stripeDestination(action: "upgrade"): string {
-  const url = WORKFORCE_CHECKOUT_URL;
-  const approved = approvedStripeUrl(url);
-  if (!approved || new URL(approved).hostname !== STRIPE_HOSTS[action]) {
-    throw new Error(`Stripe ${action} URL is not on the allowed host`);
-  }
-  return approved;
 }
 
 export interface SettingsGeneral {

@@ -1665,7 +1665,12 @@ fn handle_sync_line<R: tauri::Runtime>(
                 // if the run terminates because of these. Per-file errors that
                 // co-exist with a clean exit (`success=true, errors[] in
                 // all-complete`) are intentionally renderer-only.
-                app.emit(EVENT_SYNC_ERROR, payload.clone())
+                // A usage pause (US-024) is shown as the server's sentence,
+                // never as raw runner text.
+                app.emit(
+                    EVENT_SYNC_ERROR,
+                    hq_desktop_core::sync_outcome::presentable_error_event(payload),
+                )
             }
         }
         SyncEvent::Complete(payload) => app.emit(EVENT_SYNC_COMPLETE, payload.clone()),

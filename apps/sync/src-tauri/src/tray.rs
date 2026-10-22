@@ -421,21 +421,33 @@ const TRAY_ID: &str = "hq-sync-tray";
 
 /// The tray menu items for the plan-limit upload pause: one disabled status
 /// row per company, plus an upgrade row when an approved link was recorded.
+/// A usage pause (US-024) reads "Cloud sync paused for …" and its action row
+/// "Open Billing for ……"; the action row keeps the upgrade id, so the click
+/// opens the recorded link, which for a usage pause is its Billing link.
 /// Pure (ids + titles only) so the menu contract is unit-testable.
 pub(crate) fn uploads_paused_menu_rows(
     paused: &[hq_desktop_core::uploads_paused::UploadsPaused],
 ) -> Vec<(String, String, bool)> {
     let mut rows = Vec::new();
     for entry in paused {
+        let usage = entry.usage_pause.is_some();
         rows.push((
             format!("{MENU_UPLOADS_PAUSED_PREFIX}{}", entry.company),
-            format!("Uploads paused for {}", entry.company),
+            if usage {
+                format!("Cloud sync paused for {}", entry.company)
+            } else {
+                format!("Uploads paused for {}", entry.company)
+            },
             false,
         ));
         if entry.upgrade_url.is_some() {
             rows.push((
                 format!("{MENU_UPGRADE_PREFIX}{}", entry.company),
-                format!("Upgrade plan for {}…", entry.company),
+                if usage {
+                    format!("Open Billing for {}…", entry.company)
+                } else {
+                    format!("Upgrade plan for {}…", entry.company)
+                },
                 true,
             ));
         }
@@ -1864,11 +1876,13 @@ mod tests {
                 company: "Acme".into(),
                 upgrade_url: Some("https://hq.computer/companies/acme/billing?upgrade=1".into()),
                 last_notice_at_ms: 1,
+                usage_pause: None,
             },
             UploadsPaused {
                 company: "Beta".into(),
                 upgrade_url: None,
                 last_notice_at_ms: 1,
+                usage_pause: None,
             },
         ]);
         assert_eq!(
@@ -1892,6 +1906,57 @@ mod tests {
             ]
         );
         assert!(uploads_paused_menu_rows(&[]).is_empty());
+    }
+
+    #[test]
+    fn uploads_paused_menu_rows_offer_billing_for_a_usage_pause() {
+        use hq_desktop_core::plan_limit::UsagePause;
+        use hq_desktop_core::uploads_paused::UploadsPaused;
+        let billing = "https://hq.computer/companies/acme/billing";
+        let rows = uploads_paused_menu_rows(&[
+            UploadsPaused {
+                company: "Acme".into(),
+                upgrade_url: Some(billing.into()),
+                last_notice_at_ms: 1,
+                usage_pause: Some(UsagePause {
+                    code: "usage_paused".into(),
+                    reason: "usage_card_required".into(),
+                    message: "Cloud sync is paused.".into(),
+                    action_url: billing.into(),
+                }),
+            },
+            UploadsPaused {
+                company: "Beta".into(),
+                upgrade_url: Some("https://hq.computer/billing".into()),
+                last_notice_at_ms: 1,
+                usage_pause: None,
+            },
+        ]);
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "uploads-paused:Acme".to_string(),
+                    "Cloud sync paused for Acme".to_string(),
+                    false
+                ),
+                (
+                    "upgrade-plan:Acme".to_string(),
+                    "Open Billing for Acme…".to_string(),
+                    true
+                ),
+                (
+                    "uploads-paused:Beta".to_string(),
+                    "Uploads paused for Beta".to_string(),
+                    false
+                ),
+                (
+                    "upgrade-plan:Beta".to_string(),
+                    "Upgrade plan for Beta…".to_string(),
+                    true
+                ),
+            ]
+        );
     }
 
     #[test]
