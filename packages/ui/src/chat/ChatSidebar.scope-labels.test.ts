@@ -310,10 +310,17 @@ describe("ChatSidebar company / email labels", () => {
     const unread = row("ch:unread-desk");
     expect(unread.classList.contains("has-badge")).toBe(true);
     expect(
-      unread.querySelector('[data-testid="chat-unread-badge"]')?.textContent,
+      unread.closest(".chat-li")?.querySelector('[data-testid="chat-unread-badge"]')?.textContent,
     ).toBe("3");
     const li = unread.closest(".chat-li");
-    expect(li?.querySelector('[data-testid="chat-pin"]')).toBeTruthy();
+    const pin = li?.querySelector('[data-testid="chat-pin"]');
+    expect(pin).toBeTruthy();
+    // Owner, 2026-10-22: the count sits at the right edge, the pin to its left.
+    const badge = li?.querySelector('[data-testid="chat-unread-badge"]');
+    expect(badge?.parentElement).toBe(li);
+    expect(pin!.compareDocumentPosition(badge!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // And the row button still announces it.
+    expect(unread.querySelector(".chat-row-sr")?.textContent).toBe("3 unread");
     // The fill is on the row's container, which holds the pin too.
     expect(src).toMatch(/\n  \.chat-li:hover \{[^}]*background: var\(--hover\)/);
     expect(src).toMatch(/\n  \.chat-li\.active \{[^}]*background: var\(--sel\)/);

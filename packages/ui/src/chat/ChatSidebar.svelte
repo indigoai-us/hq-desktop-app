@@ -5473,20 +5473,12 @@
             </svg>
           </span>
         {/if}
+        <!-- The visible count sits outside the button (below); this keeps it
+             in the row's accessible name. -->
         {#if row.unreadCount != null && row.unreadCount > 0}
-          <span
-            class="chat-unread-badge"
-            data-testid="chat-unread-badge"
-            aria-label={`${row.unreadCount} unread`}
-          >
-            {row.unreadCount > 99 ? "99+" : row.unreadCount}
-          </span>
+          <span class="chat-row-sr">{row.unreadCount > 99 ? "99+" : row.unreadCount} unread</span>
         {:else if row.unreadDot}
-          <span
-            class="chat-unread-dot"
-            data-testid="chat-unread-dot"
-            aria-label="Unread"
-          ></span>
+          <span class="chat-row-sr">Unread</span>
         {/if}
       </button>
       <button
@@ -5508,6 +5500,24 @@
           />
         </svg>
       </button>
+      <!-- The count or dot sits at the row's right edge, after the pin, so the
+           pin appears to its LEFT on hover (owner, #772, restored 2026-10-22).
+           Siblings of the row button for the same reason as the pin. -->
+      {#if row.unreadCount != null && row.unreadCount > 0}
+        <span
+          class="chat-unread-badge"
+          data-testid="chat-unread-badge"
+          aria-hidden="true"
+        >
+          {row.unreadCount > 99 ? "99+" : row.unreadCount}
+        </span>
+      {:else if row.unreadDot}
+        <span
+          class="chat-unread-dot"
+          data-testid="chat-unread-dot"
+          aria-hidden="true"
+        ></span>
+      {/if}
     </div>
     {#if hasChildren && childrenOpen}
       <div
@@ -6385,6 +6395,24 @@
     font-weight: 500;
     font-variant-numeric: tabular-nums;
     line-height: 1;
+  }
+
+  /* At the row's right edge, after the pin (siblings of the row button, so
+     the row's own padding no longer insets them). */
+  .chat-li > .chat-unread-badge,
+  .chat-li > .chat-unread-dot {
+    margin-left: 0;
+    margin-right: 8px;
+  }
+
+  .chat-row-sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   .chat-unread-dot {
