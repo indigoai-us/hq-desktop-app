@@ -327,15 +327,17 @@ pub fn read_manifest(hq_root: &Path) -> ManifestLoad {
 /// - when every entry or no entry is uid-named, the one later in the file.
 ///
 /// An entry is uid-named when its slug key, or the last component of its
-/// `path`, looks like a company uid. Entries without a `cloud_uid`, and every
+/// `path`, equals its own `cloud_uid` (case-insensitive). A real company slug
+/// that merely starts with `cmp_` (for example `cmp_labs`) is not uid-named. Entries without a `cloud_uid`, and every
 /// entry whose `cloud_uid` is unique, are untouched; a company's only entry
 /// is never removed. Removal uses `shift_remove`, so the remaining entries
 /// keep their order.
 ///
-/// Returns `(cloud_uid, removed_slug, removed_path)` for each removed entry.
+/// Returns `(cloud_uid, removed_slug, removed_path, kept_slug)` for each
+/// removed entry.
 pub fn drop_duplicate_cloud_uid_entries(
     value: &mut serde_yaml::Value,
-) -> Vec<(String, String, String)> {
+) -> Vec<(String, String, String, String)> {
     let Some(companies) = value
         .as_mapping_mut()
         .and_then(|m| m.get_mut("companies"))
@@ -357,38 +359,40 @@ pub fn drop_duplicate_cloud_uid_entries(
             .map(str::to_string)
             .unwrap_or_else(|| format!("companies/{slug}"))
     };
-    let is_uid_named = |slug: &str, path: &str| -> bool {
+    let is_uid_named = |uid: &str, slug: &str, path: &str| -> bool {
         let folder = path
             .trim_end_matches(['/', '\\'])
             .rsplit(['/', '\\'])
             .next()
             .unwrap_or_default();
-        looks_like_company_uid(slug) || looks_like_company_uid(folder)
+        slug.eq_ignore_ascii_case(uid) || folder.eq_ignore_ascii_case(uid)
     };
     // Per uid: the index of the entry that stays, and whether it is the
     // named (non-uid-named) kind. A later entry replaces the current keeper
     // unless the keeper is named and the later entry is uid-named.
-    let mut keeper: std::collections::HashMap<String, (usize, bool)> =
+    let mut keeper: std::collections::HashMap<String, (usize, bool, String)> =
         std::collections::HashMap::new();
     for (i, (key, entry)) in companies.iter().enumerate() {
         let Some(uid) = uid_of(entry) else { continue };
         let slug = key.as_str().unwrap_or_default();
-        let named = !is_uid_named(slug, &path_of(slug, entry));
+        let named = !is_uid_named(&uid, slug, &path_of(slug, entry));
         match keeper.get(&uid) {
-            Some(&(_, true)) if !named => {}
+            Some((_, true, _)) if !named => {}
             _ => {
-                keeper.insert(uid, (i, named));
+                keeper.insert(uid, (i, named, slug.to_string()));
             }
         }
     }
-    let doomed: Vec<(serde_yaml::Value, String, String, String)> = companies
+    let doomed: Vec<(serde_yaml::Value, String, String, String, String)> = companies
         .iter()
         .enumerate()
         .filter_map(|(i, (key, entry))| {
             let uid = uid_of(entry)?;
-            if keeper.get(&uid).map(|k| k.0) == Some(i) {
+            let (keep_index, _, kept_slug) = keeper.get(&uid)?;
+            if *keep_index == i {
                 return None;
             }
+            let kept_slug = kept_slug.clone();
             let slug = key.as_str().unwrap_or_default().to_string();
             let path = path_of(&slug, entry);
             let original_uid = entry
@@ -396,16 +400,16 @@ pub fn drop_duplicate_cloud_uid_entries(
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
-            Some((key.clone(), original_uid, slug, path))
+            Some((key.clone(), original_uid, slug, path, kept_slug))
         })
         .collect();
     doomed
         .into_iter()
-        .map(|(key, uid, slug, path)| {
+        .map(|(key, uid, slug, path, kept)| {
             // Not `remove`: in serde_yaml 0.9 that is `swap_remove`, which
             // moves the last entry into the gap and reorders the file.
             companies.shift_remove(&key);
-            (uid, slug, path)
+            (uid, slug, path, kept)
         })
         .collect()
 }
@@ -431,11 +435,11 @@ fn dedupe_manifest_on_disk(manifest_path: &Path) -> Option<serde_yaml::Value> {
     if removed.is_empty() {
         return Some(value);
     }
-    for (uid, slug, path) in &removed {
+    for (uid, slug, path, kept) in &removed {
         log(
             "manifest",
             &format!(
-                "info: removed duplicate manifest entry '{slug}' (path {path}) for company {uid}"
+                "info: removed duplicate manifest entry '{slug}' (path {path}) for company {uid}; kept '{kept}'"
             ),
         );
     }
@@ -452,9 +456,10 @@ fn dedupe_manifest_on_disk(manifest_path: &Path) -> Option<serde_yaml::Value> {
 }
 
 /// Advisory lock around a manifest read-modify-write, shared by every writer
-/// in this module. It lives in a sibling `manifest.yaml.lock` file (a file,
-/// so the company-folder scan ignores it). The OS releases `flock` locks on
-/// process exit, so the lock cannot go stale after a crash.
+/// in this module. The lock file lives in the app state dir
+/// (`~/.hq/locks/manifest-<sha256 of the manifest path>.lock`), not in the HQ
+/// tree, so git and autosave never pick it up. The OS releases `flock` locks
+/// on process exit, so the lock cannot go stale after a crash.
 struct ManifestLock {
     file: std::fs::File,
 }
@@ -465,8 +470,24 @@ impl Drop for ManifestLock {
     }
 }
 
+/// Path of the lock file for one manifest: one per HQ root, keyed by the
+/// canonical manifest path.
+fn manifest_lock_path(manifest_path: &Path) -> Result<PathBuf, String> {
+    use sha2::{Digest, Sha256};
+    let canonical = manifest_path
+        .parent()
+        .and_then(|dir| std::fs::canonicalize(dir).ok())
+        .map(|dir| dir.join("manifest.yaml"))
+        .unwrap_or_else(|| manifest_path.to_path_buf());
+    let digest = Sha256::digest(canonical.to_string_lossy().as_bytes());
+    let dir = paths::hq_config_dir()?.join("locks");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    Ok(dir.join(format!("manifest-{:x}.lock", digest)))
+}
+
+/// Blocks until the lock is free. A nested call on the same thread deadlocks.
 fn lock_manifest(manifest_path: &Path) -> Result<ManifestLock, String> {
-    let lock_path = manifest_path.with_extension("yaml.lock");
+    let lock_path = manifest_lock_path(manifest_path)?;
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -479,7 +500,7 @@ fn lock_manifest(manifest_path: &Path) -> Result<ManifestLock, String> {
 }
 
 /// Write `serialized` to the manifest atomically: a temp file unique to this
-/// writer (pid, time, counter), then rename over the manifest. A failed
+/// writer (`manifest.yaml.<pid>.<nanos>.<seq>.tmp`), then rename over the manifest. A failed
 /// rename removes the temp file and leaves the original intact.
 fn write_manifest_atomic(manifest_path: &Path, serialized: &str) -> Result<(), String> {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -488,8 +509,10 @@ fn write_manifest_atomic(manifest_path: &Path, serialized: &str) -> Result<(), S
         .map(|d| d.subsec_nanos())
         .unwrap_or_default();
     let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // `manifest.yaml.<pid>.<nanos>.<seq>.tmp`: ends in `.tmp` so the
+    // repo's `*.tmp` ignore rule covers a leftover after a crash.
     let tmp =
-        manifest_path.with_extension(format!("yaml.tmp.{}.{nanos}.{seq}", std::process::id()));
+        manifest_path.with_extension(format!("yaml.{}.{nanos}.{seq}.tmp", std::process::id()));
     std::fs::write(&tmp, serialized).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         format!("write tmp manifest: {e}")
@@ -1717,6 +1740,21 @@ companies:\n\
             .filter(|n| n.contains(".tmp"))
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    /// A real company whose slug starts with `cmp_` is not uid-named: it
+    /// wins over the entry named after the cloud uid.
+    #[test]
+    fn read_manifest_keeps_cmp_prefixed_real_slug_over_uid_named_entry() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            &format!(
+                "companies:\n  cmp_labs:\n    name: Cmp Labs\n    path: companies/cmp_labs\n    cloud_uid: cmp_01KT9FG6G8NXKJEJ372TZ42M00\n{UID_ENTRY}"
+            ),
+        );
+        assert_eq!(load_slugs(tmp.path()), vec!["cmp_labs"]);
+        assert_eq!(on_disk_keys(tmp.path()), vec!["cmp_labs"]);
     }
 
     #[test]
