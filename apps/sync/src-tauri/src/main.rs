@@ -1043,6 +1043,7 @@ fn main() {
             commands::link_title::link_page_title,
             commands::link_github::link_github_summary,
             commands::desktop_alt::deploy_access_request,
+            commands::desktop_alt::deploy_domain_request,
             commands::desktop_alt::get_company_secrets,
             commands::desktop_alt::get_company_crm_projection_vault,
             commands::desktop_alt::get_company_file_tree,

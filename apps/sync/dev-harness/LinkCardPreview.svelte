@@ -1,6 +1,7 @@
 <script lang="ts">
   /**
-   * Preview of chat link hovercards for GitHub PRs and issues (?view=link-card).
+   * Preview of chat link hovercards for GitHub PRs and issues, and HQ deploy
+   * links on hq.work and indigo-hq.com (?view=link-card).
    * Hover a link to open its card. Live details come from a fixture fetcher in
    * place of the link_github_summary Tauri command; #3 has no details, the
    * way a private repo looks without a GitHub sign-in. Zero network.
@@ -66,6 +67,12 @@
       eventId: 'm2',
       body: 'Approved: https://github.com/acme/desktop/pull/1710 and the open bug https://github.com/acme/desktop/issues/830. No details for https://github.com/acme/private/pull/3.',
       createdAt: at(2),
+    },
+    {
+      ...from,
+      eventId: 'm3',
+      body: 'Deploys: https://demo.hq.work/docs/index.html and the same app at https://demo.indigo-hq.com/docs/index.html.',
+      createdAt: at(3),
     },
   ];
 </script>

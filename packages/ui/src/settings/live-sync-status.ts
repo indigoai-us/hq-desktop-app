@@ -23,6 +23,8 @@ export interface UploadsPausedCompany {
 }
 
 export interface LiveSyncStatus {
+  /** Persisted legacy hold, available before any runner event in this window. */
+  recoveryHoldReason?: string;
   lastSyncAt: string | null;
   pendingFiles: number;
   conflicts: number;
@@ -110,12 +112,14 @@ export function parseLiveSyncStatus(raw: unknown): LiveSyncStatus {
       : typeof rec.watchPath === "string" && rec.watchPath.trim()
         ? rec.watchPath.trim()
         : null;
+  const recoveryHoldReason = typeof rec.recoveryHoldReason === "string" ? rec.recoveryHoldReason.trim() : "";
   return {
     ...EMPTY_LIVE_SYNC,
+    ...(recoveryHoldReason ? { recoveryHoldReason, daemonHealth: "held", daemonErrors: [recoveryHoldReason] } : {}),
     lastSyncAt: last,
     pendingFiles: pending,
     conflicts,
-    daemonRunning: daemon,
+    daemonRunning: recoveryHoldReason ? false : daemon,
     source,
     hqFolderPath: folder,
     uploadsPaused: parseUploadsPaused(rec.uploadsPaused),
@@ -127,8 +131,8 @@ export function parseLiveSyncStatus(raw: unknown): LiveSyncStatus {
  * copy has no desktop surface (owner decision 2026-10-13), so it never changes
  * the state the shell draws from.
  */
-export function syncStateFromLive(_status: LiveSyncStatus): SyncState {
-  return "idle";
+export function syncStateFromLive(status: LiveSyncStatus): SyncState {
+  return status.recoveryHoldReason ? "error" : "idle";
 }
 
 export function lastSyncLabelFromLive(
@@ -179,7 +183,8 @@ export async function readLiveSyncStatus(
   }
   if (!daemonResult.value) return live;
   const daemon = daemonResult.value;
-  const errors = [...live.daemonErrors];
+  const { recoveryHoldReason, ...daemonLive } = live;
+  const errors = live.daemonErrors.filter((message) => message !== recoveryHoldReason);
   const reasonIsFailure = daemon.unitStatus === "failed" && !daemon.paused;
   const reasonIsCapabilityNotice = daemon.reason?.startsWith("Instant Sync is off,") === true;
   if (daemon.reason && (reasonIsFailure || reasonIsCapabilityNotice)) errors.push(daemon.reason);
@@ -187,7 +192,7 @@ export async function readLiveSyncStatus(
     errors.push("The last daemon sync reported errors. See the daemon log for details.");
   }
   return {
-    ...live,
+    ...daemonLive,
     daemonRunning: daemon.running,
     lastSyncAt: newestSyncTimestamp(live.lastSyncAt, daemon.lastPassResult?.completedAt ?? null),
     source: "hq-daemon",
@@ -196,4 +201,24 @@ export async function readLiveSyncStatus(
     daemonErrors: errors,
     daemonLogPath: daemon.logPath,
   };
+}
+
+/** Explicit user retry only. A status read never resets recovery or starts work. */
+export async function retrySyncFromLive(
+  adapter: PlatformAdapter,
+  previous: LiveSyncStatus,
+): Promise<{ status: LiveSyncStatus; error: string | null }> {
+  if (!adapter.isAvailable("canSync")) return { status: previous, error: "Sync is unavailable on this surface." };
+  let error: string | null = null;
+  try {
+    const result = await adapter.sync.startSync();
+    if (!result.ok) error = result.message ?? "Sync could not be started. Try again.";
+  } catch {
+    error = "Sync could not be started. Try again.";
+  }
+  try {
+    return { status: await readLiveSyncStatus(adapter), error };
+  } catch {
+    return { status: previous, error: error ?? "Sync status could not be read. Try again." };
+  }
 }

@@ -1,9 +1,8 @@
 use std::fs;
 
 use hq_desktop_core::drift_scope::{
-    drift_blob_sha, drift_blob_sha_for_path, drift_hash_matches_with_raw_fallback,
-    excluded_scope_paths_for, normalized_or_raw_drift_sha,
-    path_in_excluded_scope, walk_local_under_scope,
+    drift_blob_sha, drift_blob_sha_for_path, excluded_scope_paths_for, normalized_or_raw_drift_sha,
+    path_in_excluded_scope, settings_drift_matches, walk_local_under_scope,
 };
 
 fn without_generated_path(settings: &str) -> Vec<u8> {
@@ -45,11 +44,13 @@ fn generated_path_is_ignored_but_other_settings_edits_remain_visible() {
         drift_blob_sha(&stripped_upstream),
         "the semantic settings hash ignores the HQ-generated env.PATH"
     );
-    assert!(drift_hash_matches_with_raw_fallback(
+    assert!(settings_drift_matches(
         &local[".claude/settings.json"].0,
-        &drift_blob_sha(upstream.as_bytes()),
-        Some(&drift_blob_sha_for_path(".claude/settings.json", generated.as_bytes())),
-        Some(&drift_blob_sha_for_path(".claude/settings.json", upstream.as_bytes())),
+        Some(&drift_blob_sha_for_path(
+            ".claude/settings.json",
+            generated.as_bytes()
+        )),
+        &drift_blob_sha_for_path(".claude/settings.json", upstream.as_bytes()),
     ));
 
     let edited =
@@ -61,11 +62,13 @@ fn generated_path_is_ignored_but_other_settings_edits_remain_visible() {
         drift_blob_sha(&stripped_upstream),
         "a user edit outside env.PATH must remain visible as drift"
     );
-    assert!(!drift_hash_matches_with_raw_fallback(
+    assert!(!settings_drift_matches(
         &local[".claude/settings.json"].0,
-        &drift_blob_sha(upstream.as_bytes()),
-        Some(&drift_blob_sha_for_path(".claude/settings.json", edited.as_bytes())),
-        Some(&drift_blob_sha_for_path(".claude/settings.json", upstream.as_bytes())),
+        Some(&drift_blob_sha_for_path(
+            ".claude/settings.json",
+            edited.as_bytes()
+        )),
+        &drift_blob_sha_for_path(".claude/settings.json", upstream.as_bytes()),
     ));
 }
 
@@ -117,4 +120,53 @@ fn settings_normalization_canonicalizes_json_formatting() {
         drift_blob_sha_for_path(".claude/settings.json", compact),
         drift_blob_sha_for_path(".claude/settings.json", reordered_and_pretty)
     );
+}
+
+/// The Core state check stores the env.PATH-stripped hash in place of the
+/// baseline and target settings SHAs before it classifies files. A copy
+/// restored byte-for-byte from upstream must count as unchanged against that
+/// stored hash, not as drift.
+#[test]
+fn restored_settings_match_the_normalized_baseline_sha() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let path = ".claude/settings.json";
+    let settings = root.join(path);
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    let locked = vec![path.to_string()];
+
+    let upstream = "{\n  \"permissions\": {\n    \"allow\": [\"Read\"]\n  },\n  \"hooks\": {}\n}\n";
+    let upstream_raw_sha = drift_blob_sha(upstream.as_bytes());
+    let (normalized_baseline_sha, error) = normalized_or_raw_drift_sha(
+        &upstream_raw_sha,
+        Ok(drift_blob_sha_for_path(path, upstream.as_bytes())),
+    );
+    assert!(error.is_none());
+
+    let matches = |bytes: &[u8]| {
+        fs::write(&settings, bytes).unwrap();
+        let local = walk_local_under_scope(root, &locked);
+        let local_settings_sha = drift_blob_sha_for_path(path, bytes);
+        (
+            settings_drift_matches(
+                &local[path].0,
+                Some(&local_settings_sha),
+                &normalized_baseline_sha,
+            ),
+            settings_drift_matches(&local[path].0, Some(&local_settings_sha), &upstream_raw_sha),
+        )
+    };
+
+    // Restored from upstream: unchanged against the normalized SHA, and
+    // against the raw SHA kept when normalization could not run.
+    assert_eq!(matches(upstream.as_bytes()), (true, true));
+
+    // Only a generated env.PATH added: unchanged against the normalized SHA.
+    let with_path = "{\n  \"permissions\": {\n    \"allow\": [\"Read\"]\n  },\n  \"hooks\": {},\n  \"env\": {\n    \"PATH\": \"/managed/bin:/usr/bin\"\n  }\n}\n";
+    assert!(matches(with_path.as_bytes()).0);
+
+    // Any other edit is still drift.
+    let edited =
+        "{\n  \"permissions\": {\n    \"allow\": [\"Read\", \"Write\"]\n  },\n  \"hooks\": {}\n}\n";
+    assert_eq!(matches(edited.as_bytes()), (false, false));
 }

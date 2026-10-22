@@ -73,7 +73,7 @@ use crate::commands::sync::resolve_vault_api_url;
 use crate::util::client_info::build_client;
 
 pub const WINDOW_LABEL: &str = "desktop-alt";
-pub(crate) const HQ_DEPLOY_API_BASE: &str = "https://api.indigo-hq.com";
+pub(crate) const HQ_DEPLOY_API_BASE: &str = "https://api.hq.work";
 
 /// Desktop session scope — mirrors CLI session `company_slug` binding for read gates.
 pub struct DesktopSessionScope {
@@ -730,6 +730,65 @@ pub async fn deploy_access_request(
         return Ok(serde_json::Value::Null);
     }
     serde_json::from_str(text).map_err(|e| format!("deploy access parse: {e}"))
+}
+
+/// One hq-deploy custom-domain call for the Custom domain sheet: list, add,
+/// refresh or remove an app's own domain. `path` is validated by
+/// `deploy_domain_url` so only the domain routes are reachable. The ID token
+/// rides in `x-hq-pro-authorization` because adding a domain is checked
+/// against hq-pro billing and membership. A refusal is returned as data
+/// (`{ status, body }`) so the sheet can read the server's error code
+/// (`PAYMENT_METHOD_REQUIRED`, `DOMAIN_RESERVED`, ...). Tokens never reach
+/// the log.
+#[tauri::command]
+pub async fn deploy_domain_request(
+    scope: String,
+    method: String,
+    path: String,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let scope = normalize_slug(&scope)?;
+    let method = method.to_ascii_uppercase();
+    let url = hq_desktop_core::desktop_alt::deploy_domain_url(HQ_DEPLOY_API_BASE, &method, &path)?;
+    let tokens = cognito::get_valid_tokens()
+        .await
+        .map_err(|e| format!("auth: {e}"))?;
+    let verb = reqwest::Method::from_bytes(method.as_bytes())
+        .map_err(|_| "deploy domain: invalid method".to_string())?;
+    let mut req = build_client()
+        .request(verb, &url)
+        .header("authorization", format!("Bearer {}", tokens.access_token));
+    if let Some(id_token) = tokens.id_token.as_deref() {
+        req = req.header("x-hq-pro-authorization", format!("Bearer {id_token}"));
+    }
+    req = if scope == "personal" {
+        req.header("x-hq-deploy-scope", "personal")
+    } else {
+        req.header("x-org-slug", &scope)
+    };
+    if let Some(body) = body {
+        req = req.json(&body);
+    }
+    let res = req
+        .send()
+        .await
+        .map_err(|e| format!("deploy domain fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("deploy domain read: {e}"))?;
+    eprintln!("[desktop-alt] deploy domain {method} {path} -> HTTP {status}");
+    if status.as_u16() == 401 {
+        return Err("auth: unauthorized 401".to_string());
+    }
+    let text = text.trim();
+    let body = if text.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_str(text).unwrap_or(serde_json::Value::Null)
+    };
+    Ok(serde_json::json!({ "status": status.as_u16(), "body": body }))
 }
 
 #[tauri::command]
