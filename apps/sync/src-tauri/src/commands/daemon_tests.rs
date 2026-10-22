@@ -143,6 +143,71 @@ fn test_start_daemon_refuses_while_cloud_paused() {
     // process-global and other tests exercise it concurrently.
 }
 
+/// Feedback 682e9187: after the person paused sync, the runner was killed and
+/// a new one was spawned 4-7 seconds later. With `cloudPaused` set and every
+/// other auto-sync switch on, neither the app-launch start nor the supervisor
+/// (normal respawn, owner preflight, or orphan-takeover respawn) may start a
+/// runner, under either sync host. The unpaused control proves the pause is
+/// what holds them back.
+#[test]
+fn paused_sync_blocks_app_launch_and_supervisor_respawn() {
+    use crate::commands::hq_daemon_host::{set_phase_for_test, HostPhase, TEST_PHASE_LOCK};
+    use hq_desktop_core::daemon::CLOUD_PAUSED_MESSAGE;
+
+    // Same lock order as the hq_daemon_host tests: phase, then env.
+    let _phase = TEST_PHASE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = TempDir::new().unwrap();
+    let menubar = tmp.path().join(".hq/menubar.json");
+    std::fs::create_dir_all(menubar.parent().unwrap()).unwrap();
+    let _home = scoped_home(tmp.path());
+
+    // Control: unpaused, the supervisor would respawn a dead watcher.
+    std::fs::write(
+        &menubar,
+        r#"{"cloudPaused":false,"realtimeSync":true,"autostartDaemon":true}"#,
+    )
+    .unwrap();
+    assert!(supervisor_respawn_wanted(false));
+    assert!(orphan_takeover_respawn_wanted(false));
+
+    // Paused.
+    std::fs::write(
+        &menubar,
+        r#"{"cloudPaused":true,"realtimeSync":true,"autostartDaemon":true}"#,
+    )
+    .unwrap();
+    assert!(!supervisor_respawn_wanted(false));
+    assert!(!orphan_takeover_respawn_wanted(false));
+
+    let spawns_before = crate::commands::process::sync_runner_spawn_attempts();
+    let app = tauri::test::mock_app();
+    let handle = app.handle().clone();
+    for phase in [HostPhase::Legacy, HostPhase::Daemon] {
+        set_phase_for_test(phase);
+        assert_eq!(
+            start_daemon_for_app_launch(handle.clone()).unwrap_err(),
+            CLOUD_PAUSED_MESSAGE,
+            "app-launch start under {phase:?}"
+        );
+        assert_eq!(
+            start_daemon_for_supervisor_respawn(handle.clone()).unwrap_err(),
+            CLOUD_PAUSED_MESSAGE,
+            "supervisor respawn under {phase:?}"
+        );
+    }
+    set_phase_for_test(HostPhase::Legacy);
+    assert_eq!(
+        crate::commands::hq_daemon_host::set_sync_enabled(true).unwrap_err(),
+        CLOUD_PAUSED_MESSAGE
+    );
+    assert_eq!(
+        crate::commands::process::sync_runner_spawn_attempts(),
+        spawns_before,
+        "no runner spawn may be attempted while sync is paused"
+    );
+}
+
 /// First-run VM report (v0.10.395): before setup finished, the app-launch
 /// start and the supervisor respawn both reached sync preflight and the
 /// runner pulled the cloud company into the default HQ folder. While HQ

@@ -358,33 +358,28 @@ mod tests {
 
     #[test]
     fn one_permanent_failure_cannot_spawn_487_npm_attempts() {
+        // Run the lock-owning scenario after exec, outside the shared test
+        // process. Concurrent fork-based tests cannot inherit its lock files.
+        const CHILD: &str = "HQ_SYNC_RETRY_EPISODE_ISOLATED_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "sync_retry_episode::tests::one_permanent_failure_cannot_spawn_487_npm_attempts",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "isolated retry episode failed: {status}");
+            return;
+        }
+
         let dir = tempfile::tempdir().unwrap();
         assert!(allow_start(dir.path(), "v1", false).unwrap());
-        // Concurrent child-process tests can briefly inherit this process's
-        // advisory lock during fork. Wait only in test setup; runtime admission
-        // must keep its immediate, fail-closed refusal.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        loop {
-            match record_failure(dir.path(), "v1", TERMINAL_RESOLUTION) {
-                Ok(true) => break,
-                Err(error)
-                    if error.starts_with("Sync recovery state is busy:")
-                        && std::time::Instant::now() < deadline =>
-                {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-                other => panic!("persist terminal test failure: {other:?}"),
-            }
-        }
-        let mut spawns = 1;
+        assert!(record_failure(dir.path(), "v1", TERMINAL_RESOLUTION).unwrap());
         for _ in 1..487 {
-            match allow_start(dir.path(), "v1", false) {
-                Ok(true) => spawns += 1,
-                Ok(false) => {}
-                Err(error) => assert!(error.starts_with("Sync recovery state is busy:"), "{error}"),
-            }
+            assert!(!allow_start(dir.path(), "v1", false).unwrap());
         }
-        assert_eq!(spawns, 1);
     }
 
     #[test]
