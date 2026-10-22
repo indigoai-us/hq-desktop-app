@@ -97,7 +97,6 @@ function render(props: Record<string, unknown> = {}): void {
       botWorkers: [],
       existingNames: [],
       botCompanies: [],
-      loadClaudeProviderFlag: async () => ok(true),
       loadCloudProvisionOptions: async () => ok(QUOTE),
       oncreate: vi.fn(),
       // The name was given on the first step (the takeover's), so the flow
@@ -183,23 +182,25 @@ describe("New bot flow, agents.desktop-agent-creation on", () => {
     expect(first.quote).toEqual({ instanceType: "t3.medium", netMonthlyCents: 10000, catalogVersion: "catalog-7" });
   });
 
-  it("defaults the brain to Claude without the separate Claude flag, with Codex and Grok offered", async () => {
+  it("defaults the brain to Codex and never offers Claude, even with Claude signed in", async () => {
     const onCloudCreate = vi.fn(async (_companyUid: string, _draft: Record<string, unknown>) => undefined);
     render({
       onCloudCreate,
       agentTargets: COMPANIES,
       directCloud: seam(true),
-      loadClaudeProviderFlag: async () => ok(false),
+      botRuntimeReady: { claude: true, codex: true, grok: true },
     });
     await settle();
     await openCloudDetails();
-    expect(q<HTMLInputElement>('[data-testid="cloud-bot-runtime-claude"]')?.checked).toBe(true);
-    expect(q('[data-testid="cloud-bot-runtime-codex"]')).not.toBeNull();
+    expect(q('[data-testid="cloud-bot-runtime-claude"]')).toBeNull();
+    expect(q('[data-testid="cloud-bot-runtime-claude-choice"]')).toBeNull();
+    expect(q('[data-testid="cloud-bot-claude-subscription-help"]')).toBeNull();
+    expect(q<HTMLInputElement>('[data-testid="cloud-bot-runtime-codex"]')?.checked).toBe(true);
     expect(q('[data-testid="cloud-bot-runtime-grok"]')).not.toBeNull();
     click('[data-testid="chat-bot-create"]');
     await settle();
     expect(onCloudCreate).toHaveBeenCalledTimes(1);
-    expect((onCloudCreate.mock.calls[0]![1] as { runtime?: string }).runtime).toBe("claude");
+    expect((onCloudCreate.mock.calls[0]![1] as { runtime?: string }).runtime).toBe("codex");
   });
 
   it("a member without createAgents sees Cloud disabled with the admin to ask", async () => {
