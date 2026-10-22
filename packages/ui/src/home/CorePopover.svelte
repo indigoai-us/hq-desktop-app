@@ -68,6 +68,8 @@
      * the row, matching the tray popover.
      */
     errorMessage?: string | null;
+    /** `sync:error` kind. First-launch cache bail is `first-launch-unsynced`. */
+    errorKind?: string | null;
     errorCompany?: string | null;
     /** Non-null → companies/manifest.yaml could not be read. */
     manifestError?: string | null;
@@ -127,6 +129,7 @@
     lastSyncLabel = null,
     syncCaption = null,
     errorMessage = null,
+    errorKind = null,
     errorCompany = null,
     manifestError = null,
     cloudReachable = true,
@@ -157,6 +160,9 @@
   let loadGeneration = 0;
   let returnNudge = $state<{ companyUid: string; slug?: string; dayIndex: number } | null>(null);
   let returnNudgeBusy = $state(false);
+  let cacheOfferBusy = $state(false);
+  /** Shown under the plain line when Sync now did not start. Existing copy. */
+  let cacheOfferFailure = $state<string | null>(null);
   const modelPacks = $derived.by((): CorePopoverPack[] => {
     if (packs.length > 0) return packs;
     return useFixtures ? CORE_POPOVER_FIXTURE_PACKS : [];
@@ -245,6 +251,7 @@
       uploadsPaused: uploadsPaused ?? [],
       notices: {
         errorMessage,
+        errorKind,
         errorCompany,
         manifestError,
         cloudReachable,
@@ -401,6 +408,38 @@
     }
   }
 
+  // Same sentence the membership banner uses when a sync does not start.
+  const SYNC_NOT_STARTED = "Sync could not be started. Try again.";
+
+  async function runCacheOfferSync(): Promise<void> {
+    if (cacheOfferBusy || !model.syncOffer || !model.syncNowAllowed) return;
+    cacheOfferBusy = true;
+    cacheOfferFailure = null;
+    try {
+      const result = await adapter.sync.startSync();
+      if (!result.ok) {
+        // A run already in progress is not a failure; its own events will
+        // replace the plain line.
+        const alreadyRunning = (result.message ?? "")
+          .toLowerCase()
+          .includes("already running");
+        cacheOfferFailure = alreadyRunning ? null : SYNC_NOT_STARTED;
+        console.error(
+          "core-popover: sync now failed",
+          result.code ?? result.reason,
+        );
+      }
+    } catch (error) {
+      cacheOfferFailure = SYNC_NOT_STARTED;
+      console.error(
+        "core-popover: sync now failed",
+        error instanceof Error ? error.name : "unknown",
+      );
+    } finally {
+      cacheOfferBusy = false;
+    }
+  }
+
   async function runReturnNudgeSync(): Promise<void> {
     const nudge = returnNudge;
     if (!nudge) return;
@@ -519,6 +558,31 @@
     data-tone={model.syncHeader.tone}
     role="status"
   >
+    {#if model.syncOffer}
+      <span class="core-status-plain" data-testid="core-popover-sync-plain">
+        {model.syncOffer.line}
+      </span>
+      {#if cacheOfferFailure}
+        <span
+          class="core-status-plain"
+          role="status"
+          data-testid="core-popover-sync-retry-failed"
+        >
+          {cacheOfferFailure}
+        </span>
+      {/if}
+      <button
+        type="button"
+        class="core-btn"
+        data-testid="core-popover-sync-now"
+        disabled={cacheOfferBusy || !model.syncNowAllowed}
+        aria-busy={cacheOfferBusy}
+        onclick={() => void runCacheOfferSync()}
+      >
+        <RailIcon name="refresh" />
+        {cacheOfferBusy ? "Starting sync…" : model.syncOffer.action}
+      </button>
+    {:else}
     <span class="core-status-state" data-testid="core-popover-sync-state">
       <span class="core-status-dot" aria-hidden="true">●</span>
       {model.syncHeader.stateWord}
@@ -531,7 +595,8 @@
         {model.syncHeader.caption}
       </span>
     {/if}
-    {#if returnNudge}
+    {/if}
+    {#if returnNudge && !model.syncOffer}
       <span class="core-return-nudge" data-testid="core-popover-return-nudge">
         Run a sync today to keep your company up to date.
       </span>
@@ -940,10 +1005,15 @@
   }
 
   .core-status-last,
-  .core-status-caption {
+  .core-status-caption,
+  .core-status-plain {
     font-size: 13px;
     line-height: 1.35;
     color: var(--t2);
+  }
+
+  .core-status-plain {
+    color: var(--t1);
   }
 
   .core-status-caption {

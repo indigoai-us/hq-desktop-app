@@ -116,6 +116,13 @@ pub struct SyncErrorEvent {
     pub message: String,
 }
 
+/// `{message}` while first-launch sync waits for the npm cache lock.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncWaitingEvent {
+    pub message: String,
+}
+
 /// `{type: "conflict", company?, path, direction?, resolution?}`
 /// Per-file divergence, emitted by `hq-sync-runner` once per conflicted path
 /// (`sync-runner-company` forwards the engine's `conflict` event and stamps
@@ -366,6 +373,12 @@ pub const EVENT_SYNC_FANOUT_PLAN: &str = "sync:fanout-plan";
 pub const EVENT_SYNC_PLAN: &str = "sync:plan";
 pub const EVENT_SYNC_PLAN_LIMIT: &str = "sync:plan-limit";
 pub const EVENT_SYNC_PROGRESS: &str = "sync:progress";
+/// First-launch sync is waiting for the npm cache lock. `message` is the
+/// existing setup caption, not an error.
+pub const EVENT_SYNC_WAITING: &str = "sync:waiting";
+/// The first-launch cache wait ended without starting a run. No payload.
+/// The UI drops the `sync:waiting` caption if it is still showing.
+pub const EVENT_SYNC_WAITING_END: &str = "sync:waiting-end";
 pub const EVENT_SYNC_ERROR: &str = "sync:error";
 pub const EVENT_SYNC_COMPLETE: &str = "sync:complete";
 /// hq-cloud ≥5.24.0. Emitted only under `currency-gated` delete policy
