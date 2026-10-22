@@ -56,6 +56,12 @@ use crate::commands::install_stages::{
     record_onboarding_failure_detail_with_kind, OnboardingErrorCategory, OnboardingFailureScope,
 };
 use crate::util::logfile::log;
+#[cfg_attr(not(windows), allow(unused_imports))]
+use hq_desktop_core::windows_portable_git::{
+    classify_managed_git_bundle, install_portable_git, managed_git_needs_reprovision,
+    portable_git_asset_for_arch, windows_git_search_dirs, ManagedGitBundle, ManagedGitLayout,
+    PortableGitAsset, PortableGitStage, SystemPortableGitHost, PORTABLE_GIT_VERSION,
+};
 
 tokio::task_local! {
     static ACTIVE_ONBOARDING_FAILURE_SCOPE: OnboardingFailureScope;
@@ -5202,18 +5208,11 @@ const WINDOWS_YQ_SHA256_ARM64: &str =
 const RSYNC_BUNDLE_SHA256: &str =
     "0e1d90ab60c2fd6c24debe6b59bd4b23ea65009a408976f94b916dcad8332f1d";
 
-// Portable Git (MinGit) — the fallback when neither winget nor scoop is present.
-// MinGit ships a single 64-bit build; on arm64 Windows it runs under x64
-// emulation, so the same asset serves every supported arch. git is a REQUIRED
-// dep (autocommit, repos, agents, pack-install), so this keeps it installable
-// without a system package manager rather than hard-failing.
-#[cfg(windows)]
-const WINDOWS_MINGIT_VERSION: &str = "2.54.0";
-#[cfg(windows)]
-const WINDOWS_MINGIT_URL: &str = "https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/MinGit-2.54.0-64-bit.zip";
-#[cfg(windows)]
-const WINDOWS_MINGIT_SHA256: &str =
-    "04f937e1f0918b17b9be6f2294cb2bb66e96e1d9832d1c298e2de088a1d0e668";
+// Git on Windows is always HQ's own per-user PortableGit (Git and Bash), never
+// WinGet's `Git.Git` or Scoop: those run the machine-wide Git for Windows setup
+// (an administrator prompt) or an unverified package. The pinned x64/ARM64
+// assets and the verify -> stage -> probe -> activate flow live in
+// `hq_desktop_core::windows_portable_git`.
 
 #[cfg(windows)]
 fn debug_log(msg: &str) {
@@ -5476,20 +5475,38 @@ fn managed_node_bin() -> PathBuf {
 }
 
 #[cfg(windows)]
-fn managed_git_dir() -> PathBuf {
-    managed_toolchain_dir().join("git")
+fn managed_git_layout() -> ManagedGitLayout {
+    ManagedGitLayout::new(managed_toolchain_dir())
 }
 
-/// Directory holding the MinGit `git.exe` wrapper — what goes on PATH.
+#[cfg(windows)]
+fn managed_git_dir() -> PathBuf {
+    managed_git_layout().git_dir()
+}
+
+/// Directory holding the managed `git.exe` entry point — what goes on PATH.
 #[cfg(windows)]
 fn managed_git_cmd() -> PathBuf {
     managed_git_dir().join("cmd")
 }
 
-/// MinGit's core libexec/bin (the real git + helpers it shells out to).
+/// The managed bundle's native folder name: `mingw64` on x64, `clangarm64`
+/// on ARM64. Its `bin` holds the real git and the helpers it shells out to.
 #[cfg(windows)]
-fn managed_git_mingw_bin() -> PathBuf {
-    managed_git_dir().join("mingw64").join("bin")
+fn managed_git_native_prefix() -> &'static str {
+    portable_git_asset_for_arch(std::env::consts::ARCH)
+        .map_or("mingw64", |asset| asset.native_prefix)
+}
+
+#[cfg(all(windows, test))]
+fn managed_git_native_bin() -> PathBuf {
+    managed_git_dir().join(managed_git_native_prefix()).join("bin")
+}
+
+/// True when HQ's PortableGit (Git and Bash) is the live managed bundle.
+#[cfg(windows)]
+fn managed_portable_git_active() -> bool {
+    classify_managed_git_bundle(&managed_git_dir()) == ManagedGitBundle::PortableGit
 }
 
 #[cfg(windows)]
@@ -5534,11 +5551,25 @@ pub fn extended_search_path() -> String {
             .join("bin")
             .to_string_lossy()
             .into_owned(),
-        // Portable Git (MinGit) installed by the managed fallback when no
-        // package manager is present. `cmd` holds the git.exe wrapper;
-        // `mingw64/bin` holds the helpers it shells out to.
-        managed_git_cmd().to_string_lossy().into_owned(),
-        managed_git_mingw_bin().to_string_lossy().into_owned(),
+    ];
+    // HQ's managed Git: `cmd` holds git.exe, `bin` holds Git Bash (ahead of
+    // System32 so a bare `bash` is never the WSL launcher), and the native
+    // folder holds the helpers git shells out to. When HQ's PortableGit is
+    // live, the system Git folders are left out so git, bash and their
+    // helpers all come from one bundle.
+    let git_dirs = windows_git_search_dirs(
+        &managed_git_dir(),
+        managed_git_native_prefix(),
+        &program_files(),
+        managed_portable_git_active(),
+    );
+    dirs.extend(
+        git_dirs
+            .managed
+            .iter()
+            .map(|dir| dir.to_string_lossy().into_owned()),
+    );
+    dirs.extend([
         // Node.js as installed by winget's `OpenJS.NodeJS.LTS` package. The MSI
         // lands `node.exe`/`npm.cmd` in `C:\Program Files\nodejs` (machine
         // scope) or `%LOCALAPPDATA%\Programs\nodejs` (winget `--scope user`).
@@ -5555,22 +5586,14 @@ pub fn extended_search_path() -> String {
             .join("nodejs")
             .to_string_lossy()
             .into_owned(),
-        program_files()
-            .join("Git")
-            .join("bin")
-            .to_string_lossy()
-            .into_owned(),
-        program_files()
-            .join("Git")
-            .join("usr")
-            .join("bin")
-            .to_string_lossy()
-            .into_owned(),
-        program_files()
-            .join("Git")
-            .join("cmd")
-            .to_string_lossy()
-            .into_owned(),
+    ]);
+    dirs.extend(
+        git_dirs
+            .system
+            .iter()
+            .map(|dir| dir.to_string_lossy().into_owned()),
+    );
+    dirs.extend([
         local_app_data()
             .join("Microsoft")
             .join("WindowsApps")
@@ -5596,7 +5619,7 @@ pub fn extended_search_path() -> String {
             .to_string_lossy()
             .into_owned(),
         system_root().to_string_lossy().into_owned(),
-    ];
+    ]);
 
     if let Some(latest) = latest_claude_code_dir() {
         dirs.push(latest.to_string_lossy().into_owned());
@@ -6349,37 +6372,6 @@ fn winget_install_args(id: &str) -> [&str; 8] {
     ]
 }
 
-// WinGet documents 0x8A15005E (-1978335138) as
-// APPINSTALLER_CLI_ERROR_PINNED_CERTIFICATE_MISMATCH, not as an already-
-// installed result. Re-probe Git after this source failure so an existing
-// managed Git is accepted, while preserving the original error when absent.
-#[cfg(any(test, windows))]
-fn winget_exit_code_from_error(error: &str) -> Option<i32> {
-    let rest = error.strip_prefix("Process exited with code ")?;
-    rest.split_once(':')
-        .map_or(rest, |(code, _)| code)
-        .trim()
-        .parse()
-        .ok()
-}
-
-#[cfg(any(test, windows))]
-fn resolve_git_winget_install_failure<F>(
-    error: String,
-    git_is_satisfied: F,
-) -> Result<String, String>
-where
-    F: FnOnce() -> bool,
-{
-    if winget_exit_code_from_error(&error) == Some(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE)
-        && git_is_satisfied()
-    {
-        Ok("Git already available after WinGet certificate mismatch".to_string())
-    } else {
-        Err(error)
-    }
-}
-
 #[cfg(windows)]
 async fn scoop_install(app: &AppHandle, name: &str) -> Result<String, String> {
     run_streaming(app, "scoop", &["install", name]).await
@@ -6637,122 +6629,152 @@ async fn install_managed_node<R: tauri::Runtime>(
     Ok(format!("Managed Node installed at {node_dir:?}"))
 }
 
+/// Serializes managed Git installs: the setup step and the launch-time
+/// MinGit upgrade must not stage and activate at the same time.
 #[cfg(windows)]
-fn validate_managed_git_dir(git_dir: &Path) -> Result<(), String> {
-    for path in [
-        git_dir.join("cmd").join("git.exe"),
-        git_dir.join("mingw64").join("bin").join("git.exe"),
-    ] {
-        if !path.is_file() {
-            return Err(format!(
-                "managed Git missing required file {}",
-                path.display()
-            ));
-        }
-    }
-    Ok(())
+static MANAGED_GIT_INSTALL_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+#[cfg(windows)]
+fn record_managed_git_failure(stage: &str, detail: &str) {
+    eprintln!("[hq-deps] managed PortableGit {stage} failed: {detail}");
+    record_setup_command_failure(
+        "hq-managed-portable-git",
+        &[stage],
+        None,
+        String::new(),
+        String::new(),
+        detail.to_string(),
+    );
 }
 
-/// Extract a MinGit zip. Unlike the Node archive, MinGit has no single top-level
-/// root dir — entries are `cmd/...`, `mingw64/...`, etc. at the archive root — so
-/// we extract relative paths directly into the staging dir.
+/// Download, verify, stage, probe and activate HQ's PortableGit, then put its
+/// `cmd` folder on the user PATH. No installer runs and nothing asks for
+/// administrator rights. Every failure leaves the previous managed Git (if
+/// any) live and returns copy that offers Try again.
 #[cfg(windows)]
-fn extract_mingit_zip(bytes: &[u8], staged_git_dir: &Path) -> Result<(), String> {
-    let cursor = std::io::Cursor::new(bytes);
-    let mut archive =
-        zip::ZipArchive::new(cursor).map_err(|e| format!("Failed to open Git zip: {e}"))?;
-
-    std::fs::create_dir_all(staged_git_dir)
-        .map_err(|e| format!("mkdir {}: {e}", staged_git_dir.display()))?;
-
-    for i in 0..archive.len() {
-        let mut entry = archive
-            .by_index(i)
-            .map_err(|e| format!("git zip entry {i}: {e}"))?;
-        let raw_name = entry.name().to_string();
-        if zip_raw_name_has_unsafe_component(&raw_name) {
-            return Err(format!("git zip entry has unsafe path: {raw_name}"));
-        }
-        let rel = entry
-            .enclosed_name()
-            .ok_or_else(|| format!("git zip entry has unsafe path: {raw_name}"))?
-            .to_path_buf();
-        if rel.as_os_str().is_empty() {
-            continue;
-        }
-        let out_path = staged_git_dir.join(&rel);
-        if !out_path.starts_with(staged_git_dir) {
-            return Err(format!("git zip entry escapes staging dir: {raw_name}"));
-        }
-        if entry.is_dir() {
-            std::fs::create_dir_all(&out_path)
-                .map_err(|e| format!("mkdir {}: {e}", out_path.display()))?;
-            continue;
-        }
-        if let Some(parent) = out_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("mkdir parent {}: {e}", parent.display()))?;
-        }
-        let mut out =
-            std::fs::File::create(&out_path).map_err(|e| format!("create {out_path:?}: {e}"))?;
-        std::io::copy(&mut entry, &mut out).map_err(|e| format!("extract {out_path:?}: {e}"))?;
-    }
-
-    validate_managed_git_dir(staged_git_dir)
-}
-
-#[cfg(windows)]
-fn ensure_git_runs(git_exe: &Path, expected_version: &str) -> Result<(), String> {
-    let output = Command::new(git_exe)
-        .arg("--version")
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|e| format!("failed to run {} --version: {e}", git_exe.display()))?;
-    // `git --version` prints e.g. "git version 2.54.0.windows.1".
-    let combined = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if output.status.success() && combined.contains(expected_version) {
-        Ok(())
-    } else {
-        Err(format!(
-            "managed Git version check failed: expected {expected_version}, got '{combined}'"
-        ))
-    }
-}
-
-#[cfg(windows)]
-async fn install_managed_git(app: &AppHandle) -> Result<String, String> {
-    let url = WINDOWS_MINGIT_URL.to_string();
-    emit_progress(app, &format!("Downloading {url}"));
-    let url_for_dl = url.clone();
-    let bytes = tokio::task::spawn_blocking(move || download_bytes_checked(&url_for_dl, "Git zip"))
+async fn install_managed_git(
+    app: &AppHandle,
+    asset: &'static PortableGitAsset,
+) -> Result<String, String> {
+    emit_progress(
+        app,
+        &format!(
+            "Downloading Git for Windows {PORTABLE_GIT_VERSION} ({})",
+            asset.file_name
+        ),
+    );
+    let url = asset.url;
+    let bytes = match tokio::task::spawn_blocking(move || download_bytes_checked(url, "Git"))
         .await
-        .map_err(|e| format!("git download task join failed: {e}"))??;
+    {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(error)) => {
+            record_managed_git_failure("download", &error);
+            return Err(GIT_DOWNLOAD_ERROR.to_string());
+        }
+        Err(error) => {
+            record_managed_git_failure("download", &format!("task join failed: {error}"));
+            return Err(GIT_SETUP_ERROR.to_string());
+        }
+    };
     emit_progress(app, &format!("Downloaded {} bytes", bytes.len()));
-    verify_sha256_bytes("Git zip", &bytes, WINDOWS_MINGIT_SHA256)?;
 
-    let target = managed_toolchain_dir();
-    std::fs::create_dir_all(&target).map_err(|e| format!("Failed to mkdir {target:?}: {e}"))?;
-
-    let git_dir = managed_git_dir();
-    let staged_git_dir = target.join(format!(".git-install-{}", Uuid::new_v4()));
-    emit_progress(app, &format!("Extracting Git into {staged_git_dir:?}..."));
-    if let Err(e) = extract_mingit_zip(&bytes, &staged_git_dir) {
-        let _ = std::fs::remove_dir_all(&staged_git_dir);
-        return Err(e);
-    }
-    if let Err(e) = ensure_git_runs(
-        &staged_git_dir.join("cmd").join("git.exe"),
-        WINDOWS_MINGIT_VERSION,
-    ) {
-        let _ = std::fs::remove_dir_all(&staged_git_dir);
-        return Err(e);
-    }
-    activate_staged_dir(&staged_git_dir, &git_dir)?;
+    let layout = managed_git_layout();
+    let progress_app = app.clone();
+    let root = system_root();
+    let installed = tokio::task::spawn_blocking(move || {
+        let mut host = SystemPortableGitHost::new(
+            root,
+            Box::new(move |line: &str| emit_progress(&progress_app, line)),
+        );
+        install_portable_git(&layout, asset, &bytes, &mut host)
+    })
+    .await;
+    let installed = match installed {
+        Ok(Ok(installed)) => installed,
+        Ok(Err(error)) => {
+            record_managed_git_failure(&format!("{:?}", error.stage), &error.detail);
+            return Err(managed_git_install_error(error.stage).to_string());
+        }
+        Err(error) => {
+            record_managed_git_failure("install", &format!("task join failed: {error}"));
+            return Err(GIT_SETUP_ERROR.to_string());
+        }
+    };
 
     append_user_path(&managed_git_cmd())?;
-    append_user_path(&managed_git_mingw_bin())?;
+    // qmd's Windows shim runs through Git Bash when one exists. After a MinGit
+    // upgrade the shim can switch from npm's Node launcher to this bundle's
+    // bin\bash.exe. Before qmd is installed there is nothing to rewrite.
+    if let Err(error) = write_qmd_bash_shim() {
+        debug_log(&format!("qmd shim not rewritten after Git install: {error}"));
+    }
 
-    Ok(format!("Managed Git installed at {git_dir:?}"))
+    Ok(format!(
+        "Managed Git {PORTABLE_GIT_VERSION} installed at {:?} (replaced {:?}, rollback copy {:?})",
+        managed_git_dir(),
+        installed.replaced,
+        installed.rollback_copy
+    ))
+}
+
+/// True when HQ's managed Git is an older MinGit or not the pinned
+/// PortableGit, so it should be upgraded. Runs the managed `git --version`
+/// only when a managed bundle exists.
+#[cfg(windows)]
+fn managed_git_upgrade_needed() -> bool {
+    let git_dir = managed_git_dir();
+    let git = hq_desktop_core::windows_portable_git::git_exe_in(&git_dir);
+    if !git.is_file() {
+        return false;
+    }
+    let status = check_dep_in("git", &managed_git_cmd().to_string_lossy());
+    managed_git_needs_reprovision(&git, status.version.as_deref(), &git_dir)
+}
+
+/// Upgrade HQ's own MinGit (or an older managed PortableGit) to the pinned
+/// PortableGit. Never fatal: when the upgrade fails the existing managed Git
+/// stays live, and the next launch or setup run tries again. Returns `None`
+/// when there was nothing to upgrade.
+#[cfg(windows)]
+async fn upgrade_managed_git_if_needed(
+    app: &AppHandle,
+    announce: bool,
+) -> Option<Result<String, String>> {
+    let _guard = MANAGED_GIT_INSTALL_LOCK.lock().await;
+    if !managed_git_upgrade_needed() {
+        return None;
+    }
+    let asset = portable_git_asset_for_arch(std::env::consts::ARCH)?;
+    if announce {
+        emit_deps_tool(app, "git", DepsToolState::Installing);
+    }
+    let result = install_managed_git(app, asset).await;
+    if announce {
+        emit_deps_tool(app, "git", DepsToolState::Done);
+    }
+    if let Err(error) = &result {
+        eprintln!("[hq-deps] managed Git upgrade did not finish; the current Git stays: {error}");
+        clear_recovered_setup_command_failure();
+    }
+    Some(result)
+}
+
+/// Launch-time upgrade of an existing HQ-managed MinGit (no Bash) to
+/// PortableGit, after the app has settled. Not run for scratch builds.
+#[cfg(windows)]
+pub fn setup_managed_git_upgrade(app: &AppHandle) {
+    if !crate::scratch_build::launch_side_effect_allowed("managed Git upgrade") {
+        return;
+    }
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        if let Some(result) = upgrade_managed_git_if_needed(&handle, false).await {
+            log("git", &format!("launch-time managed Git upgrade: {result:?}"));
+        }
+    });
 }
 
 #[cfg(windows)]
@@ -6789,64 +6811,22 @@ pub async fn install_pnpm(app: AppHandle) -> Result<String, String> {
 
 #[cfg(windows)]
 async fn install_git_windows(app: AppHandle) -> Result<String, String> {
-    emit_progress(&app, "Detecting package manager for Git install...");
-    let pm = detect_package_manager();
-    match pm {
-        PackageManager::Winget => {
-            emit_progress(&app, "Installing Git via winget...");
-            // Git for Windows is a machine-wide installer, so Windows shows a
-            // UAC prompt. Tell the onboarding window before it appears.
-            emit_git_permission(&app, GitPermissionState::Requesting);
-            let install = winget_install(&app, "Git.Git").await;
-            emit_git_permission(&app, GitPermissionState::Done);
-            match install {
-                Ok(_) => {
-                    // winget's exit code does not prove Git landed: run
-                    // `git --version` from the Git folder it installs to.
-                    let folder = verify_git_install(&winget_git_cmd_folders(), |folder| {
-                        check_dep_in("git", folder)
-                    })?;
-                    append_user_path(Path::new(&folder))?;
-                    Ok("git installed via winget".to_string())
-                }
-                Err(error) if git_winget_failure_is_permission_declined(&error) => {
-                    Err(git_permission_declined_error())
-                }
-                Err(error) => resolve_git_winget_install_failure(error, || {
-                    dependency_defs()
-                        .iter()
-                        .find(|dep| dep.id == "git")
-                        .is_some_and(|dep| dep_is_satisfied(&app, dep))
-                }),
+    let winget_available = matches!(detect_package_manager(), PackageManager::Winget);
+    match windows_git_install_plan(winget_available, std::env::consts::ARCH) {
+        WindowsGitInstallPlan::ManagedPortableGit(asset) => {
+            if winget_available {
+                debug_log("WinGet is present; Git comes from HQ's PortableGit, not WinGet Git.Git");
             }
+            let _guard = MANAGED_GIT_INSTALL_LOCK.lock().await;
+            // A launch-time upgrade may have finished while this call waited.
+            if !managed_git_upgrade_needed() && managed_portable_git_active() {
+                append_user_path(&managed_git_cmd())?;
+                return Ok("Managed Git already present".to_string());
+            }
+            install_managed_git(&app, asset).await
         }
-        PackageManager::Scoop => {
-            emit_progress(&app, "Installing Git via scoop...");
-            scoop_install(&app, "git").await?;
-            append_user_path(&user_profile().join("scoop").join("shims"))?;
-            Ok("git installed via scoop".to_string())
-        }
-        PackageManager::Managed => {
-            emit_progress(
-                &app,
-                "No package manager found - downloading portable Git (MinGit)...",
-            );
-            install_managed_git(&app).await
-        }
+        WindowsGitInstallPlan::Unsupported => Err(GIT_UNSUPPORTED_ERROR.to_string()),
     }
-}
-
-/// The `cmd` folders a winget Git for Windows install can land in: the
-/// machine-wide install, then the per-user one.
-#[cfg(windows)]
-fn winget_git_cmd_folders() -> Vec<String> {
-    [
-        program_files().join("Git").join("cmd"),
-        local_app_data().join("Programs").join("Git").join("cmd"),
-    ]
-    .iter()
-    .map(|folder| folder.to_string_lossy().into_owned())
-    .collect()
 }
 
 /// Puts the folder of the Git that runs now on the user PATH, so new
@@ -8202,9 +8182,6 @@ fn is_installer_program(program: &str, args: &[&str]) -> bool {
     }
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
-const GIT_PERMISSION_DECLINED_MARKER: &str = "[git-permission-declined]";
-
 /// Runs `run` (one streamed command, from spawn until the child exits) while
 /// holding `lock` when the command is an installer. The guard lives until
 /// `run` returns, so a winget install keeps the lock until winget and the
@@ -8307,6 +8284,58 @@ const INSTALL_STOPPED_ERROR: &str =
 #[cfg_attr(not(windows), allow(dead_code))]
 const GIT_DID_NOT_START_ERROR: &str =
     "[install-retry] Git could not be started after installing. Select Try again.";
+/// Copy for HQ's managed Git install on Windows. Each one that says Try again
+/// carries the marker that shows the button.
+#[cfg_attr(not(windows), allow(dead_code))]
+const GIT_DOWNLOAD_ERROR: &str =
+    "[install-retry] Git could not be downloaded. Check your network connection, then select Try again.";
+#[cfg_attr(not(windows), allow(dead_code))]
+const GIT_CHECKSUM_ERROR: &str =
+    "[install-retry] The Git download did not match its checksum. Select Try again.";
+#[cfg_attr(not(windows), allow(dead_code))]
+const GIT_SETUP_ERROR: &str = "[install-retry] Git could not be set up. Select Try again.";
+#[cfg_attr(not(windows), allow(dead_code))]
+const GIT_UNSUPPORTED_ERROR: &str =
+    "HQ cannot install Git on this type of processor. Install Git for Windows, then open HQ again.";
+
+/// How setup installs a missing Git on Windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+enum WindowsGitInstallPlan {
+    /// HQ's per-user PortableGit: no Git setup program, no administrator
+    /// prompt.
+    ManagedPortableGit(&'static PortableGitAsset),
+    /// No PortableGit build for this processor.
+    Unsupported,
+}
+
+/// The plan for a missing Git. `winget_available` is taken so the rule is
+/// explicit and pinned by a test: WinGet being present never selects WinGet's
+/// `Git.Git`, which runs the machine-wide Git for Windows setup and raises an
+/// administrator prompt. Scoop is never used for Git either.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_git_install_plan(winget_available: bool, rust_arch: &str) -> WindowsGitInstallPlan {
+    let _ = winget_available;
+    match portable_git_asset_for_arch(rust_arch) {
+        Some(asset) => WindowsGitInstallPlan::ManagedPortableGit(asset),
+        None => WindowsGitInstallPlan::Unsupported,
+    }
+}
+
+/// The setup-screen copy for a failed managed Git install stage.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn managed_git_install_error(stage: PortableGitStage) -> &'static str {
+    match stage {
+        PortableGitStage::Checksum => GIT_CHECKSUM_ERROR,
+        PortableGitStage::Verify => GIT_DID_NOT_START_ERROR,
+        PortableGitStage::Payload
+        | PortableGitStage::Extract
+        | PortableGitStage::Prepare
+        | PortableGitStage::Activate
+        | PortableGitStage::Rollback => GIT_SETUP_ERROR,
+    }
+}
+
 #[cfg_attr(not(windows), allow(dead_code))]
 const PATH_WRITE_ERROR: &str = "HQ could not update the Windows PATH setting.";
 /// The setup step's form of [`PATH_WRITE_ERROR`], where the Try again button shows.
@@ -8331,21 +8360,21 @@ fn plain_path_write_error(raw: &str) -> String {
     PATH_WRITE_ERROR.to_string()
 }
 
-/// Where the waiting notice goes: the Git permission notice for Git, the
-/// tool line for any other dependency.
+/// Where the waiting notice goes: the tool line for the dependency whose
+/// Windows installer is still running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(not(windows), allow(dead_code))]
 enum InstallWaitSignal {
-    GitPermission,
     Tool(&'static str),
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
 fn install_wait_signal(dependency: Option<&'static str>) -> Option<InstallWaitSignal> {
     match dependency? {
-        "git" => Some(InstallWaitSignal::GitPermission),
-        // Downloaded, never run through a Windows installer.
-        "jq" | "yq" => None,
+        // Downloaded and unpacked by HQ, never run through a Windows
+        // installer, so Windows never asks permission for them. Git is HQ's
+        // own PortableGit.
+        "git" | "jq" | "yq" => None,
         id => Some(InstallWaitSignal::Tool(id)),
     }
 }
@@ -8353,9 +8382,6 @@ fn install_wait_signal(dependency: Option<&'static str>) -> Option<InstallWaitSi
 #[cfg_attr(not(windows), allow(dead_code))]
 fn emit_install_wait<R: tauri::Runtime>(app: &AppHandle<R>, signal: Option<InstallWaitSignal>) {
     match signal {
-        Some(InstallWaitSignal::GitPermission) => {
-            emit_git_permission(app, GitPermissionState::Waiting)
-        }
         Some(InstallWaitSignal::Tool(id)) => emit_deps_tool(app, id, DepsToolState::Waiting),
         None => {}
     }
@@ -8421,119 +8447,8 @@ fn git_user_path_addition(
         .filter(|folder| !path_list_contains(effective_path, folder))
 }
 
-/// After a Git install, runs `git --version` from each expected Git folder
-/// and returns the first folder where it works. That folder goes on PATH.
-#[cfg_attr(not(windows), allow(dead_code))]
-fn verify_git_install(
-    folders: &[String],
-    probe: impl Fn(&str) -> DepStatus,
-) -> Result<String, String> {
-    folders
-        .iter()
-        .find(|folder| {
-            let status = probe(folder);
-            status.installed
-                && status
-                    .version
-                    .as_deref()
-                    .is_some_and(|version| version.trim_start().starts_with("git version"))
-        })
-        .cloned()
-        .ok_or_else(|| GIT_DID_NOT_START_ERROR.to_string())
-}
-
-/// ERROR_CANCELLED: the user answered No at the UAC prompt.
-#[cfg_attr(not(windows), allow(dead_code))]
-const WINDOWS_ERROR_CANCELLED: i32 = 1223;
-#[cfg_attr(not(windows), allow(dead_code))]
-const HRESULT_ERROR_CANCELLED: i32 = 0x8007_04C7_u32 as i32;
-
-#[cfg_attr(not(windows), allow(dead_code))]
-fn winget_output_indicates_permission_declined(exit_code: Option<i32>, output: &str) -> bool {
-    if matches!(
-        exit_code,
-        Some(WINDOWS_ERROR_CANCELLED) | Some(HRESULT_ERROR_CANCELLED)
-    ) {
-        return true;
-    }
-    let lower = output.to_ascii_lowercase();
-    if lower.contains("0x800704c7")
-        || lower.contains("canceled by the user")
-        || lower.contains("cancelled by the user")
-    {
-        return true;
-    }
-    // "1223" as a whole number, not a substring of a larger one.
-    lower
-        .split(|c: char| !c.is_ascii_digit())
-        .any(|token| token == "1223")
-}
-
-/// Classifies a failed Git winget run from its error string and the streamed
-/// command's recorded diagnostic (winget prints the installer result on
-/// stdout, which the error string does not carry).
-#[cfg(any(test, windows))]
-fn git_winget_failure_indicates_permission_declined(
-    error: &str,
-    diagnostic: Option<&SetupCommandDiagnostic>,
-) -> bool {
-    let exit_code = diagnostic
-        .and_then(|diagnostic| diagnostic.exit_code)
-        .or_else(|| winget_exit_code_from_error(error));
-    let mut output = error.to_string();
-    if let Some(diagnostic) = diagnostic {
-        output.push('\n');
-        output.push_str(&diagnostic.stdout);
-        output.push('\n');
-        output.push_str(&diagnostic.stderr);
-    }
-    winget_output_indicates_permission_declined(exit_code, &output)
-}
-
-#[cfg(windows)]
-#[cfg_attr(not(windows), allow(dead_code))]
-fn git_winget_failure_is_permission_declined(error: &str) -> bool {
-    let diagnostic = ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR
-        .try_with(|collector| collector.current())
-        .ok()
-        .flatten();
-    git_winget_failure_indicates_permission_declined(error, diagnostic.as_ref())
-}
-
-#[cfg_attr(not(windows), allow(dead_code))]
-fn git_permission_declined_error() -> String {
-    format!("{GIT_PERMISSION_DECLINED_MARKER} Windows permission to install Git was declined.")
-}
-
-#[cfg_attr(not(windows), allow(dead_code))]
-const GIT_PERMISSION_EVENT: &str = "setup:git-permission";
 #[cfg_attr(not(windows), allow(dead_code))]
 const DEPS_TOOL_EVENT: &str = "setup:deps-tool";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(windows), allow(dead_code))]
-enum GitPermissionState {
-    Requesting,
-    /// Git is still installing after the wait budget; Windows may be waiting
-    /// on a permission prompt the person has not seen.
-    Waiting,
-    Done,
-}
-
-#[cfg_attr(not(windows), allow(dead_code))]
-fn git_permission_payload(state: GitPermissionState) -> serde_json::Value {
-    let state = match state {
-        GitPermissionState::Requesting => "requesting",
-        GitPermissionState::Waiting => "waiting",
-        GitPermissionState::Done => "done",
-    };
-    serde_json::json!({ "state": state })
-}
-
-#[cfg_attr(not(windows), allow(dead_code))]
-fn emit_git_permission<R: tauri::Runtime>(app: &AppHandle<R>, state: GitPermissionState) {
-    let _ = app.emit_to("main", GIT_PERMISSION_EVENT, git_permission_payload(state));
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DepsToolState {
@@ -9455,6 +9370,14 @@ async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), S
         // new terminals would not find it. That is not worth failing setup for.
         #[cfg(windows)]
         if dep.id == "git" {
+            // HQ's own MinGit works but has no Bash: upgrade it to PortableGit
+            // now. A failed upgrade keeps the working MinGit, so setup goes on.
+            let status = check_dep_impl("git", None);
+            if status.path.as_deref().is_some_and(|git| {
+                managed_git_needs_reprovision(git, status.version.as_deref(), &managed_git_dir())
+            }) {
+                let _ = upgrade_managed_git_if_needed(app, true).await;
+            }
             if let Err(error) = ensure_git_on_user_path(false) {
                 eprintln!("[hq-deps] git PATH update skipped: {error}");
             }
@@ -10093,61 +10016,92 @@ mod install_deps_planner_tests {
         );
     }
 
+
+
+
     #[test]
-    fn winget_certificate_mismatch_accepts_git_when_present() {
-        let error = format_install_error(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE, &[]);
-        let probes = std::cell::Cell::new(0);
-
-        let result = resolve_git_winget_install_failure(error, || {
-            probes.set(probes.get() + 1);
-            true
-        });
-
-        assert_eq!(
-            result,
-            Ok("Git already available after WinGet certificate mismatch".to_string())
-        );
-        assert_eq!(
-            probes.get(),
-            1,
-            "the exact error must trigger one Git re-probe"
-        );
+    fn winget_present_and_git_missing_takes_managed_portable_git_never_winget() {
+        // Regression: with WinGet on the machine, setup used to run
+        // `winget install Git.Git`, the machine-wide Git setup, which raised a
+        // Windows administrator prompt. Git now always comes from HQ's own
+        // per-user PortableGit, whatever package managers exist.
+        for winget_available in [true, false] {
+            assert_eq!(
+                windows_git_install_plan(winget_available, "x86_64"),
+                WindowsGitInstallPlan::ManagedPortableGit(
+                    &hq_desktop_core::windows_portable_git::PORTABLE_GIT_X64
+                ),
+                "winget_available={winget_available}"
+            );
+        }
+        let WindowsGitInstallPlan::ManagedPortableGit(asset) =
+            windows_git_install_plan(true, "x86_64")
+        else {
+            panic!("expected the managed PortableGit plan");
+        };
+        assert!(asset.file_name.starts_with("PortableGit-"));
+        assert!(asset.url.contains("github.com/git-for-windows/git/releases/download/"));
+        assert!(!asset.url.contains("winget"));
     }
 
     #[test]
-    fn winget_certificate_mismatch_keeps_error_when_git_is_absent() {
-        let error = format_install_error(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE, &[]);
-        let probes = std::cell::Cell::new(0);
-
-        let result = resolve_git_winget_install_failure(error.clone(), || {
-            probes.set(probes.get() + 1);
-            false
-        });
-
+    fn windows_git_plan_picks_the_arm64_build_on_arm64_and_refuses_other_arches() {
         assert_eq!(
-            result,
-            Err(error),
-            "an absent Git must preserve the original WinGet exit code and error"
+            windows_git_install_plan(true, "aarch64"),
+            WindowsGitInstallPlan::ManagedPortableGit(
+                &hq_desktop_core::windows_portable_git::PORTABLE_GIT_ARM64
+            )
         );
         assert_eq!(
-            probes.get(),
-            1,
-            "the exact error must trigger one Git re-probe"
+            windows_git_install_plan(true, "x86"),
+            WindowsGitInstallPlan::Unsupported
         );
+        assert!(!GIT_UNSUPPORTED_ERROR.contains("[install-retry]"));
     }
 
     #[test]
-    fn other_winget_errors_do_not_reprobe_git() {
-        let error = format_install_error(-1, &[]);
-        let probes = std::cell::Cell::new(0);
+    fn managed_git_failures_show_try_again_copy() {
+        assert_eq!(
+            managed_git_install_error(PortableGitStage::Checksum),
+            GIT_CHECKSUM_ERROR
+        );
+        assert_eq!(
+            managed_git_install_error(PortableGitStage::Verify),
+            GIT_DID_NOT_START_ERROR
+        );
+        for stage in [
+            PortableGitStage::Payload,
+            PortableGitStage::Extract,
+            PortableGitStage::Prepare,
+            PortableGitStage::Activate,
+            PortableGitStage::Rollback,
+        ] {
+            assert_eq!(managed_git_install_error(stage), GIT_SETUP_ERROR);
+        }
+        for message in [GIT_DOWNLOAD_ERROR, GIT_CHECKSUM_ERROR, GIT_SETUP_ERROR] {
+            assert!(message.starts_with("[install-retry] "), "{message}");
+            assert!(message.ends_with("select Try again.") || message.ends_with("Select Try again."), "{message}");
+            // No admin prompt exists any more, so no copy may mention one.
+            assert!(!message.to_lowercase().contains("permission"), "{message}");
+        }
+    }
 
-        let result = resolve_git_winget_install_failure(error.clone(), || {
-            probes.set(probes.get() + 1);
-            true
-        });
-
-        assert_eq!(result, Err(error));
-        assert_eq!(probes.get(), 0, "only the named WinGet code re-probes Git");
+    #[test]
+    fn managed_git_failure_copy_keeps_its_onboarding_error_category() {
+        let category = |error: &str| {
+            setup_error_category(
+                &DepInstallResult {
+                    id: "git",
+                    label: "Git",
+                    optional: false,
+                    status: DepInstallStatus::Failed,
+                    error: Some(error.to_string()),
+                },
+                None,
+            )
+        };
+        assert_eq!(category(GIT_DOWNLOAD_ERROR), OnboardingErrorCategory::Network);
+        assert_eq!(category(GIT_CHECKSUM_ERROR), OnboardingErrorCategory::Checksum);
     }
 
     #[test]
@@ -11719,60 +11673,8 @@ mod windows_tests {
         );
     }
 
-    #[test]
-    fn mingit_zip_extracts_flat_layout() {
-        let tmp = tempfile::tempdir().unwrap();
-        // MinGit has no top-level root dir — entries sit at the archive root.
-        let bytes = zip_fixture(&[
-            ("cmd/git.exe", b"git"),
-            ("mingw64/bin/git.exe", b"git-core"),
-            ("etc/gitconfig", b"[core]\n"),
-            ("LICENSE.txt", b"license"),
-        ]);
 
-        extract_mingit_zip(&bytes, tmp.path()).expect("mingit zip should extract");
 
-        assert_eq!(
-            std::fs::read(tmp.path().join("cmd").join("git.exe")).unwrap(),
-            b"git"
-        );
-        assert_eq!(
-            std::fs::read(tmp.path().join("mingw64").join("bin").join("git.exe")).unwrap(),
-            b"git-core"
-        );
-        assert_eq!(
-            std::fs::read(tmp.path().join("LICENSE.txt")).unwrap(),
-            b"license"
-        );
-    }
-
-    #[test]
-    fn mingit_zip_rejects_unsafe_entries_and_missing_git() {
-        let tmp = tempfile::tempdir().unwrap();
-        let unsafe_zip = zip_fixture(&[("cmd/../evil.exe", b"evil")]);
-        let err = extract_mingit_zip(&unsafe_zip, tmp.path()).unwrap_err();
-        assert!(err.contains("unsafe path"), "{err}");
-
-        let tmp2 = tempfile::tempdir().unwrap();
-        let incomplete = zip_fixture(&[("LICENSE.txt", b"license")]);
-        let err = extract_mingit_zip(&incomplete, tmp2.path()).unwrap_err();
-        assert!(err.contains("missing required file"), "{err}");
-    }
-
-    #[test]
-    fn mingit_pin_matches_expected_asset_and_sha_shape() {
-        assert_eq!(WINDOWS_MINGIT_VERSION, "2.54.0");
-        assert_eq!(
-            WINDOWS_MINGIT_URL,
-            "https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/MinGit-2.54.0-64-bit.zip"
-        );
-        assert_eq!(
-            WINDOWS_MINGIT_SHA256,
-            "04f937e1f0918b17b9be6f2294cb2bb66e96e1d9832d1c298e2de088a1d0e668"
-        );
-        assert_eq!(WINDOWS_MINGIT_SHA256.len(), 64);
-        assert!(WINDOWS_MINGIT_SHA256.chars().all(|c| c.is_ascii_hexdigit()));
-    }
 
     #[test]
     fn rsync_zip_extracts_bin_and_rejects_bad_archives() {
@@ -12079,7 +11981,7 @@ mod windows_tests {
         let managed_npm = path_entry_position(&entries, managed_npm_bin());
         let managed_tool_bin = path_entry_position(&entries, managed_toolchain_dir().join("bin"));
         let managed_git_cmd_pos = path_entry_position(&entries, managed_git_cmd());
-        let managed_git_mingw = path_entry_position(&entries, managed_git_mingw_bin());
+        let managed_git_mingw = path_entry_position(&entries, managed_git_native_bin());
         let winget_node_machine = path_entry_position(&entries, program_files().join("nodejs"));
         let winget_node_user =
             path_entry_position(&entries, local_app_data().join("Programs").join("nodejs"));
@@ -12108,14 +12010,28 @@ mod windows_tests {
     fn extended_search_path_contains_managed_git_dirs() {
         let entries = path_entries_lower();
         let cmd = managed_git_cmd().to_string_lossy().to_lowercase();
-        let mingw = managed_git_mingw_bin().to_string_lossy().to_lowercase();
+        let mingw = managed_git_native_bin().to_string_lossy().to_lowercase();
         assert!(
             entries.iter().any(|e| e == &cmd),
             "PATH should include the managed Git cmd dir"
         );
         assert!(
             entries.iter().any(|e| e == &mingw),
-            "PATH should include the managed Git mingw64\\bin dir"
+            "PATH should include the managed Git native helper dir"
+        );
+        let bash = managed_git_dir()
+            .join("bin")
+            .to_string_lossy()
+            .to_lowercase();
+        let bash_pos = entries.iter().position(|e| e == &bash).expect("managed Git Bash dir");
+        let system32 = system_root()
+            .join("System32")
+            .to_string_lossy()
+            .to_lowercase();
+        let system32_pos = entries.iter().position(|e| e == &system32).expect("System32");
+        assert!(
+            bash_pos < system32_pos,
+            "managed Git Bash must precede System32's WSL bash.exe"
         );
     }
 
@@ -12124,7 +12040,7 @@ mod windows_tests {
         for dir in [
             managed_git_dir(),
             managed_git_cmd(),
-            managed_git_mingw_bin(),
+            managed_git_native_bin(),
         ] {
             let p = dir.to_string_lossy().to_lowercase();
             assert!(p.contains("indigohq") && p.contains("toolchain"), "{p}");
@@ -15466,11 +15382,10 @@ mod install_deps_windows_onboarding_tests {
     }
 
     #[test]
-    fn install_wait_notice_targets_the_git_permission_notice_for_git() {
-        assert_eq!(
-            install_wait_signal(Some("git")),
-            Some(InstallWaitSignal::GitPermission)
-        );
+    fn install_wait_notice_never_names_git_or_downloaded_tools() {
+        // Git is HQ's own PortableGit: downloaded and unpacked, never a
+        // Windows installer, so it never gets a permission notice.
+        assert_eq!(install_wait_signal(Some("git")), None);
         assert_eq!(
             install_wait_signal(Some("gh")),
             Some(InstallWaitSignal::Tool("gh"))
@@ -15480,10 +15395,6 @@ mod install_deps_windows_onboarding_tests {
         // installer, so they never get the permission wording.
         assert_eq!(install_wait_signal(Some("jq")), None);
         assert_eq!(install_wait_signal(Some("yq")), None);
-        assert_eq!(
-            git_permission_payload(GitPermissionState::Waiting),
-            serde_json::json!({ "state": "waiting" })
-        );
         assert_eq!(
             deps_tool_payload("gh", DepsToolState::Waiting),
             serde_json::json!({ "id": "gh", "state": "waiting" })
@@ -15526,90 +15437,10 @@ mod install_deps_windows_onboarding_tests {
         assert!(!again.terminate);
     }
 
-    #[test]
-    fn permission_declined_detects_uac_cancellation() {
-        assert!(winget_output_indicates_permission_declined(Some(1223), ""));
-        assert!(winget_output_indicates_permission_declined(
-            Some(0x8007_04C7_u32 as i32),
-            ""
-        ));
-        assert!(winget_output_indicates_permission_declined(
-            Some(-1978335226),
-            "Installer failed with exit code: 1223"
-        ));
-        assert!(winget_output_indicates_permission_declined(
-            None,
-            "Error 0x800704C7: The operation was canceled by the user."
-        ));
-        assert!(winget_output_indicates_permission_declined(
-            Some(1),
-            "The operation was Cancelled by the user"
-        ));
-    }
 
-    #[test]
-    fn permission_declined_ignores_other_failures() {
-        assert!(!winget_output_indicates_permission_declined(Some(0), ""));
-        assert!(!winget_output_indicates_permission_declined(
-            Some(WINGET_PINNED_CERTIFICATE_MISMATCH_EXIT_CODE),
-            "Process exited with code -1978335138"
-        ));
-        assert!(!winget_output_indicates_permission_declined(
-            Some(1),
-            "No package found matching input criteria."
-        ));
-        assert!(!winget_output_indicates_permission_declined(None, ""));
-        // A number that merely contains 1223 as a substring is not a cancellation.
-        assert!(!winget_output_indicates_permission_declined(
-            Some(1),
-            "Downloading 12234 bytes"
-        ));
-    }
 
-    #[test]
-    fn git_winget_failure_reads_installer_result_from_diagnostic_stdout() {
-        let diagnostic = SetupCommandDiagnostic {
-            command: "winget install --id Git.Git".to_string(),
-            exit_code: Some(-1978335226),
-            stdout: "Starting package install...\nInstaller failed with exit code: 1223"
-                .to_string(),
-            stderr: String::new(),
-            error: "Process exited with code -1978335226".to_string(),
-        };
-        assert!(git_winget_failure_indicates_permission_declined(
-            "Process exited with code -1978335226",
-            Some(&diagnostic)
-        ));
-        assert!(git_winget_failure_indicates_permission_declined(
-            "Process exited with code 1223",
-            None
-        ));
-        assert!(!git_winget_failure_indicates_permission_declined(
-            "Process exited with code -1978335138",
-            None
-        ));
-    }
 
-    #[test]
-    fn git_permission_declined_error_has_stable_marker() {
-        assert_eq!(
-            git_permission_declined_error(),
-            "[git-permission-declined] Windows permission to install Git was declined."
-        );
-    }
 
-    #[test]
-    fn git_permission_payload_shape() {
-        assert_eq!(GIT_PERMISSION_EVENT, "setup:git-permission");
-        assert_eq!(
-            git_permission_payload(GitPermissionState::Requesting),
-            serde_json::json!({ "state": "requesting" })
-        );
-        assert_eq!(
-            git_permission_payload(GitPermissionState::Done),
-            serde_json::json!({ "state": "done" })
-        );
-    }
 
     #[test]
     fn deps_tool_payload_shape() {
@@ -16077,45 +15908,6 @@ mod install_deps_windows_onboarding_tests {
         }
     }
 
-    fn git_status(installed: bool, version: Option<&str>) -> DepStatus {
-        DepStatus {
-            installed,
-            version: version.map(str::to_string),
-            path: None,
-        }
-    }
 
-    #[test]
-    fn git_install_is_verified_by_running_git_from_an_expected_folder() {
-        let folders = [
-            r"C:\Program Files\Git\cmd".to_string(),
-            r"C:\Users\me\AppData\Local\Programs\Git\cmd".to_string(),
-        ];
-        let probed = std::cell::RefCell::new(Vec::new());
-        let verified = verify_git_install(&folders, |folder| {
-            probed.borrow_mut().push(folder.to_string());
-            if folder.contains("Programs") {
-                git_status(true, Some("git version 2.47.0.windows.1"))
-            } else {
-                git_status(false, None)
-            }
-        });
-        assert_eq!(
-            verified.as_deref(),
-            Ok(r"C:\Users\me\AppData\Local\Programs\Git\cmd")
-        );
-        assert_eq!(probed.borrow().len(), 2);
-    }
 
-    #[test]
-    fn git_install_fails_verification_when_git_does_not_run() {
-        let folders = [r"C:\Program Files\Git\cmd".to_string()];
-        let not_found = verify_git_install(&folders, |_| git_status(false, None));
-        let wrong_output = verify_git_install(&folders, |_| git_status(true, Some("")));
-        for result in [not_found, wrong_output] {
-            let error = result.unwrap_err();
-            assert_eq!(error, GIT_DID_NOT_START_ERROR);
-            assert!(!error.contains("Git.Git"));
-        }
-    }
 }

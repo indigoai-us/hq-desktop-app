@@ -258,7 +258,7 @@ pub fn managed_windows_settings_path_dirs_for_roots(roots: &[PathBuf]) -> Vec<Pa
 }
 
 fn managed_windows_dirs_for_roots(roots: &[PathBuf], npm_prefix_first: bool) -> Vec<PathBuf> {
-    let mut dirs = Vec::with_capacity(roots.len() * 5);
+    let mut dirs = Vec::with_capacity(roots.len() * 6);
     for root in roots {
         // This function models the Windows layout independent of the host
         // running its tests; `managed_npm_prefix_in` follows host cfgs.
@@ -270,7 +270,11 @@ fn managed_windows_dirs_for_roots(roots: &[PathBuf], npm_prefix_first: bool) -> 
             dirs.push(root.join("npm-prefix"));
         }
         dirs.push(root.join("bin"));
+        // HQ's managed Git: `cmd` (git.exe), then `bin` (PortableGit's Git
+        // Bash, so `bash` resolves here before the WSL launcher in System32),
+        // then the helper folder an older MinGit install used.
         dirs.push(root.join("git").join("cmd"));
+        dirs.push(root.join("git").join("bin"));
         dirs.push(root.join("git").join("mingw64").join("bin"));
     }
     dirs
@@ -3617,6 +3621,8 @@ mod tests {
                 ";",
                 r"C:\ProgramData\IndigoHQ\toolchain\git\cmd",
                 ";",
+                r"C:\ProgramData\IndigoHQ\toolchain\git\bin",
+                ";",
                 r"C:\ProgramData\IndigoHQ\toolchain\git\mingw64\bin",
                 ";",
                 r"C:\UserCli\npm",
@@ -5354,9 +5360,16 @@ mod tests {
             matches!((node, npm, wrappers), (Some(n), Some(p), Some(w)) if n < p && p < w),
             "managed node, npm shims, and wrappers must match installer precedence: {dirs:?}"
         );
+        let git_bash = dirs
+            .iter()
+            .position(|dir| dir == &toolchain.join("git").join("bin"));
         assert!(
             git_cmd.is_some() && git_mingw.is_some(),
-            "Core rescue must inherit the managed MinGit command and helper directories: {dirs:?}"
+            "Core rescue must inherit the managed Git command and helper directories: {dirs:?}"
+        );
+        assert!(
+            matches!((git_cmd, git_bash), (Some(c), Some(b)) if c < b),
+            "managed Git Bash must follow the managed git.exe folder: {dirs:?}"
         );
     }
 
