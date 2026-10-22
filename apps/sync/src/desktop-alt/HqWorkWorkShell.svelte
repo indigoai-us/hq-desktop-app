@@ -687,7 +687,9 @@
           applyStatusPlanLimitNotice(
             workspace.slug,
             upgradeUrl,
-            pause.usageReason ? usagePauseFromReason(pause.usageReason, workspace.displayName || workspace.slug) : null,
+            pause.usageReason
+              ? usagePauseFromReason(pause.usageReason, workspace.displayName || workspace.slug, pause.usageContext)
+              : null,
           );
         } catch (error) {
           console.error(`Could not refresh plan-limit status for ${workspace.slug}.`, error);

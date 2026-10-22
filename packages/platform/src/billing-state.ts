@@ -227,12 +227,13 @@ export interface BillingPauseContext {
 }
 
 /**
- * True unless the state says a card cannot help: a card is already on file,
- * or the server does not offer Add a card. Unknown (older callers that pass
- * neither field) keeps the add-card copy.
+ * True only when the state offers Add a card (`actions.addCard`) and no card
+ * is on file. A caller that does not know says nothing about a card, since
+ * telling someone with a card on file to add one is wrong and cannot clear a
+ * trial cap.
  */
 export function pauseOffersAddCard(context: Pick<BillingPauseContext, "cardOnFile" | "addCard"> = {}): boolean {
-  return context.cardOnFile !== true && context.addCard !== false;
+  return context.cardOnFile !== true && context.addCard === true;
 }
 
 /**

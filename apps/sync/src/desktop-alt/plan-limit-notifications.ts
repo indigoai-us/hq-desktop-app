@@ -14,7 +14,14 @@
  * because the rows (and which episodes are still open) persist per account.
  */
 
-import { billingPauseMessage, isUsageBillingKind, parseBillingState, type UsagePauseReason } from '@hq/platform';
+import {
+  billingPauseMessage,
+  isUsageBillingKind,
+  parseBillingState,
+  parseUsagePause,
+  type BillingPauseContext,
+  type UsagePauseReason,
+} from '@hq/platform';
 
 const PLAN_LIMIT_NOTIFICATION_TYPE = 'plan_limit';
 const PLAN_LIMIT_ID_PREFIX = 'local:plan-limit:';
@@ -85,14 +92,30 @@ export const FILES_PAUSED_ARMED_STOP = 'files.create';
  */
 export function statusPushFilesPause(
   body: unknown,
-): { paused: true; upgradeUrl: unknown; usageReason?: UsagePauseReason } | { paused: false } {
+):
+  | { paused: true; upgradeUrl: unknown; usageReason?: UsagePauseReason; usageContext?: UsagePauseContext }
+  | { paused: false } {
   if (!body || typeof body !== 'object') return { paused: false };
   const status = body as Record<string, unknown>;
   // US-024: the shared plan status wins. A usage-priced company is paused
   // only by `billingState.paused`; the Starter fields below never apply to it.
   const billingState = parseBillingState(status.billingState);
   if (billingState?.paused) {
-    return { paused: true, upgradeUrl: status.upgradeUrl ?? null, usageReason: billingState.paused.reason };
+    // The copy follows the whole state: the server message when the body has
+    // one, else resumesOn / cardOnFile / addCard (a trial cap with a card on
+    // file must not ask for another card).
+    const serverPause = parseUsagePause(status.usagePause);
+    return {
+      paused: true,
+      upgradeUrl: serverPause?.actionUrl ?? status.upgradeUrl ?? null,
+      usageReason: billingState.paused.reason,
+      usageContext: {
+        resumesOn: billingState.paused.resumesOn,
+        cardOnFile: billingState.cardOnFile,
+        addCard: billingState.actions.addCard,
+        message: serverPause?.message ?? null,
+      },
+    };
   }
   if (billingState && isUsageBillingKind(billingState.kind)) return { paused: false };
   const plan =
@@ -345,10 +368,18 @@ export function planLimitBannerAllowed(
   return prefs.files !== false;
 }
 
+/** What a status-push answer says about a usage pause beyond its reason. */
+export type UsagePauseContext = Omit<BillingPauseContext, 'company'>;
+
 /**
- * The usage pause for a status-push answer that carried only
- * `billingState.paused` (no server message): a plain sentence from the reason.
+ * The usage pause for a status-push answer: the server message when it had
+ * one, else a sentence built from `billingState` (reason, resumesOn,
+ * cardOnFile, addCard). With no state it never asks for a card.
  */
-export function usagePauseFromReason(reason: UsagePauseReason, company: string): PlanLimitUsagePause {
-  return { reason, message: billingPauseMessage(reason, company) };
+export function usagePauseFromReason(
+  reason: UsagePauseReason,
+  company: string,
+  context: UsagePauseContext = {},
+): PlanLimitUsagePause {
+  return { reason, message: billingPauseMessage(reason, { ...context, company }) };
 }
