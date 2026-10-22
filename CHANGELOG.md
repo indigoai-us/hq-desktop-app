@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Knowledge: the company file browser now lists all file types, including images, PDFs, HTML and Word documents, in folders, search and file counts. Images and PDFs use the existing authorized preview; HTML appears as text, and files that cannot be previewed can be shown in their folder.
+
 - Company list: when a sync leaves a folder named after a company's cloud ID (`companies/cmp_...`), HQ no longer lists it as a second company named "Cmp_..." and no longer adds a second entry for it to `companies/manifest.yaml`; the company keeps its one real entry. A manifest that already has the extra `cmp_...` entry keeps it until you delete that entry by hand. On a fresh install whose manifest has an empty `companies:` line, HQ now adds your companies instead of failing with "`companies` key is not a mapping". A `companies:` list is still left untouched.
 - Messages: clicking a "Shared a folder with you" card now opens that folder in Files, listing what is inside it, instead of failing with "Could not load the file". If the company is not on this computer, it opens your Shared files list. File shares open as before.
 - Core Drift no longer lists `.claude/settings.json` as modified when it matches the installed hq-core release, including after you restore it or when the only difference is the setup-managed `env.PATH`. Restore for that file now fetches and verifies the correct upstream copy. Other edits to the file still show as drift.
