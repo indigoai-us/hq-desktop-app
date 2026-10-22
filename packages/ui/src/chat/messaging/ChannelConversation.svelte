@@ -2057,7 +2057,7 @@
     </button>
   {/each}
   <span class="dm-quick-react-picker-wrap">
-    <button
+    <button data-icon-only
       type="button"
       class="dm-quick-react-btn dm-quick-react-more"
       data-testid="message-react-more"
@@ -2117,7 +2117,7 @@
       aria-label="Forward message"
       title="Forward"
       onclick={() => onforward(msg)}
-    >
+    ><RailIcon name="forward" />
       Forward
     </button>
   {/if}
@@ -3853,7 +3853,8 @@
   }
 
   .dm-quick-reply,
-  .dm-quick-copy {
+  .dm-quick-copy,
+  .dm-quick-forward {
     padding: 0 8px;
     color: var(--t1);
     font: 500 11px/1 var(--font-ui);

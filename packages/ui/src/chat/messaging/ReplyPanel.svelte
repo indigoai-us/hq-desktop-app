@@ -1326,7 +1326,7 @@
                 </button>
               {/each}
               <span class="reply-quick-react-picker-wrap">
-                <button
+                <button data-icon-only
                   type="button"
                   class="reply-quick-react-btn reply-quick-react-more"
                   aria-label="Add a reaction"
@@ -1486,7 +1486,7 @@
                     </button>
                   {/each}
                   <span class="reply-quick-react-picker-wrap">
-                    <button
+                    <button data-icon-only
                       type="button"
                       class="reply-quick-react-btn reply-quick-react-more"
                       aria-label="Add a reaction"

@@ -30,7 +30,9 @@ describe("labelled buttons carry a leading icon", () => {
 
   it("spaces a leading icon 6px from the label and centres it", () => {
     const css = read("common/button/rail-type.css");
-    expect(css).toMatch(/button:not\(\[data-rail-btn\]\) > svg\.rail-icon:first-child \{[^}]*margin-inline-end: 6px/u);
+    // Labelled buttons only: icon-only ones (`data-icon-only`) are skipped so
+    // the gap cannot push their icon off centre (icon-only-buttons.test.ts).
+    expect(css).toMatch(/button:not\(\[data-rail-btn\]\):not\(\[data-icon-only\]\) > svg\.rail-icon:first-child \{[^}]*margin-inline-end: 6px/u);
     expect(read("common/button/RailIcon.svelte")).toMatch(/import "\.\/rail-type\.css"/u);
   });
 });

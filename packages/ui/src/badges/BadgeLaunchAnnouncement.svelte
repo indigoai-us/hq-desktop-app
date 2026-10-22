@@ -149,7 +149,7 @@
   use:layer
 >
   <div bind:this={panelEl} class="la-stage" role="dialog" aria-modal="true" aria-labelledby="la-title" aria-describedby="la-lead" tabindex="-1">
-    <button type="button" class="la-close" data-testid="badge-launch-close" aria-label="Close" onclick={() => leave(onclose)}>
+    <button data-icon-only type="button" class="la-close" data-testid="badge-launch-close" aria-label="Close" onclick={() => leave(onclose)}>
       <RailIcon name="x" size={14} />
     </button>
 

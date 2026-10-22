@@ -40,10 +40,10 @@
 
 <aside class="pane" style:width="{PROFILE_PANE_WIDTH}px" aria-label="{badge.def.name} badge" data-testid="badge-detail-pane">
   <header class="head">
-    <button type="button" class="icon" data-testid="badge-detail-back" aria-label={backLabel} onclick={() => onback?.()}><RailIcon name="caret-left" size={14} /></button>
+    <button data-icon-only type="button" class="icon" data-testid="badge-detail-back" aria-label={backLabel} onclick={() => onback?.()}><RailIcon name="caret-left" size={14} /></button>
     <span>Badge</span>
     <span class="grow"></span>
-    <button type="button" class="icon" data-testid="badge-detail-close" aria-label="Close" onclick={() => onclose?.()}><RailIcon name="x" size={14} /></button>
+    <button data-icon-only type="button" class="icon" data-testid="badge-detail-close" aria-label="Close" onclick={() => onclose?.()}><RailIcon name="x" size={14} /></button>
   </header>
   <div class="body">
     <div class="hero">

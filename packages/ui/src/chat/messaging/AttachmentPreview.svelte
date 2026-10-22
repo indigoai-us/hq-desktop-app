@@ -256,7 +256,7 @@
     {/if}
     <!-- A folder share is not an object: nothing to download (#1765). -->
     {#if kind !== "folder"}
-    <button
+    <button data-icon-only
       type="button"
       class="att-preview-ic push-right"
       data-testid="attachment-download"

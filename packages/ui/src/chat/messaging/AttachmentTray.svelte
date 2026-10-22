@@ -120,7 +120,7 @@
          rides in it. Naming the file in a header here as well meant the user
          read the same filename twice, six lines apart. -->
     {#snippet closeButton()}
-      <button
+      <button data-icon-only
         type="button"
         class="att-preview-ic"
         data-testid="attachment-tray-close"

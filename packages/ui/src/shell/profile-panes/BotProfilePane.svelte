@@ -149,7 +149,7 @@
       {#if snapshot && phase !== "shimmer"}
         <button type="button" class="details-button" aria-expanded={detailsOpen} aria-controls="{paneId}-details" onclick={() => { detailsOpen = !detailsOpen; detailsVisited = true; }}><RailIcon name="sliders" />Bot details</button>
       {/if}
-    <button type="button" class="icon" data-testid="bot-profile-close" aria-label="Close bot management" onclick={() => onclose?.()}><RailIcon name="x" /></button>
+    <button data-icon-only type="button" class="icon" data-testid="bot-profile-close" aria-label="Close bot management" onclick={() => onclose?.()}><RailIcon name="x" /></button>
     </div>
   </header>
   {#if snapshot && phase !== "shimmer"}

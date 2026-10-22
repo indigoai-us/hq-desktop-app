@@ -107,7 +107,7 @@
   <span class="doc-card-actions artifact-card-actions">
     <Tooltip label={copied ? "Copied" : "Copy"}>
       {#snippet trigger(id)}
-        <button
+        <button data-icon-only
           type="button"
           class="doc-card-btn artifact-card-btn"
           data-testid={kind === "details"
@@ -124,7 +124,7 @@
     </Tooltip>
     <Tooltip label="Open in side pane">
       {#snippet trigger(id)}
-        <button
+        <button data-icon-only
           type="button"
           class="doc-card-btn artifact-card-btn artifact-card-open"
           data-testid="artifact-card-open"
