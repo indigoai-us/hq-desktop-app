@@ -202,7 +202,7 @@ describe("NewBotTakeover", () => {
     );
   });
 
-  describe("Claude is never offered for a new cloud bot (review A-C1)", () => {
+  describe("the Claude provider flag (review A-C1)", () => {
     const BASIC = {
       key: "basic" as const,
       productName: "Basic",
@@ -221,6 +221,7 @@ describe("NewBotTakeover", () => {
       render({
         companies: [{ companyUid: "cmp_acme", label: "Acme" }],
         currentCompanyUid: "cmp_acme",
+        // Claude is the brain signed in on this computer.
         runtimeReady: { claude: true, codex: false, grok: false },
         loadProvisionOptions: async () => ({
           ok: true as const,
@@ -241,12 +242,22 @@ describe("NewBotTakeover", () => {
       );
     }
 
-    it("leaves Claude out and starts on Codex when Claude is the only brain signed in here", async () => {
-      expect(await brainsOffered({})).toEqual(["codex*", "grok"]);
+    it("offers Claude when the host says the provider is on", async () => {
+      const loadClaudeProviderFlag = vi.fn(async () => ({ ok: true as const, value: true }));
+      expect(await brainsOffered({ loadClaudeProviderFlag })).toEqual(["codex", "claude*", "grok"]);
+      expect(loadClaudeProviderFlag).toHaveBeenCalledTimes(1);
     });
 
-    it("leaves Claude out and starts on Codex when every brain is signed in here", async () => {
-      expect(await brainsOffered({ runtimeReady: { claude: true, codex: true, grok: true } })).toEqual(["codex*", "grok"]);
+    it.each([
+      ["says it is off", async () => ({ ok: true as const, value: false })],
+      ["could not be read", async () => ({ ok: false as const, reason: "error" as const, code: "http-500" })],
+      ["threw", async () => { throw new Error("offline"); }],
+    ])("leaves Claude out when the flag %s", async (_label, loadClaudeProviderFlag) => {
+      expect(await brainsOffered({ loadClaudeProviderFlag })).toEqual(["codex*", "grok"]);
+    });
+
+    it("leaves Claude out when the host has no flag reader", async () => {
+      expect(await brainsOffered({})).toEqual(["codex*", "grok"]);
     });
   });
 

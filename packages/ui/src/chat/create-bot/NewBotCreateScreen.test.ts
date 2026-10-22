@@ -134,7 +134,7 @@ describe("NewBotCreateScreen", () => {
     // One company: the brain, then the optional size.
     expect(document.querySelector("[data-testid='new-bot-progress']")?.getAttribute("aria-label")).toBe("Step 2 of 3");
   });
-  describe("Claude is never offered for a cloud bot (review A-C1)", () => {
+  describe("Claude is offered only when the company has it (review A-C1)", () => {
     function brains(): string[] {
       return [...document.querySelectorAll<HTMLInputElement>("input[name='new-bot-brain']")].map((input) => input.value);
     }
@@ -143,7 +143,10 @@ describe("NewBotCreateScreen", () => {
     }
     const ONE_COMPANY = { companies: [{ companyUid: "cmp_only", label: "Only company" }], currentCompanyUid: "cmp_only" };
 
-    it("never shows or preselects Claude, even when Claude is the one signed in here", async () => {
+    it("never shows or preselects Claude without the provider, even when Claude is the one signed in here", async () => {
+      // The server answers a Claude create with 403 CLAUDE_PROVIDER_NOT_ENABLED
+      // for a company without the provider. Claude signed in on this computer
+      // used to be preselected regardless, so Create bot led straight to it.
       const { oncreate } = render({ ...ONE_COMPANY, runtimeReady: { claude: true, codex: false, grok: false } });
       await settle();
       await advanceName();
@@ -162,17 +165,15 @@ describe("NewBotCreateScreen", () => {
       expect(checkedBrain()).toBe("grok");
     });
 
-    it("never renders a Claude choice and defaults to Codex when every brain is signed in", async () => {
-      const { oncreate } = render({ ...ONE_COMPANY, runtimeReady: { claude: true, codex: true, grok: true } });
+    it("offers Claude, and preselects it when signed in, once the provider is on", async () => {
+      const { oncreate } = render({ ...ONE_COMPANY, claudeEnabled: true, runtimeReady: { claude: true, codex: true, grok: false } });
       await settle();
       await advanceName();
-      expect(brains()).toEqual(["codex", "grok"]);
-      expect(document.querySelector("input[value='claude']")).toBeNull();
-      expect(checkedBrain()).toBe("codex");
-      expect(document.querySelector("[data-testid='new-bot-step-2']")?.textContent).not.toContain("Claude");
+      expect(brains()).toEqual(["codex", "claude", "grok"]);
+      expect(checkedBrain()).toBe("claude");
       document.querySelector<HTMLButtonElement>("[data-testid='new-bot-create-submit']")!.click();
       await settle();
-      expect(oncreate).toHaveBeenCalledWith("cmp_only", expect.objectContaining({ runtime: "codex" }));
+      expect(oncreate).toHaveBeenCalledWith("cmp_only", expect.objectContaining({ runtime: "claude" }));
     });
   });
   describe("when the company's options do not load (review A-C3)", () => {
@@ -516,7 +517,8 @@ describe("NewBotCreateScreen", () => {
     );
   });
   it("preserves answers when going back", async () => {
-    render();
+    // Claude is picked on the way, so this company has the Claude provider.
+    render({ claudeEnabled: true });
     await settle();
     await advanceName();
     document
@@ -531,7 +533,7 @@ describe("NewBotCreateScreen", () => {
     await settle();
     document.querySelector<HTMLButtonElement>(".new-bot-back")!.click();
     await settle();
-    document.querySelector<HTMLInputElement>("input[value='grok']")!.click();
+    document.querySelector<HTMLInputElement>("input[value='claude']")!.click();
     await settle();
     document
       .querySelector<HTMLButtonElement>(
@@ -544,7 +546,7 @@ describe("NewBotCreateScreen", () => {
     ).toBe("true");
     document.querySelector<HTMLButtonElement>(".new-bot-back")!.click();
     await settle();
-    expect(document.querySelector<HTMLInputElement>("input[value='grok']")?.checked).toBe(true);
+    expect(document.querySelector<HTMLInputElement>("input[value='claude']")?.checked).toBe(true);
   });
   it("shows a final-step failure and permits a retry", async () => {
     const oncreate = vi

@@ -124,6 +124,7 @@ function mountSidebar(props: Record<string, unknown>): void {
       oncreateagent: async (): Promise<EntryPointResult> => {
         throw new Error("the takeover must not use the modal's create");
       },
+      loadClaudeProviderFlag: async () => ok(false),
       loadCloudProvisionOptions: async () => ok(OPTIONS),
       loadAgentStatus: async () => ({ ok: true, value: { setupState: { phase: "provisioning" } } }),
       tenantAccountId: ACCOUNT,

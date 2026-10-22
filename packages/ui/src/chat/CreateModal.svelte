@@ -150,6 +150,7 @@
       | null;
     /** Opens Desktop's New Bot takeover, which starts on the Cloud or Local choice. */
     onnewcloudbot?: (() => void) | null;
+    loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
     loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
     /** `agents.desktop-agent-creation` seam for the New bot flow. */
     directCloud?: DirectCloudFlowSeam | null;
@@ -245,6 +246,7 @@
     companyCreate = null,
     oncreateagent = null,
     onnewcloudbot = null,
+    loadClaudeProviderFlag = null,
     loadCloudProvisionOptions = null,
     directCloud = null,
     agentCompanies = null,
@@ -2191,6 +2193,7 @@
         initialHome: initialBotHome,
         initialName: initialBotName,
         onCloudCreate: canCreateCloudBot ? newAgentFor : null,
+        loadClaudeProviderFlag,
         loadCloudProvisionOptions,
         directCloud,
         oncreate: canCreateLocalBot ? submitLocalBot : null,

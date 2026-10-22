@@ -211,6 +211,7 @@ function mountSidebar(props: Record<string, unknown>): void {
     props: {
       api: createFixtureChatSidebarApi(),
       seedDirectory,
+      loadClaudeProviderFlag: async () => ok(false),
       loadCloudProvisionOptions: async () => ok(CLOUD_PROVISION_OPTIONS),
       ...props,
     },

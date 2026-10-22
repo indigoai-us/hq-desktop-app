@@ -426,6 +426,7 @@
     restartBrainApproval?: ((agentUid: string, brain: "grok" | "codex" | "claude") => Promise<unknown>) | null;
     submitClaudeLoginCode?: ((agentUid: string, code: string) => Promise<unknown>) | null;
     openExternal?: ((url: string) => void | Promise<void>) | null;
+    loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
     loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
     /** `agents.desktop-agent-creation` seam, passed through to the New bot flow. */
     directCloud?: import("./create-bot/direct-cloud-lazy.js").DirectCloudFlowSeam | null;
@@ -603,6 +604,7 @@
     restartBrainApproval = null,
     submitClaudeLoginCode = null,
     openExternal = null,
+    loadClaudeProviderFlag = null,
     loadCloudProvisionOptions = null,
     directCloud = null,
     oncreatebot = null,
@@ -5222,6 +5224,7 @@
       {companyCreate}
       {oncreateagent}
       onnewcloudbot={newBotChoicePossible ? () => openNewBotTakeover({ choose: true }) : null}
+      {loadClaudeProviderFlag}
       {loadCloudProvisionOptions}
       {directCloud}
       {agentCompanies}
@@ -5267,6 +5270,7 @@
       currentCompanyUid={newBotPreferredCompanyUid ?? (scopedCompanyUid || null)}
       runtimeReady={botRuntimeReady}
       loadProvisionOptions={loadCloudProvisionOptions}
+      {loadClaudeProviderFlag}
       oncreate={oncreatenewbot ? createAgentFromTakeover : null}
       checkingCreate={checkingCreate !== null}
       oncancelcreate={cancelCreateInFlight}

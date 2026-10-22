@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 
 /**
- * The full-window New Bot flow never offers Claude for a cloud bot (review
- * A-C1): only Codex and Grok, with Codex the default.
+ * The full-window New Bot flow offers Claude only when the host's Claude
+ * provider flag is on (review A-C1). The sidebar hands the takeover the same
+ * flag reader it hands the "+" modal's create, so the two flows agree.
  */
 import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
@@ -128,29 +129,31 @@ afterEach(async () => {
   window.localStorage?.clear?.();
 });
 
-describe("New Bot takeover: Claude is never offered for a cloud bot", () => {
-  it("creates with Codex, never Claude, when Claude is the brain signed in here", async () => {
+describe("New Bot takeover: Claude follows the provider flag", () => {
+  it("creates with Codex, never Claude, for a company without the provider", async () => {
     const oncreatenewbot = vi.fn(
       async (): Promise<EntryPointResult> => ({
         ok: true,
         target: { channelId: "", cardId: null, cardKind: null, agentUid: "agt_nova" },
       }),
     );
-    await openBrainStep({ oncreatenewbot });
+    const loadClaudeProviderFlag = vi.fn(async () => ok(false));
+    await openBrainStep({ oncreatenewbot, loadClaudeProviderFlag });
 
+    expect(loadClaudeProviderFlag).toHaveBeenCalled();
     expect(brains()).toEqual(["codex*", "grok"]);
     q<HTMLButtonElement>('[data-testid="new-bot-create-submit"]')!.click();
     await settle();
     expect(oncreatenewbot).toHaveBeenCalledWith("cmp_indigo", expect.objectContaining({ runtime: "codex" }));
   });
 
-  it("leaves Claude out and starts on Codex when every brain is signed in here", async () => {
+  it("offers Claude when the provider is on, read through the same reader as the modal's create", async () => {
+    const loadClaudeProviderFlag = vi.fn(async () => ok(true));
     await openBrainStep({
       oncreatenewbot: async (): Promise<EntryPointResult> => ({ ok: false, blocked: false, reason: "" }),
-      botRuntimeReady: { claude: true, codex: true, grok: true },
+      loadClaudeProviderFlag,
     });
 
-    expect(brains()).toEqual(["codex*", "grok"]);
-    expect(document.querySelector("input[value='claude']")).toBeNull();
+    expect(brains()).toEqual(["codex", "claude*", "grok"]);
   });
 });

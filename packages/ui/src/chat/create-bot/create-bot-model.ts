@@ -91,7 +91,13 @@ export interface CreateBotContext {
   /** The owner's companies a Local company bot can belong to (slugs). */
   ownerCompanies: ReadonlyArray<{ slug: string; label: string }>;
   templates: readonly LocalBotWorkerOption[];
-  /** `agents.desktop-agent-creation` is on for a company in this modal. */
+  /** Server-resolved hq-flags value. Claude stays hidden until this is true. */
+  claudeProviderEnabled?: boolean;
+  /**
+   * `agents.desktop-agent-creation` is on for a company in this modal. Cloud
+   * bots then default to Claude, with Codex and Grok offered, and Claude needs
+   * no second flag.
+   */
   directCloudOn?: boolean;
   /** Tenant-specific options from GET /v1/agents/provision-options. */
   cloudProvisionOptions?: AgentProvisionOptionsView | null;
@@ -144,7 +150,7 @@ export const BOT_NAME_SUGGESTIONS: readonly string[] = [
 
 export function initialDraft(
   ctx: Pick<CreateBotContext, "canLocal" | "canCloud" | "existingNames" | "companies" | "runtimeReady"> &
-    Partial<Pick<CreateBotContext, "ownerCompanies">>,
+    Partial<Pick<CreateBotContext, "ownerCompanies" | "claudeProviderEnabled" | "directCloudOn">>,
   preferredCompanyUid: string | null = null,
   preferredCompanySlug: string | null = null,
   /**
@@ -172,7 +178,7 @@ export function initialDraft(
   return {
     kind: "blank",
     home: local ? "local" : "cloud",
-    runtime: local ? firstReadyRuntime(ctx.runtimeReady) : defaultCloudRuntime(),
+    runtime: local ? firstReadyRuntime(ctx.runtimeReady) : defaultCloudRuntime(ctx),
     size: "",
     companyUid: preferred?.companyUid ?? ctx.companies[0]?.companyUid,
     scope: ownerSlug ? "company" : "personal",
@@ -185,9 +191,18 @@ export function initialDraft(
   };
 }
 
-/** The brain a new Cloud bot starts on. */
-export function defaultCloudRuntime(): "codex" {
-  return "codex";
+/** Claude can run a Cloud bot: the direct-create flag is on, or the Claude provider flag is. */
+export function claudeAllowedForCloud(
+  ctx: Partial<Pick<CreateBotContext, "claudeProviderEnabled" | "directCloudOn">>,
+): boolean {
+  return ctx.directCloudOn === true || ctx.claudeProviderEnabled === true;
+}
+
+/** The brain a new Cloud bot starts on: Claude when allowed, otherwise Codex. */
+export function defaultCloudRuntime(
+  ctx: Partial<Pick<CreateBotContext, "claudeProviderEnabled" | "directCloudOn">>,
+): "claude" | "codex" {
+  return claudeAllowedForCloud(ctx) ? "claude" : "codex";
 }
 
 /** The first signed-in runtime in picker order; claude when nothing is known. */
@@ -196,9 +211,14 @@ export function firstReadyRuntime(ready: Record<string, boolean> | null | undefi
   return LOCAL_BOT_RUNTIMES.find((r) => ready[r.id] !== false)?.id ?? "claude";
 }
 
-/** The brains a new Cloud bot can start on. Claude is not offered at creation. */
-export function cloudBrainChoices(): BotRuntime[] {
-  return ["codex", "grok"];
+/**
+ * The brains the full-window New Bot flow offers. Claude is offered only when
+ * the host read the Claude provider flag as on: the server refuses a Claude
+ * bot for everyone else (403 CLAUDE_PROVIDER_NOT_ENABLED), so a brain that is
+ * not offered must never be shown or preselected.
+ */
+export function cloudBrainChoices(claudeEnabled: boolean): BotRuntime[] {
+  return claudeEnabled ? ["codex", "claude", "grok"] : ["codex", "grok"];
 }
 
 /**
@@ -665,8 +685,8 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
         const fieldsIssue =
           cloudNameIssue(draft.name) ?? handleIssue(draft) ?? titleIssue(draft.title);
         if (fieldsIssue) return fieldsIssue;
-        if (draft.runtime === "claude") {
-          return "Pick Codex or Grok for a cloud bot.";
+        if (draft.runtime === "claude" && !claudeAllowedForCloud(ctx)) {
+          return "Claude isn’t available for this account.";
         }
         if (ctx.cloudQuoteStatus !== "ready" || !ctx.cloudProvisionOptions) {
           return ctx.cloudQuoteStatus === "error"

@@ -43,6 +43,11 @@
     companies: readonly Company[];
     currentCompanyUid?: string | null;
     runtimeReady?: Record<string, boolean> | null;
+    /**
+     * True once the host read the Claude provider flag as on. Claude is
+     * offered only then: the server refuses a Claude bot for everyone else.
+     */
+    claudeEnabled?: boolean;
     loadProvisionOptions: (companyUid: string) => AdapterPromise<AgentProvisionOptionsView>;
     oncreate: (companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>;
     /**
@@ -76,6 +81,7 @@
     companies,
     currentCompanyUid = null,
     runtimeReady = null,
+    claudeEnabled = false,
     loadProvisionOptions,
     oncreate,
     oncomplete,
@@ -103,8 +109,8 @@
   /** Read once: the name was given on the step before and is not changed here. */
   const name = untrack(() => givenName.trim());
   /** The brains this screen shows. A brain that is not here is never selected. */
-  const brainChoices = $derived(cloudBrainChoices());
-  let runtime = $state<BotRuntime>(firstSignedInCloudRuntime(runtimeReady, cloudBrainChoices()));
+  const brainChoices = $derived(cloudBrainChoices(claudeEnabled));
+  let runtime = $state<BotRuntime>(firstSignedInCloudRuntime(runtimeReady, cloudBrainChoices(claudeEnabled)));
   let options = $state<AgentProvisionOptionsView | null>(null);
   let quoteStatus = $state<"loading" | "ready" | "error">("loading");
   /** Why the options did not load. Set while `quoteStatus` is "error". */

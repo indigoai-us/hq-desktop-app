@@ -27,6 +27,7 @@
     draft: CreateBotDraft;
     /** The company that will host it, for the help line. */
     companyLabel?: string;
+    claudeProviderEnabled: boolean;
     cloudProvisionOptions: AgentProvisionOptionsView | null;
     cloudQuoteStatus: "loading" | "ready" | "error";
     disabled?: boolean;
@@ -38,6 +39,7 @@
   let {
     draft,
     companyLabel = "your company",
+    claudeProviderEnabled,
     cloudProvisionOptions,
     cloudQuoteStatus,
     disabled = false,
@@ -131,8 +133,29 @@
         />
         <span>Grok</span>
       </label>
+      {#if claudeProviderEnabled}
+        <label class="cloud-choice" data-testid="cloud-bot-runtime-claude-choice">
+          <input
+            type="radio"
+            name="cloud-bot-runtime"
+            value="claude"
+            checked={draft.runtime === "claude"}
+            data-testid="cloud-bot-runtime-claude"
+            onchange={() => onpatch({ runtime: "claude" })}
+          />
+          <span>Claude</span>
+        </label>
+      {/if}
     </fieldset>
   </div>
+
+  {#if draft.runtime === "claude"}
+    <div class="cb-field">
+      <p class="cb-help" data-testid="cloud-bot-claude-subscription-help">
+        After creation, HQ opens the Claude authorization page.
+      </p>
+    </div>
+  {/if}
 
   <div class="cb-field">
     <fieldset class="cloud-size-options" disabled={disabled || cloudQuoteStatus !== "ready"} data-testid="cloud-bot-size-choice">
