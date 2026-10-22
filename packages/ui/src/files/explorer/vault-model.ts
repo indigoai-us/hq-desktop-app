@@ -165,6 +165,8 @@ export function folderShareLocation(
   const vault = vaultsFor(workspaces).find((v) => v.slug === company.slug);
   if (!vault) return null;
   const parts = share.vaultPath.replace(/\\/g, "/").split("/").filter(Boolean);
+  // A glob share ("projects/x/*" or "/**") names the folder it covers.
+  while (parts.length > 0 && /^\*{1,2}$/.test(parts[parts.length - 1])) parts.pop();
   if (parts.some((part) => part === "." || part === "..")) return null;
   if (parts[0] === "companies" && parts[1] === company.slug) parts.splice(0, 2);
   // Files never shows settings, secrets or dot folders; a share does not either.
