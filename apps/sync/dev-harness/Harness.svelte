@@ -11,6 +11,7 @@
   import MeetingsWindow from '../src/components/MeetingsWindow.svelte';
   import MeetingsShot from './MeetingsShot.svelte';
   import AccessShot from './AccessShot.svelte';
+  import CustomDomainShot from './CustomDomainShot.svelte';
   import BriefDesignStage from './BriefDesignStage.svelte';
   import ActivityShot from './ActivityShot.svelte';
   import RepairCardsShot from './RepairCardsShot.svelte';
@@ -314,6 +315,8 @@
   <MeetingsShot />
 {:else if view === 'access-shot'}
   <AccessShot />
+{:else if view === 'custom-domain-shot'}
+  <CustomDomainShot />
 {:else if view === 'activity-shot'}
   <ActivityShot />
 {:else if view === 'repair-cards'}

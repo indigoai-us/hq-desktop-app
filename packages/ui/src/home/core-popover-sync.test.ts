@@ -22,14 +22,14 @@ describe("syncStateWord", () => {
     expect(syncStateWord("syncing")).toBe("Syncing");
     expect(syncStateWord("auth-error")).toBe("Sign in required");
     expect(syncStateWord("error")).toBe("Needs attention");
-    expect(syncStateWord("idle")).toBe("All synced");
+    expect(syncStateWord("idle")).toBe("HQ is synced");
   });
 
   it("falls back to the healthy word for unknown or missing phases", () => {
-    expect(syncStateWord(null)).toBe("All synced");
-    expect(syncStateWord("setup-needed")).toBe("All synced");
+    expect(syncStateWord(null)).toBe("HQ is synced");
+    expect(syncStateWord("setup-needed")).toBe("HQ is synced");
     // A parked sync conflict is not a sync state (owner decision 2026-10-13).
-    expect(syncStateWord("conflict")).toBe("All synced");
+    expect(syncStateWord("conflict")).toBe("HQ is synced");
   });
 });
 
@@ -70,7 +70,7 @@ describe("buildCoreSyncHeader", () => {
       syncCaption: "Syncing indigo · 3 of 28",
     });
     expect(idle.caption).toBeNull();
-    expect(idle.stateWord).toBe("All synced");
+    expect(idle.stateWord).toBe("HQ is synced");
   });
 
   it("never claims a caption it was not given", () => {
@@ -182,7 +182,7 @@ describe("buildCorePopoverViewModel sync surface", () => {
       syncState: "idle",
       lastSyncLabel: "5m ago",
     });
-    expect(model.syncHeader.stateWord).toBe("All synced");
+    expect(model.syncHeader.stateWord).toBe("HQ is synced");
     expect(model.syncHeader.lastSyncLine).toBe("Last sync · 5m ago");
     expect(model.notices).toEqual([]);
   });

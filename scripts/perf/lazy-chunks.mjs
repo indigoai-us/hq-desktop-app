@@ -14,6 +14,34 @@ function matches(entry, pattern) {
   return pattern.test(src);
 }
 
+/**
+ * Output files the entry loads before anything else: the entry chunk and
+ * everything it imports statically. A manifest's `imports` lists manifest
+ * KEYS, not output files. For a source module the key is its path; for a
+ * chunk with no source module (such as the shared "hq-shared" chunk) the key
+ * is `_<name>-<hash>.js` while the file is `assets/<name>-<hash>.js`.
+ * Walking keys counts those shared chunks, which a file-name walk misses.
+ *
+ * @param {Record<string, { file?: string, isEntry?: boolean, imports?: string[] }>} manifest
+ * @returns {Set<string>}
+ */
+export function initialFiles(manifest) {
+  const entryKey = Object.keys(manifest).find((key) => manifest[key].isEntry);
+  const files = new Set();
+  const seen = new Set();
+  const queue = entryKey ? [entryKey] : [];
+  while (queue.length) {
+    const key = queue.pop();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const item = manifest[key];
+    if (!item) continue;
+    if (item.file) files.add(item.file);
+    for (const next of item.imports ?? []) queue.push(next);
+  }
+  return files;
+}
+
 export async function inspectLazyChunks(buildDir) {
   const manifestPath = join(buildDir, ".vite/manifest.json");
   let manifest;
@@ -33,21 +61,7 @@ export async function inspectLazyChunks(buildDir) {
     };
   }
 
-  const byFile = new Map();
-  for (const entry of Object.values(manifest)) {
-    if (entry.file) byFile.set(entry.file, entry);
-  }
-
-  const entry = Object.values(manifest).find((item) => item.isEntry);
-  const initial = new Set();
-  const queue = [...(entry?.imports ?? []), entry?.file].filter(Boolean);
-  while (queue.length) {
-    const file = queue.pop();
-    if (initial.has(file)) continue;
-    initial.add(file);
-    const item = byFile.get(file);
-    for (const next of item?.imports ?? []) queue.push(next);
-  }
+  const initial = initialFiles(manifest);
 
   const atlasInitial = [];
   const telemetryInitial = [];
@@ -65,7 +79,6 @@ export async function inspectLazyChunks(buildDir) {
       bytes = 0;
     }
     const inInitial = initial.has(item.file);
-    if (inInitial && item.file.endsWith(".js")) initialJsBytes += bytes;
     if (matches(item, ATLAS)) {
       atlasBytes += bytes;
       if (inInitial) atlasInitial.push(item.src ?? item.file);
@@ -73,6 +86,15 @@ export async function inspectLazyChunks(buildDir) {
     if (matches(item, TELEMETRY)) {
       telemetryBytes += bytes;
       if (inInitial) telemetryInitial.push(item.src ?? item.file);
+    }
+  }
+
+  for (const file of initial) {
+    if (!file.endsWith(".js")) continue;
+    try {
+      initialJsBytes += (await stat(join(buildDir, file))).size;
+    } catch {
+      // A listed file that is missing on disk counts as zero bytes.
     }
   }
 

@@ -28,6 +28,8 @@
 
   const groups = $derived(badgeCollection(badges, progress));
   const earned = $derived(resolveEarned(badges));
+  // The badges this person can see: given honors they were not given are not counted.
+  const total = $derived(groups.reduce((n, g) => n + g.tiles.length, 0));
 
 </script>
 
@@ -39,7 +41,7 @@
     <button type="button" class="icon" data-testid="badges-pane-close" aria-label="Close" onclick={() => onclose?.()}><RailIcon name="x" size={14} /></button>
   </header>
   <div class="body">
-    <p class="sum" data-testid="badges-pane-summary">{earned.length} of {BADGES.length} earned</p>
+    <p class="sum" data-testid="badges-pane-summary">{earned.length} of {total} earned</p>
     {#each groups as group (group.tier)}
       <section aria-label="{group.label} badges" data-testid="badges-group" data-tier={group.tier}>
         <div class="k">{group.label} <span class="count">{group.earned}/{group.tiles.length}</span></div>

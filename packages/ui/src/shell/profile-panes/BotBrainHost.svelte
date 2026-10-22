@@ -7,8 +7,8 @@
   import { startVisibleInterval } from '../../common/visible-interval.js';
   import { dismissable } from '../../common/dismissable.js';
   import { portal, focusOnMount } from '../../chat/portal.js';
-  import BotBrainPanel from './BotBrainPanel.svelte';
-  import { BRAIN_PROVIDERS, brainRow, providerId, loginState, type BrainProvider, type BrainRow } from './bot-brain.js';
+  import BotBrainPanel, { type BrainSwitchProgress } from './BotBrainPanel.svelte';
+  import { BRAIN_PROVIDERS, brainRow, cloudBrainChoices, effortsFor, modelCatalog, providerId, loginState, type BrainProvider, type BrainRow, type ModelCatalog } from './bot-brain.js';
   let { uid, name, runtimeKind, adapter = null, onopenurl }: { uid: string | null; name: string; runtimeKind?: 'local' | 'cloud' | null; adapter?: PlatformAdapter | null; onopenurl?: (url: string) => void } = $props();
   let rows = $state<BrainRow[]>(BRAIN_PROVIDERS.map(p => brainRow(p.id)));
   let local = $state<LocalBotRow | null>(null);
@@ -23,6 +23,8 @@
   let multiProvider = false, signAttempt = 0, signStartedAt = 0;
   const launchFailure = 'Fleet could not launch sign-in on this bot. You can retry here. If it fails again, a Fleet administrator needs to repair the provider login service.';
   let starting = $state(false);
+  let switching = $state<BrainSwitchProgress | null>(null), canSwitch = $state(false), switchAttempt = 0, switchStartedAt = 0, pollFailures = 0;
+  const SWITCH_POLL_MAX_FAILURES = 5, SWITCH_POLL_MAX_MS = 20 * 60_000, SWITCH_RESULT_RECENT_MS = 15 * 60_000;
   let signFailed = $state(false);
   const isLocal = $derived(runtimeKind === 'local');
   const record = (value: unknown): Record<string, unknown> | null => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -30,8 +32,8 @@
     const state = record(result.value)?.state;
     return { state: result.ok && ['connected','waiting','disconnected','error'].includes(String(state)) ? state as RuntimeSignInState['state'] : 'error' };
   }
-  async function refresh() {
-    const version = generation, request = ++readNumber, api = adapter, bot = uid;
+  async function refresh(options: { restoreSwitch?: boolean } = {}) {
+    const version = generation, request = ++readNumber, api = adapter, bot = uid, restoreSwitch = options.restoreSwitch !== false;
     loading = true; error = '';
     try {
       if (!api || !bot) throw new Error('Unavailable');
@@ -48,16 +50,24 @@
           return { ...brainRow(p.id, active ? local?.model : ''), active, effort: active && !local?.effortIsDefault ? local?.effort ?? '' : '', state: result?.ok ? loginState(record(result.value)?.state) : 'unknown', canConnect: !!api.sessions.loginStart && !!api.sessions.loginStatus, canSave: active && !!api.bots?.configure, detail: active ? 'Configure the model this local bot uses. Sign-in is shared by local bots using this provider.' : 'You can connect this provider on this computer. Switching this bot’s runtime is not supported here yet.' };
         });
       } else {
-        const result = await api.agents.getProfile?.(bot);
+        const [result, catalog] = await Promise.all([api.agents.getProfile?.(bot), readCatalog(api)]);
         if (version !== generation || request !== readNumber) return;
         const view = result?.ok ? profileFromPayload(result.value, { uid: bot, displayName: name }) : null;
         if (!view?.hasBox || view.freshness.source !== 'live') throw new Error('Cloud status unavailable');
         multiProvider = result?.ok === true && record(record(result.value)?.agent)?.provider === 'agents-v2';
         const activeId = providerId(view.brain.provider);
-        rows = BRAIN_PROVIDERS.map(p => ({ ...brainRow(p.id, p.id === activeId ? view.brain.model ?? '' : ''), models: brainRow(p.id, p.id === activeId ? view.brain.model ?? '' : '').models.filter(choice => choice.value !== ''), active: p.id === activeId, effort: p.id === activeId ? view.brain.reasoningEffort ?? '' : '', state: loginState(view.brain.logins.find(login => providerId(login.provider) === p.id)?.status), canConnect: !!(multiProvider ? api.agents.fetch : api.agents.restartBrainApproval) && !!onopenurl, canSave: p.id === activeId && !!api.agents.fetch, detail: p.id === activeId ? 'Choose the model and thinking level this bot uses for future messages.' : 'Connect this account for setup. Switching this cloud bot to another provider requires a separate runtime migration.' }));
+        canSwitch = multiProvider && !!api.agents.fetch;
+        rows = BRAIN_PROVIDERS.map(p => ({ ...brainRow(p.id, p.id === activeId ? view.brain.model ?? '' : ''), ...cloudBrainChoices(p.id, catalog, p.id === activeId ? view.brain.model ?? '' : ''), active: p.id === activeId, effort: p.id === activeId ? view.brain.reasoningEffort ?? '' : '', state: loginState(view.brain.logins.find(login => providerId(login.provider) === p.id)?.status), canConnect: !!(multiProvider ? api.agents.fetch : api.agents.restartBrainApproval) && !!onopenurl, canSave: p.id === activeId && !!api.agents.fetch, detail: p.id === activeId ? 'Choose the model and thinking level this bot uses for future messages.' : multiProvider ? 'Connected and ready. Use this brain to move the bot onto it; the current brain stays signed in.' : 'Connect this account for setup. Switching this cloud bot to another provider requires a separate runtime migration.' }));
+        if (canSwitch) await readSwitch(bot, version, request, restoreSwitch);
       }
     } catch { if (version === generation && request === readNumber) { local = null; rows = BRAIN_PROVIDERS.map(p => brainRow(p.id)); error = 'Could not verify this bot’s brain configuration. Refresh to try again.'; } }
     finally { if (version === generation && request === readNumber) loading = false; }
+  }
+  async function readCatalog(api: PlatformAdapter): Promise<ModelCatalog | null> {
+    try {
+      const response = await api.agents.fetch?.('/v1/agents/models', { method: 'GET' });
+      return response && response.status >= 200 && response.status < 300 ? modelCatalog(JSON.parse(await response.text())) : null;
+    } catch { return null; }
   }
   function closeSignIn() { if (!submitting && !starting) { signAttempt++; signFailed = false; signing = null; approval = null; code = ''; signError = ''; } }
   async function checkSignIn() {
@@ -131,11 +141,98 @@
     catch { if (version === generation) signError = 'Could not submit the code. Get a fresh code and try again.'; }
     finally { submitting = false; }
   }
+  function switchFailure(status: number, body: Record<string, unknown> | null): string {
+    if (status === 401 || status === 403) return 'Your HQ account does not have permission to switch this bot’s brain. Ask a company owner or administrator.';
+    if (body?.code === 'BRAIN_SWITCH_IN_PROGRESS') return 'A switch is already running for this bot. Wait for it to finish.';
+    if (body?.code === 'BRAIN_SWITCH_DISABLED') return 'Brain switching is turned off right now.';
+    if (body?.code === 'BRAIN_NOT_AUTHORIZED') return 'Connect this provider on the bot first, then switch.';
+    if (body?.code === 'BOX_NOT_RUNNING') return 'The bot is not running, so its brain cannot be switched right now.';
+    if (status === 404 || body?.code === 'BRAIN_SWITCH_V2_ONLY' || body?.code === 'BRAIN_SWITCH_UNAVAILABLE') return 'Brain switching is not available for this bot on the current Fleet version.';
+    if (status === 400) return 'That model or thinking level is not available for this brain. Choose another and try again.';
+    return 'Could not start the switch. Try again when the service is available.';
+  }
+  type SwitchView = { status: string; provider: BrainProvider | null; error: string | null; startedAt: number; finishedAt: number };
+  function switchView(value: unknown): SwitchView | null {
+    const view = record(record(value)?.switch);
+    if (!view) return null;
+    const when = (field: unknown) => (typeof field === 'string' ? Date.parse(field) : NaN);
+    return { status: String(view.status ?? ''), provider: providerId(typeof view.to === 'string' ? view.to : null), error: typeof view.error === 'string' ? view.error : null, startedAt: when(view.startedAt), finishedAt: when(view.finishedAt) };
+  }
+  const switchInFlight = (view: SwitchView) => view.status === 'running' || view.status === 'waiting';
+  const plainCopy = (text: string) => text.length > 0 && text.length <= 240 && !/[\n\r{}<>\\]|\bError\b|Exception|\bat \/|https?:\/\/|\/[A-Za-z0-9_.-]+\//.test(text);
+  function switchResultCopy(view: SwitchView, fallback: BrainProvider | null): string {
+    const name = BRAIN_PROVIDERS.find(p => p.id === (view.provider ?? fallback))?.name ?? 'the new brain';
+    if (view.status === 'done') return `Now using ${name}. The bot answered a test message on it.`;
+    if (view.error && plainCopy(view.error)) return view.error;
+    return view.status === 'rolled-back' ? `The switch to ${name} did not work. The bot is back on its previous brain.` : `The switch to ${name} did not finish.`;
+  }
+  function trackSwitch(view: SwitchView, fallback: BrainProvider) {
+    switchAttempt++; pollFailures = 0;
+    switchStartedAt = Number.isFinite(view.startedAt) ? view.startedAt : Date.now();
+    switching = { provider: view.provider ?? fallback, status: view.status === 'waiting' ? 'waiting' : 'running' };
+  }
+  async function readSwitch(bot: string, version: number, request: number, restore: boolean) {
+    const api = adapter;
+    if (!api?.agents.fetch) return;
+    try {
+      const response = await api.agents.fetch(`/v1/agents/${encodeURIComponent(bot)}/brain-switch`, { method: 'GET' });
+      if (version !== generation || request !== readNumber || response.status < 200 || response.status >= 300) return;
+      const view = switchView(JSON.parse(await response.text()));
+      if (!view) return;
+      if (switchInFlight(view)) { if (restore && view.provider && !switching) trackSwitch(view, view.provider); return; }
+      if (!switching && Number.isFinite(view.finishedAt) && Date.now() - view.finishedAt <= SWITCH_RESULT_RECENT_MS) notice = switchResultCopy(view, null);
+    } catch { /* the brain rows stand on their own */ }
+  }
+  async function switchBrain(provider: BrainProvider, model: string, effort: string) {
+    const api = adapter, bot = uid, version = generation;
+    const row = rows.find(row => row.id === provider);
+    if (!api?.agents.fetch || !bot || !canSwitch || !row || row.active || row.state !== 'connected' || switching) throw new Error('This brain cannot be switched to right now.');
+    if (!row.models.some(choice => choice.value === model) || (effort && !effortsFor(row, model).includes(effort))) throw new Error('Choose a model and thinking level for this brain.');
+    const body = JSON.stringify({ brain: provider, model, ...(effort ? { reasoningEffort: effort } : {}) });
+    let response: { status: number; text: () => Promise<string> };
+    try { response = await api.agents.fetch(`/v1/agents/${encodeURIComponent(bot)}/brain-switch`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }); }
+    catch { throw new Error('Could not reach Fleet to start the switch. Try again when the connection is available.'); }
+    if (version !== generation) return;
+    let parsed: Record<string, unknown> | null = null;
+    try { parsed = record(JSON.parse(await response.text())); } catch { parsed = null; }
+    if (response.status < 200 || response.status >= 300) throw new Error(switchFailure(response.status, parsed));
+    const view = switchView(parsed);
+    trackSwitch(view ?? { status: 'running', provider, error: null, startedAt: NaN, finishedAt: NaN }, provider);
+    notice = '';
+  }
+  async function pollSwitch() {
+    const api = adapter, bot = uid, version = generation, attempt = switchAttempt, inFlight = switching;
+    if (!api?.agents.fetch || !bot || !inFlight) return;
+    const giveUp = async () => {
+      switching = null;
+      await refresh({ restoreSwitch: false });
+      if (version === generation) notice = 'Could not confirm whether the switch finished. Refresh to see which brain the bot is using.';
+    };
+    let view: SwitchView | null = null, failed = false;
+    try {
+      const response = await api.agents.fetch(`/v1/agents/${encodeURIComponent(bot)}/brain-switch`, { method: 'GET' });
+      if (version !== generation || attempt !== switchAttempt || !switching) return;
+      if (response.status >= 200 && response.status < 300) view = switchView(JSON.parse(await response.text()));
+      failed = !view;
+    } catch { failed = true; }
+    if (version !== generation || attempt !== switchAttempt || !switching) return;
+    if (failed || !view) { pollFailures++; if (pollFailures >= SWITCH_POLL_MAX_FAILURES) await giveUp(); return; }
+    pollFailures = 0;
+    if (switchInFlight(view)) {
+      if (Date.now() - switchStartedAt > SWITCH_POLL_MAX_MS) { await giveUp(); return; }
+      switching = { provider: view.provider ?? inFlight.provider, status: view.status === 'waiting' ? 'waiting' : 'running' };
+      return;
+    }
+    switching = null;
+    const result = switchResultCopy(view, inFlight.provider);
+    await refresh();
+    if (version === generation) notice = result;
+  }
   async function save(provider: BrainProvider, model: string, effort: string) {
     const api = adapter, bot = local, version = generation;
     const row = rows.find(row => row.id === provider);
     if (!isLocal) {
-      if (!api?.agents.fetch || !uid || !row?.active || !row.canSave || row.state !== 'connected' || !model || !row.models.some(choice => choice.value === model) || effort && !row.efforts.includes(effort)) throw new Error('Unavailable');
+      if (!api?.agents.fetch || !uid || !row?.active || !row.canSave || row.state !== 'connected' || !model || !row.models.some(choice => choice.value === model) || effort && !effortsFor(row, model).includes(effort)) throw new Error('Unavailable');
       const botUid = uid;
       const latest = await api.agents.getProfile?.(botUid);
       if (version !== generation) return;
@@ -156,10 +253,11 @@
     if (!result.ok) throw new Error('Save refused');
     await refresh(); notice = 'Configuration saved for future messages.';
   }
-  $effect(() => { void stableUid; void stableRuntimeKind; void stableAdapter; untrack(() => { generation++; local = null; closeSignIn(); notice = ''; void refresh(); }); return () => { generation++; code = ''; approval = null; }; });
+  $effect(() => { void stableUid; void stableRuntimeKind; void stableAdapter; untrack(() => { generation++; local = null; switching = null; canSwitch = false; closeSignIn(); notice = ''; void refresh(); }); return () => { generation++; code = ''; approval = null; }; });
   $effect(() => { if (signing && !isLocal && !signFailed) return startVisibleInterval(() => { void checkSignIn(); }, 3000); });
+  $effect(() => { if (switching && !isLocal) return startVisibleInterval(() => { void pollSwitch(); }, 3000); });
 </script>
-<BotBrainPanel {rows} {loading} {error} {notice} onrefresh={refresh} onconnect={connect} onsave={save} />
+<BotBrainPanel {rows} {loading} {error} {notice} {canSwitch} {switching} onrefresh={refresh} onconnect={connect} onsave={save} onswitch={switchBrain} />
 {#if signing && adapter}
 <div class="overlay" use:portal><div class="dialog" tabindex="-1" role="dialog" aria-modal="true" aria-label="Connect provider" use:focusOnMount use:dismissable={{ onclose: closeSignIn }}>
   <h3>Connect {BRAIN_PROVIDERS.find(p => p.id === signing)?.name}</h3>

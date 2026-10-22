@@ -42,6 +42,7 @@ import { fileURLToPath } from "node:url";
 import { FRAME_BUDGET_MS, INIT_SCRIPT, SHELL_READY_SELECTORS, frameStats, longTaskBusyMs } from "./perf/collectors.mjs";
 import { HARNESS_ENTRY, HARNESS_OUT_DIR, buildHarness } from "./perf/harness-build.mjs";
 import { inspectLazyChunks } from "./perf/lazy-chunks.mjs";
+import { palettePaintedProbe } from "./perf/palette-probe.mjs";
 import { machineContext } from "./perf/machine.mjs";
 import { RAIL_REFERENCE, RAIL_SCENARIO_TODO, judgeRail, renderRailVerdict } from "./perf/rail-budget.mjs";
 import { compareMetric, renderTable, summarise } from "./perf/stats.mjs";
@@ -379,64 +380,18 @@ async function timeToNextPaint(page, act) {
 }
 
 /**
- * Palette budget: the frame that paints the input, not the frame after it.
- * The entrance animation starts at opacity 0, so opacity is not the signal.
- * `[hidden]` on the backdrop is: the shell premounts the palette invisible.
- * The predicate lives inside the page callback; Node has no document.
+ * Palette budget: Cmd-K keydown to the end of the frame that paints the
+ * palette with its result rows. The probe is scripts/perf/palette-probe.mjs.
+ * A palette that never paints yields the timeout duration (1000 ms or more),
+ * which fails the 20 ms gate instead of dropping the sample.
+ *
+ * An earlier definition stopped on the microtask after the keydown handler.
+ * That only timed the handler's state change and read 0.0 ms.
  */
-async function timeToPaletteFirstPaint(page) {
-  // t0 is the Cmd-K keydown in the page. The shortcut handler runs in the
-  // capture phase and queues the Svelte flush; this listener is bubble, so
-  // its microtask runs after that flush and sees the input in the frame
-  // that will paint it. Waiting for rAF measures the following frame.
-  const pending = page.evaluate(
-    () =>
-      new Promise((res) => {
-        const armed = performance.now();
-        let t0 = 0;
-        let settled = false;
-        const ready = () => {
-          const input = document.querySelector(
-            '[data-testid="command-palette"] input',
-          );
-          if (!input || input.closest("[hidden]")) return false;
-          const style = getComputedStyle(input);
-          if (style.display === "none" || style.visibility === "hidden") {
-            return false;
-          }
-          const box = input.getBoundingClientRect();
-          return box.width > 0 && box.height > 0;
-        };
-        const finish = (now) => {
-          if (settled) return;
-          settled = true;
-          window.removeEventListener("keydown", onKey, false);
-          res(now - (t0 || armed));
-        };
-        const check = () => {
-          if (settled) return;
-          const now = performance.now();
-          if (t0 && (ready() || now - t0 >= 1000)) {
-            finish(now);
-            return;
-          }
-          if (!t0 && now - armed >= 2000) {
-            finish(now);
-            return;
-          }
-          requestAnimationFrame(check);
-        };
-        const onKey = (event) => {
-          if (t0) return;
-          if (event.key.toLowerCase() !== "k") return;
-          if (!event.metaKey && !event.ctrlKey) return;
-          t0 = performance.now();
-          queueMicrotask(check);
-        };
-        window.addEventListener("keydown", onKey, false);
-        requestAnimationFrame(check);
-      }),
-  );
+const PALETTE_ROW_SELECTOR = '[data-testid="command-palette"] [role="option"]';
+
+async function timeToPalettePainted(page) {
+  const pending = page.evaluate(palettePaintedProbe, PALETTE_ROW_SELECTOR);
   await page.keyboard.press("Meta+k");
   return pending;
 }
@@ -455,10 +410,9 @@ async function measureInteractions(page) {
     out["interaction.switchConversation"] = null;
   }
 
-  // Command palette: keydown → the input is in the frame that will paint
-  // it. The next animation frame is the frame after that paint. App work
-  // on this path is about 3 ms.
-  out["interaction.commandPalette"] = await timeToPaletteFirstPaint(page);
+  // Command palette: keydown to the end of the frame that paints the
+  // palette with its result rows (see timeToPalettePainted).
+  out["interaction.commandPalette"] = await timeToPalettePainted(page);
   await page.keyboard.press("Escape").catch(() => {});
 
   // Composer keystroke: per-character handler + render cost. This is the one

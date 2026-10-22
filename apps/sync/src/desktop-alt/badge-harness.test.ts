@@ -87,5 +87,9 @@ describe('sample badges span the tiers', () => {
     expect(sampleBadges({ kind: 'person', name: 'Spencer' })).toEqual(
       expect.arrayContaining([{ id: 'ecomrat', tier: 'L', earnedAt: '2026-10-16' }]),
     );
+    for (const [name, id] of [['Cody', 'architect'], ['Connor', 'angel'], ['Sean', 'optimist'], ['Bobby', 'visionary']] as const) {
+      expect(sampleBadges({ kind: 'person', name })).toEqual(expect.arrayContaining([{ id, tier: 'L', earnedAt: '2026-10-20' }]));
+      expect(ids('Ada Lovelace')).not.toEqual(expect.arrayContaining([id]));
+    }
   });
 });

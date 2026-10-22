@@ -117,6 +117,21 @@ describe("linkPreview: deploys", () => {
     expect(page?.wantsPageTitle).toBe(true);
   });
 
+  it("parses hq.work app subdomains the same as their indigo-hq.com twins", () => {
+    const fresh = linkPreview("https://demo.hq.work/docs/index.html");
+    expect(fresh?.provider).toBe("deploy");
+    expect(fresh?.kind).toBe("HQ deploy");
+    expect(fresh?.title).toBe("demo › docs/index.html");
+    expect(fresh?.fields).toContainEqual({ label: "App", value: "demo" });
+    expect(fresh?.fields).toContainEqual({ label: "Host", value: "demo.hq.work" });
+
+    const legacy = linkPreview("https://demo.indigo-hq.com/docs/index.html");
+    expect(legacy?.title).toBe(fresh?.title);
+    expect(legacy?.fields).toContainEqual({ label: "Host", value: "demo.indigo-hq.com" });
+
+    expect(linkPreview("https://evilhq.work/")?.provider).not.toBe("deploy");
+  });
+
   it("parses Vercel preview and dashboard links", () => {
     const branch = linkPreview("https://hq-console-git-fix-login-indigo.vercel.app/");
     expect(branch?.kind).toBe("Vercel deploy");

@@ -1,6 +1,7 @@
 /**
  * The Badges page: every badge in the catalog, grouped by tier, earned ones
- * first, the rest locked with what earns them and plain progress.
+ * first, the rest locked with what earns them and plain progress. Given
+ * honors only appear for the people who hold them.
  *
  * A locked badge sits in the tier its first level would give: Bronze for the
  * badges with levels (three, or four with Legendary on top), the badge's own
@@ -51,7 +52,9 @@ export function badgeCollection(earned: readonly EarnedBadge[], progress: readon
   const prog = new Map(progress.map((p) => [p.id, p]));
   const tiles: CollectionTile[] = [
     ...have.map((b) => ({ def: b.def, tier: b.tier, earned: b, progress: "" })),
-    ...BADGES.filter((def) => !byId.has(def.id)).map((def) => ({
+    // A given honor (OG, Ecom Rat, the persona cards) is one of one: people who
+    // were not given it do not see an empty placeholder for it (owner, 2026-10-20).
+    ...BADGES.filter((def) => !byId.has(def.id) && !isAwarded(def)).map((def) => ({
       def,
       tier: firstTier(def),
       earned: null,
