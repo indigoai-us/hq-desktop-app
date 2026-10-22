@@ -1,3 +1,4 @@
+import type { BillingState } from "@hq/platform";
 import type { CompanyBrandSettings } from "./brand";
 
 // Mirrors src-tauri/src/commands/workspaces.rs::Workspace.
@@ -17,6 +18,18 @@ export interface Workspace {
   localPath: string | null;
   membershipStatus: string | null;
   role: string | null;
+  /**
+   * The server plan status for this company as this member may see it
+   * (hq-pro #5088 `billingState` on the membership row, US-024). Absent on
+   * older servers and local-only rows.
+   */
+  billingState?: BillingState;
+  /**
+   * True when the row marks the company as usage-priced: `billingState`
+   * kind `usage` / `usage-trial`, else the legacy `pricingPlan`. Absent when
+   * the row says neither.
+   */
+  usagePriced?: boolean;
   // Per-workspace local sync gate. Distinct from the cloud footprint
   // (`get_sync_mode` shared/all/custom): when false this workspace stays
   // browsable in the desktop UI but is removed from watched/polled sync work

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  meetingUsagePause,
   isAlreadyScheduledError,
   isPlanRequiredError,
   planRequiredUpgradeUrl,
@@ -98,5 +99,15 @@ describe('planRequiredUpgradeUrl', () => {
     expect(
       planRequiredUpgradeUrl('bot/invite HTTP 402: {"code":"MEETING_PLAN_REQUIRED","upgradeUrl":" https://hq.computer/upgrade"}'),
     ).toEqual({ kind: 'invalid' });
+  });
+});
+
+describe('meetingUsagePause (US-024)', () => {
+  it('reads a valid usagePause from the flattened 402 and ignores anything else', () => {
+    const pause = { code: 'usage_paused', reason: 'usage_spend_limit', message: 'Cloud sync is paused.', actionUrl: 'https://hq.computer/companies/acme/billing' };
+    expect(meetingUsagePause(`bot/invite HTTP 402: ${JSON.stringify({ code: 'MEETING_PLAN_REQUIRED', usagePause: pause })}`)).toEqual(pause);
+    expect(meetingUsagePause(`bot/invite HTTP 402: ${JSON.stringify({ usagePause: { ...pause, actionUrl: 'https://evil.example/x' } })}`)).toBeNull();
+    expect(meetingUsagePause('bot/invite HTTP 402: {not json')).toBeNull();
+    expect(meetingUsagePause('HTTP 500')).toBeNull();
   });
 });

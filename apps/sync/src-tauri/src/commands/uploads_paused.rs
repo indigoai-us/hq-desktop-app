@@ -81,7 +81,12 @@ fn with_state<T>(hq_folder: Option<&str>, f: impl FnOnce(&mut UploadsPausedRegis
             // A notice may already have arrived before the first seed; keep it.
             let mut seeded = UploadsPausedRegistry::from_snapshot(persisted);
             for entry in guard.registry.snapshot() {
-                seeded.record_notice(&entry.company, entry.upgrade_url, entry.last_notice_at_ms);
+                seeded.record_notice_with_usage_pause(
+                    &entry.company,
+                    entry.upgrade_url,
+                    entry.usage_pause,
+                    entry.last_notice_at_ms,
+                );
             }
             guard.registry = seeded;
             guard.seeded = true;
@@ -108,14 +113,21 @@ pub fn record_plan_limit<R: Runtime>(
     notice: &SyncPlanLimitEvent,
 ) {
     let approved = hq_desktop_core::plan_limit::approved_plan_upgrade_url(&notice.upgrade_url);
-    if approved.is_none() {
+    if approved.is_none() && notice.usage_pause.is_none() {
         log(
             "sync",
             "plan-limit notice carried an upgrade link on an unapproved host; showing it without one",
         );
     }
     let (changed, snapshot) = with_state(Some(hq_folder), |registry| {
-        let changed = registry.record_notice(&notice.company, approved, now_ms());
+        // A usage pause (US-024) carries its own Billing link, which the
+        // registry uses in place of `upgradeUrl`.
+        let changed = registry.record_notice_with_usage_pause(
+            &notice.company,
+            approved,
+            notice.usage_pause.clone(),
+            now_ms(),
+        );
         (changed, registry.snapshot())
     });
     if changed {
@@ -191,6 +203,7 @@ mod tests {
             company: "Acme".into(),
             upgrade_url: Some("https://hq.computer/companies/acme/billing?upgrade=1".into()),
             last_notice_at_ms: 1,
+            usage_pause: None,
         }]);
         let wire = serde_json::to_value(&payload).unwrap();
         assert_eq!(wire["summary"], "Uploads paused for Acme");
@@ -202,5 +215,30 @@ mod tests {
         let empty = serde_json::to_value(UploadsPausedPayload::from_snapshot(Vec::new())).unwrap();
         assert_eq!(empty["summary"], serde_json::Value::Null);
         assert_eq!(empty["companies"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn payload_carries_a_usage_pause_for_the_desktop_window() {
+        let payload = UploadsPausedPayload::from_snapshot(vec![UploadsPaused {
+            company: "Acme".into(),
+            upgrade_url: Some("https://hq.computer/companies/acme/billing".into()),
+            last_notice_at_ms: 1,
+            usage_pause: Some(hq_desktop_core::plan_limit::UsagePause {
+                code: "usage_paused".into(),
+                reason: "usage_trial_cap".into(),
+                message: "Cloud sync is paused.".into(),
+                action_url: "https://hq.computer/companies/acme/billing".into(),
+            }),
+        }]);
+        let wire = serde_json::to_value(&payload).unwrap();
+        assert_eq!(wire["summary"], "Cloud sync paused for Acme");
+        assert_eq!(
+            wire["companies"][0]["usagePause"]["reason"],
+            "usage_trial_cap"
+        );
+        assert_eq!(
+            wire["companies"][0]["usagePause"]["actionUrl"],
+            "https://hq.computer/companies/acme/billing"
+        );
     }
 }

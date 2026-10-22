@@ -16,10 +16,22 @@
 //! approved upgrade link. It mirrors `packages/platform/src/plan-limit.ts`; the
 //! two share fixtures in their tests so they cannot drift apart.
 //!
+//! Usage-only pricing (US-024) adds a `usagePause` block to the same 402 body
+//! when a company's cloud sync is paused for usage:
+//!
+//! ```text
+//! usagePause: { code: "usage_paused", reason, message, actionUrl }
+//! ```
+//!
+//! `reason` is one of `usage_trial_cap`, `usage_card_required` or
+//! `usage_spend_limit`, and `actionUrl` links to the company's Billing page.
+//! A valid block wins over the legacy fields; see [`parse_usage_pause`].
+//!
 //! A refusal is an expected product state. Nothing here reports to Sentry, and
 //! [`is_plan_limit_refusal_message`] lets the runner-exit classifier keep a
 //! plan-limit refusal out of the alertable set.
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// Current hard-stop code (and the legacy membership code).
@@ -36,6 +48,61 @@ pub const PLAN_LIMIT_REACHED_ERROR: &str = "plan_limit_reached";
 pub const PLAN_UPGRADE_HOSTS: &[&str] = &["hq.computer"];
 
 const DEFAULT_PLAN_LIMIT_MESSAGE: &str = "Your plan limit is reached.";
+
+/// `usagePause.code` for a usage pause.
+pub const USAGE_PAUSE_CODE: &str = "usage_paused";
+/// The trial allowance is used up.
+pub const USAGE_REASON_TRIAL_CAP: &str = "usage_trial_cap";
+/// A card is needed before more usage is allowed.
+pub const USAGE_REASON_CARD_REQUIRED: &str = "usage_card_required";
+/// The company's spend limit is reached.
+pub const USAGE_REASON_SPEND_LIMIT: &str = "usage_spend_limit";
+/// Every reason hq-pro sends in `usagePause.reason`.
+pub const USAGE_PAUSE_REASONS: &[&str] = &[
+    USAGE_REASON_TRIAL_CAP,
+    USAGE_REASON_CARD_REQUIRED,
+    USAGE_REASON_SPEND_LIMIT,
+];
+
+/// Shown for a usage pause when the server sentence cannot be read.
+pub const USAGE_PAUSE_FALLBACK_MESSAGE: &str = "Cloud sync is paused for this company. Open Billing to add a card or raise the spend limit. Files on this computer are not affected.";
+
+/// A company's cloud sync is paused for usage (US-024). Built only by
+/// [`parse_usage_pause`], so every field has been checked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsagePause {
+    /// Always [`USAGE_PAUSE_CODE`].
+    pub code: String,
+    /// One of [`USAGE_PAUSE_REASONS`].
+    pub reason: String,
+    /// The server's sentence, shown as is.
+    pub message: String,
+    /// Billing link, normalized by [`approved_plan_upgrade_url`].
+    pub action_url: String,
+}
+
+/// Read a `usagePause` block. `None` unless `code` is `usage_paused`, the
+/// reason is known, the message is not empty, and `actionUrl` is an approved
+/// https link.
+pub fn parse_usage_pause(value: &Value) -> Option<UsagePause> {
+    let rec = value.as_object()?;
+    if non_empty_str(rec, "code")? != USAGE_PAUSE_CODE {
+        return None;
+    }
+    let reason = non_empty_str(rec, "reason")?;
+    if !USAGE_PAUSE_REASONS.contains(&reason) {
+        return None;
+    }
+    let message = non_empty_str(rec, "message")?;
+    let action_url = approved_plan_upgrade_url(non_empty_str(rec, "actionUrl")?)?;
+    Some(UsagePause {
+        code: USAGE_PAUSE_CODE.to_string(),
+        reason: reason.to_string(),
+        message: message.to_string(),
+        action_url,
+    })
+}
 
 /// True for every code or error token hq-pro uses for a plan-limit refusal.
 pub fn is_plan_limit_token(value: &str) -> bool {
@@ -71,8 +138,11 @@ pub fn approved_plan_upgrade_url(raw: &str) -> Option<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanLimitRefusal {
     pub message: String,
-    /// Present only when the body carried an approved upgrade link.
+    /// Present only when the body carried an approved upgrade link. For a
+    /// usage pause this is the Billing link from `usagePause.actionUrl`.
     pub upgrade_url: Option<String>,
+    /// Set when the body carried a valid `usagePause` block.
+    pub usage_pause: Option<UsagePause>,
 }
 
 fn resource_label(resource: &str) -> &str {
@@ -169,6 +239,13 @@ fn usage_sentences(rec: &Map<String, Value>) -> Vec<String> {
 pub fn parse_plan_limit_body(body: &str) -> Option<PlanLimitRefusal> {
     let value: Value = serde_json::from_str(body.trim()).ok()?;
     let rec = value.as_object()?;
+    if let Some(pause) = rec.get("usagePause").and_then(parse_usage_pause) {
+        return Some(PlanLimitRefusal {
+            message: pause.message.clone(),
+            upgrade_url: Some(pause.action_url.clone()),
+            usage_pause: Some(pause),
+        });
+    }
     let is_limit = non_empty_str(rec, "code").is_some_and(is_plan_limit_token)
         || non_empty_str(rec, "error").is_some_and(is_plan_limit_token);
     if !is_limit {
@@ -189,6 +266,7 @@ pub fn parse_plan_limit_body(body: &str) -> Option<PlanLimitRefusal> {
             .get("upgradeUrl")
             .and_then(Value::as_str)
             .and_then(approved_plan_upgrade_url),
+        usage_pause: None,
     })
 }
 
@@ -221,6 +299,9 @@ pub fn readable_error_body(body: &str) -> Option<String> {
 /// the `plan_limit_reached` token, or the vault's `http=402` status. 402 is
 /// only ever sent by hq-pro's plan gates.
 pub fn is_plan_limit_refusal_message(message: &str) -> bool {
+    if usage_pause_runner_message(message).is_some() {
+        return true;
+    }
     if message.contains("code=PLAN_LIMIT_EXCEEDED")
         || message.contains("code=PLAN_LIMIT_REACHED")
         || message.contains(PLAN_LIMIT_REACHED_ERROR)
@@ -231,6 +312,40 @@ pub fn is_plan_limit_refusal_message(message: &str) -> bool {
         let rest = &message[index + token.len()..];
         !rest.starts_with(|c: char| c.is_ascii_digit())
     })
+}
+
+/// The JSON object embedded in a runner error message, if one parses.
+fn embedded_json_object(message: &str) -> Option<Value> {
+    let start = message.find('{')?;
+    let end = message.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    let value: Value = serde_json::from_str(&message[start..=end]).ok()?;
+    value.is_object().then_some(value)
+}
+
+/// The sentence to show for a runner error message (hq-cloud `describeError`
+/// output such as `VaultClientError code=PLAN_LIMIT_EXCEEDED http=402 ...`)
+/// that is a usage pause. Returns the server's usage sentence when the message
+/// carries a valid `usagePause` block, else [`USAGE_PAUSE_FALLBACK_MESSAGE`]
+/// when it names a usage reason or `usage_paused`. `None` for anything else,
+/// including legacy plan-limit refusals.
+pub fn usage_pause_runner_message(message: &str) -> Option<String> {
+    if let Some(value) = embedded_json_object(message) {
+        let pause = value
+            .get("usagePause")
+            .and_then(parse_usage_pause)
+            .or_else(|| parse_usage_pause(&value));
+        if let Some(pause) = pause {
+            return Some(pause.message);
+        }
+    }
+    let names_usage_pause = message.contains(USAGE_PAUSE_CODE)
+        || USAGE_PAUSE_REASONS
+            .iter()
+            .any(|reason| message.contains(reason));
+    names_usage_pause.then(|| USAGE_PAUSE_FALLBACK_MESSAGE.to_string())
 }
 
 #[cfg(test)]
@@ -264,6 +379,7 @@ mod tests {
             Some(PlanLimitRefusal {
                 message: "New files are paused while Acme is over its Starter limits. Storage: 10.2 GB of 10 GB used.".into(),
                 upgrade_url: Some(UPGRADE_URL.into()),
+                usage_pause: None,
             })
         );
     }
@@ -299,6 +415,7 @@ mod tests {
             Some(PlanLimitRefusal {
                 message: "Your plan limit is reached. Members: 5 of 5 used.".into(),
                 upgrade_url: Some("https://hq.computer/billing".into()),
+                usage_pause: None,
             })
         );
     }
@@ -405,6 +522,159 @@ mod tests {
         assert!(!is_plan_limit_refusal_message(
             "ENOSPC: no space left on device"
         ));
+    }
+
+    const BILLING_URL: &str = "https://hq.computer/companies/acme/billing";
+    const USAGE_MESSAGE: &str = "Cloud sync is paused. Acme used its $10.00 monthly allowance. Add a card on the Billing page to resume. Files on this computer are not affected.";
+
+    fn usage_block(reason: &str) -> Value {
+        serde_json::json!({
+            "code": "usage_paused",
+            "reason": reason,
+            "message": USAGE_MESSAGE,
+            "actionUrl": BILLING_URL,
+        })
+    }
+
+    fn usage_pause_body() -> String {
+        serde_json::json!({
+            "error": "plan_limit_reached",
+            "code": "PLAN_LIMIT_EXCEEDED",
+            "message": "New files are paused while Acme is over its Starter limits.",
+            "upgradeUrl": UPGRADE_URL,
+            "usagePause": usage_block("usage_card_required"),
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn parses_every_known_usage_pause_reason() {
+        for reason in USAGE_PAUSE_REASONS {
+            assert_eq!(
+                parse_usage_pause(&usage_block(reason)),
+                Some(UsagePause {
+                    code: USAGE_PAUSE_CODE.into(),
+                    reason: (*reason).into(),
+                    message: USAGE_MESSAGE.into(),
+                    action_url: BILLING_URL.into(),
+                }),
+                "{reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_an_invalid_usage_pause_block() {
+        let mut bad = Vec::new();
+        for (key, value) in [
+            ("code", Value::from("usage_limit")),
+            ("code", Value::Null),
+            ("reason", Value::from("usage_other")),
+            ("reason", Value::from(7)),
+            ("message", Value::from("   ")),
+            (
+                "actionUrl",
+                Value::from("https://app.indigo-hq.com/billing"),
+            ),
+            ("actionUrl", Value::from("http://hq.computer/billing")),
+            ("actionUrl", Value::from("")),
+        ] {
+            let mut block = usage_block("usage_trial_cap");
+            block[key] = value;
+            bad.push(block);
+        }
+        let mut missing = usage_block("usage_trial_cap");
+        missing.as_object_mut().unwrap().remove("actionUrl");
+        bad.push(missing);
+        bad.push(Value::from("usage_paused"));
+        bad.push(Value::Null);
+        for block in bad {
+            assert_eq!(parse_usage_pause(&block), None, "{block}");
+        }
+    }
+
+    #[test]
+    fn usage_pause_serializes_with_camel_case_names() {
+        let pause = parse_usage_pause(&usage_block("usage_spend_limit")).unwrap();
+        let wire = serde_json::to_value(&pause).unwrap();
+        assert_eq!(wire, usage_block("usage_spend_limit"));
+        let back: UsagePause = serde_json::from_value(wire).unwrap();
+        assert_eq!(back, pause);
+    }
+
+    #[test]
+    fn a_valid_usage_pause_wins_over_the_legacy_fields() {
+        let refusal = parse_plan_limit_body(&usage_pause_body()).unwrap();
+        assert_eq!(refusal.message, USAGE_MESSAGE);
+        assert_eq!(refusal.upgrade_url.as_deref(), Some(BILLING_URL));
+        assert_eq!(
+            refusal.usage_pause.as_ref().map(|p| p.reason.as_str()),
+            Some("usage_card_required")
+        );
+        assert_eq!(
+            readable_error_body(&usage_pause_body()).as_deref(),
+            Some(USAGE_MESSAGE)
+        );
+    }
+
+    #[test]
+    fn a_usage_pause_counts_without_the_legacy_markers() {
+        let body = serde_json::json!({ "usagePause": usage_block("usage_trial_cap") }).to_string();
+        let refusal = parse_plan_limit_body(&body).unwrap();
+        assert_eq!(refusal.message, USAGE_MESSAGE);
+        assert!(refusal.usage_pause.is_some());
+    }
+
+    #[test]
+    fn an_invalid_usage_pause_keeps_the_legacy_behaviour() {
+        let mut value: Value = serde_json::from_str(&usage_pause_body()).unwrap();
+        value["usagePause"]["reason"] = Value::from("usage_unknown");
+        let refusal = parse_plan_limit_body(&value.to_string()).unwrap();
+        assert_eq!(
+            refusal.message,
+            "New files are paused while Acme is over its Starter limits."
+        );
+        assert_eq!(refusal.upgrade_url.as_deref(), Some(UPGRADE_URL));
+        assert_eq!(refusal.usage_pause, None);
+        // Without legacy markers an invalid block is not a refusal at all.
+        let body = serde_json::json!({ "usagePause": { "code": "usage_paused" } }).to_string();
+        assert_eq!(parse_plan_limit_body(&body), None);
+    }
+
+    #[test]
+    fn usage_pause_runner_message_shows_the_server_sentence_or_a_fallback() {
+        let with_body = format!(
+            "VaultClientError code=PLAN_LIMIT_EXCEEDED http=402 {}",
+            usage_pause_body()
+        );
+        assert_eq!(
+            usage_pause_runner_message(&with_body).as_deref(),
+            Some(USAGE_MESSAGE)
+        );
+        let bare_block = format!("presign refused {}", usage_block("usage_trial_cap"));
+        assert_eq!(
+            usage_pause_runner_message(&bare_block).as_deref(),
+            Some(USAGE_MESSAGE)
+        );
+        for text in [
+            "VaultClientError code=PLAN_LIMIT_EXCEEDED http=402 reason=usage_spend_limit",
+            "VaultClientError http=402 usage_paused",
+            "usage_card_required",
+        ] {
+            assert_eq!(
+                usage_pause_runner_message(text).as_deref(),
+                Some(USAGE_PAUSE_FALLBACK_MESSAGE),
+                "{text}"
+            );
+            assert!(is_plan_limit_refusal_message(text), "{text}");
+        }
+        for text in [
+            "VaultClientError code=PLAN_LIMIT_EXCEEDED http=402 New files are paused while Acme is over its Starter limits.",
+            "VaultClientError http=403 Forbidden",
+            "bad json {",
+        ] {
+            assert_eq!(usage_pause_runner_message(text), None, "{text}");
+        }
     }
 
     #[test]

@@ -14,6 +14,8 @@
   import WorkShell from '@hq/work/WorkShell';
   import {
     approvedPlanUpgradeUrl,
+    parseUsagePause,
+    roleCanManageBilling,
     createSyncPlatformAdapter,
     DESKTOP_LIMIT_STATUS_PUSH_FLAG,
     type SyncInvokeFn,
@@ -88,7 +90,9 @@
     resolvePlanLimitCompanyUids,
     savePlanLimitNotifications,
     statusPushFilesPause,
+    usagePauseFromReason,
     type PlanLimitNotificationRow,
+    type PlanLimitUsagePause,
     type StorageLike,
   } from './plan-limit-notifications';
   import { startDesktopMeshPresence } from './mesh-presence';
@@ -250,6 +254,21 @@
     upgradeUrl: string | null;
     /** Notice inferred from hq-pro usage status rather than a native sync event. */
     statusPush?: boolean;
+    /** US-024: the usage pause behind it (server message), when not a plan limit. */
+    usagePause?: PlanLimitUsagePause | null;
+  }
+
+  /** A validated `usagePause` from a runner event or the native snapshot. */
+  function noticeUsagePause(raw: unknown): PlanLimitUsagePause | null {
+    const pause = parseUsagePause(raw);
+    return pause ? { reason: pause.reason, message: pause.message } : null;
+  }
+
+  /** The Billing link of a usage pause, else the attributed upgrade link. */
+  function noticeLink(rawUsagePause: unknown, rawUpgradeUrl: unknown): string | null {
+    const pause = parseUsagePause(rawUsagePause);
+    if (pause) return approvedPlanUpgradeUrl(pause.actionUrl);
+    return planLimitUpgradeLink(rawUpgradeUrl);
   }
   // The companies whose uploads are paused right now. Each one is announced
   // once per paused episode as a row in the notifications panel (see
@@ -278,7 +297,7 @@
     const seen = new Set<string>();
     for (const entry of raw) {
       if (!entry || typeof entry !== 'object') continue;
-      const rec = entry as { company?: unknown; upgradeUrl?: unknown };
+      const rec = entry as { company?: unknown; upgradeUrl?: unknown; usagePause?: unknown };
       const company = typeof rec.company === 'string' ? rec.company.trim() : '';
       if (!company || seen.has(company)) continue;
       seen.add(company);
@@ -289,7 +308,8 @@
         company,
         companyUid: resolvePlanLimitCompanyUid(company),
         exposureId: `exposure:${crypto.randomUUID()}`,
-        upgradeUrl: planLimitUpgradeLink(rec.upgradeUrl),
+        upgradeUrl: noticeLink(rec.usagePause, rec.upgradeUrl),
+        usagePause: noticeUsagePause(rec.usagePause),
       });
     }
     planLimitNotices = next;
@@ -369,6 +389,7 @@
         company: notice.company,
         companyUid: notice.companyUid,
         upgradeUrl: notice.upgradeUrl,
+        usagePause: notice.usagePause ?? null,
       })),
     );
     const changed =
@@ -597,18 +618,23 @@
     syncPlanLimitNotifications();
   }
 
-  function applyStatusPlanLimitNotice(company: string, upgradeUrl: string | null): void {
+  function applyStatusPlanLimitNotice(
+    company: string,
+    upgradeUrl: string | null,
+    usagePause: PlanLimitUsagePause | null = null,
+  ): void {
     const currentNotice = planLimitNotices.find(
       (notice) => notice.company === company && notice.upgradeUrl === upgradeUrl,
     );
     const notice: PlanLimitNotice = currentNotice
-      ? { ...currentNotice, statusPush: true }
+      ? { ...currentNotice, statusPush: true, usagePause: currentNotice.usagePause ?? usagePause }
       : {
           company,
           companyUid: resolvePlanLimitCompanyUid(company),
           exposureId: `exposure:${crypto.randomUUID()}`,
           upgradeUrl,
           statusPush: true,
+          usagePause,
         };
     planLimitNotices = [
       ...planLimitNotices.filter((current) => current.company !== company),
@@ -658,8 +684,18 @@
             removeStatusPushNotice(workspace.slug);
             continue;
           }
-          const upgradeUrl = planLimitUpgradeLink(pause.upgradeUrl);
-          applyStatusPlanLimitNotice(workspace.slug, upgradeUrl);
+          const upgradeUrl = pause.usageReason ? approvedPlanUpgradeUrl(pause.upgradeUrl) : planLimitUpgradeLink(pause.upgradeUrl);
+          applyStatusPlanLimitNotice(
+            workspace.slug,
+            upgradeUrl,
+            pause.usageReason
+              ? usagePauseFromReason(pause.usageReason, workspace.displayName || workspace.slug, {
+                  ...pause.usageContext,
+                  // Owners and admins get the Billing pointer in the copy.
+                  canManageBilling: roleCanManageBilling(workspace.role),
+                })
+              : null,
+          );
         } catch (error) {
           console.error(`Could not refresh plan-limit status for ${workspace.slug}.`, error);
         }
@@ -1165,6 +1201,7 @@
     const unlistenPlanLimitPromise = listen<{
       company?: unknown;
       upgradeUrl?: unknown;
+      usagePause?: unknown;
     }>('sync:plan-limit', (event) => {
       if (cancelled) return;
       const company =
@@ -1175,17 +1212,20 @@
       }
       // The plan URL is server-selected. Only a link on a host hq-pro returns
       // becomes an action; the notice itself still shows without one.
-      const upgradeUrl = planLimitUpgradeLink(event.payload?.upgradeUrl);
+      // US-024: a usage pause carries its own Billing link and message.
+      const upgradeUrl = noticeLink(event.payload?.usagePause, event.payload?.upgradeUrl);
+      const usagePause = noticeUsagePause(event.payload?.usagePause);
       const currentNotice = planLimitNotices.find(
         (notice) => notice.company === company && notice.upgradeUrl === upgradeUrl,
       );
       const notice: PlanLimitNotice = currentNotice
-        ? { ...currentNotice, statusPush: false }
+        ? { ...currentNotice, statusPush: false, usagePause: usagePause ?? currentNotice.usagePause ?? null }
         : {
         company,
         companyUid: resolvePlanLimitCompanyUid(company),
         exposureId: `exposure:${crypto.randomUUID()}`,
         upgradeUrl,
+        usagePause,
         };
       planLimitNotices = [
         ...planLimitNotices.filter((current) => current.company !== company),
