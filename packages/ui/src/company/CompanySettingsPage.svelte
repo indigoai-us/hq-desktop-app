@@ -24,6 +24,7 @@
   import { readUsageBilling, vaultCostCents, type UsageBillingView } from "./usage-billing.js";
   import { boxLadder, boxRange, formatCardCents, formatCardUsd, vaultMeter } from "./usage-pricing.js";
   import ReadLoader from "../common/ReadLoader.svelte";
+  import CompanyLabel from "./CompanyLabel.svelte";
   import GroupGrantsPane from "./GroupGrantsPane.svelte";
   import type { GrantTarget } from "./group-grants.js";
   import {
@@ -162,6 +163,17 @@
     resumesOn: pauseState?.paused?.resumesOn ?? null,
     cardOnFile: pauseState?.cardOnFile ?? null,
     addCard: pauseState?.actions?.addCard ?? null,
+  });
+  // The pause sentence split around the company name, so the name renders
+  // through CompanyLabel. A server message without the name has no split.
+  const PAUSE_COMPANY_MARK = "\u0000company\u0000";
+  const pauseParts = $derived.by(() => {
+    if (!pausedReason) return null;
+    const sentence = billingPauseMessage(pausedReason, { ...pauseContext, company: PAUSE_COMPANY_MARK });
+    const at = sentence.indexOf(PAUSE_COMPANY_MARK);
+    return at < 0
+      ? { before: sentence, after: null }
+      : { before: sentence.slice(0, at), after: sentence.slice(at + PAUSE_COMPANY_MARK.length) };
   });
   const usagePriced = $derived(usage !== null || billingState?.kind === "usage" || billingState?.kind === "usage-trial");
   const usageTrialEnds = $derived(
@@ -447,8 +459,8 @@
       {#if portalHint}
         <p class="note" data-testid="manage-payment-hint" role="status">{portalHint}</p>
       {/if}
-      {#if pausedReason}
-        <p class="note" data-testid="usage-paused" role="status">{billingPauseMessage(pausedReason, { ...pauseContext, company: snap.general.name || companyLabel })}</p>
+      {#if pausedReason && pauseParts}
+        <p class="note" data-testid="usage-paused" role="status">{pauseParts.before}{#if pauseParts.after !== null}<CompanyLabel name={snap.general.name || companyLabel} {companyUid} size={14} />{pauseParts.after}{/if}</p>
         {#if !roleCanManageBilling(role)}
           <p class="note" data-testid="usage-paused-ask-owner">{askOwnerHint(pausedReason, pauseContext)}</p>
         {/if}

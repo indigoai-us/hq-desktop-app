@@ -482,6 +482,10 @@ describe("CompanySettingsPage Billing: usage-priced companies (US-014)", () => {
     });
     const day = new Date(resumesOn).toLocaleDateString(undefined, { month: "short", day: "numeric" });
     expect(text(target, "usage-paused")).toContain(`Usage is paused until ${day}, when the trial ends.`);
+    // The company name in the sentence renders through CompanyLabel (company-label guard).
+    const label = target.querySelector("[data-testid='usage-paused'] [data-testid='company-label'] .company-label-name");
+    expect(label?.textContent?.trim()).toBeTruthy();
+    expect(text(target, "usage-paused")).toContain(`${label!.textContent!.trim()} used the usage included in its trial.`);
     expect(target.querySelector("[data-testid='usage-paused-ask-owner']")).toBeNull();
   });
 
