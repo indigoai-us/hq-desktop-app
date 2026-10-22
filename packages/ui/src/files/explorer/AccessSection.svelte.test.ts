@@ -182,7 +182,7 @@ describe("OWNER-R17 AccessSection", () => {
     const el = render({ vault: COMPANY, path: `${COMPANY.root}/${uniquePath("noacl")}`, isDir: true, companyUid: "cmp_acme", readTree });
     await settle();
     expect(el.querySelector("[data-testid='access-failed']")).toBeNull();
-    expect(el.querySelector("[data-testid='access-no-record']")?.textContent).toBe("Inherits access from its folder");
+    expect(el.querySelector("[data-testid='access-no-record']")?.textContent).toBe("Uses the company's default access");
     expect(el.querySelectorAll("[data-testid='access-row']")).toHaveLength(0);
   });
 
@@ -192,6 +192,14 @@ describe("OWNER-R17 AccessSection", () => {
     await settle();
     expect(el.querySelector("[data-testid='access-no-record']")).toBeNull();
     expect(el.querySelector("[data-testid='access-inherited-link']")?.textContent?.trim()).toBe("projects");
+  });
+
+  it("feedback 227937a0: a folder whose only covering row is its own lock row does not link to itself", async () => {
+    const readTree = vi.fn(async () => ok({ ...NO_RECORD_TREE, prefix: "projects/", coveringAclPath: "projects/*" }));
+    const el = render({ vault: COMPANY, path: `${COMPANY.root}/${uniquePath("noacl-self")}`, isDir: true, companyUid: "cmp_acme", readTree });
+    await settle();
+    expect(el.querySelector("[data-testid='access-inherited']")).toBeNull();
+    expect(el.querySelector("[data-testid='access-no-record']")?.textContent).toBe("Uses the company's default access");
   });
 
   it("feedback 227937a0: personal vault path with no ACL record reads Only you", async () => {

@@ -35,8 +35,8 @@ export interface AccessView {
    * True when nothing in the tree names this path: no own row, no inherited
    * grants and no grants below. This is the 200 body for which
    * `hq files acl <prefix>` prints "No ACL record exists" (feedback 227937a0);
-   * that sentence is the CLI's, hq-pro never sends it. The path then follows
-   * its folder's default access.
+   * that sentence is the CLI's, hq-pro never sends it. The path then uses
+   * the company's default access.
    */
   noRecord: boolean;
 }
@@ -237,7 +237,9 @@ export function accessView(body: unknown, groups: Map<string, string> = new Map(
   // coveringAclPath. Point at it when no inherited grant did.
   const covering = typeof b.coveringAclPath === "string" ? b.coveringAclPath : null;
   const ownPrefix = typeof b.prefix === "string" ? b.prefix : null;
-  if (inheritedFrom === null && covering !== null && covering !== ownPrefix) inheritedFrom = folderOfPrefix(covering);
+  // The path's own "folder/*" lock row is not a parent; never link a folder to itself.
+  const ownFolder = ownPrefix === null ? null : folderOfPrefix(ownPrefix);
+  if (inheritedFrom === null && covering !== null && folderOfPrefix(covering) !== ownFolder) inheritedFrom = folderOfPrefix(covering);
 
   const children = Array.isArray(b.children) ? b.children : [];
   const noRecord = directRow === null && direct.length === 0 && inherited.length === 0 && children.length === 0 && inheritedFrom === null;

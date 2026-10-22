@@ -107,8 +107,8 @@
     {#if vault.kind === "personal" && view.rows.length <= 1}
       <p class="muted" data-testid="access-only-you">Only you</p>
     {:else if view.noRecord}
-      <!-- No ACL row on or above this path: it follows its folder's default access. -->
-      <p class="muted" data-testid="access-no-record">Inherits access from its folder</p>
+      <!-- No ACL row on or above this path: the company's default access applies. -->
+      <p class="muted" data-testid="access-no-record">Uses the company's default access</p>
     {:else}
       <ul class="rows" data-testid="access-rows">
         {#each view.rows.filter((r) => vault.kind === "company" || r.kind !== "owner") as row (row.key)}
