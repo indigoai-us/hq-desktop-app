@@ -281,20 +281,7 @@ export function withPricing(view: AccountRowView, pricing: UsagePricing | null):
  * older `usageTrial` record says. Without it, the older record decides.
  */
 export function accountTrial(summary: Record<string, unknown>, now: Date): RunningTrial | null {
-  const state = parseBillingState(summary.billingState);
-  if (!state) return runningTrialFromSummary(summary, now);
-  if (state.kind !== "usage-trial" || !state.trial?.endsAt) return null;
-  const legacy = runningTrialFromSummary(summary, now);
-  const days = Math.ceil((Date.parse(state.trial.endsAt) - now.getTime()) / 86_400_000);
-  const daysLeft = Number.isFinite(days) ? days : (state.trial.daysLeft ?? 0);
-  if (daysLeft <= 0) return null;
-  return {
-    endsAt: state.trial.endsAt,
-    daysLeft,
-    capCents: state.trial.capCents ?? legacy?.capCents ?? null,
-    usedCents: state.trial.usedCents ?? legacy?.usedCents ?? null,
-    ...(legacy?.unknownMeters ? { unknownMeters: legacy.unknownMeters } : {}),
-  };
+  return runningTrialFromSummary(summary, now);
 }
 
 /**

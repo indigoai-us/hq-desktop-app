@@ -479,6 +479,28 @@ describe("CoreUsagePanel", () => {
       };
     }
 
+    it("each account's level coin in the list is named for screen readers (US-019 review)", async () => {
+      const { __resetUsageLevelsForTests } = await import("./usage-levels.svelte");
+      __resetUsageLevelsForTests();
+      try {
+        const src = multiSource({
+          getBillingSummary: vi.fn(async () => ok({ pricingPlan: "usage-only", usageTrial: { status: "ended", allowanceCents: 1000, cardOnFile: true } })),
+          getUsageStatement: vi.fn(async () => ok({ ...STATEMENT, usageCents: 6_000 })),
+        });
+        await render(src, vi.fn(), { account: ACCOUNTS[1], accounts: ACCOUNTS });
+        for (let i = 0; i < 3; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          flushSync();
+        }
+        const mark = host.querySelector('[data-testid="core-usage-account"][data-key="cmp_northwind"] [data-testid="core-usage-account-level"]');
+        expect(mark?.getAttribute("role")).toBe("img");
+        expect(mark?.getAttribute("aria-label")).toBe("Level 2 · Prototype");
+        expect(mark?.getAttribute("aria-hidden")).toBeNull();
+      } finally {
+        __resetUsageLevelsForTests();
+      }
+    });
+
     it("a read in flight across sign-out is never painted (review, 2026-10-20)", async () => {
       // Person A's personal read is still in flight when they sign out.
       let release: (() => void) | null = null;
@@ -527,7 +549,7 @@ describe("CoreUsagePanel", () => {
       const { rememberCoreUsage } = await import("./core-usage-model");
       rememberCoreUsage("cmp_amass", {
         kind: "ready", companyName: "Amass", planLabel: "Usage plan", paid: false, usageUnavailable: false, notice: null,
-        usage: { mode: "allowance", fill: 0.5, tone: "ok", over: false, usedLine: "$5.00 of $10.00 free", resetLine: null, partial: false, rows: [], rowsNote: null, totalCents: 500, segments: [], scaleCents: 1000, includedCents: 1000 },
+        usage: { mode: "allowance", fill: 0.5, tone: "ok", over: false, usedLine: "$5.00 of $10.00 free", resetLine: null, partial: false, rows: [], rowsNote: null, totalCents: 500, segments: [], scaleCents: 1000, includedCents: 1000, periodStart: "2026-10-01", counts: {} },
       });
       await render(multiSource(), vi.fn(), { account: ACCOUNTS[2], accounts: ACCOUNTS });
       const amass = host.querySelector('[data-testid="core-usage-account"][data-key="cmp_amass"]');
@@ -539,7 +561,7 @@ describe("CoreUsagePanel", () => {
       const { rememberCoreUsage } = await import("./core-usage-model");
       rememberCoreUsage("cmp_northwind", {
         kind: "ready", companyName: "Northwind", planLabel: "Usage plan", paid: false, usageUnavailable: false, notice: null,
-        usage: { mode: "allowance", fill: 0.1, tone: "ok", over: false, usedLine: "$1.00 of $10.00 free", resetLine: null, partial: false, rows: [], rowsNote: null, totalCents: 100, segments: [], scaleCents: 1000, includedCents: 1000 },
+        usage: { mode: "allowance", fill: 0.1, tone: "ok", over: false, usedLine: "$1.00 of $10.00 free", resetLine: null, partial: false, rows: [], rowsNote: null, totalCents: 100, segments: [], scaleCents: 1000, includedCents: 1000, periodStart: "2026-10-01", counts: {} },
       });
       const src = multiSource();
       await render(src, vi.fn(), { account: ACCOUNTS[2], accounts: ACCOUNTS });
@@ -557,7 +579,7 @@ describe("CoreUsagePanel", () => {
       const { rememberCoreUsage } = await import("./core-usage-model");
       rememberCoreUsage("cmp_northwind", {
         kind: "ready", companyName: "Northwind", planLabel: "Usage plan", paid: false, usageUnavailable: false, notice: null,
-        usage: { mode: "allowance", fill: 0.1, tone: "ok", over: false, usedLine: "$1.00 of $10.00 free", resetLine: null, partial: false, rows: [], rowsNote: null, totalCents: 100, segments: [], scaleCents: 1000, includedCents: 1000 },
+        usage: { mode: "allowance", fill: 0.1, tone: "ok", over: false, usedLine: "$1.00 of $10.00 free", resetLine: null, partial: false, rows: [], rowsNote: null, totalCents: 100, segments: [], scaleCents: 1000, includedCents: 1000, periodStart: "2026-10-01", counts: {} },
       });
       await render(multiSource({ getBillingSummary: vi.fn(async () => fail("http-500")) }), vi.fn(), { account: ACCOUNTS[2], accounts: ACCOUNTS });
       for (let i = 0; i < 3; i += 1) {

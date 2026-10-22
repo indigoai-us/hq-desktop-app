@@ -57,6 +57,8 @@ export interface UsageLine {
   status: UsageLineStatus | null;
   billed: boolean;
   costCents: number | null;
+  /** The meter's count this period (runs, syncs, calls); null when not reported. */
+  usage?: number | null;
 }
 
 export interface MonthStatement {
@@ -103,6 +105,10 @@ export interface UsageMeterView {
   scaleCents: number;
   /** Where the included usage ends, for the bar's tick; null in trial mode. */
   includedCents: number | null;
+  /** The month the statement covers (`periodStart`); null in trial mode (US-019 levels read it). */
+  periodStart: string | null;
+  /** Meter counts this month by rate-card key, for the level-up card; empty in trial mode. */
+  counts: Readonly<Record<string, number>>;
 }
 
 /** Group rows as bar parts; a group with no measured amount draws nothing. */
@@ -193,7 +199,7 @@ export function monthStatementFromBody(body: unknown): MonthStatement | null {
         const status = typeof line.status === "string" && LINE_STATUSES.has(line.status)
           ? (line.status as UsageLineStatus)
           : null;
-        return [{ key, status, billed: line.billed !== false, costCents: finite(line.costCents) }];
+        return [{ key, status, billed: line.billed !== false, costCents: finite(line.costCents), usage: finite(line.usage) }];
       })
     : [];
   return {
@@ -278,6 +284,13 @@ function fillOf(usedCents: number, limitCents: number): number {
   return usedCents > 0 ? 1 : 0;
 }
 
+/** Billed meters' counts by key (`agent-run`: 1240); meters with no count are left out. */
+function lineCounts(lines: readonly UsageLine[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const l of lines) if (l.billed && typeof l.usage === "number" && l.usage >= 0) out[l.key] = l.usage;
+  return out;
+}
+
 /** The month against the included usage (no trial running). */
 export function meterView(statement: MonthStatement): UsageMeterView {
   const { allowanceCents, usageCents } = statement;
@@ -304,6 +317,8 @@ export function meterView(statement: MonthStatement): UsageMeterView {
     segments: groupSegments(rows),
     scaleCents: Math.max(allowanceCents, usageCents, 1),
     includedCents: allowanceCents > 0 ? allowanceCents : null,
+    periodStart: statement.periodStart,
+    counts: lineCounts(statement.lines),
   };
 }
 
@@ -336,6 +351,8 @@ export function trialMeterView(trial: RunningTrial): UsageMeterView {
       segments: [],
       scaleCents: Math.max(trial.capCents ?? 0, 1),
       includedCents: null,
+      periodStart: null,
+      counts: {},
     };
   }
   const line = `${formatUsd(trial.usedCents)} of ${formatUsd(trial.capCents)} trial usage`;
@@ -354,6 +371,8 @@ export function trialMeterView(trial: RunningTrial): UsageMeterView {
     segments: [{ id: "trial", label: "Trial usage", cents: trial.usedCents }],
     scaleCents: Math.max(trial.capCents, trial.usedCents, 1),
     includedCents: null,
+    periodStart: null,
+    counts: {},
   };
 }
 
@@ -366,17 +385,49 @@ export function trialDaysLeft(endsAt: string, now: Date = new Date()): number {
   return Math.ceil(ms / DAY_MS);
 }
 
-/** The running trial from a billing summary, or null when none is running. */
+/**
+ * The running trial from a billing summary, or null when none is running.
+ * `billingState` wins (US-024): kind `usage-trial` with an end date is a
+ * trial and its `trial` block gives the dates, cap and usage; any other kind
+ * is not a trial, whatever the older `usageTrial` record says. A server
+ * without `billingState` falls back to `usageTrial`. The older record still
+ * fills a cap or usage the state leaves out, and `unknownMeters`, which
+ * billingState does not carry.
+ */
 export function runningTrialFromSummary(summary: unknown, now: Date = new Date()): RunningTrial | null {
-  if (!isRecord(summary) || !isRecord(summary.usageTrial)) return null;
+  if (!isRecord(summary)) return null;
+  const state = parseBillingState(summary.billingState);
+  if (!state) return legacyRunningTrial(summary, now);
+  if (state.kind !== "usage-trial" || !state.trial?.endsAt) return null;
+  const endsAt = state.trial.endsAt;
+  const daysLeft = Number.isFinite(Date.parse(endsAt)) ? trialDaysLeft(endsAt, now) : (state.trial.daysLeft ?? 0);
+  if (daysLeft <= 0) return null;
+  const legacy = isRecord(summary.usageTrial) ? summary.usageTrial : null;
+  const unknownMeters = unknownMetersOf(legacy);
+  return {
+    endsAt,
+    daysLeft,
+    capCents: state.trial.capCents ?? finite(legacy?.capCents),
+    usedCents: state.trial.usedCents ?? finite(legacy?.usedCents),
+    ...(unknownMeters.length > 0 ? { unknownMeters } : {}),
+  };
+}
+
+function unknownMetersOf(trial: Record<string, unknown> | null): string[] {
+  return trial && Array.isArray(trial.unknownMeters)
+    ? trial.unknownMeters.filter((m): m is string => typeof m === "string" && m.length > 0)
+    : [];
+}
+
+/** The running trial from the older `usageTrial` record (servers without billingState). */
+function legacyRunningTrial(summary: Record<string, unknown>, now: Date): RunningTrial | null {
+  if (!isRecord(summary.usageTrial)) return null;
   const trial = summary.usageTrial;
   const endsAt = str(trial.endsAt);
   if (trial.status !== "active" || !endsAt) return null;
   const daysLeft = trialDaysLeft(endsAt, now);
   if (daysLeft <= 0) return null;
-  const unknownMeters = Array.isArray(trial.unknownMeters)
-    ? trial.unknownMeters.filter((m): m is string => typeof m === "string" && m.length > 0)
-    : [];
+  const unknownMeters = unknownMetersOf(trial);
   return {
     endsAt,
     daysLeft,
@@ -403,9 +454,13 @@ function longDate(iso: string): string | null {
 export function usageNoticeFromSummary(summary: unknown): UsageNotice | null {
   if (!isRecord(summary) || !isRecord(summary.usageTrial)) return null;
   const t = summary.usageTrial;
-  const cap = finite(t.capCents);
+  // billingState's trial block gives the cap and end date when present;
+  // the older record fills them in for servers without it.
+  const stateTrial = parseBillingState(summary.billingState)?.trial ?? null;
+  const cap = stateTrial?.capCents ?? finite(t.capCents);
   const allowance = finite(t.allowanceCents);
-  const ends = str(t.endsAt) ? longDate(str(t.endsAt)!) : null;
+  const endsAt = stateTrial?.endsAt ?? str(t.endsAt);
+  const ends = endsAt ? longDate(endsAt) : null;
   const capText = cap !== null ? `the trial's ${formatUsd(cap)} of usage` : "the trial's usage cap";
   const allowanceText = allowance !== null ? `the ${formatUsd(allowance)} of usage included this month` : "this month's included usage";
   const memberAsk = "Ask an owner or admin to add a card.";

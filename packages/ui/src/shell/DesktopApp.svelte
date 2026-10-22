@@ -41,7 +41,7 @@
     type CloudFileEventPayload,
 } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
-  import { resolveUsageCompany, usageAccounts } from "../home/core-usage-model.js";
+  import { PERSONAL_ACCOUNT_KEY, resolveUsageCompany, setPreferredUsageAccount, usageAccounts } from "../home/core-usage-model.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
@@ -105,6 +105,7 @@
     shouldShowLaunch,
   } from "../badges/badge-launch.js";
   import { installBadgeLoader } from "../badges/badge-loader.svelte.js";
+  import { setUsageLevelHistoryLoader, setUsageLevelOpener, setUsageLevelViewer } from "../home/usage-levels.svelte.js";
   import { topBadge } from "../badges/badge-tier.js";
   import { resolveEarned, type ResolvedBadge } from "../badges/badge-catalog.js";
   import CompanySettingsHost from "./CompanySettingsHost.svelte";
@@ -12975,6 +12976,35 @@
   });
   /** Your earned badges, for the hover card on the rail's You button. */
   const youBadges = $derived(badgesFor(youSubject));
+
+  /**
+   * usage-only-pricing US-019: which level-up cards were shown is stored per
+   * signed-in person, and the card's "See usage" opens Settings > Usage on that account.
+   */
+  $effect(() => {
+    setUsageLevelViewer(self?.uid ?? null);
+  });
+  $effect(() => {
+    setUsageLevelOpener((accountKey) => {
+      setPreferredUsageAccount(accountKey);
+      openSettings("usage");
+    });
+    return () => setUsageLevelOpener(null);
+  });
+  // Levels follow the owner usage history (GET /v1/billing/usage/history,
+  // hq-pro #5087), read once per account. With no history there is no card.
+  $effect(() => {
+    const company = adapter.company;
+    setUsageLevelHistoryLoader(
+      company
+        ? (accountKey) =>
+            accountKey === PERSONAL_ACCOUNT_KEY
+              ? (company.getPersonalUsageHistory?.() ?? null)
+              : (company.getUsageHistory?.(accountKey) ?? null)
+        : null,
+    );
+    return () => setUsageLevelHistoryLoader(null);
+  });
 
   /**
    * hq-accomplishment-badges US-016: the launch announcement, once, over the
