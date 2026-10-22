@@ -82,7 +82,7 @@
       schedule();
       return;
     }
-    await run(null, readOnce);
+    run(null, readOnce);
   }
 
   function onVisibility() {
@@ -91,22 +91,48 @@
     void pollTick();
   }
 
-  /** Run one action under the single in-flight guard, then re-arm the poll. */
-  async function run(label: "submit" | "refresh" | "regenerate" | null, action: () => Promise<void>): Promise<boolean> {
-    if (inFlight || destroyed) return false;
+  type ActionLabel = "submit" | "refresh" | "regenerate";
+  /** The label of the call that holds the guard; null for a background poll. */
+  let runningLabel: ActionLabel | null = null;
+  /** One user action that arrived while a background poll read was out. */
+  let pending: { label: ActionLabel; action: () => Promise<void> } | null = null;
+
+  /**
+   * Run one action under the single in-flight guard, then re-arm the poll.
+   * A user action that arrives during a background poll is not dropped: it
+   * shows its pending label at once and runs as soon as the poll returns.
+   * Returns true when the action ran or was queued.
+   */
+  function run(label: ActionLabel | null, action: () => Promise<void>): boolean {
+    if (destroyed) return false;
+    if (inFlight) {
+      if (label === null || runningLabel !== null || pending !== null) return false;
+      pending = { label, action };
+      busy = label;
+      return true;
+    }
     inFlight = true;
+    runningLabel = label;
     busy = label;
     clearTimer();
-    try {
-      await action();
-    } finally {
-      inFlight = false;
-      if (!destroyed) {
-        busy = null;
-        tick = Date.now();
-        schedule();
+    void (async () => {
+      try {
+        await action();
+      } finally {
+        inFlight = false;
+        runningLabel = null;
+        const next = pending;
+        pending = null;
+        if (destroyed) return;
+        if (next) {
+          run(next.label, next.action);
+        } else {
+          busy = null;
+          tick = Date.now();
+          schedule();
+        }
       }
-    }
+    })();
     return true;
   }
 
@@ -148,12 +174,12 @@
 
   function refresh() {
     if (!canManage) return;
-    void run("refresh", readOnce);
+    run("refresh", readOnce);
   }
 
   function regenerate() {
     if (!canManage) return;
-    void run("regenerate", async () => {
+    run("regenerate", async () => {
       // Hide the old link before the request goes out, so no read that lands
       // meanwhile can show it again.
       suppressedUrl = view?.loginUrl ?? suppressedUrl;
@@ -192,9 +218,10 @@
     });
   }
 
-  function submit(code: string) {
-    if (!canManage) return;
-    void run("submit", async () => {
+  /** Returns true once the code is handed to a running or queued call. */
+  function submit(code: string): boolean {
+    if (!canManage) return false;
+    return run("submit", async () => {
       const sentFor = view?.loginUrl ?? null;
       const result = await client.submitCode(code);
       if (destroyed) return;
@@ -229,7 +256,7 @@
       view = { signedIn: false, state: "unknown" };
       return;
     }
-    void run(null, readOnce);
+    run(null, readOnce);
   });
 
   onDestroy(() => {

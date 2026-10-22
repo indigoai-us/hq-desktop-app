@@ -69,6 +69,21 @@ describe("company sign-in card", () => {
     expect(target.textContent).not.toContain(CODE);
   });
 
+  it("keeps the code in the field when the handler does not take it", () => {
+    const onSubmitCode = vi.fn(() => false);
+    const target = mountCard({
+      role: "admin",
+      now: NOW,
+      onSubmitCode,
+      view: { signedIn: false, state: "awaiting_sign_in", loginUrl: URL, loginUrlExpiresAt: "2026-10-18T20:10:00.000Z" },
+    });
+    const input = typeCode(target, CODE);
+    (target.querySelector("[data-testid='company-signin-submit']") as HTMLButtonElement).click();
+    flushSync();
+    expect(onSubmitCode).toHaveBeenCalledWith(CODE);
+    expect(input.value).toBe(CODE);
+  });
+
   it("shows one rejection line and keeps the field ready for another try", () => {
     const target = mountCard({
       role: "admin",

@@ -233,6 +233,36 @@ describe("company sign-in panel: one call at a time", () => {
     expect(target.textContent).not.toContain(URL_A);
   });
 
+  it("queues a code submitted while a background poll read is out, then sends it once", async () => {
+    let reads = 0;
+    const pollRead = deferred<CompanySignInPostResult>();
+    const { post, calls } = transport((body) => {
+      if (body.action === "code") return accepted;
+      return ++reads === 2 ? pollRead.promise : waitingA();
+    });
+    mountPanel({ role: "admin", companyUid: "cmp_a", post });
+    await settle();
+    typeCode(CODE);
+    // The 15 second poll for a shown link starts a read and holds it open.
+    await settle(15_000);
+    expect(calls.map((c) => c.action)).toEqual(["status", "status"]);
+
+    button("submit")!.click();
+    flushSync();
+    // The click is acknowledged at once and every action is blocked.
+    expect(button("submit")!.textContent?.trim()).toBe(SIGNIN_COPY.submitting);
+    expect(button("new-link")!.disabled).toBe(true);
+    expect(button("refresh")!.disabled).toBe(true);
+    expect(calls.map((c) => c.action)).toEqual(["status", "status"]);
+
+    pollRead.resolve(waitingA());
+    await settle();
+    const codes = calls.filter((c) => c.action === "code");
+    expect(codes).toHaveLength(1);
+    expect(JSON.stringify(codes[0])).toContain(CODE);
+    expect(calls.map((c) => c.action)).toEqual(["status", "status", "code", "status"]);
+  });
+
   it("shows Refreshing... while a manual read is out, with every action disabled", async () => {
     let reads = 0;
     const slow = deferred<CompanySignInPostResult>();

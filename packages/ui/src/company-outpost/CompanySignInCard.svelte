@@ -22,7 +22,7 @@
     finishing?: SignInFinishing;
     onRefresh?: () => void;
     onRegenerate?: () => void;
-    onSubmitCode?: (code: string) => void;
+    onSubmitCode?: (code: string) => boolean | void;
   }
 
   let {
@@ -47,9 +47,14 @@
     event.preventDefault();
     if (!card.showCode || busy) return;
     const value = code.trim();
+    if (!value) {
+      code = "";
+      return;
+    }
+    // Clear the field only once the code is handed to a call. A handler that
+    // returns false did not take it, so the code stays for another try.
+    if (onSubmitCode?.(value) === false) return;
     code = "";
-    if (!value) return;
-    onSubmitCode?.(value);
   }
 </script>
 
