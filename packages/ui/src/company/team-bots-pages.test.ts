@@ -94,6 +94,20 @@ describe("US-027 team and bots", () => {
     expect(inviteFailureText(null)).toBe("Couldn't send the invite. Try again.");
   });
 
+  it("maps an admin role refusal to plain language with a next step, never the raw code or server text", () => {
+    const text = inviteFailureText({
+      code: "ADMIN_ROLE_TARGET_RESTRICTED",
+      message: "Admin can only invite at role=member; ask an owner to invite at this role",
+    });
+    expect(text).toBe("Admins can invite people as Members only. Choose Member, or ask an owner to send this invite.");
+    expect(text).not.toMatch(/ADMIN_ROLE_TARGET_RESTRICTED|role=|[A-Z]{3,}_[A-Z]/);
+  });
+
+  it("never passes through server text for a code it does not know", () => {
+    const text = inviteFailureText({ code: "SOMETHING_NEW", message: "Invalid groupIds: grp_x not in company" });
+    expect(text).toBe("Couldn't send the invite. Try again.");
+  });
+
   it("reads pending invites from the team telemetry payload", () => {
     const rows = pendingInvitesFromTelemetry({
       invites: [{ email: "priya@vyg.ai", role: "member", sentBy: "Corey", sentLabel: "5h ago" }],

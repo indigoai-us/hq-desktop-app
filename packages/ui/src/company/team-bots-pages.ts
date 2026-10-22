@@ -8,7 +8,7 @@
  * pending invite only after confirmation. Pause on Bots is the same gate.
  */
 
-import type { CompanyApi, MessagingApi } from "@hq/platform";
+import { isPlanLimitCode, type CompanyApi, type MessagingApi } from "@hq/platform";
 import {
   joinedLabel,
   memberKindFromUid,
@@ -152,17 +152,26 @@ export function withConfirmedInvite(list: readonly PendingInvite[], invite: Pend
   return [invite, ...list.filter((row) => row.id !== invite.id)];
 }
 
-/** A plain sentence for a refused or failed invite. Never a machine code. */
-export function inviteFailureText(failure: { code?: string; message?: string } | null | undefined): string {
+/**
+ * A plain sentence, with a next step, for a refused or failed invite. Server
+ * text is shown only for plan-limit and usage-pause refusals, whose sentence
+ * the platform layer already rewrote for people. Every other code maps to a
+ * fixed sentence, so a raw code or server wording never reaches the page.
+ */
+export function inviteFailureText(
+  failure: { code?: string; message?: string; usagePause?: unknown } | null | undefined,
+): string {
   const code = failure?.code ?? "";
   if (code === "MEMBERSHIP_ALREADY_EXISTS") return "That person is already invited or on the team.";
-  if (code === "FORBIDDEN" || code === "http-403") return "You don't have permission to invite people to this company.";
+  if (code === "ADMIN_ROLE_TARGET_RESTRICTED") {
+    return "Admins can invite people as Members only. Choose Member, or ask an owner to send this invite.";
+  }
+  if (code === "FORBIDDEN" || code === "http-403") {
+    return "You don't have permission to invite people to this company. Ask an owner or admin to send it.";
+  }
   if (code === "USER_SEAT_RESERVATION_BUSY") return "Another invite is being saved. Try again in a moment.";
   const message = failure?.message?.trim() ?? "";
-  // Plan-limit refusals carry a readable sentence from the server.
-  if (message && !message.includes("{") && !/^(POST|GET) \//.test(message) && !/^[A-Z_]+$/.test(message)) {
-    return message;
-  }
+  if (message && (isPlanLimitCode(code) || failure?.usagePause)) return message;
   return "Couldn't send the invite. Try again.";
 }
 

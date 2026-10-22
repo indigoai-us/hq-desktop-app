@@ -29,6 +29,10 @@
  *          Rust registry covers, and where the same /v1 bug class was found
  *          live in `companyBoard`/`companyActivity` while building this
  *          check.
+ *        - EXACT: `SYNC_HQ_PRO_ROUTES` in
+ *          `packages/platform/src/tauri/hq-pro-routes.ts` — the desktop sync
+ *          adapter's `hqProJson` calls that build their request from that
+ *          table (DEV-5255 added the first, `POST /membership/invite`).
  *      Everything else the app calls (100+ notify/agent/work-mesh routes
  *      across `packages/platform`) is NOT yet migrated to an exact
  *      registry. Migrating it is future work; regex-extracting all of it
@@ -177,6 +181,18 @@ export function extractWebPathsCompanyRoutes(sourceText) {
   return routes;
 }
 
+/** Parses `packages/platform/src/tauri/hq-pro-routes.ts` — the
+ * `name: "METHOD /path",` entries of `SYNC_HQ_PRO_ROUTES`, which the desktop
+ * sync adapter builds its `hqProJson` requests from (DEV-5255). */
+export function extractSyncHqProRoutes(sourceText) {
+  const routes = [];
+  const re = /^\s*(\w+):\s*"([A-Z]+\s+\/[^"]*)",?\s*$/gm;
+  for (const match of sourceText.matchAll(re)) {
+    routes.push({ name: `SYNC_HQ_PRO_ROUTES.${match[1]}`, route: normalizeRoute(match[2]) });
+  }
+  return routes;
+}
+
 export function collectAppRoutes(appRoot) {
   const routesRs = readFileSync(
     join(appRoot, "crates/hq-desktop-core/src/routes.rs"),
@@ -186,9 +202,14 @@ export function collectAppRoutes(appRoot) {
     join(appRoot, "packages/platform/src/web/index.ts"),
     "utf8",
   );
+  const syncRoutesTs = readFileSync(
+    join(appRoot, "packages/platform/src/tauri/hq-pro-routes.ts"),
+    "utf8",
+  );
   return [
     ...extractRustRegistryRoutes(routesRs),
     ...extractWebPathsCompanyRoutes(webIndexTs),
+    ...extractSyncHqProRoutes(syncRoutesTs),
   ];
 }
 

@@ -141,6 +141,34 @@ describe("TeamPage invite (DEV-5255)", () => {
     expect(readTeamCache("acme-invite-refused")?.invites ?? []).toEqual([]);
   });
 
+  it("an admin inviting above Member sees plain language and a next step, never the raw code", async () => {
+    const company = companyApi({
+      invite: async () => ({
+        ok: false,
+        reason: "error",
+        code: "ADMIN_ROLE_TARGET_RESTRICTED",
+        message: "Admin can only invite at role=member; ask an owner to invite at this role",
+      }),
+    });
+    const target = render({ slug: "acme-invite-admin-role", companyUid: "cmp_acme", company });
+    await ready(target);
+
+    openSheetAndType(target, "kade@hikerhunger.com");
+    send(target);
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(target.querySelector("[data-testid='invite-error']")).not.toBeNull();
+    });
+    const text = target.textContent ?? "";
+    expect(text).toContain("Choose Member, or ask an owner to send this invite.");
+    expect(text).not.toContain("ADMIN_ROLE_TARGET_RESTRICTED");
+    expect(text).not.toContain("role=member");
+    expect(pendingEmails(target)).toEqual([]);
+    // The control stays usable so the person can change the role and send again.
+    expect((target.querySelector("[data-testid='invite-send']") as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("shows an error and adds no row when the request itself fails", async () => {
     const company = companyApi({ invite: async () => Promise.reject(new Error("offline")) });
     const target = render({ slug: "acme-invite-throws", companyUid: "cmp_acme", company });
