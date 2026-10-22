@@ -130,8 +130,15 @@ impl WorkAdmission {
     /// Start a sign-out: close admission and hold it closed until the returned
     /// guard is dropped. No sign-in published meanwhile can reopen it.
     pub fn begin_sign_out(&'static self) -> SignOutGuard {
-        self.close(Closed::SignedOut);
-        self.lock().signing_out += 1;
+        let mut inner = self.lock();
+        inner.signing_out += 1;
+        if inner.closed != Some(Closed::Quitting) {
+            inner.closed = Some(Closed::SignedOut);
+        }
+        inner.epoch += 1;
+        for (_, flag) in &inner.cancels {
+            flag.store(true, Ordering::Release);
+        }
         SignOutGuard { gate: self }
     }
 
@@ -354,5 +361,60 @@ mod tests {
     #[test]
     fn an_idle_gate_drains_immediately() {
         assert!(gate().wait_drained(Duration::ZERO));
+    }
+    #[test]
+    fn nested_sign_out_guards_keep_closed_and_cancel_inflight_work() {
+        let gate = gate();
+        let ticket = gate.admit().unwrap();
+        let flag = Arc::new(AtomicBool::new(false));
+        let _registration = ticket.register_cancel(flag.clone());
+        let first = gate.begin_sign_out();
+        let second = gate.begin_sign_out();
+        assert!(flag.load(Ordering::Acquire));
+        assert_eq!(ticket.check(), Err(Closed::SignedOut));
+        assert!(!gate.wait_drained(Duration::ZERO));
+        drop(first);
+        assert!(!gate.reopen_after_sign_in());
+        assert!(gate.admit().is_err());
+        drop(ticket);
+        assert!(gate.wait_drained(Duration::ZERO));
+        drop(second);
+        assert!(!gate.is_open());
+        assert!(gate.reopen_after_sign_in());
+        assert!(gate.admit().is_ok());
+    }
+
+    #[test]
+    fn sign_out_preserves_sticky_quit() {
+        let gate = gate();
+        gate.close(Closed::Quitting);
+        let sign_out = gate.begin_sign_out();
+        assert_eq!(gate.closed_reason(), Some(Closed::Quitting));
+        drop(sign_out);
+        assert!(!gate.reopen_after_sign_in());
+    }
+
+    #[test]
+    fn concurrent_sign_in_never_opens_while_sign_out_guard_exists() {
+        let gate = gate();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let worker = std::thread::spawn(move || {
+            while !worker_stop.load(Ordering::Relaxed) {
+                gate.reopen_after_sign_in();
+                std::thread::yield_now();
+            }
+        });
+        let mut observed = 0;
+        for _ in 0..200_000 {
+            let sign_out = gate.begin_sign_out();
+            if gate.is_open() {
+                observed += 1;
+            }
+            drop(sign_out);
+        }
+        stop.store(true, Ordering::Relaxed);
+        worker.join().unwrap();
+        assert_eq!(observed, 0, "admission opened while sign-out guard existed");
     }
 }
