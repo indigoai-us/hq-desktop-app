@@ -111,3 +111,21 @@ describe("titlebar sync chip", () => {
     expect(chip()?.disabled).toBe(true);
   });
 });
+
+it("shows a persisted startup hold and an explicit retry before any sync events arrive", async () => {
+  const { readLiveSyncStatus, syncStateFromLive } = await import("../settings/live-sync-status.js");
+  const reason = "Automatic sync recovery stopped after a setup failure. Fix the problem, then try Sync Now again.";
+  const source = { isAvailable: () => true, sync: { getSyncStatus: async () => ok({ recoveryHoldReason: reason }) } };
+  const status = await readLiveSyncStatus(source as never);
+  const onretry = vi.fn(async () => {});
+  await mountBar({ adapter: { ...adapter(), isAvailable: (cap: string) => cap === "canSync", sync: source.sync }, syncState: syncStateFromLive(status), syncRecoveryReason: status.recoveryHoldReason, errorMessage: status.recoveryHoldReason, errorSummary: status.recoveryHoldReason, onretry });
+  host.querySelector<HTMLButtonElement>('[data-testid="titlebar-core-pill"]')?.click();
+  await tick();
+  expect(host.textContent).toContain(reason);
+  expect(host.textContent).not.toContain("Sync started but needs a hand");
+  const retry = host.querySelector<HTMLButtonElement>('[data-testid="core-popover-recovery-action"]');
+  expect(retry?.textContent).toContain("Retry");
+  retry?.click();
+  await tick();
+  expect(onretry).toHaveBeenCalledTimes(1);
+});

@@ -184,6 +184,22 @@ const STORIES: Readonly<Record<string, StoryDef>> = {
     did: [(v) => `${v.Subject} ${was(v)} named HQ's honorary Ecom Rat.`],
     why: () => "For an ecommerce operator who lives in the trenches of DTC and builds on HQ.",
   },
+  architect: {
+    did: [(v) => `${v.Subject} ${was(v)} named HQ's Architect.`],
+    why: () => "For the one who designs the systems everyone else builds on.",
+  },
+  angel: {
+    did: [(v) => `${v.Subject} ${was(v)} named HQ's Angel.`],
+    why: () => "For backing HQ early, before there was much to see.",
+  },
+  optimist: {
+    did: [(v) => `${v.Subject} ${was(v)} named HQ's Optimist.`],
+    why: () => "For seeing the upside first and bringing everyone else along.",
+  },
+  visionary: {
+    did: [(v) => `${v.Subject} ${was(v)} named HQ's Visionary.`],
+    why: () => "For seeing where HQ is going before anyone else does.",
+  },
   corebuilder: {
     did: [
       (v) => `${v.Subject} got ${v.their} first pull request merged into HQ core.`,

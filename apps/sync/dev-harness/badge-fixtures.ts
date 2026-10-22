@@ -26,10 +26,11 @@ const BOTS: EarnedBadge[] = [
 ];
 
 /**
- * The honors badges (OG, Captain, Patient Zero, Core Builder, Ecom Rat) go
- * to named people, not to a random mix: here, Corey Epstein has the first
- * four and Spencer has Ecom Rat, so the Legendary tier and Core Builder's
- * fourth level can be seen in the harness.
+ * The honors badges (OG, Captain, Patient Zero, Core Builder, Ecom Rat and
+ * the four persona honors) go to named people, not to a random mix: here,
+ * Corey Epstein has the first four, Spencer has Ecom Rat, and Cody, Connor,
+ * Sean and Bobby each have their persona card, so the Legendary tier and
+ * Core Builder's fourth level can be seen in the harness.
  */
 const HONORS: Readonly<Record<string, EarnedBadge[]>> = {
   'corey epstein': [
@@ -39,6 +40,10 @@ const HONORS: Readonly<Record<string, EarnedBadge[]>> = {
     { id: 'corebuilder', tier: 'L', earnedAt: '2026-10-11' },
   ],
   spencer: [{ id: 'ecomrat', tier: 'L', earnedAt: '2026-10-16' }],
+  cody: [{ id: 'architect', tier: 'L', earnedAt: '2026-10-20' }],
+  connor: [{ id: 'angel', tier: 'L', earnedAt: '2026-10-20' }],
+  sean: [{ id: 'optimist', tier: 'L', earnedAt: '2026-10-20' }],
+  bobby: [{ id: 'visionary', tier: 'L', earnedAt: '2026-10-20' }],
 };
 
 function hash(s: string): number {
@@ -76,7 +81,7 @@ export const sampleBadges: BadgeSource = ({ kind, name }) => {
   if (kind === 'bot') return BOTS.slice(0, 2 + (h % 3));
   const top = TOP_LEVEL[key] ?? h % 4;
   const allowed = PEOPLE.filter((b) => badgeLevel(b) <= top);
-  if (!allowed.length) return [];
+  if (!allowed.length) return HONORS[key] ?? [];
   // Always the badge at their top level, then a mix of the rest by name.
   const lead = allowed.find((b) => badgeLevel(b) === top) ?? allowed[0]!;
   const rest = allowed.filter((b) => b !== lead && ((h >> PEOPLE.indexOf(b)) & 1) === 1);

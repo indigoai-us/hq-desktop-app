@@ -144,7 +144,10 @@ export function joinableMemberships(workspaces: Workspace[]): Workspace[] {
       // personal cloud membership has no local match, and not collapsed by
       // dedupe (different `kind`) — must not drive the prompt. Guard by slug so
       // a row mis-typed as kind=company can't leak through either.
-      w.slug !== "personal",
+      w.slug !== "personal" &&
+      // Sync switched off for this company on this computer (Settings › Sync,
+      // US-016): it is not pulled automatically and not offered as a pull.
+      w.syncEnabled !== false,
   );
 }
 

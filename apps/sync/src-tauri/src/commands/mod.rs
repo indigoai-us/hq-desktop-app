@@ -41,6 +41,7 @@ pub mod feedback;
 pub mod personal_apps_signin;
 pub mod storage;
 pub mod cloud_file;
+pub mod cloud_switch;
 pub mod first_push;
 pub mod setup_secret;
 pub mod first_run;
