@@ -8,6 +8,12 @@
    */
   import type { PlatformAdapter } from "@hq/platform";
   import PageHeader from "../shell/PageHeader.svelte";
+  import { parseListPage } from "../shell/vault-list-page.js";
+  import { sharedFolderEntries, type SharedFolderEntry } from "../files/explorer/vault-model.js";
+  import type { SharedFolderFocus } from "../shell/navigation-history.js";
+
+  /** Pages of `GET /v1/files/list` read for one shared folder before the list stops. */
+  const SHARED_FOLDER_MAX_PAGES = 10;
 
   interface ShareEvent {
     id: string;
@@ -19,11 +25,71 @@
   interface Props {
     adapter: {
       notifications: Pick<PlatformAdapter["notifications"], "fetchSharedWithMe">;
+      /** ACL-filtered vault listing; absent on hosts without it. */
+      files?: Partial<Pick<PlatformAdapter["files"], "listVaultPrefix">> | null;
     };
+    /**
+     * A DM folder share whose company is not synced on this computer. The view
+     * then lists that folder from the vault (names only, no preview or
+     * download) and says which company to sync to open it in Files.
+     */
+    folder?: SharedFolderFocus | null;
     onback?: () => void;
   }
 
-  let { adapter, onback }: Props = $props();
+  let { adapter, folder = null, onback }: Props = $props();
+  let folderLoading = $state(false);
+  let folderEntries = $state<SharedFolderEntry[]>([]);
+  let folderError = $state<string | null>(null);
+  let folderTruncated = $state(false);
+
+  const folderName = $derived.by(() => {
+    const prefix = folder?.prefix ?? "";
+    return prefix.split("/").filter(Boolean).pop() || folder?.companyLabel || "Shared folder";
+  });
+  /** The company-relative folder path, as the share names it. */
+  const folderPath = $derived(folder ? folder.prefix || "/" : "");
+  const folderSyncNote = $derived(
+    folder ? `${folder.companyLabel} isn't synced on this Mac yet. Sync it to open this folder in Files.` : "",
+  );
+
+  async function loadFolder(focus: SharedFolderFocus): Promise<void> {
+    const list = adapter.files?.listVaultPrefix;
+    folderLoading = true;
+    folderError = null;
+    folderTruncated = false;
+    folderEntries = [];
+    if (!list) {
+      folderLoading = false;
+      folderError = "This folder can't be listed from here.";
+      return;
+    }
+    try {
+      const keys: string[] = [];
+      let cursor: string | undefined;
+      let truncated = false;
+      for (let page = 0; ; page += 1) {
+        if (page >= SHARED_FOLDER_MAX_PAGES) {
+          truncated = true;
+          break;
+        }
+        const res = await list(focus.companyUid, focus.prefix, cursor);
+        if (!res.ok) throw new Error(res.code ?? res.reason);
+        const parsed = parseListPage(res.value);
+        for (const obj of parsed.objects) keys.push(obj.key);
+        if (!parsed.cursor) break;
+        cursor = parsed.cursor;
+      }
+      if (focus !== folder) return;
+      folderEntries = sharedFolderEntries(focus.prefix, keys);
+      folderTruncated = truncated;
+    } catch {
+      if (focus !== folder) return;
+      folderError = "Couldn't list this folder. Check your connection and try again.";
+    } finally {
+      if (focus === folder) folderLoading = false;
+    }
+  }
   let loading = $state(true);
   let events = $state<ShareEvent[]>([]);
   let error = $state<string | null>(null);
@@ -121,11 +187,53 @@
   }
 
   $effect(() => {
-    void load();
+    const focus = folder;
+    if (focus) void loadFolder(focus);
+    else void load();
   });
 </script>
 
 <section class="shared-files" aria-label="Shared files" data-testid="shared-files-overlay">
+  {#if folder}
+    <PageHeader
+      title={folderName}
+      subtitle={`Shared from ${folder.companyLabel} · ${folderPath}`}
+      titleTestId="shared-folder-title"
+      subtitleTestId="shared-folder-scope"
+      backTestId="shared-files-back"
+      onback={() => onback?.()}
+      variant="embedded"
+    />
+    <p class="shared-files-status shared-folder-note" data-testid="shared-folder-sync-note" role="note">
+      {folderSyncNote}
+    </p>
+    {#if folderLoading}
+      <p class="shared-files-status" data-testid="shared-folder-loading" role="status">Listing folder…</p>
+    {:else if folderError}
+      <div class="shared-files-status" data-testid="shared-folder-error" role="alert">
+        <p>{folderError}</p>
+        {#if adapter.files?.listVaultPrefix}
+          <button type="button" data-testid="shared-folder-retry" onclick={() => { if (folder) void loadFolder(folder); }}><RailIcon name="refresh" />Retry</button>
+        {/if}
+      </div>
+    {:else if folderEntries.length === 0}
+      <p class="shared-files-status" data-testid="shared-folder-empty" role="status">This folder is empty, or nothing in it is shared with you.</p>
+    {:else}
+      <ul class="shared-files-list shared-folder-list" aria-label="Shared folder contents">
+        {#each folderEntries as entry (`${entry.isDir ? "d" : "f"}:${entry.name}`)}
+          <li data-testid="shared-folder-entry" data-kind={entry.isDir ? "folder" : "file"}>
+            <RailIcon name={entry.isDir ? "folder" : "file"} />
+            <span class="shared-file-name">{entry.isDir ? `${entry.name}/` : entry.name}</span>
+          </li>
+        {/each}
+      </ul>
+      {#if folderTruncated}
+        <p class="shared-files-status" data-testid="shared-folder-truncated" role="status">
+          Showing the first part of a large folder. Sync {folder.companyLabel} to see everything.
+        </p>
+      {/if}
+    {/if}
+  {:else}
   <PageHeader
     title="Shared files"
     subtitle="Files are shown from share-scoped notifications. Open a company project to preview a file."
@@ -178,6 +286,7 @@
       </div>
     {/if}
   {/if}
+  {/if}
 </section>
 
 <style>
@@ -195,4 +304,6 @@
   .shared-files-list { display: grid; gap: 8px; padding: 0; list-style: none; }
   .shared-files-list li { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); }
   .shared-file-name { color: var(--t1); font-family: var(--font-mono, ui-monospace, monospace); }
+  .shared-folder-note { margin-bottom: 0; }
+  .shared-folder-list li { display: flex; align-items: center; gap: 8px; }
 </style>

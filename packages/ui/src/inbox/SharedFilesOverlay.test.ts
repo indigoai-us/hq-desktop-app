@@ -19,6 +19,79 @@ async function flush(): Promise<void> {
 }
 
 describe("SharedFilesOverlay", () => {
+  // Folder share for a company not synced on this Mac (feedback 3e124bcd /
+  // ae977608 follow-up): list the folder from the vault and say what to sync.
+  it("lists a shared folder remotely with a sync note when given a folder focus", async () => {
+    const fetchSharedWithMe = vi.fn(async () => ({ ok: true as const, value: { events: [] } }));
+    const listVaultPrefix = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true as const,
+        value: {
+          objects: [{ key: "knowledge/clients/frank/brief.md" }, { key: "knowledge/clients/frank/notes/a.md" }],
+          cursor: "c2",
+        },
+      })
+      .mockResolvedValueOnce({
+        ok: true as const,
+        value: { objects: [{ key: "knowledge/clients/frank/.DS_Store" }, { key: "knowledge/clients/other/x.md" }], cursor: null },
+      });
+    const presignVaultGet = vi.fn();
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(SharedFilesOverlay, {
+      target: host,
+      props: {
+        adapter: { notifications: { fetchSharedWithMe }, files: { listVaultPrefix, presignVaultGet } as never },
+        folder: { companyUid: "cmp_remote", companyLabel: "Remote Co", prefix: "knowledge/clients/frank/" },
+      },
+    });
+
+    await flush();
+    await flush();
+    expect(listVaultPrefix).toHaveBeenNthCalledWith(1, "cmp_remote", "knowledge/clients/frank/", undefined);
+    expect(listVaultPrefix).toHaveBeenNthCalledWith(2, "cmp_remote", "knowledge/clients/frank/", "c2");
+    expect(fetchSharedWithMe).not.toHaveBeenCalled();
+    expect(presignVaultGet).not.toHaveBeenCalled();
+    expect(host.querySelector('[data-testid="shared-folder-title"]')?.textContent).toBe("frank");
+    expect(host.querySelector('[data-testid="shared-folder-scope"]')?.textContent).toBe(
+      "Shared from Remote Co · knowledge/clients/frank/",
+    );
+    expect(host.querySelector('[data-testid="shared-folder-sync-note"]')?.textContent?.trim()).toBe(
+      "Remote Co isn't synced on this Mac yet. Sync it to open this folder in Files.",
+    );
+    const rows = [...host.querySelectorAll('[data-testid="shared-folder-entry"]')].map((row) => row.textContent?.trim());
+    expect(rows).toEqual(["notes/", "brief.md"]);
+    expect(host.querySelector('[data-testid="shared-files-event"]')).toBeNull();
+  });
+
+  it("shows the sync note and a retry when the folder listing fails", async () => {
+    const fetchSharedWithMe = vi.fn(async () => ({ ok: true as const, value: { events: [] } }));
+    const listVaultPrefix = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false as const, reason: "offline" })
+      .mockResolvedValueOnce({ ok: true as const, value: { objects: [], cursor: null } });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(SharedFilesOverlay, {
+      target: host,
+      props: {
+        adapter: { notifications: { fetchSharedWithMe }, files: { listVaultPrefix } as never },
+        folder: { companyUid: "cmp_remote", companyLabel: "Remote Co", prefix: "" },
+      },
+    });
+
+    await flush();
+    expect(host.querySelector('[data-testid="shared-folder-error"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="shared-folder-sync-note"]')?.textContent).toContain("Remote Co");
+    flushSync(() =>
+      host.querySelector<HTMLButtonElement>('[data-testid="shared-folder-retry"]')?.click(),
+    );
+    await flush();
+    expect(host.querySelector('[data-testid="shared-folder-empty"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="shared-folder-title"]')?.textContent).toBe("Remote Co");
+  });
+
   it("loads the share-scoped event list instead of silently returning to chat", async () => {
     const fetchSharedWithMe = vi.fn(async () => ({
       ok: true as const,

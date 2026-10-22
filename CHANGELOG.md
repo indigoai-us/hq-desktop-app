@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Messages: opening a folder someone shared with you now works when that company is not synced on this Mac. Before, the card dropped you on the general Shared files list with no explanation. Now HQ lists the folder's contents from the cloud (names only, so nothing is downloaded), shows which company and folder it came from, and says "<Company> isn't synced on this Mac yet. Sync it to open this folder in Files." Companies already on this Mac still open the folder in Files as before.
+
 ## [0.11.16] — 2026-10-22
 
 - Messages: file shares whose text names the shared files, such as "Shared a file with you: q3.pdf (in HQ at reports/q3.pdf).", now group with other shares in a DM the same way the older "Shared a file with you." messages do. A share followed by a second line of text still shows on its own.
