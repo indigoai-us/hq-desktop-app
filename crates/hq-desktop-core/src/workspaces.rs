@@ -248,14 +248,18 @@ pub fn discover_local_companies(hq_root: &Path) -> (Vec<LocalCompanyEntry>, Opti
             // unconnected entries so they're still visible (and connectable)
             // in the UI — otherwise a folder-only company shows as Cloud Only
             // (via memberships pass) when it actually exists locally.
+            //
+            // A folder the manifest already covers is skipped: by slug, by
+            // `path`, or by a `companies/<cloud uid>/` name matching an
+            // entry's `cloud_uid`. The sync runner can leave that last kind
+            // behind, and listing it would show the company twice, once under
+            // a "Cmp_..." name (feedback 7e456ff8).
+            let extras: Vec<LocalCompanyEntry> = folder_enumeration_fallback(hq_root)
+                .into_iter()
+                .filter(|extra| folder_is_new_to_manifest(&extra.slug, &extra.path, &entries))
+                .collect();
             let mut union = entries;
-            let known: std::collections::HashSet<String> =
-                union.iter().map(|e| e.slug.clone()).collect();
-            for extra in folder_enumeration_fallback(hq_root) {
-                if !known.contains(&extra.slug) {
-                    union.push(extra);
-                }
-            }
+            union.extend(extras);
             (union, None)
         }
         ManifestLoad::Absent => (folder_enumeration_fallback(hq_root), None),
@@ -335,6 +339,48 @@ pub fn read_local_company_name(hq_root: &Path, slug: &str) -> Option<String> {
     let bytes = std::fs::read(&yaml_path).ok()?;
     let parsed: YamlSlice = serde_yaml::from_slice(&bytes).ok()?;
     parsed.name
+}
+
+/// True when `name` is a company cloud UID (`cmp_...`) rather than a slug.
+/// Slugs are lowercase kebab-case, so no real company slug has this prefix.
+pub fn looks_like_company_uid(name: &str) -> bool {
+    name.len() > 4 && name.is_char_boundary(4) && name[..4].eq_ignore_ascii_case("cmp_")
+}
+
+/// Decide whether the post-sync reconcile should add a manifest entry for
+/// the folder `companies/<folder>` (at `folder_path`).
+///
+/// Skips scaffolding folders (`_template`), folders the manifest already
+/// covers by slug or by `path`, and folders named after a company cloud UID.
+/// The sync runner can create `companies/<cloud uid>/` when it cannot
+/// resolve a company's slug; adding that folder would duplicate the company's
+/// real entry under a "Cmp_..." name.
+pub fn folder_needs_manifest_entry(
+    folder: &str,
+    folder_path: &Path,
+    entries: &[LocalCompanyEntry],
+) -> bool {
+    if folder.starts_with('_') || looks_like_company_uid(folder) {
+        return false;
+    }
+    folder_is_new_to_manifest(folder, folder_path, entries)
+}
+
+/// True when no manifest entry covers the folder `companies/<folder>`: no
+/// entry has that slug, that `path`, or a `cloud_uid` equal to the folder
+/// name.
+fn folder_is_new_to_manifest(
+    folder: &str,
+    folder_path: &Path,
+    entries: &[LocalCompanyEntry],
+) -> bool {
+    !entries.iter().any(|e| {
+        e.slug == folder
+            || e.path == folder_path
+            || e.cloud_uid
+                .as_deref()
+                .is_some_and(|uid| uid.eq_ignore_ascii_case(folder))
+    })
 }
 
 pub fn last_synced_at(slug: &str) -> Option<String> {
@@ -558,7 +604,12 @@ pub fn add_manifest_entry_for_synced_company(
     let mapping = value
         .as_mapping_mut()
         .ok_or_else(|| "manifest root is not a mapping".to_string())?;
-    if !mapping.contains_key(&companies_key) {
+    // A missing key or a bare `companies:` (YAML null, common on fresh
+    // installs) both mean "no companies yet". A list or scalar is left alone.
+    let needs_empty_map = mapping
+        .get(&companies_key)
+        .is_none_or(serde_yaml::Value::is_null);
+    if needs_empty_map {
         mapping.insert(
             companies_key.clone(),
             serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
@@ -783,6 +834,54 @@ companies:
         let (entries, _) = discover_local_companies(tmp.path());
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].slug, "_archive");
+    }
+
+    /// Feedback 7e456ff8: the sync runner can leave `companies/<cloud uid>/`
+    /// next to the real company folder. The folder union must not list it as
+    /// a second company (it showed as "Cmp_01KT...").
+    #[test]
+    fn discover_skips_folder_named_after_a_manifest_cloud_uid() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            r#"
+companies:
+  solace:
+    name: "Solace"
+    path: "companies/solace"
+    cloud_uid: "cmp_01KT9FG6G8NXKJEJ372TZ42M00"
+"#,
+        );
+        std::fs::create_dir_all(tmp.path().join("companies/solace")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("companies/cmp_01KT9FG6G8NXKJEJ372TZ42M00"))
+            .unwrap();
+        std::fs::create_dir_all(tmp.path().join("companies/other-co")).unwrap();
+
+        let (entries, err) = discover_local_companies(tmp.path());
+        assert!(err.is_none());
+        let slugs: Vec<&str> = entries.iter().map(|e| e.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["solace", "other-co"]);
+    }
+
+    /// A folder the manifest lists under a different key (by `path`) is the
+    /// same company, not a second one.
+    #[test]
+    fn discover_skips_folder_the_manifest_covers_by_path() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            r#"
+companies:
+  weylyn:
+    name: "Weylyn"
+    path: "companies/weylyn-co/"
+"#,
+        );
+        std::fs::create_dir_all(tmp.path().join("companies/weylyn-co")).unwrap();
+
+        let (entries, _) = discover_local_companies(tmp.path());
+        let slugs: Vec<&str> = entries.iter().map(|e| e.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["weylyn"]);
     }
 
     #[test]
@@ -1091,6 +1190,134 @@ companies:
 
         let (entries, _) = discover_local_companies(tmp.path());
         assert!(entries.iter().any(|e| e.slug == "fresh"));
+    }
+
+    #[test]
+    fn add_manifest_entry_repairs_null_companies_key() {
+        // Fresh installs can carry a bare `companies:` (YAML null). Adding a
+        // company used to fail with "`companies` key is not a mapping" and the
+        // manifest stayed empty (feedback e6fd5d91).
+        let tmp = TempDir::new().unwrap();
+        write_manifest(tmp.path(), "version: 1\ncompanies:\n");
+        let manifest_path = tmp.path().join("companies").join("manifest.yaml");
+
+        add_manifest_entry_for_synced_company(&manifest_path, "solace", "Solace", None, None)
+            .unwrap();
+
+        let (entries, err) = discover_local_companies(tmp.path());
+        assert!(err.is_none(), "manifest should parse: {err:?}");
+        assert!(entries.iter().any(|e| e.slug == "solace"));
+    }
+
+    #[test]
+    fn add_manifest_entry_still_refuses_list_companies_key() {
+        // A list is user content we cannot map onto entries safely; keep the
+        // refusal and leave the file untouched.
+        let tmp = TempDir::new().unwrap();
+        let original = "companies:\n  - solace\n";
+        write_manifest(tmp.path(), original);
+        let manifest_path = tmp.path().join("companies").join("manifest.yaml");
+
+        let err =
+            add_manifest_entry_for_synced_company(&manifest_path, "solace", "Solace", None, None)
+                .unwrap_err();
+        assert!(err.contains("not a mapping"), "{err}");
+        assert_eq!(std::fs::read_to_string(&manifest_path).unwrap(), original);
+    }
+
+    #[test]
+    fn read_manifest_treats_null_companies_as_empty() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(tmp.path(), "companies:\n");
+        match read_manifest(tmp.path()) {
+            ManifestLoad::Present(entries) => assert!(entries.is_empty()),
+            _ => panic!("expected the manifest to load"),
+        }
+    }
+
+    fn uid_manifest_entries(hq_root: &Path) -> Vec<LocalCompanyEntry> {
+        write_manifest(
+            hq_root,
+            r#"
+companies:
+  solace:
+    name: Solace
+    path: companies/solace
+    cloud_uid: cmp_01KT9FG6G8NXKJEJ372TZ42M00
+    bucket_name: hq-vault-solace
+  weylyn:
+    name: Weylyn
+    path: companies/weylyn-co/
+"#,
+        );
+        match read_manifest(hq_root) {
+            ManifestLoad::Present(entries) => entries,
+            _ => panic!("expected the manifest to load"),
+        }
+    }
+
+    #[test]
+    fn folder_needs_manifest_entry_skips_folder_named_after_cloud_uid() {
+        // The sync runner can leave an empty `companies/<cloud uid>/` folder.
+        // The post-sync reconcile used to add a duplicate manifest entry for
+        // it, named "Cmp_01KT..." (feedback 7e456ff8).
+        let tmp = TempDir::new().unwrap();
+        let entries = uid_manifest_entries(tmp.path());
+        let companies = tmp.path().join("companies");
+        let uid = "cmp_01KT9FG6G8NXKJEJ372TZ42M00";
+        assert!(!folder_needs_manifest_entry(
+            uid,
+            &companies.join(uid),
+            &entries
+        ));
+    }
+
+    #[test]
+    fn folder_needs_manifest_entry_skips_any_company_uid_folder() {
+        let tmp = TempDir::new().unwrap();
+        let entries = uid_manifest_entries(tmp.path());
+        let companies = tmp.path().join("companies");
+        let uid = "cmp_01KSG66K0000000000000000";
+        assert!(!folder_needs_manifest_entry(
+            uid,
+            &companies.join(uid),
+            &entries
+        ));
+    }
+
+    #[test]
+    fn folder_needs_manifest_entry_skips_known_slugs_paths_and_scaffolding() {
+        let tmp = TempDir::new().unwrap();
+        let entries = uid_manifest_entries(tmp.path());
+        let companies = tmp.path().join("companies");
+        assert!(!folder_needs_manifest_entry(
+            "solace",
+            &companies.join("solace"),
+            &entries
+        ));
+        // Entry keyed `weylyn` lives in `companies/weylyn-co/`.
+        assert!(!folder_needs_manifest_entry(
+            "weylyn-co",
+            &companies.join("weylyn-co"),
+            &entries
+        ));
+        assert!(!folder_needs_manifest_entry(
+            "_template",
+            &companies.join("_template"),
+            &entries
+        ));
+    }
+
+    #[test]
+    fn folder_needs_manifest_entry_accepts_new_company_folder() {
+        let tmp = TempDir::new().unwrap();
+        let entries = uid_manifest_entries(tmp.path());
+        let companies = tmp.path().join("companies");
+        assert!(folder_needs_manifest_entry(
+            "ez-brands",
+            &companies.join("ez-brands"),
+            &entries
+        ));
     }
 
     #[test]
