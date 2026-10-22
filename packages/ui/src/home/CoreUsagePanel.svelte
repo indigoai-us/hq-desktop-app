@@ -17,7 +17,7 @@
   import UsageLevelChip from "./UsageLevelChip.svelte";
   import UsageLevelMark from "./UsageLevelMark.svelte";
   import { levelSegmentColor } from "./usage-level-theme.js";
-  import { observeCoreView, usageLevelState } from "./usage-levels.svelte.js";
+  import { observeCoreView, usageLevelState, usageLevelViewer } from "./usage-levels.svelte.js";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import {
     approvedCheckoutUrl,
@@ -178,6 +178,7 @@
     const uid = key;
     let cancelled = false;
     const generation = coreUsageGeneration();
+    const reader = usageLevelViewer();
     void readAccountUsage(api as never, acct, {
       ...(delays ? { delays } : {}),
       cancelled: () => cancelled,
@@ -199,7 +200,7 @@
       rowViews = { ...rowViews, [uid]: next };
       // US-019: every month read counts toward the account's level, unless
       // the account changed (sign-out) while it was in flight.
-      if (generation === coreUsageGeneration()) observeCoreView(uid, next);
+      if (generation === coreUsageGeneration()) observeCoreView(uid, next, { viewer: reader });
     });
     return () => {
       cancelled = true;
@@ -309,6 +310,7 @@
       const cached = cachedCoreUsage(key);
       rowViews = { ...rowViews, [key]: cached ?? { kind: "loading", companyName: acct.name } };
       const generation = coreUsageGeneration();
+      const reader = usageLevelViewer();
       // Quiet retries, like the meter's own read, so one dropped request
       // does not leave a row at "Unavailable" for the whole open.
       void readAccountUsage(source as never, acct, retryDelays ? { delays: retryDelays } : {}).then((next) => {
@@ -317,7 +319,7 @@
         // A failed re-read keeps the last good total on screen.
         if (next.kind === "unavailable" && cached) return;
         rowViews = { ...rowViews, [key]: next };
-        observeCoreView(key, next);
+        observeCoreView(key, next, { viewer: reader });
       });
     }
   }

@@ -14,6 +14,7 @@ import {
   setUsageLevelOpener,
   setUsageLevelViewer,
   usageLevelState,
+  usageLevelViewer,
 } from "./usage-levels.svelte";
 import { dismissToast, toastItems } from "../shell/toast-stack.svelte";
 import { clearAccountCaches } from "../common/account-caches";
@@ -405,5 +406,47 @@ describe("levels from the usage history (hq-pro #5087)", () => {
     expect(levelToasts()).toHaveLength(0);
     expect(usageLevelState("cmp_ridge")).toBeNull();
     expect(storage.data.size).toBe(0);
+  });
+});
+
+describe("a read that answers for a person no longer signed in", () => {
+  const coreView = (cents: number): CoreUsageView =>
+    ({
+      kind: "ready",
+      companyName: "Personal",
+      usage: { mode: "allowance", periodStart: "2026-10-01", totalCents: cents, counts: {} },
+    }) as unknown as CoreUsageView;
+
+  it("is dropped: the new person's level is left as it was, and no card shows", async () => {
+    const storage = memory();
+    setUsageLevelViewer("prs_first");
+    const reader = usageLevelViewer();
+    expect(reader).toBe("prs_first");
+    setUsageLevelViewer("prs_second");
+    expect(observeUsageLevel("personal", "Personal", { periodStart: "2026-10-01", cents: 1_200_000 }, { storage, viewer: reader })).toBeNull();
+    expect(observeCoreView("personal", coreView(1_200_000), { viewer: reader })).toBeNull();
+    expect(
+      observeAccountRow("personal", "Personal", { kind: "ready", usage: { periodStart: "2026-10-01", usageCents: 1_200_000, lines: [] } }, { viewer: reader }),
+    ).toBeNull();
+    await flush();
+    expect(usageLevelState("personal")).toBeNull();
+    expect(levelToasts()).toHaveLength(0);
+  });
+
+  it("is dropped after a sign-out too", () => {
+    setUsageLevelViewer("prs_first");
+    const reader = usageLevelViewer();
+    setUsageLevelViewer(null);
+    expect(observeUsageLevel("personal", "Personal", { periodStart: "2026-10-01", cents: 1_200_000 }, { viewer: reader })).toBeNull();
+    expect(usageLevelState("personal")).toBeNull();
+  });
+
+  it("still counts when the same person is signed in", () => {
+    setUsageLevelViewer("prs_first");
+    const reader = usageLevelViewer();
+    expect(observeUsageLevel("personal", "Personal", { periodStart: "2026-10-01", cents: 1_200_000 }, { viewer: reader })).toMatchObject({
+      level: 7,
+      viewer: "prs_first",
+    });
   });
 });

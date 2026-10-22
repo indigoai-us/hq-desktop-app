@@ -18,7 +18,7 @@
   import UsageStackBar from "../home/UsageStackBar.svelte";
   import UsageLevelChip from "../home/UsageLevelChip.svelte";
   import { levelSegmentColor } from "../home/usage-level-theme.js";
-  import { observeAccountRow, usageLevelState } from "../home/usage-levels.svelte.js";
+  import { observeAccountRow, usageLevelState, usageLevelViewer } from "../home/usage-levels.svelte.js";
   import {
     approvedCheckoutUrl,
     billingPortalHint,
@@ -152,13 +152,23 @@
     };
   });
 
+  // Reads still out when the pane closes (Try again, a switch, a return from
+  // billing) are dropped with it.
+  let closed = false;
+  $effect(() => () => {
+    closed = true;
+  });
+
   function loadRow(acct: UsageAccount, cancelled: () => boolean = () => false): void {
     const key = accountKey(acct);
+    // The person this read is for: an answer that arrives after a change of
+    // person is not folded into the next person's level.
+    const reader = usageLevelViewer();
     void readAccountRow(company, acct, untrack(() => pricing), undefined, untrack(() => retryOpts)).then((view) => {
-      if (cancelled()) return;
+      if (closed || cancelled()) return;
       views = { ...views, [key]: withPricing(view, untrack(() => pricing)) };
       // US-019: every month read counts toward the account's level.
-      observeAccountRow(key, lineName(acct), view);
+      observeAccountRow(key, lineName(acct), view, { viewer: reader });
       // The spend limit is the line's marker and sets its colour, so it is
       // read with the line, not when it opens.
       if (view.kind === "ready" && (view.plan === "usage" || view.plan === "trial")) loadSpend(acct);

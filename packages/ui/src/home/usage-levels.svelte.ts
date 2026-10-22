@@ -72,7 +72,7 @@ let historyLoader: UsageHistoryLoader | null = null;
 interface HeldRead {
   accountName: string;
   input: UsageMonthInput;
-  opts: { announce?: boolean; storage?: LevelStorage | null };
+  opts: ObserveOptions;
 }
 
 /** One history read per account per signed-in person per session. */
@@ -127,8 +127,29 @@ export function setUsageLevelOpener(fn: ((accountKey: string) => void) | null): 
   opener = fn;
 }
 
+/**
+ * The signed-in person right now. A surface that starts a usage read keeps
+ * this and passes it back as `viewer` with the answer, so a read that
+ * answers after a change of person is dropped instead of being folded into
+ * the new person's level.
+ */
+export function usageLevelViewer(): string | null {
+  return viewer;
+}
+
 export function usageLevelState(accountKey: string): UsageLevelState | null {
   return states[accountKey] ?? null;
+}
+
+/** How a read is folded: `announce: false` (no card), `storage`, and `viewer` (whose read it was). */
+export interface ObserveOptions {
+  announce?: boolean;
+  storage?: LevelStorage | null;
+  /**
+   * The signed-in person when the read began (`usageLevelViewer()`). When it
+   * is given and is no longer the signed-in person, the read is dropped.
+   */
+  viewer?: string | null;
 }
 
 export interface UsageMonthInput {
@@ -163,8 +184,11 @@ export function observeUsageLevel(
   accountKey: string,
   accountName: string,
   input: UsageMonthInput,
-  opts: { announce?: boolean; storage?: LevelStorage | null } = {},
+  opts: ObserveOptions = {},
 ): UsageLevelState | null {
+  // A read that began for another person (or before a sign-out) is not this
+  // person's usage: drop it, and leave their level as it is.
+  if (opts.viewer !== undefined && (opts.viewer?.trim() || null) !== viewer) return null;
   const month = monthOf(input.periodStart);
   if (!month || !Number.isFinite(input.cents)) return null;
   const who = viewer;
@@ -265,7 +289,11 @@ function finishHistoryRead(accountKey: string, read: HistoryRead, history: Usage
  * month statement counts: trial usage is a trial total, not a month, and an
  * account not on usage pricing has no month to count.
  */
-export function observeCoreView(accountKey: string, view: CoreUsageView | null | undefined): UsageLevelState | null {
+export function observeCoreView(
+  accountKey: string,
+  view: CoreUsageView | null | undefined,
+  opts: Pick<ObserveOptions, "viewer"> = {},
+): UsageLevelState | null {
   if (!view || view.kind !== "ready" || !view.usage) return usageLevelState(accountKey);
   const usage = view.usage;
   if (usage.mode !== "allowance" || !usage.periodStart || usage.totalCents === null) return usageLevelState(accountKey);
@@ -273,7 +301,7 @@ export function observeCoreView(accountKey: string, view: CoreUsageView | null |
     periodStart: usage.periodStart,
     cents: usage.totalCents,
     counts: usage.counts,
-  });
+  }, opts);
 }
 
 /** The parts of a Settings > Usage line (usage-accounts-model AccountRowView) the level reads. */
@@ -284,13 +312,18 @@ export interface LevelRowLike {
 }
 
 /** Fold a Settings > Usage line into the account's level; trial lines and old plans don't count. */
-export function observeAccountRow(accountKey: string, accountName: string, view: LevelRowLike | null | undefined): UsageLevelState | null {
+export function observeAccountRow(
+  accountKey: string,
+  accountName: string,
+  view: LevelRowLike | null | undefined,
+  opts: Pick<ObserveOptions, "viewer"> = {},
+): UsageLevelState | null {
   if (!view || view.kind !== "ready" || view.trial || !view.usage) return usageLevelState(accountKey);
   return observeUsageLevel(accountKey, accountName, {
     periodStart: view.usage.periodStart,
     cents: view.usage.usageCents,
     counts: countsFromLines(view.usage.lines),
-  });
+  }, opts);
 }
 
 /** Test seam. */
