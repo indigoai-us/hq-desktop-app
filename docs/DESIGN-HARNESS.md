@@ -26,10 +26,10 @@ nothing at this route.
 
 | Parameter | Effect |
 |---|---|
-| `?stage=off` | Drops the desktop stage — the shell fills the tab edge to edge. |
-| `?wallpaper=<url>` | Swaps the gradient behind the window for an image. Useful for judging whether a translucent surface is actually tinting or just grey. |
+| `?stage=on` | Puts the window on a desktop stage (a gradient wallpaper behind a rounded, translucent frame) for judging translucency. Off by default: the shell fills the tab edge to edge, as the app's window fills the screen, so menus clamp to the same edges they do in the app. On the stage they can open past the window's edge and get clipped. |
+| `?wallpaper=<url>` | With `?stage=on`, swaps the gradient behind the window for an image. Useful for judging whether a translucent surface is actually tinting or just grey. |
 
-The Light / Dark / System control sits under the window and drives the real
+The Light / Dark / System control sits in the titlebar's empty middle (under the window on the stage) and drives the real
 `settingsArea.applyColorTheme`, not a CSS class of its own.
 
 ## What it actually mounts
@@ -50,7 +50,7 @@ the same stylesheets. Around it:
   channel status (`packages/ui/src/shell/fixtures.ts`). `fetchChannel` answers
   from the same fixtures the shell is seeded with — an adapter that returned an
   empty page here used to wipe the seeded thread a beat after it painted.
-- **A stage**: a rounded, translucent window frame over a gradient, with
+- **An optional stage** (`?stage=on`): a rounded, translucent window frame over a gradient, with
   stand-in traffic lights drawn to the shipping metrics from
   `titlebar-layout.ts`, so the 78px gutter the titlebar reserves has something
   in it the eye can judge spacing against.

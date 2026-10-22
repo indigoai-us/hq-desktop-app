@@ -381,15 +381,21 @@
    * it, which reads those same tokens as flat grey and makes translucency
    * impossible to judge.
    *
-   * So: put a wallpaper behind the window, and blur it with the app's own
-   * `--v4-glass-filter` values — the closest a browser gets to the native
-   * material. Pass `?stage=off` for full-bleed, or `?wallpaper=<url>` to judge
-   * the tint against your own desktop picture.
+   * `?stage=on` puts a wallpaper behind the window and blurs it with the
+   * app's own `--v4-glass-filter` values — the closest a browser gets to the
+   * native material — for judging translucency; `?wallpaper=<url>` swaps in
+   * your own desktop picture.
+   *
+   * Off by default (owner, 2026-10-22): the app's window IS the viewport, so
+   * menus and popovers clamp to the window's edges. On the stage the window
+   * is smaller than the tab, so they clamped to the tab instead and opened
+   * past the window's edge, where the window clipped them (Launch, the
+   * company menu). Full-bleed is the layout the app actually has.
    */
   const params = new URLSearchParams(
     typeof location === "undefined" ? "" : location.search,
   );
-  const staged = params.get("stage") !== "off";
+  const staged = params.get("stage") === "on";
   const wallpaper = params.get("wallpaper");
 
   /**
@@ -937,7 +943,7 @@
 
     <!-- Harness chrome, deliberately outside the window so it never sits on
          top of the surface being judged. -->
-    <div class="harness-bar">
+    <div class="harness-bar" class:over-window={!staged}>
       {#each THEMES as option (option)}
         <button
           type="button"
@@ -1095,6 +1101,16 @@
     box-shadow: inset 0 0 0 1px rgb(255 255 255 / 14%);
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
+  }
+
+  /* Full-bleed there is no "outside the window", so the control moves to the
+     titlebar's empty middle, clear of the composer's Send button. */
+  .harness-bar.over-window {
+    top: 8px;
+    right: auto;
+    bottom: auto;
+    left: 50%;
+    transform: translateX(-50%);
   }
 
   .harness-bar button {
