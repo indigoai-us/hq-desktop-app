@@ -3,6 +3,7 @@
     APPROVAL_LABELS,
     APPROVAL_STEP,
     formatBytes,
+    personalRootCanCheckAgain,
     personalRootCanRetry,
     personalRootOffersAdoption,
     personalRootReasonText,
@@ -17,7 +18,7 @@
     onreview: () => void;
     /** Approve exactly the next phase of the plan on screen. */
     onapprove: () => void;
-    /** Only offered for busy and authority_unavailable. */
+    /** Check the folder again (Try again for busy and authority_unavailable). */
     onretry?: () => void;
   }
 
@@ -55,8 +56,14 @@
   {#if reasonText}
     <p class="body" data-testid="personal-root-reason" role="status">{reasonText}</p>
   {/if}
+  {#if view.holdUnenforced}
+    <p class="body error" data-testid="personal-root-hold-unenforced" role="alert">
+      An HQ sync service that this app did not start is running. HQ cannot pause its personal
+      sync from here. Quit that service before you continue.
+    </p>
+  {/if}
 
-  {#if view.plan && offersAdoption}
+  {#if view.plan}
     {@const plan = view.plan}
     <dl class="plan" data-testid="personal-root-plan">
       <dt>Files in the folder</dt>
@@ -67,12 +74,47 @@
       <dd>{plan.preservedOnlyTotal}</dd>
       <dt>Uploads to</dt>
       <dd>{plan.destinationBucket} ({plan.destinationRegion}), account {plan.destinationUid}</dd>
+      <dt>Upload address</dt>
+      <dd class="mono">{plan.destinationEndpoint}</dd>
       {#if plan.historicalUids.length > 0}
         <dt>Earlier accounts seen in this folder</dt>
         <dd>{plan.historicalUids.join(', ')}</dd>
       {/if}
+      <dt>Upload limits</dt>
+      <dd>
+        {plan.maxUploadRows} files, {formatBytes(plan.maxUploadBytes)},
+        {Math.round(plan.maxDurationMs / 1000)} seconds
+      </dd>
+      <dt>HQ records folder</dt>
+      <dd class="mono">{plan.stateDirectory}</dd>
+      <dt>Review number</dt>
+      <dd class="mono">{plan.transactionId}</dd>
+      <dt>Plan fingerprint</dt>
+      <dd class="mono">{plan.approvedPlanDigest}</dd>
+      <dt>Account fingerprint</dt>
+      <dd class="mono">{plan.authorityDigest}</dd>
+      <dt>Folder fingerprint</dt>
+      <dd class="mono">{plan.inventoryDigest}</dd>
     </dl>
+    {#if plan.uploadEntries.length > 0}
+      <p class="list-title">Files HQ would upload</p>
+      <ul class="kept" aria-label="Files HQ would upload" data-testid="personal-root-uploads">
+        {#each plan.uploadEntries as entry (entry.key)}
+          <li>
+            <span class="key">{entry.key}</span>
+            <span class="why">
+              {entry.kind === 'symlink' ? 'link, ' : ''}{formatBytes(entry.size)}, sha256
+              <span class="mono">{entry.localHash}</span>
+            </span>
+          </li>
+        {/each}
+      </ul>
+      {#if plan.uploadCount > plan.uploadEntries.length}
+        <p class="more">and {plan.uploadCount - plan.uploadEntries.length} more</p>
+      {/if}
+    {/if}
     {#if plan.preservedOnly.length > 0}
+      <p class="list-title">Kept only on this computer</p>
       <ul class="kept" aria-label="Kept only on this computer">
         {#each plan.preservedOnly as entry (entry.key)}
           <li><span class="key">{entry.key}</span> <span class="why">{entry.reason}</span></li>
@@ -117,6 +159,13 @@
         disabled={busy}
         onclick={onretry}
       >Try again</button>
+    {:else if personalRootCanCheckAgain(view) && onretry}
+      <button
+        type="button"
+        data-testid="personal-root-recheck"
+        disabled={busy}
+        onclick={onretry}
+      >Check this folder again</button>
     {/if}
   </div>
 </section>
@@ -137,7 +186,8 @@
   }
 
   .path,
-  .key {
+  .key,
+  .mono {
     font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
     font-size: 12px;
     overflow-wrap: anywhere;
@@ -150,8 +200,13 @@
 
   .body,
   .note,
-  .more {
+  .more,
+  .list-title {
     margin: 0;
+  }
+
+  .list-title {
+    opacity: 0.75;
   }
 
   .error {

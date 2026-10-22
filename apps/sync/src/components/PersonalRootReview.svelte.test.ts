@@ -10,9 +10,27 @@ const base: PersonalRootView = {
   retryable: false,
   nextPhase: null,
   plan: null,
+  holdUnenforced: false,
 };
 
 const plan = {
+  transactionId: 'tx-123',
+  stateDirectory: '/Users/test/.hq',
+  authorityDigest: 'sha256:auth',
+  inventoryDigest: 'sha256:inv',
+  maxUploadRows: 500,
+  maxUploadBytes: 1048576,
+  maxDurationMs: 60000,
+  uploadEntries: [
+    {
+      key: 'notes/a.md',
+      kind: 'file' as const,
+      size: 10,
+      wireSize: 10,
+      localHash: 'sha256:aaa',
+      wireHash: 'sha256:aaa',
+    },
+  ],
   approvedPlanDigest: 'sha256:abc',
   fileCount: 12,
   byteCount: 4096,
@@ -50,6 +68,42 @@ describe('PersonalRootReview (H8, gated)', () => {
     expect(html).toContain('Step 1 of 4: Keep a copy of these files');
     expect(html.match(/data-testid="personal-root-approve"/g)).toHaveLength(1);
     expect(html).toContain('data-next-phase="preserve"');
+  });
+
+  it('shows the upload list, address, records folder, and fingerprints being approved', () => {
+    const html = renderReview({ ...base, nextPhase: 'preserve', plan });
+    expect(html).toContain('data-testid="personal-root-uploads"');
+    expect(html).toContain('notes/a.md');
+    expect(html).toContain('sha256:aaa');
+    expect(html).toContain('and 9 more');
+    expect(html).toContain('https://s3');
+    expect(html).toContain('/Users/test/.hq');
+    expect(html).toContain('tx-123');
+    expect(html).toContain('sha256:abc');
+    expect(html).toContain('sha256:auth');
+    expect(html).toContain('sha256:inv');
+    expect(html).toContain('500 files');
+  });
+
+  it('after a stop that is not retryable shows no step, only a fresh check', () => {
+    const html = renderReview({
+      ...base,
+      phase: 'preserved',
+      reason: 'authority_changed',
+      nextPhase: null,
+      plan,
+    });
+    expect(html).not.toContain('data-testid="personal-root-approve"');
+    expect(html).not.toContain('data-testid="personal-root-retry"');
+    expect(html).toContain('data-testid="personal-root-recheck"');
+    expect(html).toContain('Check this folder again');
+  });
+
+  it('warns when the hold cannot reach a sync service this app did not start', () => {
+    expect(renderReview({ ...base, holdUnenforced: true })).toContain(
+      'data-testid="personal-root-hold-unenforced"',
+    );
+    expect(renderReview(base)).not.toContain('data-testid="personal-root-hold-unenforced"');
   });
 
   it('labels each later phase', () => {

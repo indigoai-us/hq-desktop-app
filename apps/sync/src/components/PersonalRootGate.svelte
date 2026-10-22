@@ -6,6 +6,7 @@
     approveNextPhase,
     loadPersonalRoot,
     personalRootAllowsSetup,
+    recheckPersonalRoot,
     requestAdoptionPlan,
     type PersonalRootInvoke,
     type PersonalRootView,
@@ -71,7 +72,7 @@
         {error}
         onreview={() => void run(() => requestAdoptionPlan(invokeFn))}
         onapprove={() => view && void run(() => approveNextPhase(invokeFn, view!))}
-        onretry={() => void refresh()}
+        onretry={() => void run(() => recheckPersonalRoot(invokeFn))}
       />
       <div class="later">
         <button type="button" onclick={() => (dismissed = true)}>Not now</button>

@@ -7,6 +7,7 @@
 
 export type PersonalRootPhase =
   | 'legacy'
+  | 'initialize_pending'
   | 'initialized'
   | 'seeded'
   | 'owner_observed'
@@ -24,7 +25,25 @@ export interface PersonalRootPlanEntry {
   reason: string;
 }
 
+export interface PersonalRootUploadEntry {
+  key: string;
+  kind: 'file' | 'symlink';
+  size: number;
+  wireSize: number;
+  localHash: string;
+  wireHash: string;
+}
+
 export interface PersonalRootPlanView {
+  transactionId: string;
+  stateDirectory: string;
+  authorityDigest: string;
+  inventoryDigest: string;
+  maxUploadRows: number;
+  maxUploadBytes: number;
+  maxDurationMs: number;
+  /** Every upload the baseline step may make (capped for display). */
+  uploadEntries: PersonalRootUploadEntry[];
   approvedPlanDigest: string;
   fileCount: number;
   byteCount: number;
@@ -46,6 +65,8 @@ export interface PersonalRootView {
   retryable: boolean;
   nextPhase: PersonalRootApprovalPhase | null;
   plan: PersonalRootPlanView | null;
+  /** Personal sync is held, but an hq daemon this app did not start is syncing. */
+  holdUnenforced: boolean;
 }
 
 export type PersonalRootInvoke = <T>(
@@ -73,9 +94,22 @@ export function personalRootAllowsSetup(view: PersonalRootView | null | undefine
   return !view || (SETUP_READY.has(view.phase) && !view.reason);
 }
 
-/** The folder is in an adoption review the person can act on. */
+/**
+ * The folder is in an adoption review the person can act on. A stop that is
+ * not retryable (account changed, folder replaced, ...) offers no step until
+ * the folder is checked again.
+ */
 export function personalRootOffersAdoption(view: PersonalRootView): boolean {
-  return ADOPTION_PHASES.has(view.phase) && view.reason !== 'owner_mismatch';
+  return (
+    ADOPTION_PHASES.has(view.phase) &&
+    view.reason !== 'owner_mismatch' &&
+    (!view.reason || view.retryable === true)
+  );
+}
+
+/** A stop that is not retryable: offer to check the folder again instead. */
+export function personalRootCanCheckAgain(view: PersonalRootView): boolean {
+  return !!view.reason && view.retryable !== true;
 }
 
 /** Only busy and authority_unavailable come back retryable. */
@@ -152,13 +186,22 @@ export function normalizePersonalRootView(value: unknown): PersonalRootView {
     reason: v.reason ?? null,
     retryable: v.retryable === true,
     nextPhase: v.nextPhase ?? null,
-    plan: v.plan ?? null,
+    plan: v.plan ? { ...v.plan, uploadEntries: v.plan.uploadEntries ?? [] } : null,
+    holdUnenforced: v.holdUnenforced === true,
   };
 }
 
 /** Read the saved state (relaunch, desktop window). */
 export async function loadPersonalRoot(invoke: PersonalRootInvoke): Promise<PersonalRootView> {
   return normalizePersonalRootView(await invoke('personal_root_state'));
+}
+
+/**
+ * Try again / Check this folder again: re-runs inspect (and initialize for a
+ * new root) for the saved folder. Never repeats an approved step.
+ */
+export async function recheckPersonalRoot(invoke: PersonalRootInvoke): Promise<PersonalRootView> {
+  return normalizePersonalRootView(await invoke('personal_root_recheck'));
 }
 
 /** Directory step: authority, inspect, then initialize for a new root. */

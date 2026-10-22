@@ -4,10 +4,12 @@ import {
   formatBytes,
   normalizePersonalRootView,
   personalRootAllowsSetup,
+  personalRootCanCheckAgain,
   personalRootCanRetry,
   personalRootOffersAdoption,
   personalRootReasonText,
   preparePersonalRoot,
+  recheckPersonalRoot,
   requestAdoptionPlan,
   type PersonalRootView,
 } from './personal-root';
@@ -19,9 +21,27 @@ const base: PersonalRootView = {
   retryable: false,
   nextPhase: null,
   plan: null,
+  holdUnenforced: false,
 };
 
 const plan = {
+  transactionId: 'tx-123',
+  stateDirectory: '/Users/test/.hq',
+  authorityDigest: 'sha256:auth',
+  inventoryDigest: 'sha256:inv',
+  maxUploadRows: 500,
+  maxUploadBytes: 1048576,
+  maxDurationMs: 60000,
+  uploadEntries: [
+    {
+      key: 'notes/a.md',
+      kind: 'file' as const,
+      size: 10,
+      wireSize: 10,
+      localHash: 'sha256:aaa',
+      wireHash: 'sha256:aaa',
+    },
+  ],
   approvedPlanDigest: 'sha256:abc',
   fileCount: 3,
   byteCount: 30,
@@ -47,6 +67,33 @@ describe('personal root (H8, gated)', () => {
     }
     // A typed pause shown over an otherwise ready phase still stops setup.
     expect(personalRootAllowsSetup({ ...base, phase: 'initialized', reason: 'busy' })).toBe(false);
+  });
+
+  it('holds setup while an initialize result is unconfirmed', () => {
+    expect(personalRootAllowsSetup({ ...base, phase: 'initialize_pending', reason: 'timeout' })).toBe(
+      false,
+    );
+  });
+
+  it('offers no step after a stop that is not retryable, only a fresh check', () => {
+    for (const reason of ['authority_changed', 'state_changed', 'root_replaced', 'lease_released']) {
+      const view = { ...base, phase: 'preserved' as const, reason, retryable: false, plan };
+      expect(personalRootOffersAdoption(view)).toBe(false);
+      expect(personalRootCanRetry(view)).toBe(false);
+      expect(personalRootCanCheckAgain(view)).toBe(true);
+    }
+    const busy = { ...base, phase: 'preserved' as const, reason: 'busy', retryable: true, plan };
+    expect(personalRootOffersAdoption(busy)).toBe(true);
+    expect(personalRootCanCheckAgain(busy)).toBe(false);
+    expect(personalRootCanCheckAgain(base)).toBe(false);
+  });
+
+  it('checks the folder again instead of rereading saved state', async () => {
+    const invoke = vi.fn().mockResolvedValue({ phase: 'owner_observed', rootPath: '/r' });
+    const view = await recheckPersonalRoot(invoke as never);
+    expect(invoke).toHaveBeenCalledWith('personal_root_recheck');
+    expect(invoke).not.toHaveBeenCalledWith('personal_root_state');
+    expect(view.phase).toBe('owner_observed');
   });
 
   it('never offers adoption for a folder owned by another account', () => {
