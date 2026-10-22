@@ -335,23 +335,7 @@
               aria-hidden="true"
             >
               {#if item.accessDenied}
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-                  <rect
-                    x="3.5"
-                    y="7"
-                    width="9"
-                    height="6.5"
-                    rx="1"
-                    stroke="currentColor"
-                    stroke-width="1.3"
-                  />
-                  <path
-                    d="M5.5 7V5.5a2.5 2.5 0 0 1 5 0V7"
-                    stroke="currentColor"
-                    stroke-width="1.3"
-                    stroke-linecap="round"
-                  />
-                </svg>
+                <RailIcon name="lock-simple" size={12} />
               {:else}
                 <RailIcon name={item.iconKind === "image" ? "image" : "file-text"} size={12} />
               {/if}

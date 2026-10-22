@@ -621,7 +621,7 @@
       ></div>
     {/if}
     {#if !sidebarToggleHidden}
-    <button
+    <button data-icon-only
       type="button"
       class="v4-icon-btn"
       class:active={!sidebarCollapsed}
@@ -631,18 +631,7 @@
       aria-pressed={!sidebarCollapsed}
       onclick={() => ontogglesidebar?.()}
     >
-      <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <rect
-          x="1.75"
-          y="2.25"
-          width="12.5"
-          height="11.5"
-          rx="2"
-          stroke="currentColor"
-          stroke-width="1.2"
-        />
-        <path d="M5.25 2.5v11" stroke="currentColor" stroke-width="1.2" />
-      </svg>
+      <RailIcon name="sidebar-simple" size={15} />
     </button>
     {/if}
     {#if brandEntitled}
@@ -683,7 +672,7 @@
     >
       <Tooltip label={backHoverLabel} align="start">
         {#snippet trigger(describedBy: string)}
-          <button
+          <button data-icon-only
             type="button"
             class="v4-icon-btn"
             data-testid="titlebar-back"
@@ -693,21 +682,13 @@
             disabled={!canGoBack}
             onclick={() => onback?.()}
           >
-            <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path
-                d="M10 3.5 5.5 8 10 12.5"
-                stroke="currentColor"
-                stroke-width="1.6"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
+            <RailIcon name="arrow-left" size={15} />
           </button>
         {/snippet}
       </Tooltip>
       <Tooltip label={forwardHoverLabel} align="start">
         {#snippet trigger(describedBy: string)}
-          <button
+          <button data-icon-only
             type="button"
             class="v4-icon-btn"
             data-testid="titlebar-forward"
@@ -717,15 +698,7 @@
             disabled={!canGoForward}
             onclick={() => onforward?.()}
           >
-            <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path
-                d="M6 3.5 10.5 8 6 12.5"
-                stroke="currentColor"
-                stroke-width="1.6"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
+            <RailIcon name="arrow-right" size={15} />
           </button>
         {/snippet}
       </Tooltip>
@@ -741,9 +714,7 @@
   <div class="v4-title-actions" data-no-drag data-tauri-drag-region="false">
     {#if primaryAction}
       <button type="button" class="v4-core-pill" data-testid="titlebar-primary-action" onclick={primaryAction.onselect}>
-        <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.3" />
-        </svg>
+        <RailIcon name="plus" size={15} />
         {primaryAction.label}
       </button>
     {/if}
@@ -868,7 +839,7 @@
     {/if}
     <Tooltip label={hasUnread ? "Notifications (unread)" : "Notifications"}>
       {#snippet trigger(describedBy: string)}
-        <button
+        <button data-icon-only
           type="button"
           class="v4-icon-btn v4-notif-btn"
           data-testid="titlebar-notifications"
@@ -879,25 +850,7 @@
             onopenNotifications?.();
           }}
         >
-          <svg
-            class="v4-icon"
-            viewBox="0 0 16 16"
-            fill="none"
-            aria-hidden="true"
-          >
-            <path
-              d="M8 2.25a3.5 3.5 0 0 0-3.5 3.5v2.1l-1.2 1.8h9.4l-1.2-1.8V5.75A3.5 3.5 0 0 0 8 2.25Z"
-              stroke="currentColor"
-              stroke-width="1.2"
-              stroke-linejoin="round"
-            />
-            <path
-              d="M6.5 12.25a1.5 1.5 0 0 0 3 0"
-              stroke="currentColor"
-              stroke-width="1.2"
-              stroke-linecap="round"
-            />
-          </svg>
+          <RailIcon name="bell" size={15} />
           {#if hasUnread}
             <span
               class="v4-notif-dot"

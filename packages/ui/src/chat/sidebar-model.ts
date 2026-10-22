@@ -2680,13 +2680,19 @@ export function historyDayGroups(
 
 /** Initials for avatar monograms (max 2). */
 export function initialsFor(title: string): string {
-  const parts = title.trim().split(/\s+/).filter(Boolean);
+  // Letters and digits only, and no parenthetical: "Corey (you)" drew "C("
+  // (owner, 2026-10-22).
+  const parts = title
+    .replace(/\([^)]*\)/g, " ")
+    .split(/\s+/)
+    .map((part) => part.replace(/[^\p{L}\p{N}]/gu, ""))
+    .filter(Boolean);
   if (parts.length >= 2) {
     return (
       `${parts[0]?.[0] ?? ""}${parts.at(-1)?.[0] ?? ""}`.toUpperCase() || "?"
     );
   }
-  return title.trim().slice(0, 2).toUpperCase() || "?";
+  return (parts[0] ?? "").slice(0, 2).toUpperCase() || "?";
 }
 
 export type RowAvatarKind = "photo" | "generated" | "initials";

@@ -39,6 +39,8 @@ function isIconOnly(body: string): boolean {
   let rest = body.replace(/<!--[\s\S]*?-->/g, "");
   if (!rest.includes("<RailIcon")) return false;
   rest = rest.replace(/<RailIcon\b(?:[^>{]|\{[^}]*\})*\/>/g, "");
+  // An empty decorative element (an unread dot) is not a label.
+  rest = rest.replace(/<span\b(?:[^>{]|\{[^}]*\})*>\s*<\/span>/g, "");
   rest = rest.replace(/\{[#:/](?:if|else|each)[^}]*\}/g, "");
   return rest.trim() === "";
 }

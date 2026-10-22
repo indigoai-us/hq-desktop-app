@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   import { agentAvatarFor } from "./agent-avatars";
   import { paintableAvatarSrc } from "../../avatars/csp-image-src.js";
   import TierMark from "../../badges/TierMark.svelte";
@@ -107,23 +108,7 @@
     </span>
   {:else if kind === "channel"}
     {#if privateChannel}
-      <svg class="channel-lock" viewBox="0 0 16 16" fill="none">
-        <rect
-          x="3.5"
-          y="7"
-          width="9"
-          height="6.5"
-          rx="1.5"
-          stroke="currentColor"
-          stroke-width="1.4"
-        />
-        <path
-          d="M5.5 7V5.25a2.5 2.5 0 0 1 5 0V7"
-          stroke="currentColor"
-          stroke-width="1.4"
-          stroke-linecap="round"
-        />
-      </svg>
+      <span class="channel-lock" aria-hidden="true"><RailIcon name="lock-simple" size={size === "small" ? 13 : 14} /></span>
     {:else}
       <span class="channel-glyph">#</span>
     {/if}
@@ -259,6 +244,8 @@
     height: 15px;
   }
   .channel-lock {
+    display: grid;
+    place-items: center;
     width: 14px;
     height: 14px;
   }

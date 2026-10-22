@@ -4117,14 +4117,7 @@
               onclick={() => void newCompanyFromSwitcher()}
             >
               <span class="chat-scope-avatar chat-scope-plus" aria-hidden="true">
-                <svg viewBox="0 0 16 16" fill="none">
-                  <path
-                    d="M8 3.5v9M3.5 8h9"
-                    stroke="currentColor"
-                    stroke-width="1.3"
-                    stroke-linecap="round"
-                  />
-                </svg>
+                <RailIcon name="plus" size={12} />
               </span>
               <span class="chat-scope-row-label">New company</span>
             </button>
@@ -4143,7 +4136,7 @@
     </div>
 
     <div class="chat-header-actions">
-      <button
+      <button data-icon-only
         type="button"
         class="chat-icon-btn"
         bind:this={plusBtnEl}
@@ -4155,14 +4148,7 @@
         aria-controls="chat-create-menu"
         onclick={openCreateFromButton}
       >
-        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path
-            d="M8 3v10M3 8h10"
-            stroke="currentColor"
-            stroke-width="1.3"
-            stroke-linecap="round"
-          />
-        </svg>
+        <RailIcon name="plus" size={14} />
       </button>
       {#if createMenuOpen}
         <div
@@ -4189,7 +4175,7 @@
           <p class="chat-create-foot">Scope follows the selected row · {scopeLabel}</p>
         </div>
       {/if}
-      <button
+      <button data-icon-only
         type="button"
         class="chat-icon-btn"
         data-testid="chat-search"
@@ -4198,24 +4184,10 @@
         onclick={openSearch}
         bind:this={searchButton}
       >
-        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <circle
-            cx="7"
-            cy="7"
-            r="4.5"
-            stroke="currentColor"
-            stroke-width="1.25"
-          />
-          <path
-            d="m10.5 10.5 3 3"
-            stroke="currentColor"
-            stroke-width="1.25"
-            stroke-linecap="round"
-          />
-        </svg>
+        <RailIcon name="search" size={14} />
       </button>
       <div class="chat-filter-wrap" bind:this={filterWrapEl}>
-        <button
+        <button data-icon-only
           type="button"
           class="chat-icon-btn"
           class:on={showFilter !== "mine" || personFilter != null}
@@ -4225,14 +4197,7 @@
           title="Filter"
           onclick={openFilterMenu}
         >
-          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <path
-              d="M2.5 4h11M4.5 8h7M6.5 12h3"
-              stroke="currentColor"
-              stroke-width="1.25"
-              stroke-linecap="round"
-            />
-          </svg>
+          <RailIcon name="funnel-simple" size={14} />
         </button>
         {#if filterOpen}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -4492,7 +4457,7 @@
     {#if !companiesOnRail && (companies ?? []).length > 0}
       <div class="chat-section-label chat-companies-label" id="chat-companies-label">
         <span>COMPANIES</span>
-        <button
+        <button data-icon-only
           type="button"
           class="chat-companies-edit"
           data-testid="chat-companies-edit"
@@ -4502,11 +4467,7 @@
           title="Pin companies"
           onclick={() => (companiesSectionMenuOpen = !companiesSectionMenuOpen)}
         >
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <circle cx="4" cy="8" r="1.3" fill="currentColor" />
-            <circle cx="8" cy="8" r="1.3" fill="currentColor" />
-            <circle cx="12" cy="8" r="1.3" fill="currentColor" />
-          </svg>
+          <RailIcon name="dots-three" size={12} />
         </button>
       </div>
       {#if companiesSectionMenuOpen}
@@ -4626,11 +4587,7 @@
     {#if grouped.pinned.length > 0}
       <div class="chat-section-label" id="chat-pinned-label">
         <span class="chat-pin-ic" aria-hidden="true">
-          <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
-            <path
-              d="M10.2 2.4 13.6 5.8a.8.8 0 0 1-.15 1.26l-2.2 1.27-.7 3.15a.6.6 0 0 1-.98.32L7.2 9.43 4.3 12.32a.55.55 0 0 1-.78-.78L6.4 8.66 4.05 6.3a.6.6 0 0 1 .32-.98l3.15-.7 1.27-2.2A.8.8 0 0 1 10.2 2.4Z"
-            />
-          </svg>
+          <RailIcon name="push-pin" size={10} />
         </span>
         PINNED
       </div>
@@ -4900,21 +4857,7 @@
       >
         <div class="chat-switcher-search">
           <span class="chat-switcher-search-ic" aria-hidden="true">
-            <svg viewBox="0 0 16 16" fill="none">
-              <circle
-                cx="7"
-                cy="7"
-                r="4.5"
-                stroke="currentColor"
-                stroke-width="1.25"
-              />
-              <path
-                d="m10.5 10.5 3 3"
-                stroke="currentColor"
-                stroke-width="1.25"
-                stroke-linecap="round"
-              />
-            </svg>
+            <RailIcon name="search" size={15} />
           </span>
           <input
             class="chat-switcher-input"
@@ -5220,18 +5163,20 @@
      Shared by the rail row and the search-hit row; colour comes from
      `.chat-row-draft` (`var(--t3)`). -->
 {#snippet filterIcon(name: string)}
-  <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
-    {#if name === "clock"}<circle cx="8" cy="8" r="5.5" /><path d="M8 5v3l2 1.5" />
-    {:else if name === "list"}<path d="M3 4.5h10M3 8h10M3 11.5h10" />
-    {:else if name === "home"}<path d="M3 7.5 8 3.5l5 4v5H3z" />
-    {:else if name === "hash"}<path d="M6.5 3 5.5 13M10.5 3l-1 10M3.5 6.5h9.5M3 9.5h9.5" />
-    {:else if name === "bubble"}<path d="M3 4h10v6.5H7.5L4.5 13v-2.5H3z" />
-    {:else if name === "target"}<circle cx="8" cy="8" r="5.5" /><circle cx="8" cy="8" r="2" />
-    {:else if name === "archive"}<path d="M2.5 4h11v2.5h-11zM3.5 6.5v6h9v-6M6.5 9h3" />
-    {:else if name === "check"}<path d="M3.5 8.5l3 3 6-7" />
-    {:else if name === "requests"}<circle cx="6.5" cy="5.5" r="2.5" /><path d="M2 13c.6-2.4 2.3-3.5 4.5-3.5s3.9 1.1 4.5 3.5M12.5 5v4M10.5 7h4" />
-    {/if}
-  </svg>
+  <!-- Phosphor regular, like every other icon in the rail (owner,
+       2026-10-22: the hand-drawn set read as a different family). -->
+  {@const icon = ({
+    clock: "clock",
+    list: "list",
+    home: "house",
+    hash: "hash",
+    bubble: "chat-circle",
+    target: "target",
+    archive: "archive",
+    check: "check",
+    requests: "user-plus",
+  } as const)[name as "clock"]}
+  {#if icon}<RailIcon name={icon} size={14} />{/if}
 {/snippet}
 
 {#snippet draftMark()}
@@ -5296,7 +5241,7 @@
         />
       </span>
       {#if hasChildren}
-        <button
+        <button data-icon-only
           type="button"
           class="chat-row-children-toggle"
           class:open={childrenOpen}
@@ -5305,9 +5250,7 @@
           aria-expanded={childrenOpen}
           onclick={() => toggleChildren(row.id, extras?.childrenExpandedByDefault === true)}
         >
-          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-            <path d="M3 2 7 5 3 8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
+          <RailIcon name="caret-right" size={10} />
         </button>
       {/if}
       <button
@@ -5437,17 +5380,7 @@
             aria-label="Muted"
             title="Notifications muted"
           >
-            <svg viewBox="0 0 16 16" width="12" height="12" fill="none" aria-hidden="true">
-              <path
-                d="M5.2 3.6A3.6 3.6 0 0 1 11.6 6v2.6l1.2 2H5.4M3.9 10.6l.5-.9V6.9"
-                stroke="currentColor"
-                stroke-width="1.2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-              <path d="M6.6 12.6a1.5 1.5 0 0 0 2.8 0" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-              <path d="M2.5 2.5l11 11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-            </svg>
+            <RailIcon name="bell-slash" size={12} />
           </span>
         {/if}
         <!-- The visible count sits outside the button (below); this keeps it
@@ -5458,7 +5391,7 @@
           <span class="chat-row-sr">Unread</span>
         {/if}
       </button>
-      <button
+      <button data-icon-only
         type="button"
         class="chat-pin-btn"
         class:pinned={row.pinned}
@@ -5467,15 +5400,7 @@
         data-testid="chat-pin"
         onclick={() => handlePin(row)}
       >
-        <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
-          <path
-            d="M6.2 1.8h3.6l.4 4.2 2.2 1.4v1.4H8.6v5.4h-1.2V8.8H3.6V7.4l2.2-1.4.4-4.2Z"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.4"
-            stroke-linejoin="round"
-          />
-        </svg>
+        <RailIcon name="push-pin" size={12} />
       </button>
       <!-- The count or dot sits at the row's right edge, after the pin, so the
            pin appears to its LEFT on hover (owner, #772, restored 2026-10-22).
@@ -5522,13 +5447,9 @@
               aria-hidden="true"
             >
               {#if child.kind === "action"}
-                <svg width="12" height="12" viewBox="0 0 10 10">
-                  <path d="M5 1v8M1 5h8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-                </svg>
+                <RailIcon name="plus" size={12} />
               {:else}
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round">
-                  <path d="M3 3h10v7H7l-4 3V3Z" />
-                </svg>
+                <RailIcon name="chat-circle" size={14} />
               {/if}
             </span>
             <span class="chat-row-child-label" use:titleWhenTruncated={child.label}
@@ -5996,11 +5917,11 @@
     cursor: pointer;
   }
 
-  .chat-row-children-toggle svg {
+  .chat-row-children-toggle :global(svg) {
     transition: transform 120ms ease;
   }
 
-  .chat-row-children-toggle.open svg {
+  .chat-row-children-toggle.open :global(svg) {
     transform: rotate(90deg);
   }
 
@@ -6306,7 +6227,11 @@
     border-radius: 50%;
     background: var(--line2);
     color: var(--t2);
-    font: 600 9px var(--font-ui);
+    /* Two capitals have to clear the circle's curve, not just its box: at
+       9px "MA" ran into the edge of a 16px circle (owner, 2026-10-22). 7px
+       keeps them inside the circle's inscribed square (~11px). Medium, the
+       app's weight cap, as on IdentityMark. */
+    font: 500 7px var(--font-ui);
     /* `line-height: 1`, as IdentityMark does. The `font:` shorthand resets
        line-height to `normal`, and `normal` is the font's own line box —
        WebKit folds the line gap into it where Chromium does not, so a
