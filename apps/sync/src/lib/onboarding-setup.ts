@@ -1379,8 +1379,11 @@ export function isKnownDepsTool(id: unknown): id is string {
   return typeof id === 'string' && Object.prototype.hasOwnProperty.call(DEPS_TOOL_NAMES, id);
 }
 
-/** Downloaded rather than installed, so Windows never asks permission for them. */
-const DOWNLOADED_DEPS_TOOLS = new Set(['jq', 'yq']);
+/**
+ * Downloaded and unpacked by HQ rather than run through a Windows installer,
+ * so Windows never asks permission for them. Git is HQ's own PortableGit.
+ */
+const DOWNLOADED_DEPS_TOOLS = new Set(['git', 'jq', 'yq']);
 
 function depsToolName(id: string): string {
   return DEPS_TOOL_NAMES[id];
@@ -1468,15 +1471,7 @@ export function readInstallerRunsSnapshot(value: unknown): InstallerRunsSnapshot
   };
 }
 
-/** Shown once Windows is about to ask for permission to install Git. */
-export const GIT_PERMISSION_NOTICE =
-  'Windows will ask for permission to install Git. Choose Yes to continue.';
-
-/** Shown when the Git install passes its time budget, likely on the prompt. */
-export const GIT_WAITING_NOTICE =
-  'Windows may be waiting for your permission to install Git. Look for a permission prompt on the taskbar.';
-
-export type DepsFailureRecoveryKind = 'git-permission-declined' | 'install-retry';
+export type DepsFailureRecoveryKind = 'install-retry';
 
 /** Tags a Windows install error whose copy tells the user to select Try again. */
 const INSTALL_RETRY_MARKER = '[install-retry]';
@@ -1492,13 +1487,6 @@ export interface DepsFailureRecovery {
  */
 export function depsFailureRecovery(error: string | null | undefined): DepsFailureRecovery | null {
   if (!error) return null;
-  if (error.includes('[git-permission-declined]')) {
-    return {
-      kind: 'git-permission-declined',
-      message:
-        'Git was not installed because permission was declined. Select Try again and choose Yes when Windows asks.',
-    };
-  }
   const marker = error.indexOf(INSTALL_RETRY_MARKER);
   if (marker >= 0) {
     // The backend joins per-tool errors with "; ", so stop at the next one.

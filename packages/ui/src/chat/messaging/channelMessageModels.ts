@@ -10,6 +10,7 @@
  */
 
 import { isRecord } from "../../common/is-record.js";
+import { isFolderShareKey } from "./attachment-preview.js";
 
 /** Known system-event types from the v1 envelope. */
 export type KnownSystemEventType =
@@ -511,7 +512,7 @@ export function parseAttachment(raw: unknown): FileAttachmentModel | null {
   const vaultPath = asOptionalString(raw.vaultPath) ?? "";
   const name =
     asOptionalString(raw.name) ??
-    (vaultPath ? (vaultPath.replace(/\/+$/, "").split("/").pop() ?? vaultPath) : "");
+    (vaultPath ? (vaultPath.replace(/\/(?:\*{1,2})?$/, "").replace(/\/+$/, "").split("/").pop() ?? vaultPath) : "");
   if (!name && !vaultPath) return null;
 
   const sizeRaw = raw.sizeBytes;
@@ -527,7 +528,7 @@ export function parseAttachment(raw: unknown): FileAttachmentModel | null {
   const contentType = asOptionalString(raw.contentType) ?? "";
   const kindRaw = asOptionalString(raw.kind);
   const kind: FileAttachmentModel["kind"] =
-    kindRaw === "folder" || vaultPath.endsWith("/")
+    kindRaw === "folder" || isFolderShareKey(vaultPath)
       ? "folder"
       : kindRaw === "image" ||
           contentType.startsWith("image/") ||
