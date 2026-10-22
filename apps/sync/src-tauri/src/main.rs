@@ -889,6 +889,7 @@ fn main() {
             commands::install_stages::start_initial_cloud_sync,
             commands::install_deps::check_dep,
             commands::install_deps::cancel_install,
+            commands::install_deps::installer_runs_active,
             #[cfg(not(windows))]
             commands::install_deps::install_homebrew,
             commands::install_deps::install_node,
@@ -1028,6 +1029,7 @@ fn main() {
             commands::desktop_alt::set_desktop_active_company,
             commands::desktop_alt::get_desktop_active_company,
             commands::cdp_mirror::web_visitor_anon_id,
+            commands::cdp_mirror::web_visitor_plan_hints,
             commands::desktop_alt::get_company_summary,
             commands::desktop_alt::get_company_board,
             commands::desktop_alt::ensure_company_home_channel,
@@ -1697,6 +1699,9 @@ fn main() {
                     util::logfile::log("recall-sdk", &format!("startup: failed to clear stale recording activity marker: {e}"));
                 }
                 let handle = app.handle().clone();
+                // Restarts the SDK if this launch skipped it or the bridge
+                // exits later; runs regardless of the launch decision below.
+                commands::recall_sdk::setup_recall_sdk_supervisor(handle.clone());
                 tauri::async_runtime::spawn(async move {
                     if !commands::recall_sdk::meeting_detect_eligible().await {
                         util::logfile::log(
