@@ -377,6 +377,9 @@
   }
 
   async function handleSignIn(provider: SignInProvider) {
+    // "Continue as" is confirming; a provider click now would cancel an
+    // attempt that is about to activate and start a stray browser flow.
+    if (continuationBusy) return;
     if (provider === 'Microsoft' && microsoftEmail.trim() === '') {
       microsoftEmailPrompt = true;
       error = '';
@@ -651,7 +654,7 @@
         <button
           class="sign-in-btn"
           onclick={() => handleSignIn(provider.key)}
-          disabled={loadingProvider !== null || quitting}
+          disabled={loadingProvider !== null || quitting || continuationBusy}
         >
           {#if loadingProvider === provider.key}
             <span class="spinner"></span>

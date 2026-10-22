@@ -169,6 +169,7 @@ const CONTINUATION_CONFIG = {
 function installContinuationInvoke(options: {
   start?: () => Promise<unknown>;
   awaitIdentity?: () => Promise<unknown>;
+  confirm?: () => Promise<unknown>;
   onInvoke?: (command: string) => void;
 }): void {
   tauri.invoke.mockImplementation((command: string) => {
@@ -186,6 +187,8 @@ function installContinuationInvoke(options: {
         return options.start ? options.start() : Promise.resolve({ attemptId: 'attempt-1' });
       case 'desktop_continuation_await_identity':
         return options.awaitIdentity ? options.awaitIdentity() : new Promise(() => {});
+      case 'desktop_continuation_confirm':
+        return options.confirm ? options.confirm() : Promise.resolve(undefined);
       case 'desktop_continuation_cancel':
         return Promise.resolve(undefined);
       case 'get_auth_state':
@@ -277,6 +280,29 @@ describe('provider buttons stay beside a provider-less browser wait', () => {
       .filter(([command]) => command === 'desktop_continuation_deliver')
       .map(([, args]) => (args as { body: { outcome?: string } }).body.outcome);
     expect(outcomes.filter((outcome) => outcome === 'cancelled')).toHaveLength(1);
+  });
+
+  it('keeps Google and Microsoft disabled while "Continue as" is confirming', async () => {
+    installContinuationInvoke({
+      awaitIdentity: () => Promise.resolve({ email: 'person@example.test' }),
+      confirm: () => new Promise(() => {}),
+    });
+    component = mount(SignInPrompt, { target: host, props: { layout: 'column' } });
+    await flushUntil(() => host.querySelector('[data-testid="continuation-confirm"]') !== null);
+
+    host.querySelector<HTMLButtonElement>('.continuation-primary')?.click();
+    await flushUntil(() => host.textContent?.includes('Signing in…') ?? false);
+
+    const named = providerButtons().filter((button) => /Continue with (Google|Microsoft)/.test(button.textContent ?? ''));
+    expect(named).toHaveLength(2);
+    for (const button of named) expect(button.disabled).toBe(true);
+
+    named[0].click();
+    await tick();
+    const commands = tauri.invoke.mock.calls.map(([command]) => command);
+    expect(commands).not.toContain('desktop_continuation_cancel');
+    expect(commands).not.toContain('start_oauth_login');
+    expect(host.querySelector('[data-testid="continuation-confirm"]')).not.toBeNull();
   });
 
   it('returns to the provider buttons when the opened website sign-in fails', async () => {
