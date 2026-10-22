@@ -139,6 +139,14 @@ export interface GatherOptions {
    * id: used as given. Only read when `runId` is set.
    */
   previousRunId?: string | null;
+  /**
+   * Read the live adapter sources (identity, calendar, meetings, DMs,
+   * sessions). False renders a run from its files alone, so a page can show
+   * a stored brief at once and lay the live sources over it when they answer.
+   */
+  live?: boolean;
+  /** How long one live source may take before it counts as failed. */
+  sourceTimeoutMs?: number;
   log?: (message: string, err?: unknown) => void;
 }
 
@@ -152,16 +160,31 @@ export interface GatherResult {
 export const MEETINGS_PER_COMPANY = 5;
 export const BODY_READS = 30;
 export const MAX_COMPANIES = 6;
+/** A live source that has not answered by then is recorded as failed; the brief renders without it. */
+export const SOURCE_TIMEOUT_MS = 8_000;
 
 export { configureBriefSeed } from "./brief-seed.js";
 
 class SourceError extends Error {}
 
-async function unwrap<T>(name: string, call: AdapterPromise<T> | undefined): Promise<T> {
-  if (!call) throw new SourceError(`${name}: unavailable on this host`);
-  const res = await call;
-  if (!res.ok) throw new SourceError(`${name}: ${res.reason}${res.code ? ` (${res.code})` : ""}`);
-  return res.value;
+type Unwrap = <T>(name: string, call: AdapterPromise<T> | undefined) => Promise<T>;
+
+/** Reads one adapter result, or throws a SourceError when it is missing, failed, or past `timeoutMs`. */
+function unwrapper(timeoutMs: number): Unwrap {
+  return async <T>(name: string, call: AdapterPromise<T> | undefined): Promise<T> => {
+    if (!call) throw new SourceError(`${name}: unavailable on this host`);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new SourceError(`${name}: no answer in ${timeoutMs} ms`)), timeoutMs);
+    });
+    try {
+      const res = await Promise.race([call, late]);
+      if (!res.ok) throw new SourceError(`${name}: ${res.reason}${res.code ? ` (${res.code})` : ""}`);
+      return res.value;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
 }
 
 const str = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
@@ -323,75 +346,81 @@ export async function gatherBriefInput(adapter: BriefAdapter, opts: GatherOption
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);
   const companies = opts.companies.slice(0, MAX_COMPANIES);
+  const unwrap = unwrapper(opts.sourceTimeoutMs ?? SOURCE_TIMEOUT_MS);
 
-  let selfEmail = "";
-  let selfUid = "";
-  let userName = "";
-  try {
-    const me = await unwrap("identity", adapter.identity?.whoami?.());
-    selfEmail = str(me.email);
-    selfUid = str(me.personUid);
-    userName = str(me.displayName).split(/\s+/)[0] ?? "";
-  } catch (err) {
-    fail("identity", err);
+  const input: BriefInput = opts.live === false ? baseInput(now, "", companies, opts.lastBriefAt ?? null) : await readLive();
+
+  async function readLive(): Promise<BriefInput> {
+    // Who is signed in and their calendar feed, read together: the greeting
+    // name, the Today row, and the test for which recordings are theirs.
+    const [me, rawCalendar] = await Promise.all([
+      (async () => {
+        try {
+          return await unwrap("identity", adapter.identity?.whoami?.());
+        } catch (err) {
+          fail("identity", err);
+          return null;
+        }
+      })(),
+      (async () => {
+        try {
+          return await unwrap("calendar", adapter.meetings?.listUpcoming?.());
+        } catch (err) {
+          fail("calendar", err);
+          return [] as Json[];
+        }
+      })(),
+    ]);
+    const selfEmail = str(me?.email);
+    const selfUid = str(me?.personUid);
+    const userName = str(me?.displayName).split(/\s+/)[0] ?? "";
+    const [meetings, dms, sessions] = await Promise.all([
+      readMeetings(adapter, unwrap, companies, yesterday, fail, rawCalendar),
+      readDms(adapter, unwrap, now, yesterday, selfUid, fail),
+      (async () => {
+        try {
+          // Yesterday and today, so the sunrise timeline can cover the last 24 hours.
+          const page = localSessionsFromNative(
+            await unwrap(
+              "sessions",
+              adapter.agents?.listLocalSessions?.({ from: localDay(yesterday), to: localDay(now) }, { limit: 400 }),
+            ),
+          );
+          // Only sessions you started; untitled shells with no company are background noise.
+          return page.rows.filter(keepNativeSession).map(
+            (r): BriefSession => ({
+              id: r.id,
+              title: r.title,
+              startedAt: r.startedAt,
+              workstream: r.project || r.company || "Other",
+              company: r.company || null,
+            }),
+          );
+        } catch (err) {
+          fail("sessions", err);
+          return [] as BriefSession[];
+        }
+      })(),
+    ]);
+    return {
+      ...baseInput(now, userName, companies, opts.lastBriefAt ?? null),
+      calendarToday: mergePastMeetings(calendarToday(rawCalendar, now, selfEmail), meetings.todayRecorded, now),
+      meetingsYesterday: meetings.meetings,
+      decisions: meetings.decisions,
+      actionItems: meetings.actionItems,
+      risks: meetings.risks,
+      waitingOn: dms.waiting,
+      team: dms.team,
+      sessions: sessions.filter((s) => localDay(new Date(s.startedAt)) === localDay(yesterday)),
+      recentSessions: sessions.filter((s) => {
+        const t = Date.parse(s.startedAt);
+        return t > now.getTime() - 24 * 3600_000 && t <= now.getTime();
+      }),
+      dmCount: dms.count,
+    };
   }
 
-  // The signed-in person's own calendar feed, read once: the Today row and
-  // the test for which recordings are theirs.
-  const rawCalendar: Json[] = await (async () => {
-    try {
-      return await unwrap("calendar", adapter.meetings?.listUpcoming?.());
-    } catch (err) {
-      fail("calendar", err);
-      return [] as Json[];
-    }
-  })();
-  const [calendar, meetings, dms, sessions] = await Promise.all([
-    Promise.resolve(calendarToday(rawCalendar, now, selfEmail)),
-    readMeetings(adapter, companies, yesterday, fail, rawCalendar),
-    readDms(adapter, now, yesterday, selfUid, fail),
-    (async () => {
-      try {
-        // Yesterday and today, so the sunrise timeline can cover the last 24 hours.
-        const page = localSessionsFromNative(
-          await unwrap(
-            "sessions",
-            adapter.agents?.listLocalSessions?.({ from: localDay(yesterday), to: localDay(now) }, { limit: 400 }),
-          ),
-        );
-        // Only sessions you started; untitled shells with no company are background noise.
-        return page.rows.filter(keepNativeSession).map(
-          (r): BriefSession => ({
-            id: r.id,
-            title: r.title,
-            startedAt: r.startedAt,
-            workstream: r.project || r.company || "Other",
-            company: r.company || null,
-          }),
-        );
-      } catch (err) {
-        fail("sessions", err);
-        return [] as BriefSession[];
-      }
-    })(),
-  ]);
-
-  const input: BriefInput = {
-    ...baseInput(now, userName, companies, opts.lastBriefAt ?? null),
-    calendarToday: mergePastMeetings(calendar, meetings.todayRecorded, now),
-    meetingsYesterday: meetings.meetings,
-    decisions: meetings.decisions,
-    actionItems: meetings.actionItems,
-    risks: meetings.risks,
-    waitingOn: dms.waiting,
-    team: dms.team,
-    sessions: sessions.filter((s) => localDay(new Date(s.startedAt)) === localDay(yesterday)),
-    recentSessions: sessions.filter((s) => {
-      const t = Date.parse(s.startedAt);
-      return t > now.getTime() - 24 * 3600_000 && t <= now.getTime();
-    }),
-    dmCount: dms.count,
-  };
+  const userName = input.userName;
   const sweep = opts.sweep === undefined ? adapterSweepSource(adapter.files) : opts.sweep;
   if (sweep) await mergeSweep(input, sweep, opts, now, yesterday, fail);
   if (sweep && opts.runId) {
@@ -766,29 +795,34 @@ export function mergePastMeetings(calendar: BriefCalendarEvent[], recorded: Brie
   return [...calendar, ...extra].sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
 }
 
-async function readMeetings(
-  adapter: BriefAdapter,
-  companies: readonly BriefCompanyRef[],
-  yesterday: Date,
-  fail: (name: string, err: unknown) => void,
-  rawCalendar: readonly Json[] = [],
-): Promise<{
+interface MeetingsRead {
   meetings: BriefMeeting[];
   decisions: BriefDecision[];
   actionItems: BriefActionItem[];
   risks: BriefRisk[];
   todayRecorded: BriefCalendarEvent[];
-}> {
+}
+
+/**
+ * Yesterday's recorded meetings and their signals. Companies are read side
+ * by side, and so are the meetings within one; the results keep company
+ * order, then each company's own order, so the output is the same as a
+ * one-at-a-time read.
+ */
+async function readMeetings(
+  adapter: BriefAdapter,
+  unwrap: Unwrap,
+  companies: readonly BriefCompanyRef[],
+  yesterday: Date,
+  fail: (name: string, err: unknown) => void,
+  rawCalendar: readonly Json[] = [],
+): Promise<MeetingsRead> {
   const api = adapter.meetings;
-  const meetings: BriefMeeting[] = [];
-  const todayRecorded: BriefCalendarEvent[] = [];
+  const out: MeetingsRead = { meetings: [], decisions: [], actionItems: [], risks: [], todayRecorded: [] };
   const today = new Date(yesterday.getTime() + 86_400_000);
-  const decisions: BriefDecision[] = [];
-  const actionItems: BriefActionItem[] = [];
-  const risks: BriefRisk[] = [];
   if (!api?.listRecorded || !api.getRecorded) {
     fail("meetings", new SourceError("meetings: unavailable on this host"));
-    return { meetings, decisions, actionItems, risks, todayRecorded };
+    return out;
   }
   // hq-pro's recorded list is ACL-filtered, so an owner or admin reads every
   // member's recordings. Only the person's own (their notetaker bots, or an
@@ -817,74 +851,92 @@ async function readMeetings(
     }
   };
 
-  for (const company of companies) {
-    let rows;
+  const readMeeting = async (company: BriefCompanyRef, m: RecordedMeeting): Promise<MeetingsRead> => {
+    const one: MeetingsRead = { meetings: [], decisions: [], actionItems: [], risks: [], todayRecorded: [] };
+    let signals: ReturnType<typeof signalsByKind> = { decisions: [], actions: [], risks: [], questions: [] };
+    if (m.hasSignals) {
+      try {
+        signals = signalsByKind(await unwrap(`meeting ${m.meetingId}`, api.getRecorded!(m.meetingId, company.uid)));
+      } catch (err) {
+        fail(`meeting ${m.meetingId}`, err);
+      }
+    }
+    // Signal titles are often only in the body file; read the few the peek shows.
+    const [decided, todo, questions, actions, risks] = await Promise.all([
+      Promise.all(signals.decisions.slice(0, 3).map((d) => body(d.url, d.title))),
+      Promise.all(signals.actions.slice(0, 3).map((a) => body(a.url, a.title))),
+      Promise.all(signals.questions.map((q) => body(q.url, q.title))),
+      Promise.all(signals.actions.map((a) => body(a.url, a.title))),
+      Promise.all(signals.risks.map((r) => body(r.url, r.title))),
+    ]);
+    one.meetings.push({
+      id: m.meetingId,
+      title: m.title,
+      startTime: m.startTime,
+      companyUid: company.uid,
+      decisions: signals.decisions.length,
+      actions: signals.actions.length,
+      risks: signals.risks.length,
+      questions: signals.questions.length,
+      decided: decided.filter((t): t is string => !!t),
+      todo: todo.filter((t): t is string => !!t).map((text) => ({ text })),
+    });
+    const origin = { companyUid: company.uid, repo: m.title };
+    questions.forEach((title, i) => {
+      if (!title) return;
+      one.decisions.push({
+        id: `${m.meetingId}:q${i}`,
+        title,
+        summary: `Open question from ${m.title}`,
+        action: "decide",
+        actionLabel: "Decide",
+        origin,
+        detail: { why: title, unlocks: [], source: `Signal · question · ${m.title}` },
+      });
+    });
+    actions.forEach((title, i) => {
+      if (title) one.actionItems.push({ id: `${m.meetingId}:a${i}`, title, origin });
+    });
+    risks.forEach((title, i) => {
+      if (title) one.risks.push({ id: `${m.meetingId}:r${i}`, title, summary: `Raised in ${m.title}`, severity: "watch", links: [], origin });
+    });
+    return one;
+  };
+
+  const readCompany = async (company: BriefCompanyRef): Promise<MeetingsRead> => {
+    const one: MeetingsRead = { meetings: [], decisions: [], actionItems: [], risks: [], todayRecorded: [] };
+    let rows: RecordedMeeting[];
     try {
-      rows = parseRecordedMeetings(await unwrap(`meetings ${company.label}`, api.listRecorded(company.uid)));
+      rows = parseRecordedMeetings(await unwrap(`meetings ${company.label}`, api.listRecorded!(company.uid)));
     } catch (err) {
       fail(`meetings ${company.label}`, err);
-      continue;
+      return one;
     }
     // The calendar feed only lists what is still ahead; recorded meetings fill in today's earlier calls.
     for (const m of own(rows.filter((r) => sameLocalDay(r.startTime, today)))) {
-      todayRecorded.push({ id: `rec:${m.meetingId}`, title: m.title, start: m.startTime, end: m.endTime ?? null, kind: "team" });
+      one.todayRecorded.push({ id: `rec:${m.meetingId}`, title: m.title, start: m.startTime, end: m.endTime ?? null, kind: "team" });
     }
     const mine = rows.filter((m) => sameLocalDay(m.startTime, yesterday)).slice(0, MEETINGS_PER_COMPANY);
-    for (const m of mine) {
-      let signals: ReturnType<typeof signalsByKind> = { decisions: [], actions: [], risks: [], questions: [] };
-      if (m.hasSignals) {
-        try {
-          signals = signalsByKind(await unwrap(`meeting ${m.meetingId}`, api.getRecorded(m.meetingId, company.uid)));
-        } catch (err) {
-          fail(`meeting ${m.meetingId}`, err);
-        }
-      }
-      meetings.push({
-        id: m.meetingId,
-        title: m.title,
-        startTime: m.startTime,
-        companyUid: company.uid,
-        decisions: signals.decisions.length,
-        actions: signals.actions.length,
-        risks: signals.risks.length,
-        questions: signals.questions.length,
-        // Signal titles are often only in the body file; read the few the peek shows.
-        decided: (await Promise.all(signals.decisions.slice(0, 3).map((d) => body(d.url, d.title)))).filter((t): t is string => !!t),
-        todo: (await Promise.all(signals.actions.slice(0, 3).map((a) => body(a.url, a.title))))
-          .filter((t): t is string => !!t)
-          .map((text) => ({ text })),
-      });
-      const origin = { companyUid: company.uid, repo: m.title };
-      for (const [i, q] of signals.questions.entries()) {
-        const title = await body(q.url, q.title);
-        if (!title) continue;
-        decisions.push({
-          id: `${m.meetingId}:q${i}`,
-          title,
-          summary: `Open question from ${m.title}`,
-          action: "decide",
-          actionLabel: "Decide",
-          origin,
-          detail: { why: title, unlocks: [], source: `Signal · question · ${m.title}` },
-        });
-      }
-      for (const [i, a] of signals.actions.entries()) {
-        const title = await body(a.url, a.title);
-        if (title) actionItems.push({ id: `${m.meetingId}:a${i}`, title, origin });
-      }
-      for (const [i, r] of signals.risks.entries()) {
-        const title = await body(r.url, r.title);
-        if (!title) continue;
-        risks.push({ id: `${m.meetingId}:r${i}`, title, summary: `Raised in ${m.title}`, severity: "watch", links: [], origin });
-      }
-    }
-  }
-  meetings.sort((a, b) => b.decisions + b.actions - (a.decisions + a.actions));
-  return { meetings, decisions, actionItems, risks, todayRecorded };
+    for (const read of await Promise.all(mine.map((m) => readMeeting(company, m)))) collect(one, read);
+    return one;
+  };
+
+  for (const read of await Promise.all(companies.map(readCompany))) collect(out, read);
+  out.meetings.sort((a, b) => b.decisions + b.actions - (a.decisions + a.actions));
+  return out;
+}
+
+function collect(into: MeetingsRead, from: MeetingsRead): void {
+  into.meetings.push(...from.meetings);
+  into.decisions.push(...from.decisions);
+  into.actionItems.push(...from.actionItems);
+  into.risks.push(...from.risks);
+  into.todayRecorded.push(...from.todayRecorded);
 }
 
 async function readDms(
   adapter: BriefAdapter,
+  unwrap: Unwrap,
   now: Date,
   yesterday: Date,
   selfUid: string,
