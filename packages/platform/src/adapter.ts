@@ -1282,6 +1282,23 @@ export interface CompanyApi {
   /** OWNER-R9: remove a member or revoke an invite (`POST /membership/revoke`). Server keeps the last owner. */
   revokeMembership?(companyUid: string, membershipKey: string): AdapterPromise<Json>;
   /**
+   * DEV-5255: invite a person by email (`POST /membership/invite` with
+   * `sendEmail: true`, surface `desktop`). hq-pro writes the pending invite
+   * and sends the invitation email; the 201 answers `{ membership, emailSent,
+   * emailSkipped, emailError? }`. A refusal (plan limit, duplicate, not
+   * allowed) comes back as a failure with the server's code and sentence.
+   * Desktop only.
+   */
+  inviteMember?(input: {
+    companyUid: string;
+    inviteeEmail: string;
+    role: string;
+    /** Guest invites only: the vault prefixes the guest may reach. */
+    allowedPrefixes?: string[];
+    /** Secret groups the invitee joins on claim. */
+    groupIds?: string[];
+  }): AdapterPromise<Json>;
+  /**
    * Company telemetry; `range` is a `YYYY-MM-DD` window (the host defaults to
    * the last 30 days). `range.tz` is an IANA zone sent to hq-pro as `tz`; the
    * host sends this machine's zone when it is absent.

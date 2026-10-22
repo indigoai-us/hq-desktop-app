@@ -1450,6 +1450,16 @@ export function createSyncPlatformAdapter(
         hqProJson('POST', '/membership/role', { companyUid, membershipKey, newRole }),
       revokeMembership: (companyUid, membershipKey) =>
         hqProJson('POST', '/membership/revoke', { companyUid, membershipKey }),
+      inviteMember: ({ companyUid, inviteeEmail, role, allowedPrefixes, groupIds }) =>
+        hqProJson('POST', '/membership/invite', {
+          companyUid,
+          inviteeEmail,
+          role,
+          sendEmail: true,
+          inviteSurface: 'desktop',
+          ...(allowedPrefixes && allowedPrefixes.length > 0 ? { allowedPrefixes } : {}),
+          ...(groupIds && groupIds.length > 0 ? { groupIds } : {}),
+        }),
       getTeamTelemetry: (slug, range) => {
         // hq-pro cuts days in `tz` when it can; this Mac's zone is the default.
         const tz = range?.tz ?? localIanaZone();

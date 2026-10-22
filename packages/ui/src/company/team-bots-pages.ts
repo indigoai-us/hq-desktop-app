@@ -94,20 +94,76 @@ export function inviteSummary(invite: PendingInvite): string {
   return `${role}${scope}${by}`;
 }
 
-export function addInvite(list: readonly PendingInvite[], draft: InviteDraft, sentBy: string): PendingInvite[] {
-  const email = draft.email.trim();
-  if (!email) return [...list];
+/** The `POST /membership/invite` body for a draft (DEV-5255). */
+export function inviteRequest(
+  companyUid: string,
+  draft: InviteDraft,
+): { companyUid: string; inviteeEmail: string; role: InviteRole; allowedPrefixes?: string[]; groupIds?: string[] } {
   const fields = inviteRoleFields(draft.role);
-  const next: PendingInvite = {
-    id: `inv-${email.toLowerCase()}`,
-    email,
+  const prefixes = fields.showPrefixes ? parsePrefixes(draft.prefixesText) : [];
+  const groups = fields.showGroups ? [...draft.groups] : [];
+  return {
+    companyUid,
+    inviteeEmail: draft.email.trim(),
     role: draft.role,
-    prefixes: fields.showPrefixes ? parsePrefixes(draft.prefixesText) : [],
-    groups: fields.showGroups ? [...draft.groups] : [],
-    sentLabel: "just now",
-    sentBy,
+    ...(prefixes.length > 0 ? { allowedPrefixes: prefixes } : {}),
+    ...(groups.length > 0 ? { groupIds: groups } : {}),
   };
-  return [next, ...list.filter((row) => row.id !== next.id)];
+}
+
+export interface ConfirmedInvite {
+  invite: PendingInvite;
+  /** False when hq-pro saved the invite but did not send the email. */
+  emailSent: boolean;
+}
+
+/**
+ * DEV-5255: the pending row for an invite hq-pro confirmed. The row is keyed
+ * by the server's membership key so Revoke reaches the real invite. Returns
+ * null when the answer carries no membership, so the page never shows a row
+ * the server does not have.
+ */
+export function confirmedInvite(value: unknown, draft: InviteDraft, sentBy: string): ConfirmedInvite | null {
+  const rec = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const membership =
+    rec.membership && typeof rec.membership === "object" ? (rec.membership as Record<string, unknown>) : null;
+  const key = membership ? str(membership.membershipKey) : "";
+  if (!membership || !key) return null;
+  const request = inviteRequest("", draft);
+  const role = (INVITE_ROLES as readonly string[]).includes(str(membership.role))
+    ? (str(membership.role) as InviteRole)
+    : request.role;
+  return {
+    invite: {
+      id: key,
+      email: str(membership.inviteeEmail) || request.inviteeEmail,
+      role,
+      prefixes: request.allowedPrefixes ?? [],
+      groups: request.groupIds ?? [],
+      sentLabel: "just now",
+      sentBy,
+    },
+    emailSent: rec.emailSent === true,
+  };
+}
+
+/** Put a confirmed invite at the top, replacing any row with the same key. */
+export function withConfirmedInvite(list: readonly PendingInvite[], invite: PendingInvite): PendingInvite[] {
+  return [invite, ...list.filter((row) => row.id !== invite.id)];
+}
+
+/** A plain sentence for a refused or failed invite. Never a machine code. */
+export function inviteFailureText(failure: { code?: string; message?: string } | null | undefined): string {
+  const code = failure?.code ?? "";
+  if (code === "MEMBERSHIP_ALREADY_EXISTS") return "That person is already invited or on the team.";
+  if (code === "FORBIDDEN" || code === "http-403") return "You don't have permission to invite people to this company.";
+  if (code === "USER_SEAT_RESERVATION_BUSY") return "Another invite is being saved. Try again in a moment.";
+  const message = failure?.message?.trim() ?? "";
+  // Plan-limit refusals carry a readable sentence from the server.
+  if (message && !message.includes("{") && !/^(POST|GET) \//.test(message) && !/^[A-Z_]+$/.test(message)) {
+    return message;
+  }
+  return "Couldn't send the invite. Try again.";
 }
 
 /**
@@ -280,6 +336,12 @@ export interface CompanyTeamRead {
   view: TeamTelemetryView;
   /** Pending invites from the telemetry payload; empty when it had none. */
   invites: PendingInvite[];
+  /**
+   * DEV-5255: true when `invites` came from a successful
+   * `GET /membership/company/{uid}/pending` read, so an empty list means the
+   * server has no pending invites and the page must show none.
+   */
+  pendingFresh: boolean;
   /** Plain-language failure. Set only when neither telemetry nor roster came back. */
   error: string | null;
 }
@@ -471,7 +533,7 @@ export async function readCompanyTeam(opts: {
   }
   if (!rawRes.ok && roster.length === 0 && memberships.length === 0) {
     console.warn("[team] telemetry read failed", rawRes.message ?? rawRes.reason);
-    return { view: empty, invites: [], error: "Could not read the team." };
+    return { view: empty, invites: [], pendingFresh: false, error: "Could not read the team." };
   }
   if (!rawRes.ok) console.warn("[team] telemetry read failed; showing the roster", rawRes.message ?? rawRes.reason);
   const fromTelemetry = rawRes.ok
@@ -480,6 +542,7 @@ export async function readCompanyTeam(opts: {
   return {
     view: applyMemberships(mergeRosterIntoTeamView(fromTelemetry, roster), memberships),
     invites: pending ?? (rawRes.ok ? pendingInvitesFromTelemetry(rawRes.value) : []),
+    pendingFresh: pending !== null,
     error: null,
   };
 }

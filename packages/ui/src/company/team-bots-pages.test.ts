@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  addInvite,
+  confirmedInvite,
   emptyInviteDraft,
+  inviteFailureText,
+  inviteRequest,
+  withConfirmedInvite,
   filterBots,
   mergeBotRows,
   inviteRoleFields,
@@ -43,17 +46,52 @@ describe("US-027 team and bots", () => {
     expect(gone).toEqual([]);
   });
 
-  it("stores a guest invite with prefixes and no groups", () => {
+  it("asks the server for a guest invite with prefixes and no groups", () => {
     const draft = {
       ...emptyInviteDraft(),
-      email: "sam@restorecolorado.org",
+      email: " sam@restorecolorado.org ",
       role: "guest" as const,
       prefixesText: "restore-colorado/\n",
       groups: ["Engineering"],
     };
-    const [row] = addInvite([], draft, "Maggie");
-    expect(row.prefixes).toEqual(["restore-colorado/"]);
-    expect(row.groups).toEqual([]);
+    expect(inviteRequest("cmp_rc", draft)).toEqual({
+      companyUid: "cmp_rc",
+      inviteeEmail: "sam@restorecolorado.org",
+      role: "guest",
+      allowedPrefixes: ["restore-colorado/"],
+    });
+  });
+
+  it("builds the pending row from the server's membership, keyed by its membership key (DEV-5255)", () => {
+    const draft = { ...emptyInviteDraft(), email: "kade@example.com" };
+    const confirmed = confirmedInvite(
+      { membership: { membershipKey: "email:kade@example.com#cmp_a", inviteeEmail: "kade@example.com", role: "member" }, emailSent: true },
+      draft,
+      "Rory",
+    );
+    expect(confirmed?.invite.id).toBe("email:kade@example.com#cmp_a");
+    expect(confirmed?.emailSent).toBe(true);
+    expect(withConfirmedInvite([sam], confirmed!.invite).map((r) => r.id)).toEqual(["email:kade@example.com#cmp_a", sam.id]);
+  });
+
+  it("has no row when the server answer carries no membership (DEV-5255)", () => {
+    const draft = { ...emptyInviteDraft(), email: "kade@example.com" };
+    expect(confirmedInvite({}, draft, "Rory")).toBeNull();
+    expect(confirmedInvite({ membership: { inviteeEmail: "kade@example.com" } }, draft, "Rory")).toBeNull();
+    expect(confirmedInvite(undefined, draft, "Rory")).toBeNull();
+  });
+
+  it("turns invite refusals into plain sentences, never a machine code (DEV-5255)", () => {
+    expect(inviteFailureText({ code: "MEMBERSHIP_ALREADY_EXISTS", message: "Membership already exists" })).toBe(
+      "That person is already invited or on the team.",
+    );
+    expect(inviteFailureText({ code: "PLAN_LIMIT_EXCEEDED", message: "Your plan limit is reached. Members: 5 of 5 used." })).toBe(
+      "Your plan limit is reached. Members: 5 of 5 used.",
+    );
+    expect(inviteFailureText({ code: "http-500", message: "POST /membership/invite failed" })).toBe(
+      "Couldn't send the invite. Try again.",
+    );
+    expect(inviteFailureText(null)).toBe("Couldn't send the invite. Try again.");
   });
 
   it("reads pending invites from the team telemetry payload", () => {
