@@ -130,8 +130,85 @@ pub struct LocalCompanyEntry {
 /// scripts that may grow new top-level keys).
 #[derive(Debug, Deserialize)]
 pub struct CompaniesManifest {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_companies")]
     pub companies: BTreeMap<String, CompanyManifestEntry>,
+}
+
+/// Accept every "no companies yet" spelling of `companies` as an empty map:
+/// a bare `companies:` (the hq-core template ships it with only comments
+/// under it), `companies: ~`, `companies: null`, and `companies: []`.
+/// A non-empty list or a scalar is still an error.
+fn deserialize_companies<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, CompanyManifestEntry>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let value = serde_yaml::Value::deserialize(deserializer)?;
+    if is_empty_companies_value(&value) {
+        return Ok(BTreeMap::new());
+    }
+    if !value.is_mapping() {
+        return Err(D::Error::custom(describe_non_mapping_companies(&value)));
+    }
+    serde_yaml::from_value(value).map_err(D::Error::custom)
+}
+
+/// True for the `companies` values that mean "no companies": null (bare key,
+/// `~`, `null`) and an empty list. An empty mapping is handled as a mapping.
+fn is_empty_companies_value(value: &serde_yaml::Value) -> bool {
+    match value {
+        serde_yaml::Value::Null => true,
+        serde_yaml::Value::Sequence(seq) => seq.is_empty(),
+        _ => false,
+    }
+}
+
+fn describe_non_mapping_companies(value: &serde_yaml::Value) -> String {
+    let found = match value {
+        serde_yaml::Value::Sequence(seq) => format!("a list with {} entries", seq.len()),
+        serde_yaml::Value::String(_) => "a string".to_string(),
+        serde_yaml::Value::Number(_) => "a number".to_string(),
+        serde_yaml::Value::Bool(_) => "a boolean".to_string(),
+        serde_yaml::Value::Tagged(_) => "a tagged value".to_string(),
+        serde_yaml::Value::Null | serde_yaml::Value::Mapping(_) => "an empty value".to_string(),
+    };
+    format!("manifest `companies` key is not a mapping (found {found})")
+}
+
+/// Return the `companies` mapping of a parsed manifest, ready for inserts.
+///
+/// Repairs the shapes that carry no data: an empty manifest file (null root),
+/// a missing `companies` key, a null `companies` value (bare `companies:` as
+/// shipped by the hq-core template, `~`, `null`), and `companies: []`. Each
+/// becomes an empty mapping; other top-level keys are kept.
+///
+/// Refuses anything that does hold data in a shape we cannot read, such as a
+/// non-empty list or a scalar. Guessing a conversion could drop or misfile
+/// entries, so the caller leaves the file unchanged and surfaces the error.
+fn companies_mapping_for_insert(
+    value: &mut serde_yaml::Value,
+) -> Result<&mut serde_yaml::Mapping, String> {
+    if value.is_null() {
+        *value = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+    }
+    let mapping = value
+        .as_mapping_mut()
+        .ok_or_else(|| "manifest root is not a mapping".to_string())?;
+    let companies_key = serde_yaml::Value::String("companies".to_string());
+    let companies = mapping
+        .entry(companies_key)
+        .or_insert(serde_yaml::Value::Null);
+    if is_empty_companies_value(companies) {
+        *companies = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+    }
+    if !companies.is_mapping() {
+        return Err(describe_non_mapping_companies(companies));
+    }
+    Ok(companies
+        .as_mapping_mut()
+        .expect("companies checked to be a mapping"))
 }
 
 #[derive(Debug, Deserialize)]
@@ -695,25 +772,7 @@ pub fn add_manifest_entry_for_synced_company(
     let mut value: serde_yaml::Value =
         serde_yaml::from_slice(&bytes).map_err(|e| format!("parse manifest: {e}"))?;
 
-    let companies_key = serde_yaml::Value::String("companies".to_string());
-    let mapping = value
-        .as_mapping_mut()
-        .ok_or_else(|| "manifest root is not a mapping".to_string())?;
-    // A missing key or a bare `companies:` (YAML null, common on fresh
-    // installs) both mean "no companies yet". A list or scalar is left alone.
-    let needs_empty_map = mapping
-        .get(&companies_key)
-        .is_none_or(serde_yaml::Value::is_null);
-    if needs_empty_map {
-        mapping.insert(
-            companies_key.clone(),
-            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
-        );
-    }
-    let companies = mapping
-        .get_mut(&companies_key)
-        .and_then(|v| v.as_mapping_mut())
-        .ok_or_else(|| "manifest `companies` key is not a mapping".to_string())?;
+    let companies = companies_mapping_for_insert(&mut value)?;
 
     let slug_key = serde_yaml::Value::String(slug.to_string());
     if companies.contains_key(&slug_key) {
@@ -1285,6 +1344,151 @@ companies:
 
         let (entries, _) = discover_local_companies(tmp.path());
         assert!(entries.iter().any(|e| e.slug == "fresh"));
+    }
+
+    /// The hq-core template ships `companies:` with only comments under it,
+    /// which YAML parses as null. A fresh install must still be able to add
+    /// entries (feedback_e6fd5d91-a683-4337-ac5d-c8985ed8ded2).
+    const CORE_TEMPLATE_MANIFEST: &str = "# HQ Company Manifest\n\
+# Single source of truth for company -> resource mapping\n\
+# Run /newcompany to add entries, or edit manually.\n\
+\n\
+companies:\n\
+  # Empty by default. The opt-in HQ_INDIGO_MCP=1 path in core/scripts/setup.sh\n\
+  # and /newcompany append entries here as `<slug>:` blocks at this indent.\n";
+
+    fn assert_add_repairs_empty_companies(contents: &str) {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(tmp.path(), contents);
+        let manifest_path = tmp.path().join("companies").join("manifest.yaml");
+
+        add_manifest_entry_for_synced_company(
+            &manifest_path,
+            "solace",
+            "Solace",
+            Some("cmp_S"),
+            Some("hq-vault-cmp-s"),
+        )
+        .unwrap_or_else(|e| panic!("add failed for {contents:?}: {e}"));
+        add_manifest_entry_for_synced_company(&manifest_path, "ez-brands", "EZ Brands", None, None)
+            .unwrap_or_else(|e| panic!("second add failed for {contents:?}: {e}"));
+
+        let raw = std::fs::read_to_string(&manifest_path).unwrap();
+        let value: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
+        let companies = value
+            .get("companies")
+            .and_then(|v| v.as_mapping())
+            .unwrap_or_else(|| panic!("companies must be a mapping after repair: {raw}"));
+        assert_eq!(companies.len(), 2, "{raw}");
+
+        let (entries, err) = discover_local_companies(tmp.path());
+        assert!(err.is_none(), "manifest must parse after repair: {err:?}");
+        let solace = entries.iter().find(|e| e.slug == "solace").expect("solace");
+        assert_eq!(solace.cloud_uid.as_deref(), Some("cmp_S"));
+        assert!(entries.iter().any(|e| e.slug == "ez-brands"));
+    }
+
+    #[test]
+    fn add_manifest_entry_repairs_core_template_null_companies() {
+        assert_add_repairs_empty_companies(CORE_TEMPLATE_MANIFEST);
+    }
+
+    #[test]
+    fn add_manifest_entry_repairs_bare_null_companies() {
+        assert_add_repairs_empty_companies("companies:\n");
+        assert_add_repairs_empty_companies("companies: ~\n");
+        assert_add_repairs_empty_companies("companies: null\n");
+    }
+
+    #[test]
+    fn add_manifest_entry_repairs_empty_list_companies() {
+        assert_add_repairs_empty_companies("companies: []\n");
+    }
+
+    #[test]
+    fn add_manifest_entry_accepts_empty_flow_mapping_companies() {
+        assert_add_repairs_empty_companies("companies: {}\n");
+    }
+
+    #[test]
+    fn add_manifest_entry_repairs_empty_manifest_file() {
+        assert_add_repairs_empty_companies("");
+        assert_add_repairs_empty_companies("# comments only\n");
+    }
+
+    #[test]
+    fn add_manifest_entry_preserves_other_top_level_keys_on_repair() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(tmp.path(), "version: 2\ncompanies:\nextra:\n  keep: true\n");
+        let manifest_path = tmp.path().join("companies").join("manifest.yaml");
+        add_manifest_entry_for_synced_company(&manifest_path, "solace", "Solace", None, None)
+            .unwrap();
+        let value: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        assert_eq!(value.get("version").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(
+            value
+                .get("extra")
+                .and_then(|v| v.get("keep"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert!(value
+            .get("companies")
+            .and_then(|c| c.get("solace"))
+            .is_some());
+    }
+
+    /// A non-empty non-mapping `companies` value holds data we cannot
+    /// interpret. The writer must refuse and leave the file byte-for-byte.
+    #[test]
+    fn add_manifest_entry_refuses_non_empty_non_mapping_companies() {
+        for contents in [
+            "companies:\n  - solace\n  - ez-brands\n",
+            "companies:\n  - slug: solace\n    name: Solace\n",
+            "companies: solace\n",
+            "companies: 3\n",
+        ] {
+            let tmp = TempDir::new().unwrap();
+            write_manifest(tmp.path(), contents);
+            let manifest_path = tmp.path().join("companies").join("manifest.yaml");
+            let err =
+                add_manifest_entry_for_synced_company(&manifest_path, "fresh", "Fresh", None, None)
+                    .expect_err("non-empty non-mapping companies must be refused");
+            assert!(err.contains("not a mapping"), "{err}");
+            assert_eq!(std::fs::read_to_string(&manifest_path).unwrap(), contents);
+            assert!(!manifest_path.with_extension("yaml.tmp").exists());
+        }
+    }
+
+    #[test]
+    fn read_manifest_treats_null_and_empty_list_companies_as_empty() {
+        for contents in [
+            CORE_TEMPLATE_MANIFEST,
+            "companies:\n",
+            "companies: ~\n",
+            "companies: []\n",
+            "companies: {}\n",
+        ] {
+            let tmp = TempDir::new().unwrap();
+            write_manifest(tmp.path(), contents);
+            std::fs::create_dir_all(tmp.path().join("companies/solace")).unwrap();
+            let (entries, err) = discover_local_companies(tmp.path());
+            assert!(err.is_none(), "{contents:?} must parse: {err:?}");
+            assert_eq!(
+                entries.iter().map(|e| e.slug.as_str()).collect::<Vec<_>>(),
+                vec!["solace"],
+                "{contents:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn read_manifest_reports_non_empty_list_companies() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(tmp.path(), "companies:\n  - solace\n");
+        let (_, err) = discover_local_companies(tmp.path());
+        assert!(err.is_some(), "a list of companies is not a valid manifest");
     }
 
     #[test]
