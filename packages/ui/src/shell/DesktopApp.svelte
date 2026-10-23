@@ -25,9 +25,10 @@
    * stays platform-pure: every backend touch flows through the injected
    * adapter + api seams and the ChatWakeBus.
    */
+  import { messageTypesStore } from "../chat/message-types.svelte.js";
+  import { isPeopleOnly } from "../chat/message-types.js";
   import {
     DESKTOP_AGENT_CREATION_FLAG,
-    HUMAN_ONLY_CONVERSATIONS_FLAG,
     READY_FIRST_ACTION_FLAG,
     VISUAL_FIRST_RUN_FLAG,
     FIRST_RUN_FOUND_APPS_FLAG,
@@ -2120,23 +2121,16 @@
   let cheatSheetOpen = $state(false);
 
   /**
-   * desktop.human-only-conversations: on by default. The desktop adapters
-   * pin the flag to `HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT` (true), so
-   * the initial state is `true` to avoid a first-paint flash of mesh rows.
-   * An adapter that answers `ok(false)` (or fails) still turns it off; the
-   * web adapter keeps the registry read. Callers hide mesh / non-human messages in
-   * conversation views and reorder the sidebar by last human message when
-   * this is true. See `packages/platform/src/humanMessage.ts` for the rule.
+   * Message types preference (`hq:messages:types.v1`, hq-message-visibility
+   * US-004). Replaces the retired `desktop.human-only-conversations` flag.
+   * With both switches off (the default) only people messages show: callers
+   * hide mesh / non-human messages, ask the server for its human view, and
+   * reorder the sidebar by last human message. Turning a switch on in the
+   * sidebar filter menu re-filters at once. See
+   * `packages/platform/src/humanMessage.ts` for the classification rule.
    */
-  let humanOnlyConversations = $state(true);
-  /**
-   * The adapter has answered that the flag is on. `humanOnlyConversations`
-   * starts `true` before any answer so the first paint hides mesh rows, but a
-   * history request only asks the server for the human view (`view=human`)
-   * once the answer is in. Otherwise a host that ends up with the flag off
-   * would have loaded a server-filtered page it then has to show unfiltered.
-   */
-  let humanOnlyConfirmed = $state(false);
+  const messageTypes = $derived(messageTypesStore.value);
+  const humanOnlyConversations = $derived(isPeopleOnly(messageTypes));
   let readyFirstActionEnabled = $state(false);
   $effect(() => {
     const identity = adapter?.identity;
@@ -2152,35 +2146,6 @@
           if (!cancelled) readyFirstActionEnabled = result.ok && result.value === true;
         })
       : undefined;
-    return () => {
-      cancelled = true;
-      unsubscribe?.();
-    };
-  });
-  $effect(() => {
-    const identity = adapter?.identity;
-    if (!identity || typeof identity.hasFeature !== "function") return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const initial = await identity.hasFeature(
-          HUMAN_ONLY_CONVERSATIONS_FLAG,
-        );
-        if (cancelled) return;
-        humanOnlyConversations = initial.ok && initial.value === true;
-        humanOnlyConfirmed = humanOnlyConversations;
-      } catch {
-        // Registry outage / partial mock — stay dark.
-      }
-    })();
-    const unsubscribe =
-      typeof identity.subscribeFeature === "function"
-        ? identity.subscribeFeature(HUMAN_ONLY_CONVERSATIONS_FLAG, (result) => {
-            if (cancelled) return;
-            humanOnlyConversations = result.ok && result.value === true;
-            humanOnlyConfirmed = humanOnlyConversations;
-          })
-        : undefined;
     return () => {
       cancelled = true;
       unsubscribe?.();
@@ -6700,9 +6665,9 @@
    */
   let historyStartHeld = $state<Record<string, boolean>>({});
 
-  /** History requests ask for the server-side human view only once the flag is confirmed on. */
+  /** History requests ask for the server-side human view when only people show. */
   function wantsServerHumanView(): boolean {
-    return humanOnlyConversations && humanOnlyConfirmed;
+    return humanOnlyConversations;
   }
 
   /** Record what one history page says about paging for this row. */
@@ -15656,6 +15621,7 @@
                   restoreScroll={pendingRestoreScroll}
                   {localBots}
                   humanOnly={humanOnlyConversations}
+                  {messageTypes}
                   messages={timelineWithActivity}
                   onseen={async () => {
                     const row = selectedRow;

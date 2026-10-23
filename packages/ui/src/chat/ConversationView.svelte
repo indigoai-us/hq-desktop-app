@@ -33,7 +33,12 @@
   import AgentTaskStrip from "./tasks/AgentTaskStrip.svelte";
   import { TaskFeedController, isAgentUid } from "./tasks/task-feed-controller.svelte";
   import { REPLY_OVERLAY_MAX_PX } from "./reply-layout";
-  import { isHumanMessage, showsCliChip } from "@hq/platform";
+  import { messageType, showsCliChip, type MessageType } from "@hq/platform";
+  import {
+    isMessageTypeVisible,
+    isPeopleOnly,
+    type MessageTypesPref,
+  } from "./message-types.js";
   import { parseWorkSessionEvent } from "./messaging/workSessionEvent";
   import "./tokens.css";
   import "./chat-tokens.css";
@@ -48,11 +53,17 @@
     /** Platform seam for opening an external URL from a reply-body link. */
     onopenurl?: (url: string) => void;
     /**
-     * When true (the `desktop.human-only-conversations` flag is on), mesh /
-     * system rows and non-human-audience messages are dropped from the
-     * rendered timeline. Default off preserves the legacy view.
+     * When true, mesh / system rows and non-human-audience messages are
+     * dropped from the rendered timeline. Read only when `messageTypes` is
+     * not given. Default off preserves the legacy view.
      */
     humanOnly?: boolean;
+    /**
+     * Message types preference (`hq:messages:types.v1`). When given it wins
+     * over `humanOnly`: people always show, agent rows iff `agents`, system
+     * rows iff `system`. A change re-filters the open timeline at once.
+     */
+    messageTypes?: MessageTypesPref | null;
   }
 
   let {
@@ -61,18 +72,23 @@
     row,
     onopenurl,
     humanOnly = false,
+    messageTypes = null,
   }: Props = $props();
 
   /**
-   * desktop.human-only-conversations: hide mesh/system rows and any message
-   * whose audience is not human. See `@hq/platform` `isHumanMessage`.
-   * A body that parses as a work-session event is a mesh row.
+   * Effective filter: the message-types preference when given, people only
+   * when `humanOnly`, otherwise everything (legacy view).
    */
-  function keepForHumanOnly(wire: ConversationMessageWire): boolean {
-    if (!humanOnly) return true;
-    if (!isHumanMessage(wire)) return false;
-    if (parseWorkSessionEvent(wire.body ?? "") !== null) return false;
-    return true;
+  const typeFilter = $derived<MessageTypesPref | null>(
+    messageTypes ?? (humanOnly ? { agents: false, system: false } : null),
+  );
+  /** Ask the server for its human view only when people alone are shown. */
+  const serverHumanView = $derived(typeFilter !== null && isPeopleOnly(typeFilter));
+
+  /** A body that parses as a work-session event is a system (mesh) row. */
+  function rowType(wire: ConversationMessageWire): MessageType {
+    if (parseWorkSessionEvent(wire.body ?? "") !== null) return "system";
+    return messageType(wire);
   }
 
   // Background-task chips for every agent in this conversation — the room-
@@ -113,6 +129,8 @@
     fromDisplayName: string;
     /** Render the "CLI" chip after the sender name (`showsCliChip`). */
     cliChip?: boolean;
+    /** `messageType` of the wire row; absent on optimistic sends (people). */
+    type?: MessageType;
     body: string;
     createdAt: string;
     direction: "in" | "out";
@@ -148,6 +166,7 @@
       fromDisplayName:
         wire.fromDisplayName?.trim() || wire.fromEmail || "Unknown",
       cliChip: showsCliChip(wire),
+      type: rowType(wire),
       body: wire.body ?? "",
       createdAt: wire.createdAt,
       direction: wire.direction === "out" ? "out" : "in",
@@ -167,11 +186,11 @@
     messages: ConversationMessageWire[];
     nextCursor: string | null;
   }> {
-    // humanOnly: ask the server for the human view. A server that predates
+    // People only: ask the server for the human view. A server that predates
     // the option ignores it and returns an unfiltered page, which the local
-    // `keepForHumanOnly` filter handles as before. The key is only added in
-    // humanOnly mode, so the unfiltered request is unchanged.
-    const view = humanOnly ? { view: "human" as const } : {};
+    // type filter handles as before. The key is only added in that mode, so
+    // the unfiltered request is unchanged.
+    const view = serverHumanView ? { view: "human" as const } : {};
     if (row.kind === "dm" && row.personUid) {
       const resp = await api.fetchDmThread({
         withPersonUid: row.personUid,
@@ -207,10 +226,12 @@
       fetchPage: fetchWirePage,
       pageSize: PAGE_SIZE,
       initialCursor: cursor,
+      // The type filter reads audience; without it every row reads as people.
+      keepAudience: true,
     });
     return {
       page: roots
-        .filter((wire) => !isReplyMessage(wire) && keepForHumanOnly(wire))
+        .filter((wire) => !isReplyMessage(wire))
         .map(mapWireMessage),
       nextCursor: newer,
     };
@@ -358,6 +379,27 @@
       nextCursor = null;
       threadError = null;
       void load();
+    });
+  });
+
+  // Rows the current type filter lets through. Re-derives on every switch
+  // change, so the open timeline re-filters without a fetch.
+  const shownMessages = $derived(
+    typeFilter === null
+      ? messages
+      : messages.filter((m) => isMessageTypeVisible(m.type ?? "people", typeFilter)),
+  );
+
+  // Leaving or entering the server's human view changes which rows the
+  // server sends, so read the conversation again. Skips the first run (the
+  // row effect above already loads).
+  let lastServerHumanView: boolean | null = null;
+  $effect(() => {
+    const next = serverHumanView;
+    untrack(() => {
+      const prev = lastServerHumanView;
+      lastServerHumanView = next;
+      if (prev !== null && prev !== next) void load();
     });
   });
 
@@ -525,16 +567,16 @@
             {loadingOlder ? "Loading…" : "Show older messages"}
           </button>
         {/if}
-        {#if loading && messages.length === 0}
+        {#if loading && shownMessages.length === 0}
           <div class="conv-status" role="status">Loading conversation…</div>
-        {:else if threadError && messages.length === 0}
+        {:else if threadError && shownMessages.length === 0}
           <div class="conv-status" role="alert">{threadError}</div>
-        {:else if messages.length === 0}
+        {:else if shownMessages.length === 0}
           <div class="conv-status" data-testid="conversation-empty">
             No messages yet — say hi.
           </div>
         {:else}
-          {#each messages as m (m.eventId)}
+          {#each shownMessages as m (m.eventId)}
             <div
               class="conv-msg"
               class:out={m.direction === "out"}

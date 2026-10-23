@@ -1,6 +1,6 @@
 /**
  * Shared classifier + sidebar-order helpers for the
- * `desktop.human-only-conversations` flag (see `flags.ts`).
+ * message-types preference (`hq:messages:types.v1`).
  *
  * Classification rule (documented, ordered):
  *   1. If the message carries an explicit `isSystemEvent` or `isMeshEvent`

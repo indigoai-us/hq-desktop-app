@@ -252,7 +252,7 @@ export interface ConversationMessageWire {
     agent?: boolean;
   }> | null;
   /**
-   * Audience classifier used by the `desktop.human-only-conversations` flag.
+   * Audience classifier used by the people-only message-types preference.
    * `null` / `undefined` / `"human"` / `"both"` = human; `"bot"` / `"mesh"`
    * / other = not human. See `@hq/platform` `isHumanMessage`.
    */

@@ -58,8 +58,6 @@ import {
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
   FIRST_LAUNCH_JOIN_KEY_FLAG,
-  HUMAN_ONLY_CONVERSATIONS_FLAG,
-  HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   LOGIN_RECEIPT_DURABILITY_FLAG,
   PERSONAL_WORKSPACE_BOARD_FLAG,
   PERSONAL_TRANSCRIPTS_FLAG,
@@ -307,12 +305,6 @@ export function createSyncPlatformAdapter(
       // Sign-in receipt durability is opt-in; an absent or unreadable registry
       // leaves the existing asynchronous queue behavior unchanged.
       return Promise.resolve(ok(false));
-    }
-    if (flag === HUMAN_ONLY_CONVERSATIONS_FLAG) {
-      // Human-only conversations is on by default in the desktop app.
-      // `identity.hasFeature` short-circuits before the registry; this
-      // branch keeps the legacy path consistent.
-      return Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT));
     }
     if (flag === CLAUDE_PROVIDER_FLAG || flag === DESKTOP_AGENT_CREATION_FLAG) {
       return Promise.resolve(ok(false));
@@ -729,18 +721,13 @@ export function createSyncPlatformAdapter(
       resolveFeatureFlagStatus: (flag) =>
         flags.resolveStatus(flag, () => hasFeatureLegacy(flag)),
       hasFeature: (flag, scope) =>
-        flag === HUMAN_ONLY_CONVERSATIONS_FLAG
-          ? // Pinned per release; the registry cannot turn it off.
-            Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT))
-          : flagsFor(scope?.companyUid).resolve(flag, () => hasFeatureLegacy(flag)),
+        flagsFor(scope?.companyUid).resolve(flag, () => hasFeatureLegacy(flag)),
       readCompanyFeature: (flag, companyUid) =>
         readCompanyFeature(createHqProFlagFetch(invokeFn), flag, companyUid),
       hasCompanyFeature: (flag, companyUid) =>
         resolveCompanyFeature(createHqProFlagFetch(invokeFn), flag, companyUid),
       subscribeFeature: (flag, onChange) =>
-        flag === HUMAN_ONLY_CONVERSATIONS_FLAG
-          ? () => {}
-          : flags.subscribe(flag, () => hasFeatureLegacy(flag), onChange),
+        flags.subscribe(flag, () => hasFeatureLegacy(flag), onChange),
       listWorkspaces: async () => {
         const result = await call<unknown>('list_syncable_workspaces');
         if (!result.ok) return result;

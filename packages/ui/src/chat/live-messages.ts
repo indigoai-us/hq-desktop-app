@@ -191,6 +191,8 @@ export async function collectTimelineRoots(options: {
   pageSize?: number;
   maxExtraPages?: number;
   initialCursor?: string | null;
+  /** Keep each row's `audience` (see `normalizeConversationMessages`). */
+  keepAudience?: boolean;
 }): Promise<{
   roots: ConversationMessageWire[];
   nextCursor: string | null;
@@ -213,6 +215,7 @@ export async function collectTimelineRoots(options: {
     );
     const mapped = normalizeConversationMessages(
       page.messages !== undefined ? page.messages : page,
+      { keepAudience: options.keepAudience === true },
     );
     for (const row of mapped) {
       if (isReplyMessage(row)) {
@@ -397,6 +400,11 @@ export function normalizeConversationMessages(
       ...(replyCount !== undefined ? { replyCount } : {}),
       ...(lastReplyAt ? { lastReplyAt } : {}),
       ...(audience ? { audience } : {}),
+      // Message-type markers (hq-message-visibility): kept when sent so the
+      // type filter can tell system and CLI rows apart. Absent stays absent.
+      ...(row.isSystemEvent === true ? { isSystemEvent: true } : {}),
+      ...(row.isMeshEvent === true ? { isMeshEvent: true } : {}),
+      ...(asString(row.sentVia) ? { sentVia: asString(row.sentVia) } : {}),
     });
   }
   return out;

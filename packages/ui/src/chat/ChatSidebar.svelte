@@ -114,6 +114,8 @@
     saveShowArchived,
     unarchiveConversations,
   } from "./session-archive.js";
+  import { messageTypesStore } from "./message-types.svelte.js";
+  import type { MessageTypesPref } from "./message-types.js";
   import {
     applyClick as applySelectionClick,
     applySelectionKey,
@@ -544,7 +546,7 @@
     /** Optional content rendered above the account footer. */
     bottomContent?: Snippet;
     /**
-     * When true (the `desktop.human-only-conversations` flag is on), rows are
+     * When true (the message-types preference shows people only), rows are
      * ordered and sectioned by the last message a person typed, in three
      * states: a known `lastHumanMessageAt` places the row at that time; a
      * row the server knows holds no human message is placed at its creation
@@ -810,6 +812,16 @@
     void scope;
     personFilter = null;
   });
+
+  /**
+   * Message types (global default, `hq:messages:types.v1`). Shared store, so
+   * the open conversation and every snippet re-filter as soon as it changes.
+   * The popover stays open so both switches can be set in one visit.
+   */
+  const messageTypes = $derived(messageTypesStore.value);
+  function setMessageType(key: keyof MessageTypesPref, on: boolean): void {
+    messageTypesStore.set({ ...messageTypesStore.value, [key]: on });
+  }
 
   function setShowFilter(next: ShowFilter): void {
     const prev = showFilter;
@@ -4341,6 +4353,47 @@
               {/if}
             </button>
 
+            <div class="chat-filter-caption pad-top" data-testid="chat-filter-types-caption">Message types</div>
+            <div class="chat-filter-types" role="group" aria-label="Message types">
+              <button
+                type="button"
+                class="chat-filter-row chat-filter-switch-row"
+                role="switch"
+                aria-checked="true"
+                disabled
+                data-testid="chat-filter-type-people"
+              >
+                <span class="chat-filter-lead" aria-hidden="true">{@render filterIcon("people")}</span>
+                <span class="chat-filter-text">People</span>
+                <span class="chat-filter-switch on" aria-hidden="true"></span>
+              </button>
+              <button
+                type="button"
+                class="chat-filter-row chat-filter-switch-row"
+                role="switch"
+                aria-checked={messageTypes.agents}
+                data-testid="chat-filter-type-agents"
+                onclick={() => setMessageType("agents", !messageTypes.agents)}
+              >
+                <span class="chat-filter-lead" aria-hidden="true">{@render filterIcon("agents")}</span>
+                <span class="chat-filter-text">Agents &amp; CLI</span>
+                <span class="chat-filter-switch" class:on={messageTypes.agents} aria-hidden="true"></span>
+              </button>
+              <button
+                type="button"
+                class="chat-filter-row chat-filter-switch-row"
+                role="switch"
+                aria-checked={messageTypes.system}
+                data-testid="chat-filter-type-system"
+                onclick={() => setMessageType("system", !messageTypes.system)}
+              >
+                <span class="chat-filter-lead" aria-hidden="true">{@render filterIcon("system")}</span>
+                <span class="chat-filter-text">System events</span>
+                <span class="chat-filter-switch" class:on={messageTypes.system} aria-hidden="true"></span>
+              </button>
+              <p class="chat-filter-hint" data-testid="chat-filter-types-hint">Applies everywhere. Any conversation can override from its header.</p>
+            </div>
+
             {#if people.length > 0}
               <div class="chat-filter-caption pad-top">People</div>
               <div class="chat-people-list">
@@ -5175,6 +5228,9 @@
     archive: "archive",
     check: "check",
     requests: "user-plus",
+    people: "users",
+    agents: "robot",
+    system: "bell",
   } as const)[name as "clock"]}
   {#if icon}<RailIcon name={icon} size={14} />{/if}
 {/snippet}
@@ -7020,6 +7076,53 @@
   .chat-filter-text {
     flex: 1 1 auto;
     min-width: 0;
+  }
+
+  .chat-filter-switch-row:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+
+  .chat-filter-switch-row:disabled:hover {
+    background: transparent;
+  }
+
+  /* Trailing switch: a small track with a knob, same slot as the check. */
+  .chat-filter-switch {
+    position: relative;
+    flex: none;
+    width: 24px;
+    height: 14px;
+    border-radius: var(--v4-radius-pill, 980px);
+    background: var(--v4-hairline);
+    transition: background 0.12s;
+  }
+
+  .chat-filter-switch::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--v4-surface, #fff);
+    transition: transform 0.12s;
+  }
+
+  .chat-filter-switch.on {
+    background: var(--accent, var(--t1));
+  }
+
+  .chat-filter-switch.on::after {
+    transform: translateX(10px);
+  }
+
+  .chat-filter-hint {
+    margin: 4px 6px 2px;
+    color: var(--t2);
+    font-size: 11px;
+    line-height: 1.35;
   }
 
   .chat-filter-check {

@@ -15,6 +15,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
+import { messageTypesStore } from "../chat/message-types.svelte.js";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
@@ -127,7 +128,25 @@ async function settle(times = 12): Promise<void> {
   }
 }
 
+/**
+ * The retired `desktop.human-only-conversations` flag is now the message-types
+ * preference (hq-message-visibility US-004). `humanOnly: false` maps to both
+ * switches on and `true` to the default (people only); `undefined` leaves
+ * the store as the test set it. Reset to the default before each test.
+ */
+function applyMessageTypes(humanOnly: boolean | undefined): void {
+  // Undefined: the test set the store itself (or left the default).
+  if (humanOnly === undefined) return;
+  messageTypesStore.set(
+    humanOnly === false ? { agents: true, system: true } : { agents: false, system: false },
+  );
+}
+beforeEach(() => {
+  messageTypesStore.set({ agents: false, system: false });
+});
+
 async function mountApp(fx: Fixture, initialRow?: ConversationRow) {
+  applyMessageTypes(fx.humanOnly);
   const wakes = createChatWakeBus();
   const activity: InboxDmActivity[][] = [];
   wakes.on("dm:pair-unreads", (payload) => {
@@ -371,7 +390,7 @@ describe("DesktopApp DM human recency from the thread listing", () => {
     expect(fx.threadsCalls).toBe(before + 2);
   });
 
-  it("flag off: the listing is not read again on a DM wake or a send, even from a server that reports the fields", async () => {
+  it("message types on: the listing is not read again on a DM wake or a send, even from a server that reports the fields", async () => {
     const fx: Fixture = {
       threads: NEW_SERVER_THREADS,
       threadsCalls: 0,

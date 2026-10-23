@@ -35,7 +35,8 @@
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
   import MentionPicker from "./MentionPicker.svelte";
-  import { isHumanMessage, type LocalBotRow } from "@hq/platform";
+  import { isHumanMessage, messageType, type LocalBotRow, type MessageType } from "@hq/platform";
+  import { isMessageTypeVisible, type MessageTypesPref } from "../message-types.js";
   import ArtifactCard from "./ArtifactCard.svelte";
   import ForwardedBlock from "./ForwardedBlock.svelte";
   import type { ChatArtifact } from "./artifact-model.js";
@@ -364,12 +365,19 @@
     /** The user's local bots — tells the Cloud / Local chip which is which. */
     localBots?: ReadonlyArray<LocalBotRow> | null;
     /**
-     * When true (the `desktop.human-only-conversations` flag is on), work-mesh
+     * When true (the message-types preference shows people only), work-mesh
      * activity rows, server system-events, and non-human-audience messages are
-     * hidden from the timeline. See `@hq/platform` `isHumanMessage` for the
-     * exact rule. Default off preserves the legacy view.
+     * hidden from the timeline, and the server human-view paging below is
+     * used. See `@hq/platform` `messageType` for the exact rule. Default off
+     * preserves the legacy view.
      */
     humanOnly?: boolean;
+    /**
+     * Message types preference (`hq:messages:types.v1`). When given it decides
+     * which rows show: people always, agent rows iff `agents`, system rows iff
+     * `system`. Without it, `humanOnly` means people only.
+     */
+    messageTypes?: MessageTypesPref | null;
     /**
      * The host's history pages for this conversation are filtered and paged
      * by the server (it echoed `view: "human"`). `hasEarlier` is then exactly
@@ -449,6 +457,7 @@
     restoreScroll = null,
     localBots = null,
     humanOnly = false,
+    messageTypes = null,
     serverHumanView = false,
     conversationKey = null,
     offline = false,
@@ -698,8 +707,8 @@
    * count that only decreased by 20 per click (owner report, v0.10.362).
    */
   const visibleRootMessages = $derived.by(() => {
-    if (!humanOnly) return rootMessages;
-    return rootMessages.filter((msg) => !hiddenInHumanOnly(msg));
+    if (typeFilter === null) return rootMessages;
+    return rootMessages.filter((msg) => !hiddenByType(msg));
   });
   const windowed = $derived(
     takeNewestWindow(visibleRootMessages, { extra: extraOlder }),
@@ -714,12 +723,22 @@
    * with no audience tag (bot DM replies, the Setup bot), since the wire
    * cannot tell those apart from autonomous posts.
    */
-  function hiddenInHumanOnly(msg: ConversationMessageWire): boolean {
+  function timelineType(msg: ConversationMessageWire): MessageType {
     const model = systemModelForMessage(msg);
-    if (model?.kind === "lifecycle_card") return false;
-    if (model !== null) return true;
-    if (parseWorkSessionEvent(msg.body ?? "") !== null) return true;
-    return !isHumanMessage(msg, { inferFromUid: false });
+    if (model?.kind === "lifecycle_card") return "people";
+    if (model !== null) return "system";
+    if (parseWorkSessionEvent(msg.body ?? "") !== null) return "system";
+    return messageType(msg, { inferFromUid: false });
+  }
+
+  /** Effective filter: the preference, people only for `humanOnly`, or none. */
+  const typeFilter = $derived<MessageTypesPref | null>(
+    messageTypes ?? (humanOnly ? { agents: false, system: false } : null),
+  );
+
+  function hiddenByType(msg: ConversationMessageWire): boolean {
+    if (typeFilter === null) return false;
+    return !isMessageTypeVisible(timelineType(msg), typeFilter);
   }
 
   const timeline = $derived.by(() => {
@@ -732,13 +751,13 @@
       // entirely — rendering nothing for them would still paint an empty
       // bubble with an avatar and a timestamp.
       if (isHiddenTimelineMessage(msg)) continue;
-      // desktop.human-only-conversations: hide mesh/system rows and any
+      // Message types: hide mesh/system rows and any
       // non-human-audience message. A mesh row that parses as a work-session
       // event is dropped downstream via `parseWorkSessionEvent` below.
       // Filtering happens here (not only in renderRows) so a channel whose
       // only messages are non-human reaches the empty state instead of a
       // blank pane.
-      if (humanOnly && hiddenInHumanOnly(msg)) continue;
+      if (hiddenByType(msg)) continue;
       seen.add(id);
       out.push(msg);
     }
@@ -1610,10 +1629,10 @@
       const shareCard = systemModel ? null : parseShareRequestEvent(msg.systemEvent);
       const special = systemModel !== null || shareCard !== null;
       const workActivity = parseWorkSessionEvent(msg.body ?? "");
-      // desktop.human-only-conversations: a message whose body parses as a
+      // Message types: a message whose body parses as a
       // work-mesh activity event is a mesh row and MUST NOT render, even if
       // the classifier missed it on the wire fields.
-      if (humanOnly && hiddenInHumanOnly(msg)) continue;
+      if (hiddenByType(msg)) continue;
       const stackable = !special && !workActivity && isStackableShare(msg);
       const leader = out.at(-1);
       if (

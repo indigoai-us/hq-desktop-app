@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type PlatformAdapter, createSyncPlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
+import { messageTypesStore } from "../chat/message-types.svelte.js";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { createChatWakeBus } from "../chat/chat-api.js";
@@ -67,10 +68,15 @@ function adapter(opts: {
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
+beforeEach(() => {
+  messageTypesStore.set({ agents: false, system: false });
+});
+
 afterEach(async () => {
   if (component) await unmount(component);
   component = null;
   host?.remove();
+  messageTypesStore.set({ agents: false, system: false });
 });
 
 async function settle(times = 8): Promise<void> {
@@ -124,8 +130,11 @@ const MESSAGES: ConversationMessageWire[] = [
   { eventId: "e_human", direction: "in", fromPersonUid: "prs_corey", fromDisplayName: "Corey", body: "human-hello-xyz", createdAt: "2026-08-28T15:14:07.000Z" },
 ] as ConversationMessageWire[];
 
-// The desktop adapter pins the flag on; route its identity methods through
-// the real sync adapter so this covers adapter -> DesktopApp -> timeline.
+// The retired `desktop.human-only-conversations` flag no longer decides the
+// filter (hq-message-visibility US-004): the registry below answers it
+// `false`, and the default message-types preference still hides mesh and bot
+// rows. Routed through the real sync adapter so this covers
+// adapter -> DesktopApp -> timeline.
 function desktopIdentity(): Partial<PlatformAdapter["identity"]> {
   const real = createSyncPlatformAdapter({
     invoke: async (cmd) => {
@@ -141,8 +150,8 @@ function desktopIdentity(): Partial<PlatformAdapter["identity"]> {
   };
 }
 
-describe("DesktopApp human-only conversations default", () => {
-  it("desktop adapter: hides mesh noted rows and bot-audience messages, keeps human messages", async () => {
+describe("DesktopApp message types default (people only)", () => {
+  it("default preference: hides mesh noted rows and bot-audience messages, keeps human messages, whatever the old flag says", async () => {
     await mountChannel({ identityFeature: desktopIdentity(), messages: MESSAGES });
     await vi.waitFor(() => {
       expect(host.textContent).toContain("human-hello-xyz");
@@ -153,17 +162,25 @@ describe("DesktopApp human-only conversations default", () => {
     expect(host.textContent).not.toContain("bot-audience-xyz");
   });
 
-  it("an adapter answering false turns the filter off", async () => {
-    await mountChannel({
-      identityFeature: {
-        hasFeature: async () => ok(false),
-        subscribeFeature: () => () => {},
-      },
-      messages: MESSAGES,
-    });
+  it("Agents & CLI on shows bot-audience messages and still hides mesh rows", async () => {
+    messageTypesStore.set({ agents: true, system: false });
+    await mountChannel({ messages: MESSAGES });
     await vi.waitFor(() => {
       expect(host.textContent).toContain("bot-audience-xyz");
     });
     expect(host.textContent).toContain("human-hello-xyz");
+    expect(host.textContent).not.toContain("mesh-noted-xyz");
+  });
+
+  it("switching Agents & CLI on re-filters the open timeline without a reload", async () => {
+    await mountChannel({ messages: MESSAGES });
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("human-hello-xyz");
+    });
+    expect(host.textContent).not.toContain("bot-audience-xyz");
+    messageTypesStore.set({ agents: true, system: false });
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("bot-audience-xyz");
+    });
   });
 });

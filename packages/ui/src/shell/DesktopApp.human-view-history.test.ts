@@ -11,6 +11,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mount, tick, unmount } from "svelte";
+import { messageTypesStore } from "../chat/message-types.svelte.js";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
@@ -177,10 +178,28 @@ function fixture(partial: Partial<Fixture> = {}): Fixture {
   };
 }
 
+/**
+ * The retired `desktop.human-only-conversations` flag is now the message-types
+ * preference (hq-message-visibility US-004). `humanOnly: false` maps to both
+ * switches on and `true` to the default (people only); `undefined` leaves
+ * the store as the test set it. Reset to the default before each test.
+ */
+function applyMessageTypes(humanOnly: boolean | undefined): void {
+  // Undefined: the test set the store itself (or left the default).
+  if (humanOnly === undefined) return;
+  messageTypesStore.set(
+    humanOnly === false ? { agents: true, system: true } : { agents: false, system: false },
+  );
+}
+beforeEach(() => {
+  messageTypesStore.set({ agents: false, system: false });
+});
+
 async function mountApp(
   fx: Fixture,
   row: ConversationRow,
 ): Promise<ReturnType<typeof createChatWakeBus>> {
+  applyMessageTypes(fx.humanOnly);
   const wakes = createChatWakeBus();
   host = document.createElement("div");
   host.className = "desktop-shell chat-shell";
@@ -517,7 +536,7 @@ describe("DesktopApp human view history: older server (no view echo)", () => {
 });
 
 describe("DesktopApp human view history: when view is not sent", () => {
-  it("flag off: no request carries view, for a channel or a DM, first page or earlier", async () => {
+  it("Agents & CLI and System events on: no request carries view, for a channel or a DM, first page or earlier", async () => {
     const fx = fixture({
       humanOnly: false,
       first: { messages: [mesh(1), human(2)], nextCursor: "cur_1" },
@@ -535,7 +554,7 @@ describe("DesktopApp human view history: when view is not sent", () => {
     }
   });
 
-  it("flag off, DM: the thread request carries no view", async () => {
+  it("message types on, DM: the thread request carries no view", async () => {
     const fx = fixture({ humanOnly: false, first: { messages: [human(1)] } });
     await mountApp(fx, DM_ROW);
     expect(fx.calls.length).toBeGreaterThanOrEqual(1);
@@ -545,8 +564,9 @@ describe("DesktopApp human view history: when view is not sent", () => {
     }
   });
 
-  it("a host that cannot answer the flag sends no view (the default is not a confirmation)", async () => {
+  it("a host that cannot answer feature flags still follows the stored preference: Agents & CLI on sends no view", async () => {
     const fx = fixture({ humanOnly: undefined, first: { messages: [human(1)] } });
+    messageTypesStore.set({ agents: true, system: false });
     await mountApp(fx, CHANNEL_ROW);
     expect(fx.calls.length).toBeGreaterThanOrEqual(1);
     for (const call of fx.calls) {

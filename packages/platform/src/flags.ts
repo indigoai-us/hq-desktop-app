@@ -94,8 +94,6 @@ export const READY_FIRST_ACTION_FLAG = "desktop.ready-first-action-v1";
 export const DESKTOP_LIMIT_STATUS_PUSH_FLAG = "desktop.limit-status-push";
 export const SETUP_DEPS_TIMEOUT_RETRY_FLAG =
   "desktop.setup-deps-timeout-retry-v1";
-export const HUMAN_ONLY_CONVERSATIONS_FLAG =
-  "desktop.human-only-conversations";
 export const PERSONAL_TRANSCRIPTS_FLAG =
   "desktop.meetings-personal-transcripts";
 /** Admin-owned rollout gate for the person's self-service HQ Anywhere setting. */
@@ -141,14 +139,6 @@ export const BOT_INTEGRATION_CONTROL_FLAG =
  * `resolveCompanyFeature` with the company's uid, or the scoped `hasFeature`.
  */
 export const DESKTOP_AGENT_CREATION_FLAG = "agents.desktop-agent-creation";
-/**
- * Desktop value for `desktop.human-only-conversations`. The desktop (Tauri)
- * adapters answer this flag with this constant and do not consult the
- * registry, so a missing, stale, or `false` registry value cannot turn the
- * filter off. Set to `false` in a later release to turn it back off.
- */
-export const HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT = true;
-
 /**
  * Console-rail surfaces that are Indigo-only until they land (RELEASE-001).
  * The UI reads them through `isIndigoOnlySurface` in
@@ -199,7 +189,6 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   [DESKTOP_LIMIT_STATUS_PUSH_FLAG]: DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   [HQ_ANYWHERE_RUNTIME_FLAG]: HQ_ANYWHERE_RUNTIME_FLAG,
   [SETUP_DEPS_TIMEOUT_RETRY_FLAG]: SETUP_DEPS_TIMEOUT_RETRY_FLAG,
-  [HUMAN_ONLY_CONVERSATIONS_FLAG]: HUMAN_ONLY_CONVERSATIONS_FLAG,
   [DESKTOP_AGENT_CREATION_FLAG]: DESKTOP_AGENT_CREATION_FLAG,
   [PERSONAL_TRANSCRIPTS_FLAG]: PERSONAL_TRANSCRIPTS_FLAG,
   [VISUAL_FIRST_RUN_FLAG]: VISUAL_FIRST_RUN_FLAG,

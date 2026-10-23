@@ -87,6 +87,7 @@ export * from "./chat/channel-admin.js";
 export * from "./chat/portfolio-session.js";
 export * from "./chat/channel-directory-reconciler.js";
 export * from "./chat/sidebar-model.js";
+export { messageTypesStore } from "./chat/message-types.svelte.js";
 export {
   DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
   CONVERSATION_BOOT_GRACE_MS,

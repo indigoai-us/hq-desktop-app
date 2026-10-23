@@ -8,6 +8,7 @@
   import { ReactionController } from '../lib/reactionController.svelte';
   import { mergeHydratedThread, shouldAppendInbound } from '../lib/dmThread';
   import { loadSelfPersonUid } from '../lib/selfPersonUid';
+  import { messageTypesStore } from '@hq/ui';
   import type { MessageAttachment } from '../lib/messageAttachments';
   import {
     loadAttachmentCompanies,
@@ -38,7 +39,11 @@
 
   interface Props {
     event: DmEvent;
-    /** US-006 toggle: when false (default), agent-audience messages are hidden. */
+    /**
+     * Force agent-audience messages on. When false (default), the global
+     * message-types preference (`hq:messages:types.v1`, "Agents & CLI")
+     * decides; it is off by default, so agent messages stay hidden.
+     */
     showBotMessages?: boolean;
   }
 
@@ -58,9 +63,11 @@
   }
 
   let messages = $state<ThreadMessage[]>([]);
-  // US-006: apply audience filter; when toggle is off, only human/both messages show.
-  const visibleMessages = $derived(filterByAudience(messages, showBotMessages));
-  const hiddenMessageCount = $derived(countHiddenByAudience(messages, showBotMessages));
+  // Audience filter: agent-audience messages show only when the prop forces
+  // them or the "Agents & CLI" message-types switch is on.
+  const showAgents = $derived(showBotMessages || messageTypesStore.value.agents);
+  const visibleMessages = $derived(filterByAudience(messages, showAgents));
+  const hiddenMessageCount = $derived(countHiddenByAudience(messages, showAgents));
   let loadingThread = $state(false);
   let threadError = $state<string | null>(null);
   let activePeerUid: string | null = null;
