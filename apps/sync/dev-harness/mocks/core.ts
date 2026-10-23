@@ -857,7 +857,53 @@ const previewLocalBots: Array<Record<string, unknown>> = botsTablePreviewEnabled
     ]
   : [];
 
+// US-004: the free-plan usage data notice. `&notice=pending|required` shows
+// the disclosure state, `card` answers a company with a card on file, `fail`
+// fails the read (the wizard keeps today's choice). Default: not-applicable.
+const HARNESS_DISCLOSURE = {
+  version: '2026-10-preview',
+  title: 'Free plan includes usage data',
+  summary: 'On the free plan, HQ shares anonymous usage data with us so we can keep the plan free and see what helps.',
+  collected: [
+    'Which HQ features you open and how often',
+    'Setup steps you finish or skip',
+    'App version, operating system, and crash reports',
+  ],
+  neverCollected: [
+    'Your files, prompts, or chat content',
+    'Passwords, keys, or secrets',
+    'Anything from your connected apps',
+  ],
+  offSwitch: 'You can turn usage data off once your company has a paid plan.',
+  upgradePath: 'To keep usage data off, add a card for your company in Billing.',
+};
+
+function harnessTelemetryNotice(): Record<string, unknown> {
+  const mode = new URLSearchParams(window.location.search).get('notice');
+  if (mode === 'fail') throw new Error('telemetry notice unavailable (harness)');
+  if (mode === 'pending' || mode === 'required') {
+    return {
+      status: mode === 'pending' ? 'notice-pending' : 'required',
+      seenAt: null,
+      requiredFrom: mode === 'required' ? '2026-10-01T00:00:00Z' : null,
+      ackAt: null,
+      hasCard: false,
+      disclosure: HARNESS_DISCLOSURE,
+    };
+  }
+  return {
+    status: mode === 'card' ? 'opt-out-available' : 'not-applicable',
+    seenAt: null,
+    requiredFrom: null,
+    ackAt: null,
+    hasCard: mode === 'card',
+    disclosure: null,
+  };
+}
+
 const handlers: Record<string, Handler> = {
+  get_telemetry_notice: () => harnessTelemetryNotice(),
+  post_telemetry_disclosure_ack: () => ({ ackAt: new Date().toISOString(), version: HARNESS_DISCLOSURE.version }),
   local_bots_list: () => ({ bots: previewLocalBots }),
   local_bots_workers: () => ({ workers: [] }),
   // The readiness check before a local bot is saved passes by default;

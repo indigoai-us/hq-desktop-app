@@ -156,7 +156,22 @@
     thisComputerNounFor,
     yourComputerNounFor,
   } from '../../lib/onboarding-platform';
-  import { postOptIn, markConsentRepromptShown } from '../../lib/onboarding-telemetry';
+  import {
+    postOptIn,
+    markConsentRepromptShown,
+    getTelemetryNotice,
+    disclosureApplies,
+    postTelemetryDisclosureAck,
+    type TelemetryNotice,
+    type TelemetryDisclosure,
+  } from '../../lib/onboarding-telemetry';
+  import {
+    approvedCheckoutUrl,
+    billingPortalHint,
+    openBillingPortal,
+    type BillingPortalOutcome,
+  } from '@hq/ui/account/billing-portal';
+  import { HQ_CONSOLE_BASE } from '@hq/ui/hq-console';
   import {
     emitDesktopAuthFailure,
     emitDesktopAuthProgress,
@@ -452,6 +467,24 @@
   // being swallowed to the console.
   type ConsentFailure = { kind: 'server' | 'offline'; message: string };
   let consentFailure = $state<ConsentFailure | null>(null);
+  // Free-plan usage data disclosure (US-004). A company with no card on a
+  // plan where usage data is required sees the server's disclosure in place
+  // of the share/decline choice. A click that lands while the read is in
+  // flight waits for it; a failed read falls back to today's choice.
+  let telemetryNotice = $state<TelemetryNotice | null>(null);
+  let noticeLoadStarted = false;
+  /** The in-flight notice read, so a quick click can wait for it. Cleared once it settles. */
+  let noticeLoad: Promise<void> | null = null;
+  /** The ready screen reads the notice only once it knows this is not an outpost session. */
+  let machineIdentityProbed = $state(false);
+  let disclosureAcked = $state(false);
+  // Set when the person used "Finish setup, send later" after the ack failed
+  // offline. Setup never blocks on the network; the server keeps the notice
+  // pending and asks again next time.
+  let disclosureFinishedOffline = $state(false);
+  let disclosureAcking = $state(false);
+  let cardOpening = $state(false);
+  let cardOutcome = $state<BillingPortalOutcome | null>(null);
   let loadingProvider = $state<SignInProvider | null>(null);
   let signInError = $state('');
   let microsoftEmail = $state('');
@@ -933,15 +966,24 @@
   const installCardLines = installCardStepLines();
   const consentGate = $derived(deferredConsentGate(deferredConsent));
   /** Finishing (Open HQ Desktop, or handing off to a tool) waits for the install and the answer. */
-  const finishBlocked = $derived(installPending || consentGate !== 'clear');
-  const openDesktop = $derived(
-    readyGate({
+  /** The free-plan disclosure replaces the usage-data choice on this screen. */
+  const disclosureShown = $derived(
+    disclosureApplies(telemetryNotice) && !outpostSession && (consentOnly || consentOnReady),
+  );
+  /** Finishing waits for the confirmed Continue while the disclosure is shown. */
+  const disclosurePending = $derived(
+    (consentOnly || consentOnReady) && disclosureShown && !disclosureAcked && !disclosureFinishedOffline,
+  );
+  const finishBlocked = $derived(installPending || consentGate !== 'clear' || disclosurePending);
+  const openDesktop = $derived.by(() => {
+    const gate = readyGate({
       installPending,
       consent: consentGate,
       finishing,
       launching: launching !== null,
-    }),
-  );
+    });
+    return disclosurePending ? { ...gate, enabled: false } : gate;
+  });
   const storyOrder = $derived(storyScenes(replay));
   /** Run 007 note-0018: why the Claude Code and Codex buttons wait. */
   const toolsHint = $derived(
@@ -1731,6 +1773,7 @@
       machineIdentity = { available: false, active: false };
     }
     outpostSession = machineIdentity.active;
+    machineIdentityProbed = true;
     return machineIdentity;
   }
 
@@ -3361,6 +3404,16 @@
     if (telemetryChoice === null || consentSubmitting) return false;
     consentSubmitting = true;
     consentFailure = null;
+    // A quick click on the consent screen waits for the notice read; when the
+    // disclosure applies it is shown instead of sending the choice. Continue
+    // on the disclosure comes here only after the acknowledgement.
+    if (consentOnly && noticeLoad && !disclosureAcked) {
+      await noticeLoad;
+      if (disclosureShown) {
+        consentSubmitting = false;
+        return false;
+      }
+    }
     const enabled = telemetryChoice === 'share';
     // Welcome flow: the question now comes while the install is still running
     // in the background, before the person entity exists. The answer is cached
@@ -3575,15 +3628,126 @@
       if (repromptPersonUid) {
         await markConsentRepromptShown(TELEMETRY_CONSENT_VERSION, repromptPersonUid);
       }
+      if (disclosureShown && !disclosureAcked) disclosureFinishedOffline = true;
       await finishWithRecovery();
       return;
     }
     // Ready screen: the answer is cached with provenance and the consent
     // repair sends it on the next connection. Finish without posting again and
     // without calling it a confirmed write.
+    if (disclosureShown && !disclosureAcked) disclosureFinishedOffline = true;
     readyConsentRecorded = true;
     consentFailure = null;
     await finishWithRecovery();
+  }
+
+  /**
+   * US-004: read the free-plan usage data notice for the company being set
+   * up. A failed read keeps today's share/decline choice and never blocks.
+   */
+  async function loadTelemetryNotice(): Promise<void> {
+    try {
+      const notice = await getTelemetryNotice(companyStepCompanyUid, invokeCommand);
+      if (!mounted) return;
+      telemetryNotice = notice;
+      if (notice === null) {
+        console.warn('[onboarding-consent] telemetry notice unavailable; showing the usage-data choice');
+      }
+    } finally {
+      noticeLoad = null;
+    }
+  }
+
+  /**
+   * Continue on the disclosure: record the acknowledgement, then send the
+   * share answer through the usual path. Nothing moves on until the server
+   * confirms the acknowledgement; a failure shows the usual Retry (and, when
+   * offline, the usual finish-anyway).
+   */
+  async function continueDisclosure(): Promise<void> {
+    if (disclosureAcking || consentSubmitting || finishing) return;
+    consentFailure = null;
+    if (!disclosureAcked) {
+      disclosureAcking = true;
+      try {
+        const ack = await postTelemetryDisclosureAck(companyStepCompanyUid, invokeCommand);
+        if (!mounted) return;
+        if (!ack.acked) {
+          console.warn('[onboarding-consent] disclosure acknowledgement failed:', ack.error);
+          consentFailure = {
+            kind: looksOffline(ack.error) ? 'offline' : 'server',
+            message: ack.error,
+          };
+          return;
+        }
+        disclosureAcked = true;
+      } finally {
+        disclosureAcking = false;
+      }
+    }
+    telemetryChoice = 'share';
+    const recorded = await submitConsent();
+    if (recorded && consentOnReady) readyConsentRecorded = true;
+  }
+
+  /** Plain status under "Add a card instead". Never shows raw server text. */
+  function cardHint(outcome: BillingPortalOutcome): string {
+    if (outcome.kind === 'opened') {
+      return 'Add your card in the page that opened. HQ checks again when you come back.';
+    }
+    return billingPortalHint(outcome, 'this company') ?? 'The billing page didn’t open. Tap to retry.';
+  }
+
+  /**
+   * "Add a card instead": open card setup for the company in the browser.
+   * Coming back to the window reads the notice again; with a card on file
+   * the screen goes back to the usual share/decline choice.
+   */
+  async function addCardInstead(): Promise<void> {
+    if (cardOpening) return;
+    cardOpening = true;
+    cardOutcome = null;
+    try {
+      const mintCheckout = onboardingFeatureFlags.company?.createBillingCheckoutSession;
+      if (!companyStepCompanyUid || typeof mintCheckout !== 'function') {
+        // A consent-only run has no company picked in this window: billing
+        // for the person's company is a click away in the console.
+        try {
+          await openExternal(HQ_CONSOLE_BASE);
+        } catch (err) {
+          console.warn('[onboarding-consent] could not open the console for card setup:', err);
+          if (mounted) cardOutcome = { kind: 'retry' };
+          return;
+        }
+        if (!mounted) return;
+        cardOutcome = { kind: 'opened' };
+        refreshNoticeOnReturn();
+        return;
+      }
+      const outcome = await openBillingPortal({
+        companyUid: companyStepCompanyUid,
+        createSession: (uid) => mintCheckout(uid),
+        openExternal: (url) => void openExternal(url),
+        approveUrl: approvedCheckoutUrl,
+      });
+      if (!mounted) return;
+      cardOutcome = outcome;
+      if (outcome.kind === 'opened') refreshNoticeOnReturn();
+    } finally {
+      cardOpening = false;
+    }
+  }
+
+  function refreshNoticeOnReturn(): void {
+    if (typeof window === 'undefined') return;
+    const onReturn = () => {
+      if (document.visibilityState === 'hidden') return;
+      window.removeEventListener('focus', onReturn);
+      document.removeEventListener('visibilitychange', onReturn);
+      void loadTelemetryNotice();
+    };
+    window.addEventListener('focus', onReturn);
+    document.addEventListener('visibilitychange', onReturn);
   }
 
   async function startSetupRun() {
@@ -3756,6 +3920,11 @@
       // usage-data answer first, and nothing finishes on a failed write: the
       // failure is shown with Retry, or for an offline person whose answer is
       // cached, "Finish setup, send later".
+      // The free-plan disclosure, while shown and unconfirmed, holds every
+      // way of finishing. A click that lands before the notice read is done
+      // waits for it.
+      if (noticeLoad) await noticeLoad;
+      if (disclosurePending) return false;
       if (consentOnReady && readyConsentShown && !readyConsentRecorded) {
         if (!(await submitConsent())) return false;
         readyConsentRecorded = true;
@@ -4005,7 +4174,9 @@
         void leaveExplainers();
         return;
       case 'consent':
-        if (!consentFailure) void submitConsent();
+        if (consentFailure) return;
+        if (disclosureShown) void continueDisclosure();
+        else void submitConsent();
         return;
       case 'ready':
         if (openDesktop.enabled) void handleFinish();
@@ -4056,7 +4227,13 @@
       case 'folder':
         return replay || (Boolean(installPath) && !directoryBusy);
       case 'consent':
-        return telemetryChoice !== null && !consentSubmitting && !finishing && !consentFailure;
+        return (
+          (disclosureShown || telemetryChoice !== null) &&
+          !disclosureAcking &&
+          !consentSubmitting &&
+          !finishing &&
+          !consentFailure
+        );
       case 'ready':
         return openDesktop.enabled;
       default:
@@ -4309,6 +4486,16 @@
     }
   });
 
+  // US-004: the free-plan disclosure is read when the usage-data question
+  // comes up (the consent screen, or the ready screen in a first run).
+  $effect(() => {
+    if (noticeLoadStarted || outpostSession) return;
+    if ((scene === 'consent' && consentOnly) || (scene === 'ready' && consentOnReady && machineIdentityProbed)) {
+      noticeLoadStarted = true;
+      noticeLoad = loadTelemetryNotice();
+    }
+  });
+
   $effect(() => {
     if (scene === 'ready' && consentOnReady && !hqAnywhereLoadStarted) {
       hqAnywhereLoadStarted = true;
@@ -4324,6 +4511,8 @@
       consentFailure,
       finishError,
       launchEscape,
+      telemetryNotice,
+      cardOutcome,
       detectionFailed,
       installPending,
       deferredConsent,
@@ -4840,14 +5029,19 @@
       aria-labelledby="onboarding-title-consent"
     >
       <div class="copy" bind:this={refs.consentCopy}>
-        <h2 class="h h-lg" id="onboarding-title-consent" tabindex="-1" data-scene-heading>Help make HQ better?</h2>
-        <p class="body">
-          HQ can share anonymous usage data with us, so we can see what helps and what gets in the way. Setup is the same either way, and you can change your mind any time in Settings.
-        </p>
+        {#if disclosureShown && telemetryNotice?.disclosure}
+          <h2 class="h h-lg" id="onboarding-title-consent" tabindex="-1" data-scene-heading data-testid="disclosure-title">{telemetryNotice.disclosure.title}</h2>
+          <p class="body" data-testid="disclosure-summary">{telemetryNotice.disclosure.summary}</p>
+        {:else}
+          <h2 class="h h-lg" id="onboarding-title-consent" tabindex="-1" data-scene-heading>Help make HQ better?</h2>
+          <p class="body">
+            HQ can share anonymous usage data with us, so we can see what helps and what gets in the way. Setup is the same either way, and you can change your mind any time in Settings.
+          </p>
+        {/if}
       </div>
       <fieldset class="form" bind:this={refs.consentForm}>
-        <legend class="sr-only">Share anonymous usage data</legend>
-        <div class="choice-wrap" bind:this={consentChoices[0]}>
+        <legend class="sr-only">{disclosureShown ? 'Usage data on the free plan' : 'Share anonymous usage data'}</legend>
+        <div class="choice-wrap" hidden={disclosureShown} bind:this={consentChoices[0]}>
           <label class="choice" class:selected={telemetryChoice === 'share'}>
             <input
               type="radio"
@@ -4865,7 +5059,7 @@
             </span>
           </label>
         </div>
-        <div class="choice-wrap" bind:this={consentChoices[1]}>
+        <div class="choice-wrap" hidden={disclosureShown} bind:this={consentChoices[1]}>
           <label class="choice" class:selected={telemetryChoice === 'decline'}>
             <input
               type="radio"
@@ -4886,7 +5080,10 @@
         <!-- The prototype's one-line fine print ("We never collect your files,
              names, messages...") is not accurate: repository, branch and MCP
              service names ARE collected. The precise disclosure stays. -->
-        <div class="fine" bind:this={refs.consentFine}>
+        <div class="fine" class:disclosure={disclosureShown} bind:this={refs.consentFine}>
+          {#if disclosureShown && telemetryNotice?.disclosure}
+            {@render disclosureDetails(telemetryNotice.disclosure)}
+          {:else}
           <p>
             <span class="label">What we collect:</span>
             which skills you run, the AI model, token and session counts, and the
@@ -4913,7 +5110,11 @@
               <span class="consent-link-error" role="alert">Couldn’t open the page.</span>
             {/if}
           </p>
+          {/if}
         </div>
+        {#if disclosureShown && cardOutcome}
+          <p class="disclosure-card-hint" role="status" data-testid="disclosure-card-hint">{cardHint(cardOutcome)}</p>
+        {/if}
         {#if consentFailure}
           <div
             class="note consent-error"
@@ -4921,18 +5122,7 @@
             role="alert"
             data-testid="consent-error"
           >
-            {#if consentFailure.kind === 'offline'}
-              <p>
-                You appear to be offline, so your choice couldn't be sent yet.
-                It's saved on this machine and HQ will send it automatically the
-                next time you're connected. You can finish setting up now.
-              </p>
-            {:else}
-              <p>
-                We couldn't save your choice to the server just now. Nothing was
-                lost, your answer is held on this machine. Try again in a moment.
-              </p>
-            {/if}
+            {@render consentFailureCopy(consentFailure)}
           </div>
         {/if}
         {#if finishError}
@@ -4955,19 +5145,36 @@
           <button
             class="btn btn-primary"
             type="button"
-            disabled={consentSubmitting || finishing}
+            disabled={consentSubmitting || disclosureAcking || finishing}
             data-testid="consent-retry"
-            onclick={() => void submitConsent()}
-          >{consentSubmitting ? 'Retrying…' : 'Retry'}</button>
+            onclick={() => void (disclosureShown ? continueDisclosure() : submitConsent())}
+          >{consentSubmitting || disclosureAcking ? 'Retrying…' : 'Retry'}</button>
           {#if consentFailure.kind === 'offline'}
             <button
               class="btn btn-secondary"
               type="button"
-              disabled={consentSubmitting || finishing}
+              disabled={consentSubmitting || disclosureAcking || finishing}
               data-testid="consent-finish-offline"
               onclick={() => void finishOffline()}
             ><RailIcon name="check" />Finish setup, send later</button>
           {/if}
+        {:else if disclosureShown}
+          <button
+            class="btn btn-primary"
+            type="button"
+            data-testid="disclosure-continue"
+            disabled={disclosureAcking || consentSubmitting || finishing}
+            aria-busy={disclosureAcking || consentSubmitting}
+            onclick={() => void continueDisclosure()}
+          >{disclosureAcking || consentSubmitting ? 'Saving…' : 'Continue'}</button>
+          <button
+            class="btn btn-secondary"
+            type="button"
+            data-testid="disclosure-add-card"
+            disabled={cardOpening || disclosureAcking || consentSubmitting || finishing}
+            aria-busy={cardOpening}
+            onclick={() => void addCardInstead()}
+          >{cardOpening ? 'Opening…' : 'Add a card instead'}</button>
         {:else}
           <button
             class="btn btn-primary"
@@ -5370,7 +5577,39 @@
         <!-- Usage data: one quiet line, recorded when the person finishes.
              Not asked of an outpost: a fleet agent has no consent dialog. -->
         {#if consentOnReady}
-        <div class="alt ready-consent" class:on={scene === 'ready' && navRevealed} data-testid="ready-consent">
+        <div class="alt ready-consent" class:on={scene === 'ready' && navRevealed} class:disclosure={disclosureShown} data-testid="ready-consent">
+          {#if disclosureShown && telemetryNotice?.disclosure}
+            <div class="rc-disclosure" data-testid="ready-disclosure">
+              <p class="rc-disclosure-title" data-testid="disclosure-title">{telemetryNotice.disclosure.title}</p>
+              <p class="rc-disclosure-summary" data-testid="disclosure-summary">{telemetryNotice.disclosure.summary}</p>
+              {@render disclosureDetails(telemetryNotice.disclosure)}
+              <div class="rc-disclosure-actions">
+                {#if disclosureAcked && readyConsentRecorded}
+                  <span class="rc-disclosure-done" role="status" data-testid="disclosure-confirmed">Saved. You can finish setup.</span>
+                {:else}
+                  <button
+                    class="btn btn-secondary"
+                    type="button"
+                    data-testid="disclosure-continue"
+                    disabled={disclosureAcking || consentSubmitting || finishing || consentFailure !== null}
+                    aria-busy={disclosureAcking || consentSubmitting}
+                    onclick={() => void continueDisclosure()}
+                  >{disclosureAcking || consentSubmitting ? 'Saving…' : 'Continue'}</button>
+                  <button
+                    type="button"
+                    class="consent-link"
+                    data-testid="disclosure-add-card"
+                    disabled={cardOpening || disclosureAcking || consentSubmitting || finishing}
+                    aria-busy={cardOpening}
+                    onclick={() => void addCardInstead()}
+                  >{cardOpening ? 'Opening…' : 'Add a card instead'}</button>
+                {/if}
+              </div>
+              {#if cardOutcome}
+                <p class="rc-disclosure-hint" role="status" data-testid="disclosure-card-hint">{cardHint(cardOutcome)}</p>
+              {/if}
+            </div>
+          {:else}
           <label class="rc-check">
             <input
               type="checkbox"
@@ -5392,6 +5631,7 @@
             aria-busy={privacyOpening}
             onclick={() => void handleOpenPrivacy()}
           >{privacyOpening ? 'Opening…' : privacyOpenError ? 'Retry opening what’s collected' : 'What’s collected'}</button>
+          {/if}
           {#if hqAnywhereRuntimeEnabled}
             <label class="rc-check rc-check-next">
               <input
@@ -5436,7 +5676,9 @@
             role="alert"
             data-testid="consent-error"
           >
-            {#if consentFailure.kind === 'offline'}
+            {#if disclosureShown}
+              {@render consentFailureCopy(consentFailure)}
+            {:else if consentFailure.kind === 'offline'}
               <p>
                 You appear to be offline, so your usage data choice couldn't be sent yet.
                 It's saved on this machine and HQ will send it automatically the next
@@ -5453,9 +5695,9 @@
                 class="btn btn-secondary"
                 type="button"
                 data-testid="consent-retry"
-                disabled={consentSubmitting || finishing}
-                onclick={() => void handleFinish()}
-              >{consentSubmitting ? 'Retrying…' : 'Retry'}</button>
+                disabled={consentSubmitting || disclosureAcking || finishing}
+                onclick={() => void (disclosureShown && !(disclosureAcked && readyConsentRecorded) ? continueDisclosure() : handleFinish())}
+              >{consentSubmitting || disclosureAcking ? 'Retrying…' : 'Retry'}</button>
               {#if consentFailure.kind === 'offline'}
                 <button
                   class="btn btn-secondary"
@@ -5617,6 +5859,52 @@
     </div>
   {/if}
 </div>
+
+{#snippet disclosureDetails(disclosure: TelemetryDisclosure)}
+  <div class="disclosure-lists" data-testid="disclosure-lists">
+    <div class="disclosure-list">
+      <p class="label">What HQ collects</p>
+      <ul data-testid="disclosure-collected">
+        {#each disclosure.collected as item, i (i)}<li>{item}</li>{/each}
+      </ul>
+    </div>
+    <div class="disclosure-list">
+      <p class="label">What HQ never collects</p>
+      <ul data-testid="disclosure-never-collected">
+        {#each disclosure.neverCollected as item, i (i)}<li>{item}</li>{/each}
+      </ul>
+    </div>
+  </div>
+  <p class="disclosure-line" data-testid="disclosure-off-switch">{disclosure.offSwitch}</p>
+  <p class="disclosure-line" data-testid="disclosure-upgrade-path">{disclosure.upgradePath}</p>
+{/snippet}
+
+{#snippet consentFailureCopy(failure: { kind: 'server' | 'offline' })}
+  {#if disclosureShown}
+    {#if failure.kind === 'offline'}
+      <p>
+        You appear to be offline, so HQ couldn't confirm this yet. You can finish
+        setting up now and HQ will show this note again next time.
+      </p>
+    {:else}
+      <p>
+        HQ couldn't confirm this with the server just now. Nothing was lost. Try
+        again in a moment.
+      </p>
+    {/if}
+  {:else if failure.kind === 'offline'}
+    <p>
+      You appear to be offline, so your choice couldn't be sent yet.
+      It's saved on this machine and HQ will send it automatically the
+      next time you're connected. You can finish setting up now.
+    </p>
+  {:else}
+    <p>
+      We couldn't save your choice to the server just now. Nothing was
+      lost, your answer is held on this machine. Try again in a moment.
+    </p>
+  {/if}
+{/snippet}
 
 {#snippet GoogleMark()}
   <!-- the official Google G geometry, filled monochrome -->

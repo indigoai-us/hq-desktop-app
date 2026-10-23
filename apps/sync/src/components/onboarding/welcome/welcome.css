@@ -1682,6 +1682,70 @@
   border-top-color: rgba(0, 0, 0, 0.7);
   animation: hq-ai-tools-spin 0.8s linear infinite;
 }
+/* Free-plan usage data notice (US-004): a state of the consent screen and the
+   Ready line. Two short lists side by side, stacked on narrow windows. */
+.hq-welcome .disclosure-lists {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 20px;
+  text-align: left;
+}
+.hq-welcome .disclosure-list .label {
+  margin: 0 0 2px;
+  color: #fff;
+}
+.hq-welcome .disclosure-list ul {
+  margin: 0;
+  padding-left: 16px;
+}
+.hq-welcome .disclosure-list li + li {
+  margin-top: 1px;
+}
+.hq-welcome .fine.disclosure .disclosure-line,
+.hq-welcome .rc-disclosure .disclosure-line {
+  margin: 8px 0 0;
+}
+.hq-welcome .disclosure-card-hint,
+.hq-welcome .rc-disclosure-hint {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--w-muted);
+  text-align: center;
+}
+.hq-welcome .ready-consent.disclosure {
+  flex-direction: column;
+}
+.hq-welcome .rc-disclosure {
+  max-width: 560px;
+  text-align: center;
+}
+.hq-welcome .rc-disclosure p {
+  margin: 0;
+}
+.hq-welcome .rc-disclosure .rc-disclosure-title {
+  color: #fff;
+  font-size: 13px;
+  line-height: 18px;
+}
+.hq-welcome .rc-disclosure .rc-disclosure-summary {
+  margin: 2px 0 8px;
+}
+.hq-welcome .rc-disclosure-actions {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 14px;
+  margin-top: 10px;
+}
+.hq-welcome .rc-disclosure-done {
+  color: var(--w-muted);
+}
+@media (max-width: 520px) {
+  .hq-welcome .disclosure-lists {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 /* usage data: one quiet line */
 .hq-welcome .ready-consent {
   display: flex;
