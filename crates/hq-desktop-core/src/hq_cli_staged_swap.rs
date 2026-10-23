@@ -21,6 +21,10 @@
 //!   time, so `hq` is always found; a process that starts inside the
 //!   two-rename window can fail to load the package and is covered by the
 //!   hq-cli update-request wait-and-re-exec path.
+//! * On Windows, npm's `hq.ps1` / `hq-auth-refresh.ps1` launchers are never
+//!   copied in, and live ones that npm generated for hq-cli are removed.
+//!   PowerShell prefers them over `hq.cmd`, and the default Restricted
+//!   execution policy blocks them.
 //!
 //! The package-use lease and update request are held by the caller for the
 //! whole stage-verify-swap sequence; nothing here touches them.
@@ -283,6 +287,11 @@ pub fn swap_staged_install(
     let live_bin = npm_global_bin_dir(live_prefix, windows_layout);
     let staged_bin = npm_global_bin_dir(staging, windows_layout);
     for name in hq_cli_bin_entries(windows_layout) {
+        // npm's .ps1 launchers are never brought in; see
+        // remove_hq_cli_ps1_launchers.
+        if name.ends_with(".ps1") {
+            continue;
+        }
         let staged_entry = staged_bin.join(name);
         if std::fs::symlink_metadata(&staged_entry).is_err() {
             continue;
@@ -293,8 +302,66 @@ pub fn swap_staged_install(
         }
         replace_bin_entry(&live_entry, &staged_entry, nonce)?;
     }
+    if windows_layout {
+        remove_hq_cli_ps1_launchers(&live_bin);
+    }
     remove_staging(staging);
     Ok(mode)
+}
+
+/// hq-cli's bins and their entry points inside the package.
+const HQ_CLI_PS1_BINS: &[(&str, &str)] = &[
+    ("hq", "dist/index.js"),
+    ("hq-auth-refresh", "dist/bin/hq-auth-refresh.js"),
+];
+
+/// True when `content` is npm cmd-shim's PowerShell launcher for hq-cli's
+/// `entry`. Matches the same markers as hq-cli's `isNpmGeneratedHqCliPs1Shim`
+/// so a hand-written `hq.ps1` or another package's launcher is never touched.
+pub fn is_npm_hq_cli_ps1_launcher(content: &str, entry: &str) -> bool {
+    let text = content.replace("\r\n", "\n").replace('\\', "/");
+    text.starts_with("#!/usr/bin/env pwsh\n")
+        && text.contains("$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent")
+        && text.trim_end().ends_with("exit $ret")
+        && text.contains(&format!(
+            "\"$basedir/node_modules/{HQ_CLI_PACKAGE_NAME}/{entry}\""
+        ))
+}
+
+/// True when the file at `path` is npm's launcher for the hq-cli bin named
+/// `launcher_name` (`hq.ps1` or `hq-auth-refresh.ps1`). `path` can be a copy
+/// with a different name, such as an install backup.
+pub fn is_npm_hq_cli_ps1_launcher_file(launcher_name: &str, path: &Path) -> bool {
+    let Some((_, entry)) = HQ_CLI_PS1_BINS
+        .iter()
+        .find(|(bin, _)| format!("{bin}.ps1").eq_ignore_ascii_case(launcher_name))
+    else {
+        return false;
+    };
+    std::fs::read_to_string(path)
+        .map(|content| is_npm_hq_cli_ps1_launcher(&content, entry))
+        .unwrap_or(false)
+}
+
+/// Remove npm's `hq.ps1` / `hq-auth-refresh.ps1` launchers from a Windows
+/// global bin dir. PowerShell prefers `.ps1` over `.cmd`, and the default
+/// Restricted execution policy refuses to run it, so `hq` fails with
+/// UnauthorizedAccess while `hq.cmd` works. The execution policy is never
+/// read or changed here. Best effort: a missing file is fine and a failed
+/// removal is logged without failing the install.
+pub fn remove_hq_cli_ps1_launchers(bin_dir: &Path) {
+    for (bin, _) in HQ_CLI_PS1_BINS {
+        let path = bin_dir.join(format!("{bin}.ps1"));
+        if !is_npm_hq_cli_ps1_launcher_file(&format!("{bin}.ps1"), &path) {
+            continue;
+        }
+        if let Err(error) = std::fs::remove_file(&path) {
+            eprintln!(
+                "[hq_cli_staged_swap] could not remove {}: {error}",
+                path.display()
+            );
+        }
+    }
 }
 
 /// Best-effort removal of a staging prefix.
@@ -459,6 +526,142 @@ mod tests {
             std::fs::read_dir(scope).unwrap().count(),
             1,
             "no parked copy left"
+        );
+    }
+
+    /// npm cmd-shim's PowerShell launcher for an hq-cli bin, as npm writes it
+    /// into a Windows global prefix.
+    fn npm_ps1_launcher(entry: &str) -> String {
+        let target = format!("\"$basedir/node_modules/@indigoai-us/hq-cli/{entry}\"");
+        [
+            "#!/usr/bin/env pwsh".to_string(),
+            "$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent".to_string(),
+            String::new(),
+            "$exe=\"\"".to_string(),
+            "if ($PSVersionTable.PSVersion -lt \"6.0\" -or $IsWindows) {".to_string(),
+            "  $exe=\".exe\"".to_string(),
+            "}".to_string(),
+            "$ret=0".to_string(),
+            "if (Test-Path \"$basedir/node$exe\") {".to_string(),
+            format!("  & \"$basedir/node$exe\"  {target} $args"),
+            "  $ret=$LASTEXITCODE".to_string(),
+            "} else {".to_string(),
+            format!("  & \"node$exe\"  {target} $args"),
+            "  $ret=$LASTEXITCODE".to_string(),
+            "}".to_string(),
+            "exit $ret".to_string(),
+            String::new(),
+        ]
+        .join("\r\n")
+    }
+
+    // PowerShell prefers hq.ps1 over hq.cmd, and the default Restricted
+    // execution policy refuses to run it (feedback_29d91817). The hq-cli
+    // postinstall only cleans the staging prefix, so the swap has to clear
+    // the live launchers itself.
+    #[test]
+    fn windows_swap_removes_live_hq_cli_ps1_launchers() {
+        let live = tempfile::tempdir().unwrap();
+        write_install(live.path(), true, "1.0.0");
+        std::fs::write(
+            live.path().join("hq.ps1"),
+            npm_ps1_launcher("dist/index.js"),
+        )
+        .unwrap();
+        std::fs::write(
+            live.path().join("hq-auth-refresh.ps1"),
+            npm_ps1_launcher("dist/bin/hq-auth-refresh.js"),
+        )
+        .unwrap();
+        let shim_before = std::fs::read(live.path().join("hq.cmd")).unwrap();
+        let staging = staging_prefix_for(live.path(), "p1");
+        write_install(&staging, true, "2.0.0");
+
+        swap_staged_install(live.path(), &staging, true, "p1").unwrap();
+
+        assert_eq!(live_version(live.path(), true), "2.0.0");
+        assert!(!live.path().join("hq.ps1").exists(), "hq.ps1 removed");
+        assert!(
+            !live.path().join("hq-auth-refresh.ps1").exists(),
+            "hq-auth-refresh.ps1 removed"
+        );
+        assert_eq!(
+            std::fs::read(live.path().join("hq.cmd")).unwrap(),
+            shim_before,
+            "hq.cmd untouched"
+        );
+    }
+
+    #[test]
+    fn ps1_launcher_detection_handles_line_endings_and_separators() {
+        let crlf = npm_ps1_launcher("dist/index.js");
+        assert!(is_npm_hq_cli_ps1_launcher(&crlf, "dist/index.js"));
+        assert!(is_npm_hq_cli_ps1_launcher(
+            &crlf.replace("\r\n", "\n"),
+            "dist/index.js"
+        ));
+        let backslashes = crlf.replace(
+            "/node_modules/@indigoai-us/hq-cli/dist/index.js",
+            "\\node_modules\\@indigoai-us\\hq-cli\\dist\\index.js",
+        );
+        assert!(is_npm_hq_cli_ps1_launcher(&backslashes, "dist/index.js"));
+        // Points at a different hq-cli entry.
+        assert!(!is_npm_hq_cli_ps1_launcher(
+            &crlf,
+            "dist/bin/hq-auth-refresh.js"
+        ));
+        // Edited by hand after npm wrote it.
+        assert!(!is_npm_hq_cli_ps1_launcher(
+            &format!("{crlf}Write-Host done\r\n"),
+            "dist/index.js"
+        ));
+        assert!(!is_npm_hq_cli_ps1_launcher("", "dist/index.js"));
+    }
+
+    #[test]
+    fn windows_swap_does_not_copy_a_staged_ps1_launcher() {
+        let live = tempfile::tempdir().unwrap();
+        write_install(live.path(), true, "1.0.0");
+        let staging = staging_prefix_for(live.path(), "p2");
+        write_install(&staging, true, "2.0.0");
+        // An older hq-cli without the postinstall cleanup leaves it in staging.
+        std::fs::write(staging.join("hq.ps1"), npm_ps1_launcher("dist/index.js")).unwrap();
+
+        swap_staged_install(live.path(), &staging, true, "p2").unwrap();
+
+        assert_eq!(live_version(live.path(), true), "2.0.0");
+        assert!(!live.path().join("hq.ps1").exists());
+        assert!(live.path().join("hq.cmd").exists());
+    }
+
+    #[test]
+    fn windows_swap_keeps_a_ps1_that_is_not_npms_hq_cli_launcher() {
+        let live = tempfile::tempdir().unwrap();
+        write_install(live.path(), true, "1.0.0");
+        let hand_written = "Write-Host 'my own hq wrapper'\r\n";
+        std::fs::write(live.path().join("hq.ps1"), hand_written).unwrap();
+        // Another package's launcher with an hq-cli bin name.
+        let foreign =
+            npm_ps1_launcher("dist/index.js").replace("@indigoai-us/hq-cli", "some-other-cli");
+        std::fs::write(live.path().join("hq-auth-refresh.ps1"), &foreign).unwrap();
+        let unrelated = npm_ps1_launcher("bin/claude.js");
+        std::fs::write(live.path().join("claude.ps1"), &unrelated).unwrap();
+        let staging = staging_prefix_for(live.path(), "p3");
+        write_install(&staging, true, "2.0.0");
+
+        swap_staged_install(live.path(), &staging, true, "p3").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(live.path().join("hq.ps1")).unwrap(),
+            hand_written
+        );
+        assert_eq!(
+            std::fs::read_to_string(live.path().join("hq-auth-refresh.ps1")).unwrap(),
+            foreign
+        );
+        assert_eq!(
+            std::fs::read_to_string(live.path().join("claude.ps1")).unwrap(),
+            unrelated
         );
     }
 

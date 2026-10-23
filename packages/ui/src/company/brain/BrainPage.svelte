@@ -14,6 +14,7 @@
   import type { DirEntry } from "../../files/file-tree.js";
   import ShowMoreRow from "../../shell/ShowMoreRow.svelte";
   import VaultTree from "../../files/explorer/VaultTree.svelte";
+  import FilePreviewPane from "../../files/FilePreviewPane.svelte";
   import WorkerDetailPane from "./WorkerDetailPane.svelte";
   import BrainSplit from "./BrainSplit.svelte";
   import { workerYamlDetail } from "./worker-detail.js";
@@ -103,7 +104,7 @@
      */
     appShell?: Pick<AppShellApi, "setActiveCompany"> | null;
     onopenpage?: (rowId: string) => void;
-    /** OWNER-R12: the worker pane opens files in the Files preview, which reads through the adapter. */
+    /** Knowledge assets and worker files use the authorized Files preview. */
     adapter?: PlatformAdapter | null;
     /**
      * OWNER-R11: usage reads for the Skills Usage tab. `team` is hq-pro
@@ -465,11 +466,19 @@
     writeBrainCache(key, cache);
   }
 
+  // Preserve frontmatter and the existing document inspector for notes/YAML.
+  // Assets stay discoverable without eagerly decoding binary or large files.
+  const isKnowledgeDocument = (path: string) => /\.(md|markdown|ya?ml)$/i.test(path);
+
   /** Null when the folder listing itself failed (kept apart from "empty"). */
   async function readKnowledge(api: FilesApi, root: string): Promise<KnowledgeFile[] | null> {
-    const paths = await collectFiles(api, root, 0, () => true);
+    const paths = await collectFiles(api, root, 0, () => true, true);
     if (paths === null) return null;
     return mapLimit(paths, READ_CONCURRENCY, async (path) => {
+      if (!isKnowledgeDocument(path)) {
+        const row = knowledgeFromFile(path, "");
+        return { ...row, title: row.name };
+      }
       const res = await api.getFileContent(path);
       return knowledgeFromFile(path, res.ok ? res.value : "");
     });
@@ -489,6 +498,7 @@
     root: string,
     depth: number,
     keep: (name: string, isDir: boolean) => boolean,
+    allFileTypes = false,
   ): Promise<string[] | null> {
     if (depth > 4) return [];
     const res = await api.listDir(root);
@@ -502,7 +512,8 @@
       entries.map(async (entry): Promise<string[]> => {
         if (!entry || typeof entry.path !== "string" || typeof entry.name !== "string") return [];
         if (!keep(entry.name, entry.isDir)) return [];
-        if (entry.isDir) return (await collectFiles(api, entry.path, depth + 1, keep)) ?? [];
+        if (entry.isDir) return (await collectFiles(api, entry.path, depth + 1, keep, allFileTypes)) ?? [];
+        if (allFileTypes) return [entry.path];
         if (entry.name.endsWith(".md") || entry.name.endsWith(".yaml") || entry.name.endsWith(".yml")) return [entry.path];
         return [];
       }),
@@ -527,6 +538,19 @@
     const res = await shell.openInEditor(path);
     if (!res.ok) console.warn("[brain] open in editor failed", res.code, res.message);
     status = res.ok ? `Opened ${path}` : "Could not open the file. Try again.";
+  }
+
+  async function revealKnowledgeFile(path: string): Promise<void> {
+    if (!files) {
+      status = "Show in folder is not available in this host.";
+      return;
+    }
+    try {
+      const res = await files.revealInFinder(path);
+      status = res.ok ? "File shown in its folder." : "Could not show the file. Try again.";
+    } catch {
+      status = "Could not show the file. Try again.";
+    }
   }
 
   async function openInClaude(path: string): Promise<void> {
@@ -823,6 +847,24 @@
             onclose={() => (selected = null)}
             onmore={() => (sheet = "picker")}
           />
+        {:else if page === "knowledge" && selectedFile && !isKnowledgeDocument(selectedFile.path)}
+          {@const assetPath = selectedFile.path}
+          {#if adapter}
+            <FilePreviewPane
+              {adapter}
+              path={assetPath}
+              scopeRoot={knowledgeTreeRoot(slug)}
+              scopeLabel="company knowledge"
+              onopenpath={(path) => (selected = path)}
+            />
+          {:else}
+            <div class="doc-card" data-testid="brain-asset-fallback">
+              <h2>{selectedFile.name}</h2>
+              <p class="path">{selectedFile.path}</p>
+              <p>Preview is not available in this host.</p>
+              {#if files}<RailButton icon="external" onclick={() => revealKnowledgeFile(assetPath)}>Show in folder</RailButton>{/if}
+            </div>
+          {/if}
         {:else if docHeader && (selectedPolicy || selectedFile)}
           {@const openTarget = docHeader.path}
           <div class="doc-card" data-testid="brain-doc-header">
@@ -1137,8 +1179,12 @@
   .body :global(code) { font-family: var(--font-mono); font-size: 12px; padding: 1px 4px; border-radius: 4px; background: var(--raised, var(--v4-control-faint)); }
   .body :global(pre) { padding: 10px 12px; border-radius: 6px; background: var(--raised, var(--v4-control-faint)); overflow: auto; }
   .body :global(pre code) { padding: 0; background: none; }
-  .body :global(table) { border-collapse: collapse; display: block; overflow-x: auto; }
-  .body :global(th), .body :global(td) { padding: 4px 10px; border-bottom: 1px solid var(--line, var(--v4-rowline)); text-align: left; vertical-align: top; }
+  /* Wide tables scroll in their own box. Cells wrap only between words, so
+     the body's overflow-wrap: anywhere cannot squeeze a table mid-word. */
+  .body :global(.markdown-table-scroll) { max-width: 100%; margin: 0 0 10px; overflow-x: auto; }
+  .body :global(.markdown-table-scroll table) { margin: 0; }
+  .body :global(table) { width: max-content; min-width: 100%; border-collapse: collapse; }
+  .body :global(th), .body :global(td) { max-width: 40ch; padding: 4px 10px; border-bottom: 1px solid var(--line, var(--v4-rowline)); text-align: left; vertical-align: top; overflow-wrap: normal; word-break: normal; }
   .body :global(th) { color: var(--t1, var(--v4-text-1)); font-weight: 500; }
   .body :global(blockquote) { padding-left: 12px; color: var(--t3, var(--v4-text-3)); border-left: 0; background: var(--raised, var(--v4-control-faint)); padding: 8px 12px; border-radius: 6px; }
   .body :global(a) { color: var(--t1, var(--v4-text-1)); }

@@ -38,6 +38,10 @@
   import type { AdapterPromise, Json } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
   import { DEPLOY_STEP_LABELS } from "../company/deploy-progress.js";
+  import CustomDomainForm from "../company/files-connect/CustomDomainForm.svelte";
+  import { canManageDomains, readLiveCustomDomainUrl, type DeployDomainRequest, type DomainPrices } from "../company/files-connect/custom-domain.js";
+  import { callerRole } from "../company/company-roles.svelte.js";
+  import { dismissable } from "../common/dismissable.js";
   import {
     filterDeploymentsBy,
     pillsAreDefault,
@@ -69,7 +73,13 @@
     deployAppPreview?: DeployPreviewFetcher;
     /** Rendered page snapshot for the selected public app; og:image is the fallback. */
     deployAppSnapshot?: DeploySnapshotFetcher;
-    companies?: Pick<Workspace, "slug" | "displayName" | "kind" | "state">[];
+    companies?: (Pick<Workspace, "slug" | "displayName" | "kind" | "state"> & Partial<Pick<Workspace, "cloudUid" | "role">>)[];
+    /** hq-deploy custom-domain routes; with it, company rows offer Custom domain (US-007). */
+    deployDomainRequest?: DeployDomainRequest | null;
+    /** `usage.domains` from the pricing feed, for the Custom domain sheet. */
+    loadDomainPrices?: (() => Promise<DomainPrices | null>) | null;
+    /** Mints a Stripe card-entry page for a company (cloud uid); null when it can't. */
+    domainCardEntryUrl?: ((companyUid: string) => Promise<string | null>) | null;
     openExternal?: (url: string) => void;    /** RELEASE-001 gate: false hides Redeploy and the "Your bots" filter. */
     actions?: boolean;
     /**
@@ -81,7 +91,7 @@
     livePreview?: boolean;
   }
 
-  let { accountId = "local", listDeployApps, deployAppPreview, deployAppSnapshot, companies = [], openExternal, actions = true, livePreview = false }: Props = $props();
+  let { accountId = "local", listDeployApps, deployAppPreview, deployAppSnapshot, companies = [], deployDomainRequest = null, loadDomainPrices = null, domainCardEntryUrl = null, openExternal, actions = true, livePreview = false }: Props = $props();
 
   /** Rows painted per step; the rest arrive on "Show more". */
   const PAGE = 200;
@@ -319,6 +329,42 @@
     notice = "";
   }
 
+  // US-007: the company Custom domain sheet, offered on company rows here too.
+  let domainRow = $state<PersonalDeployment | null>(null);
+  const companyFor = (row: PersonalDeployment) => companies.find((c) => c.slug === row.scopeId) ?? null;
+  const offersDomain = (row: PersonalDeployment | null): row is PersonalDeployment =>
+    Boolean(deployDomainRequest && row && row.scope === "company" && row.scopeId && row.appId);
+  function domainManager(row: PersonalDeployment): boolean {
+    const company = companyFor(row);
+    return canManageDomains(callerRole(company?.cloudUid ?? null) ?? company?.role ?? null);
+  }
+  /** Live custom domain per row id: the inspector shows and visits it instead of the hq.work address. */
+  let liveDomainUrls = $state<Record<string, string | null>>({});
+  /** Bumped when the Custom domain sheet adds, finishes or removes a domain. */
+  let liveDomainReads = $state(0);
+  $effect(() => {
+    void liveDomainReads;
+    const row = selected;
+    const req = deployDomainRequest;
+    if (!req || !offersDomain(row)) return;
+    const id = row.id;
+    let live = true;
+    void readLiveCustomDomainUrl(req, row.scopeId!, row.appId!)
+      .then((url) => {
+        if (live) liveDomainUrls = { ...liveDomainUrls, [id]: url };
+      })
+      .catch((err: unknown) => console.warn("[custom-domain] live domain read failed", err));
+    return () => {
+      live = false;
+    };
+  });
+  const selectedUrl = $derived(selected ? liveDomainUrls[selected.id] ?? selected.url : "");
+
+  async function domainCardUrl(row: PersonalDeployment): Promise<string | null> {
+    const uid = companyFor(row)?.cloudUid;
+    return uid && domainCardEntryUrl ? domainCardEntryUrl(uid) : null;
+  }
+
   function tone(row: PersonalDeployment): string {
     if (row.status === "active") return "live";
     if (row.status === "failed") return "err";
@@ -478,7 +524,7 @@
                 bind:clientWidth={previewCardWidth}
                 aria-label={`Open ${selected.name}`}
                 data-testid="deploy-preview"
-                onclick={() => previewUrl && openExternal?.(previewUrl)}
+                onclick={() => previewUrl && openExternal?.(selectedUrl || previewUrl)}
               >
                 {#if !previewLoaded}<span class="preview-wait" aria-hidden="true">Loading preview</span>{/if}
                 <iframe
@@ -511,12 +557,12 @@
               class:snap={ogPreview.data.kind === "snapshot"}
               aria-label={`Open ${selected.name}`}
               data-testid={ogPreview.data.kind === "snapshot" ? "deploy-snapshot" : "deploy-og"}
-              onclick={() => selected?.url && openExternal?.(selected.url)}
+              onclick={() => selectedUrl && openExternal?.(selectedUrl)}
             ><img src={ogPreview.data.src} alt="" /></button>
             <button type="button" class="link refresh-preview" data-testid="deploy-preview-refresh" onclick={retryPreview}>Refresh preview</button>
           {/if}
           <div class="title">{selected.name}</div>
-          {#if selected.url}<div class="url">{selected.url}</div>{/if}
+          {#if selectedUrl}<div class="url" data-testid="deploy-url">{selectedUrl}</div>{/if}
           {#if progress}
             <div class="prog" role="status" data-testid="deploy-progress">
               <div class="phd">{statusLabel(selected)} <span>{progress.percent}%</span></div>
@@ -530,8 +576,9 @@
             </div>
           {/if}
           <div class="act">
-            <RailButton icon="external" disabled={!selected.url} onclick={() => selected?.url && openExternal?.(selected.url)}>Visit</RailButton>
+            <RailButton icon="external" data-testid="deploy-visit" disabled={!selectedUrl} onclick={() => selectedUrl && openExternal?.(selectedUrl)}>Visit</RailButton>
             {#if actions}<RailButton icon="upload" onclick={redeploy} data-testid="deploy-redeploy">Redeploy</RailButton>{/if}
+            {#if offersDomain(selected)}<RailButton icon="link" data-testid="deploy-custom-domain" onclick={() => (domainRow = selected)}>Custom domain</RailButton>{/if}
           </div>
           {#if notice}<p class="notice" role="status" data-testid="deploy-redeploy-notice">{notice}</p>{/if}
           <dl>
@@ -547,6 +594,32 @@
     </div>
   </main>
 </div>
+
+{#if domainRow && offersDomain(domainRow) && domainRow.appId && domainRow.scopeId}
+  {@const row = domainRow}
+  <div class="scrim" role="presentation" onclick={() => (domainRow = null)}></div>
+  <div class="sheet" role="dialog" aria-modal="true" aria-label="Custom domain" data-testid="sheet-deploy-domain" use:dismissable={{ onclose: () => (domainRow = null), outside: true }}>
+    <header class="sh">
+      <span>Custom domain</span>
+      <span class="grow"></span>
+      <button data-icon-only class="icon" type="button" aria-label="Close" onclick={() => (domainRow = null)}><RailIcon name="x" /></button>
+    </header>
+    <CustomDomainForm
+      appId={row.appId!}
+      appName={row.name}
+      appUrl={row.url}
+      scope={row.scopeId!}
+      request={deployDomainRequest}
+      canManage={domainManager(row)}
+      loadPrices={loadDomainPrices}
+      cardEntryUrl={() => domainCardUrl(row)}
+      openExternal={(url) => openExternal?.(url)}
+      onclose={() => (domainRow = null)}
+      ondone={(message) => (notice = message)}
+      onchange={() => (liveDomainReads += 1)}
+    />
+  </div>
+{/if}
 
 <style>
   /* Messages grammar: 13px/17px rows, 7px 8px padding, 8px radius,
@@ -709,6 +782,12 @@
   .steps .now { color: var(--t1); }
   .prog p { margin: 8px 0 0; color: var(--t2); font-size: 13px; }
   dl { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 6px 10px; margin: 0; }
+  /* Custom domain sheet: the company Deployments sheet frame (FilesConnectPage.svelte). */
+  .scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 70; }
+  .sheet { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(480px, calc(100vw - 32px)); max-height: calc(100% - 40px); display: flex; flex-direction: column; overflow: hidden; z-index: 71; background: var(--overlay-bg, var(--panel-bg, var(--v4-popover))); border: 1px solid var(--panel-border, var(--v4-hairline)); border-radius: 8px; color: var(--t1, var(--v4-text-1)); font: 400 13px/1.45 var(--font-ui, var(--font-sans)); }
+  .sh { height: 52px; flex: 0 0 52px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 20px; border-bottom: 1px solid var(--panel-border, var(--v4-hairline)); font-weight: 500; }
+  .icon { display: inline-grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent; color: var(--t2, var(--v4-text-2)); cursor: pointer; }
+  .icon:hover { background: var(--hover, var(--v4-hover)); color: var(--t1, var(--v4-text-1)); }
   dt { color: var(--t3); }
   dd { margin: 0; color: var(--t2); overflow-wrap: anywhere; }
 </style>

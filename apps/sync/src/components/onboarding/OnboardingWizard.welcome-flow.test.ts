@@ -319,7 +319,8 @@ describe('welcome flow: the install runs in the background', () => {
     expect(open().querySelector('.tc-name')?.textContent?.trim()).toBe('Getting ready…');
     expect(open().querySelector('.tc-spin')).not.toBeNull();
     expect(open().querySelector('.tc-line')).toBeNull();
-    expect(title()).toBe('Almost ready.');
+    // Run 006: the heading follows the setup step; step 1 is not "almost ready".
+    expect(title()).toBe('Setting up HQ');
     // The Claude Code and Codex options wait with it.
     expect(byId('onboarding-launch-claude')!.disabled).toBe(true);
     expect(byId('onboarding-launch-codex')!.disabled).toBe(true);

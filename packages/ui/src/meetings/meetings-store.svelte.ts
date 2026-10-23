@@ -10,10 +10,12 @@ import {
   saveMeetingsCache,
   type MeetingsStorage,
 } from "./meetings-cache";
-import { startJitteredPoll } from "@hq/platform";
+import { startJitteredPoll, usagePauseAction } from "@hq/platform";
+import { callerRole } from "../company/company-roles.svelte.js";
 import {
   isAlreadyScheduledError,
   isPlanRequiredError,
+  meetingUsagePause,
   planRequiredUpgradeUrl,
 } from "./invite-errors";
 import { isRecordingCompanyMembership } from "./recording-membership";
@@ -153,9 +155,25 @@ export interface ToastDescriptor {
   kind: "info" | "warn";
   text: string;
   upgradeUrl?: string;
+  /** Label for the `upgradeUrl` action; the page's default when absent. */
+  upgradeLabel?: string;
+  /** Show an "Open Console" action (HQ Console integrations page). */
+  consoleAction?: boolean;
 }
 
+/** The company the last bot invite was for, so a usage pause can be answered by role. */
+let lastInviteCompanyId: string | null = null;
+
 function planRequiredToast(err: unknown): ToastDescriptor {
+  // US-024: a usage pause shows the server's message. Owners and admins get
+  // the Billing link; a member is asked to contact one.
+  const usagePause = meetingUsagePause(err);
+  if (usagePause) {
+    const action = usagePauseAction(usagePause, callerRole(lastInviteCompanyId) ?? null);
+    return action.kind === "billing"
+      ? { kind: "warn", text: usagePause.message, upgradeUrl: action.url, upgradeLabel: action.label }
+      : { kind: "warn", text: `${usagePause.message} ${action.hint}` };
+  }
   const upgradeUrl = planRequiredUpgradeUrl(err);
   return {
     kind: "warn",
@@ -979,6 +997,7 @@ async function invitePayload(
     destination.kind === "company" ? destination.companyUid : null,
     { has: isOwnMembershipUid },
   );
+  lastInviteCompanyId = typeof companyId === "string" && companyId ? companyId : null;
   return {
     meetingUrl,
     calendarEventId: evt?.id ?? null,
@@ -1205,6 +1224,30 @@ function finishCalendarConnect(notice: ToastDescriptor | null): void {
   if (notice) connectNotice = notice;
 }
 
+export const CHOOSE_CALENDARS_IN_CONSOLE_TEXT =
+  "Connected. Choose your calendars in Console to finish setup";
+
+/** True when any newly linked account has no saved calendar selection. A
+ *  failed lookup counts as "unknown" and keeps the plain connected message. */
+async function newAccountsNeedSelection(
+  accounts: GoogleAccount[],
+): Promise<boolean> {
+  const results = await Promise.all(
+    accounts.map(async (a) => {
+      try {
+        const resp = parseAccountCalendars(
+          unwrap(await requireApi().meetings.listCalendars(a.accountId)),
+        );
+        return resp.selectedCalendarIds.length === 0;
+      } catch (err) {
+        console.error(`meetings connect listCalendars failed for ${a.accountId}:`, err);
+        return false;
+      }
+    }),
+  );
+  return results.some(Boolean);
+}
+
 async function pollForConnectedAccount(): Promise<void> {
   if (!connectPending) return;
   const gen = connectWatchGeneration;
@@ -1220,14 +1263,29 @@ async function pollForConnectedAccount(): Promise<void> {
       !isCurrentTenantSession(epoch)
     )
       return;
-    const hasNew = (accts ?? []).some(
+    const newAccounts = (accts ?? []).filter(
       (a) => a.accountId && !connectBaselineIds.has(a.accountId),
     );
-    if (!hasNew) return;
-    finishCalendarConnect({
-      kind: "info",
-      text: "Calendar connected.",
-    });
+    if (newAccounts.length === 0) return;
+    // Calendar selection is saved in HQ Console; the desktop app has no
+    // selection panel yet. A new account with nothing selected syncs no
+    // events, so point people to Console instead of claiming setup is done.
+    const needsSelection = await newAccountsNeedSelection(newAccounts);
+    if (
+      !connectPending ||
+      gen !== connectWatchGeneration ||
+      !isCurrentTenantSession(epoch)
+    )
+      return;
+    finishCalendarConnect(
+      needsSelection
+        ? {
+            kind: "info",
+            text: CHOOSE_CALENDARS_IN_CONSOLE_TEXT,
+            consoleAction: true,
+          }
+        : { kind: "info", text: "Calendar connected." },
+    );
     markMutationCommitted();
     void refresh(true);
   } catch (err) {

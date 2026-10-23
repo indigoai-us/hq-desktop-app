@@ -55,8 +55,12 @@ pub const CLIENT_HEALTH_RECEIPT_PATH: &str = "/v1/client-health/commands/receipt
 // ─── Cadence + bounds ─────────────────────────────────────────────────────────
 
 /// Authenticated polling fallback interval — the long-stop that must work on
-/// every platform even when the MQTT wake is unavailable (AC #1).
-pub const DIAGNOSTICS_POLL_INTERVAL_SECS: u64 = 60;
+/// every platform even when the MQTT wake is unavailable (AC #1). Push is the
+/// primary delivery: the poller still runs immediately at startup, on every
+/// MQTT (re)connect (ConnAck catch-up), and on every inbound wake message, so
+/// this only bounds latency when push is down. Five minutes keeps that bound
+/// acceptable for admin-enqueued diagnostics without polling every minute.
+pub const DIAGNOSTICS_POLL_INTERVAL_SECS: u64 = 300;
 /// Per-probe timeout (AC #4: "bounded by timeouts"). A hung probe must not
 /// hang the whole CHECK_NOW run.
 pub const DIAGNOSTICS_PROBE_TIMEOUT_SECS: u64 = 10;
@@ -373,6 +377,13 @@ mod tests {
         ClientHealthCheckResult, ClientHealthCheckStatus, ClientHealthDiagnosticCheck,
     };
     use serde_json::json;
+
+    // ── Cadence ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn diagnostics_fallback_poll_interval_is_five_minutes() {
+        assert_eq!(DIAGNOSTICS_POLL_INTERVAL_SECS, 300);
+    }
 
     // ── Desired-state parsing ────────────────────────────────────────────────
 

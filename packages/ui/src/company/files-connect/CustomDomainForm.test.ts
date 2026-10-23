@@ -28,6 +28,7 @@ function render(handler: Handler, props: Record<string, unknown> = {}) {
   const target = document.createElement("div");
   document.body.appendChild(target);
   const ondone = vi.fn();
+  const onchange = vi.fn();
   const openExternal = vi.fn();
   component = mount(CustomDomainForm, {
     target,
@@ -36,6 +37,7 @@ function render(handler: Handler, props: Record<string, unknown> = {}) {
       appName: "launch-notes",
       appUrl: "https://launch-notes.indigo-hq.com",
       retryDelays: [0, 0],
+      recordDelays: [0, 0],
       scope: "indigo",
       request,
       canManage: true,
@@ -43,11 +45,26 @@ function render(handler: Handler, props: Record<string, unknown> = {}) {
       openExternal,
       onclose: () => {},
       ondone,
+      onchange,
       ...props,
     },
   });
-  return { target, request, ondone, openExternal };
+  return { target, request, ondone, onchange, openExternal };
 }
+
+/** Let the zero-delay retry timers fire between settles. */
+async function settleTimers(rounds = 4) {
+  for (let i = 0; i < rounds; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await settle();
+  }
+}
+
+const certRecord = (domain = "app.example.com") => ({ type: "CNAME", name: `_abc.${domain}.`, value: "_xyz.acm-validations.aws." });
+const refreshPending = (instructions: unknown[] = []) => ({
+  status: 200,
+  body: { ok: true, certStatus: "PENDING_VALIDATION", validationState: "pending", serving: false, dnsInstructions: instructions },
+});
 
 const q = (t: HTMLElement, id: string) => t.querySelector(`[data-testid="${id}"]`) as HTMLElement | null;
 
@@ -91,42 +108,118 @@ describe("US-007 CustomDomainForm", () => {
     expect(q(target, "custom-domain-status")?.textContent).toBe("Waiting for DNS");
     expect(q(target, "custom-domain-record-ownership")?.textContent).toContain("_xyz.acm-validations.aws");
     expect(q(target, "custom-domain-record-routing")?.textContent).toContain("launch-notes.indigo-hq.com");
-    expect(q(target, "custom-domain-apex")).toBeNull();
+    expect(q(target, "custom-domain-records-partial")).toBeNull();
+    // Both records came with the add reply, so no extra read.
+    expect(request).not.toHaveBeenCalledWith("indigo", "POST", expect.stringContaining("/refresh"), undefined);
     expect(ondone).toHaveBeenCalledWith(expect.stringContaining("app.example.com added"));
   });
 
-  it("gives ALIAS / flattening guidance for a bare domain", async () => {
-    const { target } = render(() => pending("example.com"));
+  it("shows both DNS records together when the add reply has only the routing one", async () => {
+    // ACM makes the certificate record a few seconds after the request, so
+    // hq-deploy's add reply often lacks it and only a later refresh carries it.
+    let refreshes = 0;
+    const { target } = render((method, path) => {
+      if (method === "GET") return none();
+      if (path.endsWith("/refresh")) {
+        refreshes += 1;
+        return refreshPending(refreshes < 2 ? [] : [certRecord()]);
+      }
+      return {
+        status: 201,
+        body: {
+          ok: true,
+          domain: { domain: "app.example.com", validationState: "pending" },
+          dnsInstructions: [{ type: "CNAME", name: "app.example.com", value: "launch-notes.indigo-hq.com" }],
+          serving: false,
+        },
+      };
+    });
     await settle();
-    const apex = q(target, "custom-domain-apex");
-    expect(apex?.textContent).toContain("root domain");
-    expect(apex?.textContent).toContain("ALIAS");
-    expect(apex?.textContent).toContain("www.example.com");
-    // The routing record is rebuilt from the app host when the list carries none.
+    type(q(target, "custom-domain-input") as HTMLInputElement, "app.example.com");
+    (q(target, "custom-domain-add") as HTMLButtonElement).click();
+    await settle();
+    // While the certificate record is fetched, no record shows on its own.
+    expect(q(target, "custom-domain-records-loading")).not.toBeNull();
+    expect(q(target, "custom-domain-record-routing")).toBeNull();
+    expect(q(target, "custom-domain-record-ownership")).toBeNull();
+
+    await settleTimers();
+    expect(refreshes).toBe(2);
+    expect(q(target, "custom-domain-records-loading")).toBeNull();
+    expect(q(target, "custom-domain-record-ownership")?.textContent).toContain("_xyz.acm-validations.aws");
+    expect(q(target, "custom-domain-record-routing")?.textContent).toContain("launch-notes.indigo-hq.com");
+    expect(q(target, "custom-domain-records-partial")).toBeNull();
+  });
+
+  it("reads both DNS records when the sheet opens on a pending domain", async () => {
+    const { target, request } = render((method) => (method === "GET" ? pending() : refreshPending([certRecord()])));
+    await settleTimers();
+    expect(request).toHaveBeenCalledWith("indigo", "POST", "/api/apps/app_1/domains/app.example.com/refresh", undefined);
+    expect(q(target, "custom-domain-record-ownership")?.textContent).toContain("_xyz.acm-validations.aws");
     expect(q(target, "custom-domain-record-routing")?.textContent).toContain("launch-notes.indigo-hq.com");
   });
 
+  it("says so when the certificate record is still not ready after the retries", async () => {
+    const { target } = render((method) => (method === "GET" ? pending() : refreshPending([])));
+    await settleTimers();
+    expect(q(target, "custom-domain-record-routing")).not.toBeNull();
+    expect(q(target, "custom-domain-records-partial")?.textContent).toContain("Check again in a minute");
+  });
+
+  it("points a rebuilt routing record at the indigo-hq.com host for an hq.work app", async () => {
+    const { target } = render((method) => (method === "GET" ? pending("yousufkalim.com") : refreshPending([certRecord("yousufkalim.com")])), {
+      appUrl: "https://hq-lifecycle-email-map.hq.work",
+    });
+    await settleTimers();
+    expect(q(target, "custom-domain-record-routing")?.textContent).toContain("hq-lifecycle-email-map.indigo-hq.com");
+  });
+
+  it("never steers people to a subdomain", async () => {
+    const empty = render(() => none());
+    await settle();
+    expect((q(empty.target, "custom-domain-input") as HTMLInputElement).placeholder).toBe("mysite.com");
+    expect(q(empty.target, "custom-domain-price")?.textContent).not.toMatch(/subdomain/i);
+    await unmount(component as Record<string, unknown>);
+    component = null;
+    document.body.innerHTML = "";
+
+    // A bare domain gets the same two records and no root-domain or provider paragraph.
+    const bare = render((method) => (method === "GET" ? pending("yousufkalim.com") : refreshPending([certRecord("yousufkalim.com")])));
+    await settleTimers();
+    expect(q(bare.target, "custom-domain-dns")?.textContent).not.toMatch(/subdomain|root domain|ALIAS|flattening/i);
+    expect(q(bare.target, "custom-domain-record-routing")?.textContent).toContain("yousufkalim.com");
+  });
+
   it("refreshes status and reports a live domain", async () => {
-    const { target, request } = render((method, path) => {
+    let refreshes = 0;
+    const { target, request, onchange } = render((method, path) => {
       if (method === "GET") return pending();
       expect(path).toBe("/api/apps/app_1/domains/app.example.com/refresh");
-      return { status: 200, body: { ok: true, validationState: "validated", certStatus: "ISSUED", serving: true } };
+      refreshes += 1;
+      // The first read (on open) fetches the records; the click finds it live.
+      return refreshes === 1
+        ? refreshPending([certRecord()])
+        : { status: 200, body: { ok: true, validationState: "validated", certStatus: "ISSUED", serving: true } };
     });
-    await settle();
+    await settleTimers();
+    expect(onchange).not.toHaveBeenCalled();
     (q(target, "custom-domain-refresh") as HTMLButtonElement).click();
     await settle();
     expect(request).toHaveBeenCalledWith("indigo", "POST", "/api/apps/app_1/domains/app.example.com/refresh", undefined);
     expect(q(target, "custom-domain-status")?.textContent).toBe("Live");
     expect(q(target, "custom-domain-dns")).toBeNull();
     expect(q(target, "custom-domain-notice")?.textContent).toContain("is live");
+    // The deployment's address changes to the custom domain.
+    expect(onchange).toHaveBeenCalledTimes(1);
   });
 
   it("removes only after confirmation", async () => {
-    const { target, request, ondone } = render((method) => {
+    const { target, request, ondone, onchange } = render((method) => {
       if (method === "GET") return pending();
+      if (method === "POST") return refreshPending([certRecord()]);
       return { status: 200, body: { ok: true, domain: "app.example.com", remaining: 0 } };
     });
-    await settle();
+    await settleTimers();
     (q(target, "custom-domain-remove") as HTMLButtonElement).click();
     flushSync();
     expect(request).not.toHaveBeenCalledWith("indigo", "DELETE", expect.anything(), undefined);
@@ -139,6 +232,7 @@ describe("US-007 CustomDomainForm", () => {
     expect(q(target, "custom-domain-row")).toBeNull();
     expect(q(target, "custom-domain-input")).not.toBeNull();
     expect(ondone).toHaveBeenCalledWith("app.example.com removed from launch-notes.");
+    expect(onchange).toHaveBeenCalledTimes(1);
   });
 
   it("asks for a card and opens the Stripe page the server offered", async () => {
@@ -188,7 +282,8 @@ describe("US-007 CustomDomainForm", () => {
 
   it("retries a failed list read by itself before offering Try again", async () => {
     let calls = 0;
-    const { target } = render(() => {
+    const { target } = render((method) => {
+      if (method !== "GET") return refreshPending([certRecord()]);
       calls += 1;
       return calls === 1 ? { status: 503, body: { error: { code: "SERVICE_UNAVAILABLE" } } } : pending();
     });
@@ -214,9 +309,9 @@ describe("US-007 CustomDomainForm", () => {
   it("copies a DNS value with an icon button", async () => {
     const writeText = vi.fn(async () => {});
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
-    const { target } = render(() => pending());
-    await settle();
-    const button = target.querySelector("[data-testid='custom-domain-record-routing'] [data-testid='custom-domain-copy']") as HTMLButtonElement;
+    const { target } = render((method) => (method === "GET" ? pending() : refreshPending([certRecord()])));
+    await settleTimers();
+    const button =target.querySelector("[data-testid='custom-domain-record-routing'] [data-testid='custom-domain-copy']") as HTMLButtonElement;
     expect(button.querySelector("svg")).not.toBeNull();
     expect(button.getAttribute("aria-label")).toBe("Copy target");
     button.click();

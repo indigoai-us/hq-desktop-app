@@ -158,7 +158,6 @@ function render(props: Record<string, unknown> = {}): void {
       botWorkers: WORKERS,
       existingNames: [],
       botCompanies: OWNER_COMPANIES,
-      loadClaudeProviderFlag: async () => ok(true),
       loadCloudProvisionOptions: async () => ok(CLOUD_QUOTE),
       ...props,
     },
@@ -624,7 +623,7 @@ describe("CreateBotFlow", () => {
     expect(onCloudCreate).toHaveBeenCalledWith("cmp_acme", {
       name: "Polar Bear",
       handle: "ice",
-      runtime: "claude",
+      runtime: "codex",
       size: "basic",
     });
     expect(oncreate).not.toHaveBeenCalled();
@@ -648,7 +647,7 @@ describe("CreateBotFlow", () => {
     expect(onCloudCreate).toHaveBeenCalledWith("cmp_indigo", {
       name: "Polar Bear",
       handle: "polar-bear",
-      runtime: "claude",
+      runtime: "codex",
       size: "basic",
     });
   });
@@ -721,22 +720,26 @@ describe("CreateBotFlow", () => {
     expect(onCloudCreate).toHaveBeenCalledWith("cmp_indigo", {
       name: "Polar",
       handle: "polar",
-      runtime: "claude",
+      runtime: "codex",
       size: "basic",
       title: "Ad account analyst",
     });
   });
 
-  it("shows Claude only when the signed-in user flag is enabled and shows the tenant quote", async () => {
+  it("offers only Codex and Grok for a Cloud bot, even with Claude signed in, and shows the tenant quote", async () => {
     render({
       oncreate: vi.fn(),
       onCloudCreate: vi.fn(),
       agentTargets: COMPANIES,
-      loadClaudeProviderFlag: async () => ok(true),
+      botRuntimeReady: { claude: true, codex: true, grok: true },
     });
     await settle();
     await toCloudDetails();
-    expect(q('[data-testid="cloud-bot-runtime-claude"]')).toBeTruthy();
+    expect(q('[data-testid="cloud-bot-runtime-claude"]')).toBeNull();
+    expect(q('[data-testid="cloud-bot-runtime-claude-choice"]')).toBeNull();
+    expect(q('[data-testid="cloud-bot-claude-subscription-help"]')).toBeNull();
+    expect(q<HTMLInputElement>('[data-testid="cloud-bot-runtime-codex"]')?.checked).toBe(true);
+    expect(q('[data-testid="cloud-bot-runtime-grok"]')).toBeTruthy();
     expect(q('[data-testid="cloud-bot-size-basic-price"]')?.textContent).toBe("$50.00/month");
     expect(q('[data-testid="cloud-bot-size-basic-company-price"]')?.textContent).toBe("Your company pays $42.00/month");
     expect(q('[data-testid="cloud-bot-size-dev"]')?.hasAttribute("disabled")).toBe(true);
@@ -812,20 +815,24 @@ describe("CreateBotFlow", () => {
     ]);
   });
 
-  it("keeps Claude hidden and refuses creation when the flag is false", async () => {
+  it("a Cloud bot started from a Local draft on Claude switches to Codex and is created on Codex", async () => {
     const onCloudCreate = vi.fn(async () => undefined);
     render({
       oncreate: vi.fn(),
       onCloudCreate,
       agentTargets: COMPANIES,
-      loadClaudeProviderFlag: async () => ok(false),
     });
     await settle();
     await toCloudDetails();
     expect(q('[data-testid="cloud-bot-runtime-claude"]')).toBeNull();
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')?.disabled).toBe(false);
-    // Codex remains available; the hidden Claude selection is never submitted.
     expect(q<HTMLInputElement>('[data-testid="cloud-bot-runtime-codex"]')?.checked).toBe(true);
+    type(q<HTMLInputElement>('[data-testid="chat-bot-name"]')!, "Polar");
+    await settle();
+    click('[data-testid="chat-bot-create"]');
+    await settle();
+    expect(onCloudCreate).toHaveBeenCalledTimes(1);
+    expect((onCloudCreate.mock.calls[0] as unknown[])[1]).toMatchObject({ runtime: "codex" });
   });
 
   it("passes the chosen runtime and quote size to create, with no auth mode or API key", async () => {

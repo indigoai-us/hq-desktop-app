@@ -5521,10 +5521,16 @@ fn a_pass_with_plan_limit_skips_is_recorded_for_the_uploads_pause() {
     totals.accumulate(&SyncEvent::PlanLimit(SyncPlanLimitEvent {
         company: "Acme".to_string(),
         upgrade_url: "https://hq.computer/companies/acme/billing?upgrade=1".to_string(),
+        message: None,
+        usage_pause: None,
+        vault_paused: false,
     }));
     totals.accumulate(&SyncEvent::PlanLimit(SyncPlanLimitEvent {
         company: "Beta".to_string(),
         upgrade_url: "https://app.indigo-hq.com/billing/upgrade".to_string(),
+        message: None,
+        usage_pause: None,
+        vault_paused: false,
     }));
     let progress = |company: &str, direction: &str, deleted: Option<bool>| {
         SyncEvent::Progress(SyncProgressEvent {
@@ -5559,6 +5565,7 @@ fn a_pass_with_plan_limit_skips_is_recorded_for_the_uploads_pause() {
         Some("https://hq.computer/companies/acme/billing?upgrade=1")
     );
     assert_eq!(pass.plan_limited.get("Beta"), Some(&None));
+    assert!(pass.usage_paused.is_empty());
     assert_eq!(
         pass.uploaded.iter().map(String::as_str).collect::<Vec<_>>(),
         vec!["Gamma"]
@@ -5573,6 +5580,115 @@ fn a_pass_with_plan_limit_skips_is_recorded_for_the_uploads_pause() {
     // A plan-limit notice is not an error: the pass stays clean.
     assert!(!totals.saw_error);
     assert!(!totals.saw_alertable_error);
+}
+
+const USAGE_BILLING_URL: &str = "https://hq.computer/companies/acme/billing";
+const USAGE_SERVER_MESSAGE: &str = "Cloud sync is paused. Acme used its $10.00 monthly allowance. Add a card on the Billing page to resume. Files on this computer are not affected.";
+
+fn usage_pause_notice(company: &str) -> crate::events::SyncPlanLimitEvent {
+    crate::events::SyncPlanLimitEvent {
+        company: company.to_string(),
+        upgrade_url: "https://hq.computer/companies/acme/billing?upgrade=1".to_string(),
+        message: Some(USAGE_SERVER_MESSAGE.to_string()),
+        usage_pause: Some(crate::plan_limit::UsagePause {
+            code: "usage_paused".to_string(),
+            reason: "usage_spend_limit".to_string(),
+            message: USAGE_SERVER_MESSAGE.to_string(),
+            action_url: USAGE_BILLING_URL.to_string(),
+        }),
+        vault_paused: true,
+    }
+}
+
+#[test]
+fn a_usage_pause_notice_is_recorded_with_its_billing_link() {
+    let mut totals = RunTotals::default();
+    totals.accumulate(&SyncEvent::PlanLimit(usage_pause_notice("Acme")));
+    let pass = &totals.uploads_pass;
+    assert_eq!(
+        pass.plan_limited.get("Acme").cloned().flatten().as_deref(),
+        Some(USAGE_BILLING_URL)
+    );
+    assert_eq!(
+        pass.usage_paused.get("Acme").map(|p| p.reason.as_str()),
+        Some("usage_spend_limit")
+    );
+    assert!(!pass.is_empty());
+    assert!(!totals.saw_error);
+
+    // A later legacy notice for the same company in the pass drops the pause.
+    totals.accumulate(&SyncEvent::PlanLimit(crate::events::SyncPlanLimitEvent {
+        company: "Acme".to_string(),
+        upgrade_url: "https://hq.computer/companies/acme/billing?upgrade=1".to_string(),
+        message: None,
+        usage_pause: None,
+        vault_paused: false,
+    }));
+    assert!(totals.uploads_pass.usage_paused.is_empty());
+    assert_eq!(
+        totals
+            .uploads_pass
+            .plan_limited
+            .get("Acme")
+            .cloned()
+            .flatten()
+            .as_deref(),
+        Some("https://hq.computer/companies/acme/billing?upgrade=1")
+    );
+}
+
+#[test]
+fn usage_pause_errors_never_show_raw_runner_text() {
+    let body = serde_json::json!({
+        "error": "plan_limit_reached",
+        "code": "PLAN_LIMIT_EXCEEDED",
+        "message": "New files are paused while Acme is over its Starter limits.",
+        "upgradeUrl": "https://hq.computer/billing",
+        "usagePause": {
+            "code": "usage_paused",
+            "reason": "usage_trial_cap",
+            "message": USAGE_SERVER_MESSAGE,
+            "actionUrl": USAGE_BILLING_URL,
+        },
+    });
+    let with_body = SyncErrorEvent {
+        company: Some("acme".to_string()),
+        path: "knowledge/notes.md".to_string(),
+        message: format!("VaultClientError code=PLAN_LIMIT_EXCEEDED http=402 {body}"),
+    };
+    let shown = presentable_error_event(&with_body);
+    assert_eq!(shown.message, USAGE_SERVER_MESSAGE);
+    assert_eq!(shown.company, with_body.company);
+    assert_eq!(shown.path, with_body.path);
+    assert!(!is_alertable_error(&with_body));
+
+    let reason_only = SyncErrorEvent {
+        company: Some("acme".to_string()),
+        path: "(company)".to_string(),
+        message: "VaultClientError code=PLAN_LIMIT_EXCEEDED http=402 usage_card_required"
+            .to_string(),
+    };
+    let shown = presentable_error_event(&reason_only);
+    assert_eq!(
+        shown.message,
+        "Cloud sync is paused for this company. Open Billing to add a card or raise the spend limit. Files on this computer are not affected."
+    );
+    assert!(!shown.message.contains("VaultClientError"));
+    assert!(!shown.message.contains("http=402"));
+    assert!(!is_alertable_error(&reason_only));
+
+    // Every other error, including a legacy plan-limit refusal, is unchanged.
+    for message in [
+        "VaultClientError code=PLAN_LIMIT_EXCEEDED http=402 New files are paused while Acme is over its Starter limits.",
+        "EBUSY: resource busy or locked, read",
+    ] {
+        let err = SyncErrorEvent {
+            company: None,
+            path: "(company)".to_string(),
+            message: message.to_string(),
+        };
+        assert_eq!(presentable_error_event(&err), err);
+    }
 }
 
 #[test]

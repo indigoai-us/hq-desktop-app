@@ -162,3 +162,46 @@ describe("MeetingsPage plan-required action", () => {
     });
   });
 });
+
+describe("MeetingsPage usage pause (US-024)", () => {
+  it("shows the server usage message and Open Billing, with no plan wording", async () => {
+    const actionUrl = "https://hq.computer/companies/acme/billing";
+    const message =
+      "Cloud sync is paused. Acme used its $10.00 monthly allowance. Add a card on the Billing page to resume. Files on this computer are not affected.";
+    const body = {
+      code: "PLAN_LIMIT_EXCEEDED",
+      error: "plan_limit_reached",
+      message: "Your plan limit is reached.",
+      upgradeUrl: actionUrl,
+      usagePause: { code: "usage_paused", reason: "usage_card_required", message, actionUrl },
+    };
+    const base = call.getMockImplementation()!;
+    call.mockImplementation((method: string, payload?: unknown) =>
+      method === "inviteBot"
+        ? Promise.resolve(failure("http-402", `bot/invite HTTP 402: ${JSON.stringify(body)}`))
+        : base(method, payload),
+    );
+    const openExternal = vi.fn(async (_url: string) => {});
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(MeetingsPage, { target: host, props: { adapter: fakeAdapter(), openExternal, storage: null } });
+    layer = mount(ToastStack, { target: host });
+    await tick();
+    const input = host.querySelector<HTMLInputElement>('[aria-label="Paste a meeting URL to send the recording bot"]');
+    input!.value = "https://meet.google.com/abc-defg-hij";
+    input!.dispatchEvent(new Event("input", { bubbles: true }));
+    const invite = host.querySelector<HTMLButtonElement>('[data-testid="meetings-url-invite"]');
+    await vi.waitFor(() => expect(invite?.disabled).toBe(false));
+    invite!.click();
+    const billing = await vi.waitFor(() => {
+      const button = document.querySelector<HTMLButtonElement>('[data-testid="meetings-plan-upgrade"]');
+      expect(button?.textContent).toBe("Open Billing");
+      return button!;
+    });
+    const text = document.querySelector('[data-testid="toast-stack"] .ts-toast')?.textContent ?? "";
+    expect(text).toContain(message);
+    expect(text).not.toMatch(/plan limit|on this company's plan|Upgrade|Starter|Workforce|Individual/);
+    billing.click();
+    await vi.waitFor(() => expect(openExternal).toHaveBeenCalledWith(actionUrl));
+  });
+});

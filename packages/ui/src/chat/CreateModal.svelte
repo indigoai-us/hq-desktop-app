@@ -150,7 +150,6 @@
       | null;
     /** Opens Desktop's New Bot takeover, which starts on the Cloud or Local choice. */
     onnewcloudbot?: (() => void) | null;
-    loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
     loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
     /** `agents.desktop-agent-creation` seam for the New bot flow. */
     directCloud?: DirectCloudFlowSeam | null;
@@ -246,7 +245,6 @@
     companyCreate = null,
     oncreateagent = null,
     onnewcloudbot = null,
-    loadClaudeProviderFlag = null,
     loadCloudProvisionOptions = null,
     directCloud = null,
     agentCompanies = null,
@@ -2193,7 +2191,6 @@
         initialHome: initialBotHome,
         initialName: initialBotName,
         onCloudCreate: canCreateCloudBot ? newAgentFor : null,
-        loadClaudeProviderFlag,
         loadCloudProvisionOptions,
         directCloud,
         oncreate: canCreateLocalBot ? submitLocalBot : null,
@@ -2281,21 +2278,7 @@
     <div class="create-head" inert={confirmSubject !== null}>
       {#if step === "find"}
         <span class="create-search-ic" aria-hidden="true">
-          <svg viewBox="0 0 16 16" fill="none">
-            <circle
-              cx="7"
-              cy="7"
-              r="4.5"
-              stroke="currentColor"
-              stroke-width="1.25"
-            />
-            <path
-              d="m10.5 10.5 3 3"
-              stroke="currentColor"
-              stroke-width="1.25"
-              stroke-linecap="round"
-            />
-          </svg>
+          <RailIcon name="search" size={16} />
         </span>
         <h2 id="create-modal-title" class="create-sr">
           New message or channel
@@ -2319,7 +2302,7 @@
         />
       {:else}
         {#if step === "create" || step === "bot" || step === "company" || (step === "email" && !emailOutcome)}
-          <button
+          <button data-icon-only
             type="button"
             class="create-back"
             data-testid="chat-create-back"
@@ -2335,7 +2318,7 @@
               else backToFind();
             }}
           >
-            <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 3.5 5 7l3.5 3.5" /></svg>
+            <RailIcon name="caret-left" size={14} />
           </button>
         {/if}
         <h2 id="create-modal-title" class="create-title">
@@ -2355,14 +2338,14 @@
         </h2>
         <span class="create-spacer"></span>
       {/if}
-      <button
+      <button data-icon-only
         type="button"
         class="create-close"
         aria-label="Close"
         disabled={creating || emailSending}
         onclick={closeAll}
       >
-        <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
+        <RailIcon name="x" size={14} />
       </button>
     </div>
 
@@ -2504,14 +2487,7 @@
               onclick={() => newCompany(queryDebounced.trim())}
             >
               <span class="create-entry-ic" aria-hidden="true">
-                <svg viewBox="0 0 16 16" fill="none">
-                  <path
-                    d="M3 13.5V4.5l5-2 5 2v9M6 7h1M9 7h1M6 9.5h1M9 9.5h1M6.5 13.5v-2h3v2"
-                    stroke="currentColor"
-                    stroke-width="1.2"
-                    stroke-linejoin="round"
-                  />
-                </svg>
+                <RailIcon name="buildings" size={16} />
               </span>
               <span class="create-entry-label">New company</span>
               <span class="create-entry-hint">
@@ -2531,23 +2507,7 @@
               onclick={newBot}
             >
               <span class="create-entry-ic" aria-hidden="true">
-                <svg viewBox="0 0 16 16" fill="none">
-                  <rect
-                    x="3"
-                    y="5"
-                    width="10"
-                    height="8"
-                    rx="1.5"
-                    stroke="currentColor"
-                    stroke-width="1.2"
-                  />
-                  <path
-                    d="M8 2.5V5M6 8.5h.5M9.5 8.5h.5M6 11h4"
-                    stroke="currentColor"
-                    stroke-width="1.2"
-                    stroke-linecap="round"
-                  />
-                </svg>
+                <RailIcon name="robot" size={16} />
               </span>
               <span class="create-entry-label">New bot</span>
               <span class="create-entry-hint">

@@ -65,7 +65,9 @@ describe("ChannelConversation share stack", () => {
     await tick();
     const cards = root.querySelectorAll('[data-testid="attachment-card"]');
     expect(cards).toHaveLength(6);
-    expect(cards[0]?.textContent).toContain("FOLDER");
+    // A folder card says "Folder" under its name and carries the folder tile.
+    expect(cards[0]?.getAttribute("data-kind")).toBe("folder");
+    expect(cards[0]?.textContent).toContain("Folder");
     (root.querySelector('[data-testid="share-stack-collapse"]') as HTMLButtonElement).click();
     await tick();
     expect(root.querySelectorAll('[data-testid="attachment-card"]')).toHaveLength(0);
@@ -110,7 +112,9 @@ describe("ChannelConversation share stack", () => {
     await tick();
     expect(root.querySelector('[data-testid="share-stack"]')).toBeNull();
     expect(root.textContent).toContain("Shared a folder with you.");
-    expect(root.querySelector('[data-testid="attachment-card"]')?.textContent).toContain("FOLDER");
+    const card = root.querySelector('[data-testid="attachment-card"]');
+    expect(card?.getAttribute("data-kind")).toBe("folder");
+    expect(card?.textContent).toContain("Folder");
   });
 
   it("does not stack shares from different senders or with reactions", async () => {

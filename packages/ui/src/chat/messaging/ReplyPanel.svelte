@@ -1,4 +1,5 @@
 <script lang="ts">
+  import "../../common/tag.css";
   import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * ReplyPanel — Slack-style reply column (port of hq-desktop-app ThreadPanel).
@@ -20,7 +21,7 @@
   import type { ChatArtifact } from "./artifact-model.js";
   import ReactionBar from "./ReactionBar.svelte";
   import { buildMessageLink } from "./message-link";
-  import { hoverMenuClippedAbove } from "./hover-menu-placement";
+  import { hoverMenuClippedBelow } from "./hover-menu-placement";
   import EmojiPicker from "./EmojiPicker.svelte";
   import {
     readThreadComposerDraft,
@@ -75,7 +76,9 @@
     formatComposerSendError,
     isTerminalSendError,
   } from "./composer-send-error";
-  import { uploadErrorUpgradeUrl } from "./upload-chat-attachments";
+  import { uploadErrorUpgradeUrl, uploadErrorUsagePause } from "./upload-chat-attachments";
+  import { callerRole } from "../../company/company-roles.svelte.js";
+  import type { UsagePause } from "@hq/platform";
   import AgentTaskStrip from "../tasks/AgentTaskStrip.svelte";
   import type { AgentTask } from "../tasks/agent-tasks";
   import {
@@ -282,15 +285,18 @@
     const menu = row.querySelector<HTMLElement>(
       ":scope > .reply-col > .reply-quick-react",
     );
-    if (!menu) return;
-    const rowRect = row.getBoundingClientRect();
-    if (pointerY !== null && pointerY < rowRect.top) return;
+    const anchor = menu?.offsetParent;
+    if (!menu || !(anchor instanceof HTMLElement)) return;
+    const anchorRect = anchor.getBoundingClientRect();
+    // The pointer is already in the part of the menu that hangs below.
+    // Flipping would pull that menu out from under it.
+    if (pointerY !== null && pointerY > anchorRect.bottom) return;
     setReplyMenuFlip(
       id,
-      hoverMenuClippedAbove(
-        rowRect.top,
+      hoverMenuClippedBelow(
+        anchorRect.bottom,
         menu.offsetHeight,
-        replyScroller.getBoundingClientRect().top,
+        replyScroller.getBoundingClientRect().bottom,
       ),
     );
   }
@@ -433,6 +439,8 @@
   // Upgrade link for a plan-limit upload refusal; only shown beside the
   // attach error it came with (hard-stop US-018).
   let attachUpgradeUrl = $state<string | null>(null);
+  /** US-024: the usage pause behind the last refused attachment or send. */
+  let attachUsagePause = $state<UsagePause | null>(null);
   let pasteCounter = 0;
   let composerEl = $state<HTMLTextAreaElement | null>(null);
   let selectedMentions = $state<MentionTarget[]>([]);
@@ -754,12 +762,14 @@
     pendingFiles = next;
     attachError = errors[0] ?? null;
     attachUpgradeUrl = null;
+    attachUsagePause = null;
   }
 
   function removePendingFile(index: number): void {
     pendingFiles = pendingFiles.filter((_, i) => i !== index);
     attachError = null;
     attachUpgradeUrl = null;
+    attachUsagePause = null;
   }
 
   function namePastedFile(file: File): File {
@@ -840,6 +850,9 @@
         const raw = err instanceof Error ? err.message.trim() : "";
         attachError = formatComposerSendError(raw, true);
         attachUpgradeUrl = uploadErrorUpgradeUrl(err);
+        attachUsagePause = uploadErrorUsagePause(err);
+        // US-024: a usage pause shows the server's own message.
+        if (attachUsagePause) attachError = attachUsagePause.message;
         sending = false;
         return;
       }
@@ -868,6 +881,7 @@
     writeThreadComposerDraft(composerDraftKey, { text: "", files: [] });
     attachError = null;
     attachUpgradeUrl = null;
+    attachUsagePause = null;
     const echoToChannel = alsoSendToChannel && canAlsoSend;
     alsoSendToChannel = false;
     try {
@@ -1268,6 +1282,7 @@
               {:else}
                 <span class="reply-root-author">{messageAuthor(root)}</span>
               {/if}
+              {#if root.direction !== "out" && isAgent(root)}<span class="hq-tag is-bot" data-testid="author-bot-tag">Bot</span>{/if}
               <span class="reply-time">{formatTime(root.createdAt)}</span>
             </div>
             <div class="reply-root-body">
@@ -1311,7 +1326,7 @@
                 </button>
               {/each}
               <span class="reply-quick-react-picker-wrap">
-                <button
+                <button data-icon-only
                   type="button"
                   class="reply-quick-react-btn reply-quick-react-more"
                   aria-label="Add a reaction"
@@ -1321,7 +1336,7 @@
                   onclick={() =>
                     (reactPickerFor = reactPickerFor === rootId ? null : rootId)}
                 >
-                  +
+                  <RailIcon name="plus" size={12} />
                 </button>
                 {#if reactPickerFor === rootId}
                   <EmojiPicker
@@ -1356,11 +1371,31 @@
                 </button>
               {/if}
             </div>
-            <span class="reply-root-label">
-              {replyCount}
-              {replyCount === 1 ? "reply" : "replies"}
-            </span>
           </div>
+          <!-- Mobile's replies divider (owner, 2026-10-22): the caption, then
+               a hairline to the content's edge, not the panel's. One caption
+               for an empty thread too; "0 REPLIES" over "No replies yet" said
+               the same thing twice. -->
+          {#if replyCount > 0 || visibleReplies.length > 0}
+            <div class="reply-divider" data-testid="reply-divider">
+              <span class="reply-root-label">
+                {replyCount}
+                {replyCount === 1 ? "reply" : "replies"}
+              </span>
+              <span class="reply-divider-line" aria-hidden="true"></span>
+            </div>
+          {:else if !loading && !loadError}
+            <div class="reply-divider" data-testid="reply-divider">
+              <span
+                class="reply-root-label"
+                data-testid="reply-panel-empty"
+                role="status"
+              >
+                No replies yet
+              </span>
+              <span class="reply-divider-line" aria-hidden="true"></span>
+            </div>
+          {/if}
         {:else if loading}
           <p class="reply-status" role="status">Loading replies…</p>
         {:else if loadError}
@@ -1371,7 +1406,7 @@
         <p class="reply-status" role="status">Loading replies…</p>
       {:else if loadError && replies.length === 0 && root}
         <p class="reply-status reply-error" role="alert">{loadError}</p>
-      {:else if visibleReplies.length === 0}
+      {:else if visibleReplies.length === 0 && !root}
         <p class="reply-status" data-testid="reply-panel-empty" role="status">
           No replies yet
         </p>
@@ -1382,6 +1417,7 @@
           {@const replyForwardNote = replyForwarded ? forwardNoteText(msg.forwardNote) : ""}
           <div
             class="reply-row"
+            class:reply-row-tail={msg.eventId === visibleReplies[visibleReplies.length - 1]?.eventId}
             data-testid="reply-panel-message"
             data-event-id={msg.eventId}
             data-send-status={msg.sendStatus ?? ""}
@@ -1414,6 +1450,7 @@
                 {:else}
                   <span class="reply-author">{messageAuthor(msg)}</span>
                 {/if}
+                {#if msg.direction !== "out" && isAgent(msg)}<span class="hq-tag is-bot" data-testid="author-bot-tag">Bot</span>{/if}
                 <span class="reply-time">{formatTime(msg.createdAt)}</span>
               </div>
               {#if replyForwarded}
@@ -1456,7 +1493,7 @@
                     </button>
                   {/each}
                   <span class="reply-quick-react-picker-wrap">
-                    <button
+                    <button data-icon-only
                       type="button"
                       class="reply-quick-react-btn reply-quick-react-more"
                       aria-label="Add a reaction"
@@ -1467,7 +1504,7 @@
                         (reactPickerFor =
                           reactPickerFor === msg.eventId ? null : msg.eventId)}
                     >
-                      +
+                      <RailIcon name="plus" size={12} />
                     </button>
                     {#if reactPickerFor === msg.eventId}
                       <EmojiPicker
@@ -1567,6 +1604,8 @@
           files={pendingFiles}
           error={attachError}
           upgradeUrl={attachUpgradeUrl}
+          usagePause={attachUsagePause}
+          billingRole={callerRole(linkCompanyUid) ?? null}
           onupgrade={onopenurl}
           testid="reply-panel-pending"
           onremove={removePendingFile}
@@ -1603,24 +1642,10 @@
                 input.value = "";
               }}
             />
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 16 16"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="M13.2 8.2 8.05 13.35a3.25 3.25 0 0 1-4.6-4.6l5.9-5.9a2.15 2.15 0 1 1 3.04 3.04L6.5 11.7a1 1 0 1 1-1.42-1.42l5.15-5.15"
-                stroke="currentColor"
-                stroke-width="1.35"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
+            <RailIcon name="paperclip" size={15} />
           </label>
         {/if}
-        <button
+        <button data-icon-only
           type="button"
           class="reply-send"
           data-testid="reply-panel-send"
@@ -1630,17 +1655,7 @@
           title="Send"
           onclick={() => void send(draft)}
         >
-          <svg
-            width="13"
-            height="13"
-            viewBox="0 0 16 16"
-            fill="currentColor"
-            aria-hidden="true"
-          >
-            <path
-              d="M2.2 7.35 13.4 2.4a.55.55 0 0 1 .72.72L9.18 14.3a.55.55 0 0 1-1.02.05L6.4 9.6 2.15 8.2a.55.55 0 0 1 .05-1.05Z"
-            />
-          </svg>
+          <RailIcon name="send" size={14} />
         </button>
       </div>
     </div>
@@ -1818,8 +1833,7 @@
     margin: -8px -12px 8px;
     /* Reserved gutter so the root toolbar sits above the text. The list
        clips anything that sticks out past this row. */
-    padding: 40px 16px 16px;
-    border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+    padding: 40px 16px 8px;
   }
 
   .reply-root:hover .reply-quick-react-root,
@@ -1946,10 +1960,25 @@
     color: inherit;
   }
 
-  .reply-root-label {
+  /* Mobile's replies divider: the caption, then a hairline to the content's
+     right edge. Spans both grid columns, so it runs from the avatar's edge to
+     the text's, inside the root's padding rather than across the panel. */
+  .reply-divider {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 12px;
     margin-top: 8px;
-    padding-top: 8px;
-    border-top: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+  }
+
+  .reply-divider-line {
+    flex: 1 1 auto;
+    height: 1px;
+    background: var(--line, rgba(255, 255, 255, 0.12));
+  }
+
+  .reply-root-label {
+    flex: none;
     font-size: 11px;
     font-weight: 500;
     letter-spacing: 0.04em;
@@ -2008,14 +2037,15 @@
     background: color-mix(in srgb, var(--t1) 4%, transparent);
   }
 
-  /* Hover quick-react toolbar — matches the main-chat .dm-quick-react: an
-     opaque floating bar (quick emojis + picker) that takes no layout space, so
-     rows stay tight and the affordance only appears on hover/focus. */
+  /* Hover quick-react toolbar, placed like the main chat's .dm-quick-react
+     (owner, #772): an opaque bar that takes no layout space and opens 4px
+     under the reply's right edge. */
   .reply-quick-react {
     position: absolute;
-    top: auto;
-    bottom: calc(100% - 3px);
+    top: 100%;
+    bottom: auto;
     right: 8px;
+    margin-top: 4px;
     z-index: 2;
     display: flex;
     gap: 2px;
@@ -2038,13 +2068,27 @@
     pointer-events: auto;
   }
 
-  .reply-row[data-menu-flip] {
-    padding-top: 40px;
+  /* Bridges the 4px gap so the pointer reaches the bar without leaving the
+     reply. */
+  .reply-quick-react::before {
+    content: "";
+    position: absolute;
+    inset: -6px -4px -4px;
+    z-index: -1;
   }
 
+  /* Opens above the reply instead when hanging below would clip: the last
+     reply, and any the scrollport cuts off at the bottom (placeReplyMenu). */
+  .reply-row-tail > .reply-col > .reply-quick-react,
   .reply-row[data-menu-flip] > .reply-col > .reply-quick-react {
-    top: 0;
-    bottom: auto;
+    top: auto;
+    bottom: 100%;
+    margin: 0 0 4px;
+  }
+
+  .reply-row-tail > .reply-col > .reply-quick-react::before,
+  .reply-row[data-menu-flip] > .reply-col > .reply-quick-react::before {
+    inset: -4px -4px -6px;
   }
 
   /* Root toolbar stays in the row gutter. Higher specificity than the shared
@@ -2053,18 +2097,23 @@
     top: 4px;
     bottom: auto;
     right: 16px;
+    margin: 0;
   }
 
+  /* Touch: no hover state, so the bar sits in the flow under the reply,
+     right-aligned, where it never covers the next one. */
   @media (hover: none) {
-    .reply-row {
-      padding-top: 40px;
-    }
-
     .reply-quick-react {
-      top: 0;
-      bottom: auto;
+      position: static;
+      width: fit-content;
+      margin: 4px 0 0 auto;
       opacity: 1;
       pointer-events: auto;
+    }
+
+    .reply-row-tail > .reply-col > .reply-quick-react,
+    .reply-row[data-menu-flip] > .reply-col > .reply-quick-react {
+      margin: 4px 0 0 auto;
     }
   }
 
@@ -2110,6 +2159,13 @@
     gap: 0.4375rem;
     margin: 0 0 var(--msg-name-body-gap, 0.1875rem);
     min-width: 0;
+  }
+
+  /* The name row lines up on the text baseline, but a tag's baseline is its
+     small mono label, so a baseline tag sat low against the name. Centre it
+     on the row instead. */
+  .reply-meta > :global(.hq-tag) {
+    align-self: center;
   }
 
   .reply-send-state {

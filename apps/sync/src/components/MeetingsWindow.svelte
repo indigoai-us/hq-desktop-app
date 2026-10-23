@@ -25,6 +25,7 @@
     isAlreadyScheduledError,
     isPlanRequiredError,
     planRequiredUpgradeUrl,
+    meetingUsagePause,
   } from '../lib/invite-errors';
   import PlanUpgradeAction from './PlanUpgradeAction.svelte';
   import { openApprovedExternalUrl } from '../desktop-alt/external-open';
@@ -211,6 +212,7 @@
     kind: 'info' | 'warn';
     text: string;
     upgradeUrl?: string;
+    upgradeLabel?: string;
   } | null>(null);
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
   let integrationsOpening = $state(false);
@@ -386,6 +388,12 @@
   }
 
   function flashInviteError(err: unknown, fallback: string): void {
+    // US-024: a usage pause shows the server's message and the Billing link.
+    const usagePause = meetingUsagePause(err);
+    if (usagePause) {
+      flashToast('warn', usagePause.message, { upgradeUrl: usagePause.actionUrl, upgradeLabel: 'Open Billing' });
+      return;
+    }
     if (isPlanRequiredError(err)) {
       const link = planRequiredUpgradeUrl(err);
       if (link.kind === 'missing' || link.kind === 'invalid') {
@@ -1157,7 +1165,7 @@
   function flashToast(
     kind: 'info' | 'warn',
     text: string,
-    options: { upgradeUrl?: string } = {},
+    options: { upgradeUrl?: string; upgradeLabel?: string } = {},
   ) {
     if (toastTimer) clearTimeout(toastTimer);
     toast = { kind, text, ...options };
@@ -1699,6 +1707,7 @@
           upgradeUrl={toast.upgradeUrl}
           onUpgrade={openMeetingPlanUpgrade}
           testId="meetings-plan-upgrade"
+          label={toast.upgradeLabel ?? 'Upgrade'}
         />
       {/if}
     </div>

@@ -7,21 +7,36 @@
    */
   import { listEmptyState, type ListEmptyInput } from "./list-empty-state.js";
   import RailButton from "./button/RailButton.svelte";
+  import RailIcon from "./button/RailIcon.svelte";
+  import type { RailIconName } from "./button/rail-icons.js";
 
   interface Props extends ListEmptyInput {
     /** Clears the query and filters. The button hides without it. */
     onclear?: () => void;
     clearLabel?: string;
     testid?: string;
+    /**
+     * The symbol in the disc above an EMPTY list (iOS's empty states lead
+     * with one). A list that filtered to nothing always shows search.
+     */
+    icon?: RailIconName;
   }
 
-  let { onclear, clearLabel, testid = "list-empty-state", ...input }: Props = $props();
+  let { onclear, clearLabel, testid = "list-empty-state", icon, ...input }: Props = $props();
 
   const view = $derived(listEmptyState(input));
+  const discIcon = $derived<RailIconName | null>(
+    view?.kind === "no-matches" ? "search" : (icon ?? null),
+  );
 </script>
 
 {#if view}
   <div class="list-empty" data-testid={testid} data-kind={view.kind} role="status">
+    {#if discIcon}
+      <span class="disc" aria-hidden="true" data-testid={`${testid}-icon`}
+        ><RailIcon name={discIcon} size={16} /></span
+      >
+    {/if}
     <p class="title">{view.title}</p>
     {#if view.kind === "no-matches"}
       <p class="total meta-line" data-meta-line data-testid={`${testid}-total`}>{view.totalLabel}</p>
@@ -44,6 +59,21 @@
     gap: 6px;
     padding: 32px 16px;
     text-align: center;
+  }
+  /* A symbol disc and a readable measure, as iOS's shared empty state. */
+  .disc {
+    display: grid;
+    place-items: center;
+    width: 36px;
+    height: 36px;
+    margin-bottom: 4px;
+    border-radius: 50%;
+    background: var(--btn-bg, var(--v4-control-faint));
+    color: var(--t3, var(--v4-text-3));
+  }
+  .title,
+  .total {
+    max-width: 36ch;
   }
   .title {
     margin: 0;

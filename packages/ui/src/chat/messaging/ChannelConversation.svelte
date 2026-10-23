@@ -26,6 +26,7 @@
 
   import "./message-row.css";
   import IdentityMark from "./IdentityMark.svelte";
+  import "../../common/tag.css";
   import SystemEventLine from "./SystemEventLine.svelte";
   import RunCompleteCard from "./RunCompleteCard.svelte";
   import LifecycleCard from "./LifecycleCard.svelte";
@@ -128,11 +129,13 @@
     type ReactionMap,
   } from "./reactions";
   import { takeNewestWindow, TIMELINE_WINDOW } from "./timeline-window";
-  import { hoverMenuClippedAbove } from "./hover-menu-placement";
+  import { hoverMenuClippedBelow } from "./hover-menu-placement";
   import { coalesceScroll } from "./scroll-coalesce";
   import { formatComposerSendError } from "./composer-send-error";
   import { isQueuedSendToken } from "./message-outbox.js";
-  import { uploadErrorUpgradeUrl } from "./upload-chat-attachments";
+  import { uploadErrorUpgradeUrl, uploadErrorUsagePause } from "./upload-chat-attachments";
+  import { callerRole } from "../../company/company-roles.svelte.js";
+  import type { UsagePause } from "@hq/platform";
   import {
     clearDraft,
     loadDraft,
@@ -784,6 +787,8 @@
   // Upgrade link for a plan-limit upload refusal; only shown beside the
   // attach error it came with (hard-stop US-018).
   let attachUpgradeUrl = $state<string | null>(null);
+  /** US-024: the usage pause behind the last refused attachment or send. */
+  let attachUsagePause = $state<UsagePause | null>(null);
   let trayOpen = $state(false);
   let traySelectedId = $state<string | null>(null);
   let composerEmojiOpen = $state(false);
@@ -848,7 +853,7 @@
   let dragDepth = 0;
   let pasteCounter = 0;
   let scroller = $state<HTMLDivElement | null>(null);
-  /** Rows whose hover menu is flipped into the row because it would clip. */
+  /** Rows whose hover menu opens above the message because below would clip. */
   let menuFlip = $state<Record<string, true>>({});
 
   function setMenuFlip(id: string, on: boolean): void {
@@ -865,17 +870,18 @@
     const menu = row.querySelector<HTMLElement>(
       ":scope > .dm-msg-column > .dm-quick-react",
     );
-    if (!menu) return;
-    const rowRect = row.getBoundingClientRect();
-    // The pointer is already in the part of the menu that sticks out. Flipping
-    // would pull that menu out from under it.
-    if (pointerY !== null && pointerY < rowRect.top) return;
+    const anchor = menu?.offsetParent;
+    if (!menu || !(anchor instanceof HTMLElement)) return;
+    const anchorRect = anchor.getBoundingClientRect();
+    // The pointer is already in the part of the menu that hangs below.
+    // Flipping would pull that menu out from under it.
+    if (pointerY !== null && pointerY > anchorRect.bottom) return;
     setMenuFlip(
       id,
-      hoverMenuClippedAbove(
-        rowRect.top,
+      hoverMenuClippedBelow(
+        anchorRect.bottom,
         menu.offsetHeight,
-        scroller.getBoundingClientRect().top,
+        scroller.getBoundingClientRect().bottom,
       ),
     );
   }
@@ -1689,12 +1695,14 @@
     pendingFiles = next;
     attachError = errors[0] ?? null;
     attachUpgradeUrl = null;
+    attachUsagePause = null;
   }
 
   function removePendingFile(index: number): void {
     pendingFiles = pendingFiles.filter((_, i) => i !== index);
     attachError = null;
     attachUpgradeUrl = null;
+    attachUsagePause = null;
   }
 
   function namePastedFile(file: File): File {
@@ -1812,6 +1820,7 @@
     pendingFiles = [];
     attachError = null;
     attachUpgradeUrl = null;
+    attachUsagePause = null;
     discardDraft();
     try {
       // Hosts that can name the persisted event return its id; that makes the
@@ -1837,6 +1846,9 @@
         mentions.map((mention) => mention.displayName),
       );
       attachUpgradeUrl = uploadErrorUpgradeUrl(err);
+      attachUsagePause = uploadErrorUsagePause(err);
+      // US-024: a usage pause shows the server's own message.
+      if (attachUsagePause) attachError = attachUsagePause.message;
       restoreDraftAfterFailedSend(body);
     }
   }
@@ -2023,6 +2035,130 @@
     };
   });
 </script>
+
+<!-- The message hover bar: quick reactions and the message's actions. One
+     snippet so every message that takes reactions offers it, cards included
+     (owner, #772: a run or lifecycle card could be reacted to but had no way
+     to do it). Cards get reactions and the copy-ID/link actions only. -->
+{#snippet messageActions(msg: ConversationMessageWire, card: boolean)}
+<div
+  class="dm-quick-react"
+  role="group"
+  aria-label="Message actions"
+>
+  {#each QUICK_REACT_EMOJI as emoji (emoji)}
+    <button
+      type="button"
+      class="dm-quick-react-btn"
+      onclick={() => toggle(msg.eventId, emoji)}
+      aria-label={`React with ${emoji}`}
+    >
+      {emoji}
+    </button>
+  {/each}
+  <span class="dm-quick-react-picker-wrap">
+    <button data-icon-only
+      type="button"
+      class="dm-quick-react-btn dm-quick-react-more"
+      data-testid="message-react-more"
+      aria-label="Add a reaction"
+      title="Add a reaction"
+      aria-haspopup="menu"
+      aria-expanded={reactPickerFor === msg.eventId}
+      onclick={() =>
+        (reactPickerFor =
+          reactPickerFor === msg.eventId ? null : msg.eventId)}
+    >
+      <RailIcon name="plus" size={12} />
+    </button>
+    {#if reactPickerFor === msg.eventId}
+      <EmojiPicker
+        onpick={(emoji) => {
+          reactPickerFor = null;
+          toggle(msg.eventId, emoji);
+        }}
+        onclose={() => (reactPickerFor = null)}
+      />
+    {/if}
+  </span>
+  {#if onreply && !card}
+    <!-- Offered only where the host opens threads. A
+         one-to-one conversation with a bot shows replies in
+         line and passes no handler: a thread opened there was
+         empty on an answer and showed a root twice. -->
+    <button
+      type="button"
+      class="dm-quick-react-btn dm-quick-reply"
+      data-testid="message-reply-quick"
+      aria-label="Reply in thread"
+      title="Reply in thread"
+      onclick={() => openReply(msg.eventId)}
+    ><RailIcon name="send" />
+      Reply
+    </button>
+  {/if}
+  {#if !card && copyableText(msg, "body")}
+    <button
+      type="button"
+      class="dm-quick-react-btn dm-quick-copy"
+      data-testid="message-copy"
+      aria-label="Copy message text"
+      title="Copy message"
+      onclick={() => copyMessage(msg)}
+    ><RailIcon name="copy" />
+      {copiedEventId === msg.eventId && copiedKind === "text" ? "Copied" : "Copy"}
+    </button>
+  {/if}
+  {#if onforward && !card && !msg.eventId.startsWith("local-send-")}
+    <button
+      type="button"
+      class="dm-quick-react-btn dm-quick-forward"
+      data-testid="message-forward"
+      aria-label="Forward message"
+      title="Forward"
+      onclick={() => onforward(msg)}
+    ><RailIcon name="forward" />
+      Forward
+    </button>
+  {/if}
+  {#if !msg.eventId.startsWith("local-")}
+    <button
+      type="button"
+      class="dm-quick-react-btn dm-quick-copy"
+      data-testid="message-copy-id"
+      aria-label="Copy message ID"
+      title="Copy ID"
+      onclick={() => copyMessageId(msg)}
+    ><RailIcon name="copy" />
+      {copiedEventId === msg.eventId && copiedKind === "id" ? "Copied" : "Copy ID"}
+    </button>
+    {#if linkConversationId && linkCompanyUid}
+      <button
+        type="button"
+        class="dm-quick-react-btn dm-quick-copy"
+        data-testid="message-copy-link"
+        aria-label="Copy message link"
+        title="Copy link"
+        onclick={() => copyMessageLink(msg)}
+      ><RailIcon name="link" />
+        {copiedEventId === msg.eventId && copiedKind === "link" ? "Copied" : "Copy link"}
+      </button>
+    {/if}
+  {/if}
+  {#if onstartsession && !card}
+    <button
+      type="button"
+      class="dm-quick-react-btn"
+      data-testid="message-start-session"
+      aria-label="Start a session from this message"
+      title="Start session"
+      onclick={() => onstartsession(msg.eventId)}
+    ><RailIcon name="play" />
+      Session
+    </button>
+  {/if}
+</div>
+{/snippet}
 
 {#snippet bubbleBodyText(msg: ConversationMessageWire, text: string)}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -2222,6 +2358,7 @@
           {@const systemModel = row.systemModel}
           {@const workActivity = row.workActivity}
           {@const groupStart = row.groupStart}
+          {@const isTail = msg.eventId === renderRows[renderRows.length - 1]?.msg.eventId}
           {#if row.startsNewDay}
             <div
               class="date-separator"
@@ -2251,6 +2388,7 @@
               <div class="dm-msg-column">
                 <div class="dm-msg-meta">
                   <span class="dm-msg-author">{messageAuthor(msg)}</span>
+                  {#if msg.direction !== "out" && isAgent(msg)}<span class="hq-tag is-bot" data-testid="author-bot-tag">Bot</span>{/if}
                   <span class="dm-msg-header-time">{row.timeLabel}</span>
                 </div>
                 <ShareRequestCard
@@ -2287,7 +2425,14 @@
           {:else if systemModel?.kind === "run_complete"}
             <div
               class="dm-msg dm-msg-in dm-msg-group-start"
+              class:dm-msg-tail={isTail}
               data-testid="run-complete-row"
+              data-event-id={msg.eventId}
+              data-menu-flip={menuFlip[msg.eventId] ? "" : undefined}
+              onpointerenter={onMessagePointerEnter}
+              onpointerleave={onMessagePointerLeave}
+              onfocusin={onMessageFocusIn}
+              onfocusout={onMessageFocusOut}
             >
               <span class="dm-msg-avatar">
                 <IdentityMark
@@ -2302,6 +2447,7 @@
               <div class="dm-msg-column">
                 <div class="dm-msg-meta">
                   <span class="dm-msg-author">{messageAuthor(msg)}</span>
+                  {#if msg.direction !== "out" && isAgent(msg)}<span class="hq-tag is-bot" data-testid="author-bot-tag">Bot</span>{/if}
                   <span class="dm-msg-header-time"
                     >{row.timeLabel}</span
                   >
@@ -2316,13 +2462,23 @@
                     ontoggle={toggle}
                   />
                 {/if}
+                <!-- Last in the column: the bar hangs under everything that
+                     belongs to the message (text, thread card, reactions), so
+                     it never covers any of it. -->
+                {@render messageActions(msg, true)}
               </div>
             </div>
           {:else if systemModel?.kind === "lifecycle_card"}
             <div
               class="dm-msg dm-msg-in dm-msg-group-start"
+              class:dm-msg-tail={isTail}
               data-testid="lifecycle-card-row"
               data-event-id={msg.eventId}
+              data-menu-flip={menuFlip[msg.eventId] ? "" : undefined}
+              onpointerenter={onMessagePointerEnter}
+              onpointerleave={onMessagePointerLeave}
+              onfocusin={onMessageFocusIn}
+              onfocusout={onMessageFocusOut}
             >
               <span class="dm-msg-avatar">
                 <IdentityMark
@@ -2336,6 +2492,7 @@
               <div class="dm-msg-column">
                 <div class="dm-msg-meta">
                   <span class="dm-msg-author">{messageAuthor(msg)}</span>
+                  {#if msg.direction !== "out" && isAgent(msg)}<span class="hq-tag is-bot" data-testid="author-bot-tag">Bot</span>{/if}
                   <span class="dm-msg-header-time"
                     >{row.timeLabel}</span
                   >
@@ -2355,6 +2512,10 @@
                     ontoggle={toggle}
                   />
                 {/if}
+                <!-- Last in the column: the bar hangs under everything that
+                     belongs to the message (text, thread card, reactions), so
+                     it never covers any of it. -->
+                {@render messageActions(msg, true)}
               </div>
             </div>
           {:else if workActivity}
@@ -2374,6 +2535,7 @@
               class:dm-msg-group-start={groupStart}
               class:dm-msg-reply-active={activeRootEventId === msg.eventId}
               class:queued={queuedLocalIds.includes(msg.eventId)}
+              class:dm-msg-tail={isTail}
               data-testid="conversation-message"
               data-queued={queuedLocalIds.includes(msg.eventId) ? "true" : undefined}
               data-event-id={msg.eventId}
@@ -2427,6 +2589,7 @@
                     {:else}
                       <span class="dm-msg-author">{messageAuthor(msg)}</span>
                     {/if}
+                    {#if msg.direction !== "out" && isAgent(msg)}<span class="hq-tag is-bot" data-testid="author-bot-tag">Bot</span>{/if}
                     <span class="dm-msg-header-time"
                       >{row.timeLabel}</span
                     >
@@ -2517,132 +2680,17 @@
                         {/each}
                       </span>
                     {/if}
-                    {replyLabel(msg.replyCount ?? 0)}
+                    <span class="dm-replies-label">{replyLabel(msg.replyCount ?? 0)}</span>
                     {#if preview.at}
                       <span class="dm-replies-preview">
                         Last reply {formatRelative(preview.at)}
                       </span>
                     {/if}
+                    <span class="dm-replies-caret" aria-hidden="true"
+                      ><RailIcon name="caret-right" size={10} /></span
+                    >
                   </button>
                 {/if}
-                <!-- Quick reactions (tap-visible affordance). -->
-                <div
-                  class="dm-quick-react"
-                  role="group"
-                  aria-label="Message actions"
-                >
-                  {#each QUICK_REACT_EMOJI as emoji (emoji)}
-                    <button
-                      type="button"
-                      class="dm-quick-react-btn"
-                      onclick={() => toggle(msg.eventId, emoji)}
-                      aria-label={`React with ${emoji}`}
-                    >
-                      {emoji}
-                    </button>
-                  {/each}
-                  <span class="dm-quick-react-picker-wrap">
-                    <button
-                      type="button"
-                      class="dm-quick-react-btn dm-quick-react-more"
-                      data-testid="message-react-more"
-                      aria-label="Add a reaction"
-                      title="Add a reaction"
-                      aria-haspopup="menu"
-                      aria-expanded={reactPickerFor === msg.eventId}
-                      onclick={() =>
-                        (reactPickerFor =
-                          reactPickerFor === msg.eventId ? null : msg.eventId)}
-                    >
-                      +
-                    </button>
-                    {#if reactPickerFor === msg.eventId}
-                      <EmojiPicker
-                        onpick={(emoji) => {
-                          reactPickerFor = null;
-                          toggle(msg.eventId, emoji);
-                        }}
-                        onclose={() => (reactPickerFor = null)}
-                      />
-                    {/if}
-                  </span>
-                  {#if onreply}
-                    <!-- Offered only where the host opens threads. A
-                         one-to-one conversation with a bot shows replies in
-                         line and passes no handler: a thread opened there was
-                         empty on an answer and showed a root twice. -->
-                    <button
-                      type="button"
-                      class="dm-quick-react-btn dm-quick-reply"
-                      data-testid="message-reply-quick"
-                      aria-label="Reply in thread"
-                      title="Reply in thread"
-                      onclick={() => openReply(msg.eventId)}
-                    ><RailIcon name="send" />
-                      Reply
-                    </button>
-                  {/if}
-                  {#if copyableText(msg, "body")}
-                    <button
-                      type="button"
-                      class="dm-quick-react-btn dm-quick-copy"
-                      data-testid="message-copy"
-                      aria-label="Copy message text"
-                      title="Copy message"
-                      onclick={() => copyMessage(msg)}
-                    ><RailIcon name="copy" />
-                      {copiedEventId === msg.eventId && copiedKind === "text" ? "Copied" : "Copy"}
-                    </button>
-                  {/if}
-                  {#if onforward && !msg.eventId.startsWith("local-send-")}
-                    <button
-                      type="button"
-                      class="dm-quick-react-btn dm-quick-forward"
-                      data-testid="message-forward"
-                      aria-label="Forward message"
-                      title="Forward"
-                      onclick={() => onforward(msg)}
-                    >
-                      Forward
-                    </button>
-                  {/if}
-                  {#if !msg.eventId.startsWith("local-")}
-                    <button
-                      type="button"
-                      class="dm-quick-react-btn dm-quick-copy"
-                      data-testid="message-copy-id"
-                      aria-label="Copy message ID"
-                      title="Copy ID"
-                      onclick={() => copyMessageId(msg)}
-                    ><RailIcon name="copy" />
-                      {copiedEventId === msg.eventId && copiedKind === "id" ? "Copied" : "Copy ID"}
-                    </button>
-                    {#if linkConversationId && linkCompanyUid}
-                      <button
-                        type="button"
-                        class="dm-quick-react-btn dm-quick-copy"
-                        data-testid="message-copy-link"
-                        aria-label="Copy message link"
-                        title="Copy link"
-                        onclick={() => copyMessageLink(msg)}
-                      ><RailIcon name="link" />
-                        {copiedEventId === msg.eventId && copiedKind === "link" ? "Copied" : "Copy link"}
-                      </button>
-                    {/if}
-                  {/if}
-                  {#if onstartsession}
-                    <button
-                      type="button"
-                      class="dm-quick-react-btn"
-                      data-testid="message-start-session"
-                      aria-label="Start a session from this message"
-                      title="Start session"
-                      onclick={() => onstartsession(msg.eventId)}
-                    ><RailIcon name="play" />
-                      Session
-                    </button>
-                  {/if}
-                </div>
                 {#if reactionsFor(msg.eventId).length > 0}
                   <ReactionBar
                     {selfPersonUid}
@@ -2652,6 +2700,10 @@
                     ontoggle={toggle}
                   />
                 {/if}
+                <!-- Last in the column: the bar hangs under everything that
+                     belongs to the message (text, thread card, reactions), so
+                     it never covers any of it. -->
+                {@render messageActions(msg, false)}
               </div>
             </div>
           {/if}
@@ -2714,6 +2766,8 @@
           files={pendingFiles}
           error={attachError}
           upgradeUrl={attachUpgradeUrl}
+          usagePause={attachUsagePause}
+          billingRole={callerRole(linkCompanyUid) ?? null}
           onupgrade={onopenurl}
           onremove={removePendingFile}
         />
@@ -2773,24 +2827,10 @@
               input.value = "";
             }}
           />
-          <svg
-            width="15"
-            height="15"
-            viewBox="0 0 16 16"
-            fill="none"
-            aria-hidden="true"
-          >
-            <path
-              d="M13.2 8.2 8.05 13.35a3.25 3.25 0 0 1-4.6-4.6l5.9-5.9a2.15 2.15 0 1 1 3.04 3.04L6.5 11.7a1 1 0 1 1-1.42-1.42l5.15-5.15"
-              stroke="currentColor"
-              stroke-width="1.35"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
+          <RailIcon name="paperclip" size={15} />
         </label>
         <div class="dm-tool-emoji-wrap">
-          <button
+          <button data-icon-only
             type="button"
             class="dm-tool-btn"
             onclick={() => (composerEmojiOpen = !composerEmojiOpen)}
@@ -2800,29 +2840,7 @@
             aria-haspopup="menu"
             data-testid="composer-emoji"
           >
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 16 16"
-              fill="none"
-              aria-hidden="true"
-            >
-              <circle
-                cx="8"
-                cy="8"
-                r="6.25"
-                stroke="currentColor"
-                stroke-width="1.3"
-              />
-              <circle cx="5.75" cy="6.75" r="0.85" fill="currentColor" />
-              <circle cx="10.25" cy="6.75" r="0.85" fill="currentColor" />
-              <path
-                d="M5.5 9.75c.7 1 1.55 1.5 2.5 1.5s1.8-.5 2.5-1.5"
-                stroke="currentColor"
-                stroke-width="1.3"
-                stroke-linecap="round"
-              />
-            </svg>
+            <RailIcon name="smiley" size={15} />
           </button>
           {#if composerEmojiOpen}
             <EmojiPicker
@@ -2849,7 +2867,7 @@
           </button>
         {/if}
       </div>
-      <button
+      <button data-icon-only
         type="button"
         class="btn btn-send"
         class:is-idle={!canSend}
@@ -2860,17 +2878,7 @@
         title="Send"
         data-testid="composer-send"
       >
-        <svg
-          width="13"
-          height="13"
-          viewBox="0 0 16 16"
-          fill="currentColor"
-          aria-hidden="true"
-        >
-          <path
-            d="M2.2 7.35 13.4 2.4a.55.55 0 0 1 .72.72L9.18 14.3a.55.55 0 0 1-1.02.05L6.4 9.6 2.15 8.2a.55.55 0 0 1 .05-1.05Z"
-          />
-        </svg>
+        <RailIcon name="send" size={14} />
       </button>
     </div>
   </div>
@@ -3205,6 +3213,13 @@
        against the name. */
     width: 100%;
     min-width: 0;
+  }
+
+  /* The name row lines up on the text baseline, but a tag's baseline is its
+     small mono label, so a baseline tag sat low against the name. Centre it
+     on the row instead. */
+  .dm-msg-meta > :global(.hq-tag) {
+    align-self: center;
   }
 
   .dm-msg-author {
@@ -3600,34 +3615,55 @@
     background: color-mix(in srgb, var(--t1) 5%, transparent);
   }
 
+  /* The thread card, as on iOS (hq-native-mobile #44): a soft translucent
+     lift with no outline, sized to its content. The count reads as the link
+     (ink, medium), the time stays quiet, a caret says it opens, and the line
+     never wraps — on a narrow column the time drops before "3 replies"
+     breaks across lines. */
   .dm-replies-count {
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    margin: 8px 0 0 -7px;
-    padding: 5px 9px 5px 6px;
+    max-width: 100%;
+    margin: 8px 0 0;
+    padding: 4px 8px 4px 5px;
     border: 1px solid transparent;
-    border-radius: 999px;
-    background: transparent;
-    color: var(--ice-ink);
-    font: 500 11px/1.3 var(--font-ui);
+    border-radius: 8px;
+    background: var(--reply-card-fill, var(--raised));
+    color: var(--t1);
+    font: 500 12px/1.3 var(--font-ui);
+    white-space: nowrap;
     cursor: pointer;
     transition:
       background 0.12s,
       border-color 0.12s;
   }
+  .dm-replies-label {
+    flex: none;
+  }
+  .dm-replies-caret {
+    display: inline-flex;
+    flex: none;
+    color: var(--t3);
+  }
 
-  .dm-replies-count:hover,
+  /* Hover lifts the fill, as the document cards do; an edge only for the
+     keyboard. */
+  .dm-replies-count:hover {
+    background: var(--hover, var(--btn-bg));
+  }
   .dm-replies-count:focus-visible {
     border-color: var(--line2);
-    background: var(--btn-bg);
     outline: none;
   }
 
   .dm-replies-preview {
+    min-width: 0;
+    overflow: hidden;
     color: var(--t3);
     font-size: 11px;
     font-weight: 400;
+    text-overflow: ellipsis;
   }
 
   /* Slack-style overlapping participant avatars, left of "N replies". */
@@ -3650,19 +3686,20 @@
     font-size: 7px;
   }
 
-  /* Slack-style hover toolbar pinned to the message.
-     The column is the containing block, and it already starts one row-padding
-     below the row top, so `bottom: 100%` overlaps the row by that 3px of
-     padding and stops at the text. */
+  /* Hover bar (owner, #772): opens 4px under the message, its right edge
+     flush with the row's hover wash (the row's 8px end padding past the
+     column). The column is its box, so it hangs under the text, the thread
+     card and the reactions alike, and covers none of them. */
   .dm-quick-react {
     position: absolute;
-    top: auto;
-    bottom: 100%;
-    right: 8px;
+    top: 100%;
+    bottom: auto;
+    right: -8px;
     z-index: 2;
     display: flex;
+    align-items: center;
     gap: 2px;
-    margin: 0;
+    margin: 4px 0 0;
     padding: 2px;
     border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
     border-radius: 8px;
@@ -3684,6 +3721,15 @@
       box-shadow 0.12s ease;
   }
 
+  /* Bridges the 4px gap so the pointer never leaves the message on its way
+     into the bar; the bar hides the moment hover drops. */
+  .dm-quick-react::before {
+    content: "";
+    position: absolute;
+    inset: -6px -4px -4px;
+    z-index: -1;
+  }
+
   .dm-msg:hover .dm-quick-react,
   .dm-msg:focus-within .dm-quick-react,
   .dm-quick-react:hover,
@@ -3694,30 +3740,40 @@
     pointer-events: auto;
   }
 
-  /* No room above this row: keep the toolbar in a gutter inside the column.
-     Padding on the row would move the column and the toolbar together. */
-  .dm-msg[data-menu-flip] > .dm-msg-column {
-    padding-top: calc(var(--hq-btn-h) + 8px);
+  /* Opens 4px above the message instead when hanging below would clip:
+     the newest message (nothing under it but the scroller's bottom padding,
+     and a bar hanging there would stretch the scroll height even at rest),
+     and any row the scrollport cuts off at the bottom (placeMessageMenu). */
+  .dm-msg-tail .dm-quick-react,
+  .dm-msg[data-menu-flip] .dm-quick-react {
+    top: auto;
+    bottom: 100%;
+    margin: 0 0 4px;
   }
 
-  .dm-msg[data-menu-flip] > .dm-msg-column > .dm-quick-react {
-    top: 0;
-    bottom: auto;
+  .dm-msg-tail .dm-quick-react::before,
+  .dm-msg[data-menu-flip] .dm-quick-react::before {
+    inset: -4px -4px -6px;
   }
 
   /* Touch input has no hover state, so a hover-only toolbar is unreachable.
-     Same gutter as the flip, after .dm-msg-group-start so the padding wins. */
+     It sits in the flow under the message, right-aligned, so it never covers
+     the next one. */
   @media (hover: none) {
-    .dm-msg-column {
-      padding-top: calc(var(--hq-btn-h) + 8px);
-    }
-
     .dm-quick-react {
-      top: 0;
-      bottom: auto;
+      position: static;
+      width: fit-content;
+      margin: 4px 0 0 auto;
       box-shadow: var(--panel-shadow, 0 8px 24px rgba(0, 0, 0, 0.4));
       opacity: 1;
       pointer-events: auto;
+    }
+
+    /* Outranks the hover-device flip above: in the flow, there is nothing
+       to flip. */
+    .dm-msg-tail .dm-quick-react,
+    .dm-msg[data-menu-flip] .dm-quick-react {
+      margin: 4px 0 0 auto;
     }
   }
 
@@ -3751,7 +3807,8 @@
   }
 
   .dm-quick-reply,
-  .dm-quick-copy {
+  .dm-quick-copy,
+  .dm-quick-forward {
     padding: 0 8px;
     color: var(--t1);
     font: 500 11px/1 var(--font-ui);

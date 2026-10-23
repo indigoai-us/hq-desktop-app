@@ -242,6 +242,8 @@ const TIMELINES: Record<string, ConversationMessageWire[]> = {
       body: "Nice. Bump the review one to me and re-run the sweep after the deploy.",
       createdAt: new Date(now - 30 * 60_000).toISOString(),
       direction: "out",
+      // A thread under a message, so the reply card has something to show.
+      replyCount: 3,
     },
     {
       eventId: "ao-3",
@@ -570,6 +572,39 @@ export function createFixtureChatSidebarApi(): ChatSidebarApi {
   };
 }
 
+/**
+ * Replies behind the timeline's reply cards, keyed by root event. A card that
+ * said "3 replies" over a thread that opened empty read as a bug, not a
+ * sample (owner, 2026-10-22).
+ */
+const REPLY_THREADS: Record<string, ConversationMessageWire[]> = {
+  "ao-2": [
+    {
+      eventId: "ao-2-r1",
+      fromPersonUid: "agt_fleet",
+      fromDisplayName: "Fleet Agent",
+      body: "On it. The review one is yours; the sweep is queued behind the deploy.",
+      createdAt: new Date(now - 29 * 60_000).toISOString(),
+      direction: "in",
+    },
+    {
+      eventId: "ao-2-r2",
+      fromPersonUid: "person-sofia",
+      fromDisplayName: "Sofia",
+      body: "I can take the second review if it helps.",
+      createdAt: new Date(now - 24 * 60_000).toISOString(),
+      direction: "in",
+    },
+    {
+      eventId: "ao-2-r3",
+      fromDisplayName: "Stefan",
+      body: "Thanks, both. Sofia, grab it.",
+      createdAt: new Date(now - 21 * 60_000).toISOString(),
+      direction: "out",
+    },
+  ],
+};
+
 export function createFixtureConversationApi(): ConversationApi {
   return {
     fetchChannel: async ({ channelId }): Promise<ChannelDetailResponse> => ({
@@ -582,12 +617,15 @@ export function createFixtureConversationApi(): ConversationApi {
       nextCursor: null,
     }),
     sendDm: async () => {},
-    fetchReplyThread: async () => ({
-      scope: "channel" as const,
-      root: null,
-      replies: [],
-      replyCount: 0,
-    }),
+    fetchReplyThread: async ({ rootEventId }) => {
+      const replies = REPLY_THREADS[rootEventId] ?? [];
+      return {
+        scope: "channel" as const,
+        root: null,
+        replies,
+        replyCount: replies.length,
+      };
+    },
     sendReply: async () => {},
     runCardAction: async (args) => ({
       cardId: args.cardId,

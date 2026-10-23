@@ -634,7 +634,7 @@
               if (row.upgradeUrl) onopenurl?.(row.upgradeUrl);
             }}
           ><RailIcon name="arrow-right" />
-            Upgrade plan
+            {row.actionLabel}
           </button>
         </div>
       {/if}
@@ -755,7 +755,7 @@
         {#if model.showRestore}
           <button
             type="button"
-            class="core-btn primary"
+            class="core-text-btn accent"
             data-testid="core-popover-core-restore"
             disabled={coreRestoring}
             aria-busy={coreRestoring}

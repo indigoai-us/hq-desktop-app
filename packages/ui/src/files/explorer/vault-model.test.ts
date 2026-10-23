@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { Workspace } from "../../chat/workspaces.js";
 import {
   shareTarget,
+  folderShareLocation,
+  folderShareTarget,
+  sharedFolderEntries,
   PERSONAL_VAULT,
   breadcrumbs,
   isSensitiveName,
@@ -147,5 +150,109 @@ describe("shareTarget (QA-005)", () => {
     const target = shareTarget(PERSONAL_VAULT, "personal/knowledge/idea-bank.md");
     expect(target).toMatchObject({ path: "personal/knowledge/idea-bank.md", company: null, available: false });
     expect(target.reason).toContain("company vault");
+  });
+});
+
+describe("folderShareLocation (feedback 3e124bcd)", () => {
+  const roster = [ws({ slug: "acme", cloudUid: "cmp_1" }), ws({ slug: "remote", cloudUid: "cmp_2", hasLocalFolder: false })];
+
+  it("maps a company-relative folder share to that company's vault folder", () => {
+    expect(folderShareLocation({ vaultPath: "knowledge/clients/frank/", companyUid: "cmp_1" }, roster)).toEqual({
+      vault: "company:acme",
+      path: "companies/acme/knowledge/clients/frank/",
+    });
+  });
+
+  it("accepts a share path already rooted at companies/<slug>/", () => {
+    expect(folderShareLocation({ vaultPath: "companies/acme/workspaces/team/", companyUid: "acme" }, roster)).toEqual({
+      vault: "company:acme",
+      path: "companies/acme/workspaces/team/",
+    });
+  });
+
+  it("opens the company vault home for a whole-company share", () => {
+    expect(folderShareLocation({ vaultPath: "/", companyUid: "cmp_1" }, roster)).toEqual({ vault: "company:acme", path: null });
+  });
+
+  it("returns null for an unknown company, a company without a local folder, or a parent segment", () => {
+    expect(folderShareLocation({ vaultPath: "knowledge/", companyUid: "cmp_unknown" }, roster)).toBeNull();
+    expect(folderShareLocation({ vaultPath: "knowledge/", companyUid: "cmp_2" }, roster)).toBeNull();
+    expect(folderShareLocation({ vaultPath: "knowledge/../../secret/", companyUid: "cmp_1" }, roster)).toBeNull();
+    expect(folderShareLocation({ vaultPath: "knowledge/", companyUid: "" }, roster)).toBeNull();
+  });
+
+  it("maps a glob folder share to the folder it covers (feedback ae977608)", () => {
+    expect(folderShareLocation({ vaultPath: "projects/ops-workflow-design/*", companyUid: "cmp_1" }, roster)).toEqual({
+      vault: "company:acme",
+      path: "companies/acme/projects/ops-workflow-design/",
+    });
+  });
+
+  it("never opens a folder Files hides", () => {
+    expect(folderShareLocation({ vaultPath: "settings/", companyUid: "cmp_1" }, roster)).toBeNull();
+    expect(folderShareLocation({ vaultPath: "knowledge/.git/", companyUid: "cmp_1" }, roster)).toBeNull();
+  });
+});
+
+describe("folderShareTarget (folder share for a company not synced here)", () => {
+  const roster = [
+    ws({ slug: "acme", cloudUid: "cmp_1" }),
+    ws({ slug: "remote", displayName: "Remote Co", cloudUid: "cmp_2", hasLocalFolder: false, state: "cloud-only" }),
+  ];
+
+  it("names the company and folder prefix with no local location when the company is not on this computer", () => {
+    expect(folderShareTarget({ vaultPath: "knowledge/clients/frank/", companyUid: "cmp_2" }, roster)).toEqual({
+      companyUid: "cmp_2",
+      companySlug: "remote",
+      companyLabel: "Remote Co",
+      prefix: "knowledge/clients/frank/",
+      local: null,
+    });
+  });
+
+  it("keeps the local location for a synced company and a glob share", () => {
+    expect(folderShareTarget({ vaultPath: "projects/ops/*", companyUid: "cmp_1" }, roster)).toMatchObject({
+      companyLabel: "Acme",
+      prefix: "projects/ops/",
+      local: { vault: "company:acme", path: "companies/acme/projects/ops/" },
+    });
+    expect(folderShareTarget({ vaultPath: "/", companyUid: "cmp_2" }, roster)).toMatchObject({ prefix: "", local: null });
+  });
+
+  it("keeps every negative: unknown company, parent segment, hidden and sensitive folders", () => {
+    expect(folderShareTarget({ vaultPath: "knowledge/", companyUid: "cmp_unknown" }, roster)).toBeNull();
+    expect(folderShareTarget({ vaultPath: "knowledge/", companyUid: "" }, roster)).toBeNull();
+    expect(folderShareTarget({ vaultPath: "knowledge/../../secret/", companyUid: "cmp_2" }, roster)).toBeNull();
+    expect(folderShareTarget({ vaultPath: "settings/", companyUid: "cmp_2" }, roster)).toBeNull();
+    expect(folderShareTarget({ vaultPath: "knowledge/.git/", companyUid: "cmp_2" }, roster)).toBeNull();
+  });
+});
+
+describe("sharedFolderEntries", () => {
+  it("lists the immediate children of the shared prefix, folders first, hiding what Files hides", () => {
+    const keys = [
+      "knowledge/clients/frank/",
+      "knowledge/clients/frank/brief.md",
+      "knowledge/clients/frank/notes/2026-10.md",
+      "knowledge/clients/frank/notes/2026-09.md",
+      "knowledge/clients/frank/assets/logo.png",
+      "knowledge/clients/frank/.DS_Store",
+      "knowledge/clients/frank/.git/HEAD",
+      "knowledge/clients/frank/api-token.json",
+      "knowledge/clients/frank/secrets/x",
+      "knowledge/clients/other/plan.md",
+    ];
+    expect(sharedFolderEntries("knowledge/clients/frank/", keys)).toEqual([
+      { name: "assets", isDir: true },
+      { name: "notes", isDir: true },
+      { name: "brief.md", isDir: false },
+    ]);
+  });
+
+  it("lists a whole-company share from the vault root", () => {
+    expect(sharedFolderEntries("", ["knowledge/a.md", "projects/x/prd.json", "settings/a"])).toEqual([
+      { name: "knowledge", isDir: true },
+      { name: "projects", isDir: true },
+    ]);
   });
 });

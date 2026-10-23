@@ -26,7 +26,6 @@
    * adapter + api seams and the ChatWakeBus.
    */
   import {
-    CLAUDE_PROVIDER_FLAG,
     DESKTOP_AGENT_CREATION_FLAG,
     HUMAN_ONLY_CONVERSATIONS_FLAG,
     READY_FIRST_ACTION_FLAG,
@@ -42,12 +41,13 @@
     type CloudFileEventPayload,
 } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
-  import { resolveUsageCompany, usageAccounts } from "../home/core-usage-model.js";
+  import { PERSONAL_ACCOUNT_KEY, resolveUsageCompany, setPreferredUsageAccount, usageAccounts } from "../home/core-usage-model.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
   import LazyDoor from "./LazyDoor.svelte";
   import { callerRole, loadCallerRole } from "../company/company-roles.svelte.js";
+  import { domainPricesFromFeed, type DomainPrices } from "../company/files-connect/custom-domain.js";
   import {
     brainPageDoor,
     teamPageDoor,
@@ -79,7 +79,6 @@
     RAIL_DEPLOYMENTS_ACTIONS_FLAG,
     RAIL_OUTPOST_FLAG,
     RAIL_TELEMETRY_FLAG,
-    RAIL_WORKFORCE_LIMITS_FLAG,
     isIndigoCompany,
     isIndigoOnlySurface,
     watchIndigoOnlyGates,
@@ -90,6 +89,8 @@
   import DeploymentsRailHost from "./DeploymentsRailHost.svelte";
   import PersonalRailHost from "./PersonalRailHost.svelte";
   import OutpostRailHost from "./OutpostRailHost.svelte";
+  import CompanyJobsRailHost from "./CompanyJobsRailHost.svelte";
+  import { OUTPOST_JOBS_ROUTE, parseOutpostJobsParam } from "../outpost/company-jobs-model.js";
   import AtlasLandingHost from "./AtlasLandingHost.svelte";
   import type { AtlasLocalSource, AtlasVaultSource } from "./atlas-landing.js";
   import ActivityRailHost from "./ActivityRailHost.svelte";
@@ -106,6 +107,7 @@
     shouldShowLaunch,
   } from "../badges/badge-launch.js";
   import { installBadgeLoader } from "../badges/badge-loader.svelte.js";
+  import { setUsageLevelHistoryLoader, setUsageLevelOpener, setUsageLevelViewer } from "../home/usage-levels.svelte.js";
   import { topBadge } from "../badges/badge-tier.js";
   import { resolveEarned, type ResolvedBadge } from "../badges/badge-catalog.js";
   import CompanySettingsHost from "./CompanySettingsHost.svelte";
@@ -561,7 +563,7 @@
     type TourEnterAction,
     type TourState,
   } from "../tour/guided-tour.js";
-  import { vaultsFor } from "../files/explorer/vault-model.js";
+  import { folderShareTarget, vaultsFor } from "../files/explorer/vault-model.js";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
   import LocalBotDetailPanel from "../chat/LocalBotDetailPanel.svelte";
@@ -604,6 +606,7 @@
     type NavigationEntry,
     type NavigationScrollState,
     type ProjectsFocusTab,
+    type SharedFolderFocus,
   } from "./navigation-history.js";
   import { settleThreadSidebarClose } from "./thread-sidebar-close.js";
   import { resetThreadComposerDrafts } from "../chat/messaging/thread-composer-draft.js";
@@ -639,6 +642,7 @@
     EMPTY_LIVE_SYNC,
     lastSyncLabelFromLive,
     readLiveSyncStatus,
+    retrySyncFromLive,
     syncStateFromLive,
     type LiveSyncStatus,
   } from "../settings/live-sync-status.js";
@@ -1510,6 +1514,18 @@
    */
   let syncStatus = $state<SyncStatusState>(emptySyncStatus());
 
+  async function retrySyncRecovery(): Promise<void> {
+    const before = syncStatus;
+    const retried = await retrySyncFromLive(adapter, liveSync);
+    liveSync = retried.status;
+    if (retried.error) {
+      syncStatus = reduceSyncEvent(syncStatus, "sync:error", { message: retried.error });
+    } else if (!retried.status.recoveryHoldReason && syncStatus === before) {
+      // Do not overwrite a newer native auth/error/progress event while awaiting retry.
+      syncStatus = reduceSyncEvent(emptySyncStatus(), "sync:plan", {});
+    }
+  }
+
   // OWNER-003: one "sync" toast that updates in place while files move and
   // turns into a quiet "Files up to date" when the run ends. Runs that move
   // nothing stay silent; attention states belong to the Core pill.
@@ -1961,6 +1977,8 @@
   /** Files explorer location (vault id + HQ-relative file). */
   let explorerVault = $state<string | null>(null);
   let explorerPath = $state<string | null>(null);
+  /** DM folder share the shared-files view lists remotely (company not synced here). */
+  let sharedFolderFocus = $state<SharedFolderFocus | null>(null);
   let extraPageId = $state<string | null>(null);
   let extraPageParam = $state<string | null>(null);
   /** Which pending request the Requests panel should bring into view first. */
@@ -5027,6 +5045,19 @@
           void navigate({ kind: "explorer" });
         },
       });
+      // Staff only (owner, 2026-10-16): see the accomplishments
+      // announcement again, as someone who has not seen it, without clearing
+      // the "seen" record. Needs badges on for you, like the real one.
+      if (isIndigoStaff && youBadgesEnabled) {
+        nav.push({
+          id: "command-replay-accomplishments",
+          label: "Replay accomplishments announcement",
+          detail: "Staff only: show the badges launch again",
+          action: () => {
+            window.setTimeout(replayLaunch, 0);
+          },
+        });
+      }
       nav.push({
         id: "command-take-tour",
         label: "Take the tour",
@@ -10559,7 +10590,7 @@
       case "library":
         return { kind: "library", tab: libraryTab, itemId: libraryItemId };
       case "shared-files":
-        return { kind: "shared-files" };
+        return { kind: "shared-files", folder: sharedFolderFocus };
       case "explorer":
         return { kind: "explorer", vault: explorerVault, path: explorerPath };
       case "projects":
@@ -10800,6 +10831,12 @@
       };
     }
     if (destination.kind === "extra") {
+      if (destination.page === OUTPOST_JOBS_ROUTE) {
+        const jobsCompany = destination.companyUid ?? extraParamCompanyKey(destination.param);
+        const jobsDenied = accessOutcome(destination, jobsCompany);
+        if (jobsDenied) return jobsDenied;
+        return { status: "ready", destination };
+      }
       if (companyRowForPage(destination.page) === "office") {
         const uid = destination.companyUid;
         const denied = accessOutcome(destination, uid);
@@ -11009,6 +11046,7 @@
         extraPageParam = null;
         break;
       case "shared-files":
+        sharedFolderFocus = next.folder ?? null;
         view = "shared-files";
         settingsSection = null;
         extraPageId = null;
@@ -12400,14 +12438,46 @@
     items: FileAttachmentModel[] = [],
   ): void {
     const companyUid = attachmentCompanyUid(selectedRow);
-    const stamped = (items.length > 0 ? items : [item]).map((entry) => ({
-      ...entry,
-      companyUid: entry.companyUid || companyUid || "",
-    }));
+    if (item.kind === "folder") {
+      openFolderShare(item, companyUid);
+      return;
+    }
+    // A folder key is a folder marker, not an object the tray can fetch.
+    const stamped = (items.length > 0 ? items : [item])
+      .filter((entry) => entry.kind !== "folder")
+      .map((entry) => ({
+        ...entry,
+        companyUid: entry.companyUid || companyUid || "",
+      }));
     attachTray = {
       selectedId: item.id || item.vaultPath,
       items: stamped,
     };
+  }
+
+  /**
+   * A DM folder share ("Shared a folder with you") opens that folder in Files.
+   * Its trailing-slash key is not an object, so the attachment preview would
+   * fail with "Could not load the file" (feedback 3e124bcd). Without a local
+   * copy of the company, the shared-with-me view lists the folder from the
+   * vault (ACL-filtered) and says which company to sync to open it in Files.
+   * An unknown company lands on the plain shared-with-me list.
+   */
+  function openFolderShare(item: FileAttachmentModel, companyUid: string | null): void {
+    const target = folderShareTarget(
+      { vaultPath: item.vaultPath, companyUid: item.companyUid || companyUid || "" },
+      effectiveCompanies,
+    );
+    if (target?.local) {
+      void navigate({ kind: "explorer", vault: target.local.vault, path: target.local.path });
+      return;
+    }
+    void navigate({
+      kind: "shared-files",
+      folder: target
+        ? { companyUid: target.companyUid, companyLabel: target.companyLabel, prefix: target.prefix }
+        : null,
+    });
   }
 
   async function resolveTrayUrl(
@@ -12847,6 +12917,57 @@
   // OWNER-R24: the caller's role in the open company, from the membership
   // roster. Grants and Billing show only to owners and admins.
   const companyPaneRole = $derived(callerRole(companyPaneCompany?.uid));
+  // US-024: the open company's plan status from the membership row, for the
+  // Billing pane (non-owners) and the Team seat chip.
+  const companyPaneWorkspace = $derived(
+    companyPaneCompany?.uid ? (companies ?? []).find((c) => (c.cloudUid ?? "").trim() === companyPaneCompany?.uid) : undefined,
+  );
+  const companyPaneBillingState = $derived(companyPaneWorkspace?.billingState ?? null);
+  const jobsCompanyUid = $derived.by(() => {
+    if (extraPageId !== OUTPOST_JOBS_ROUTE) return null;
+    return parseOutpostJobsParam(extraPageParam).companyUid ?? tenantCompanyId;
+  });
+  const jobsRole = $derived.by(() => {
+    const uid = jobsCompanyUid;
+    if (!uid) return "unknown" as const;
+    const role = callerRole(uid);
+    if (role === "Owner") return "owner" as const;
+    if (role === "Admin") return "admin" as const;
+    if (role === undefined) return "unknown" as const;
+    return "member" as const;
+  });
+  /** Contact us on the jobs not-available-yet state. Reaches HQ through the in-app report path. */
+  function contactAboutJobs(companyUid: string) {
+    const who =
+      jobsRole === "owner" ? "An owner" : jobsRole === "admin" ? "An admin" : jobsRole === "member" ? "A member" : "Someone";
+    return adapter.feedback.submitBugReport(
+      "Outposts not available for a company",
+      `${who} asked about Outposts from the Jobs screen.\n\nCompany: ${companyUid}`,
+    );
+  }
+  $effect(() => {
+    const uid = jobsCompanyUid;
+    if (!uid) return;
+    loadCallerRole({
+      companyUid: uid,
+      selfUid: self?.uid ?? null,
+      selfEmail: self?.email ?? null,
+      company: adapter.company ?? null,
+    });
+  });
+  // US-007: the global Deployments page offers the company Custom domain sheet too.
+  async function deployDomainPrices(): Promise<DomainPrices | null> {
+    const read = adapter.company?.getPricing;
+    if (!read) return null;
+    const res = await read();
+    return res.ok ? domainPricesFromFeed(res.value) : null;
+  }
+  async function deployDomainCardEntryUrl(companyUid: string): Promise<string | null> {
+    const mint = adapter.company?.createBillingCheckoutSession;
+    if (!mint) return null;
+    const res = await mint(companyUid);
+    return res.ok && typeof res.value?.url === "string" ? res.value.url : null;
+  }
   // Grants pane: the caller's other companies, grantable where they are an
   // owner or admin (hq-pro enforces the same rule).
   const grantsOpen = $derived(railPlaceholder?.id === "grants");
@@ -12910,6 +13031,35 @@
   const youBadges = $derived(badgesFor(youSubject));
 
   /**
+   * usage-only-pricing US-019: which level-up cards were shown is stored per
+   * signed-in person, and the card's "See usage" opens Settings > Usage on that account.
+   */
+  $effect(() => {
+    setUsageLevelViewer(self?.uid ?? null);
+  });
+  $effect(() => {
+    setUsageLevelOpener((accountKey) => {
+      setPreferredUsageAccount(accountKey);
+      openSettings("usage");
+    });
+    return () => setUsageLevelOpener(null);
+  });
+  // Levels follow the owner usage history (GET /v1/billing/usage/history,
+  // hq-pro #5087), read once per account. With no history there is no card.
+  $effect(() => {
+    const company = adapter.company;
+    setUsageLevelHistoryLoader(
+      company
+        ? (accountKey) =>
+            accountKey === PERSONAL_ACCOUNT_KEY
+              ? (company.getPersonalUsageHistory?.() ?? null)
+              : (company.getUsageHistory?.(accountKey) ?? null)
+        : null,
+    );
+    return () => setUsageLevelHistoryLoader(null);
+  });
+
+  /**
    * hq-accomplishment-badges US-016: the launch announcement, once, over the
    * whole window, when the server has badges on for you (badge-launch.ts).
    * It waits for first-run setup and the guided tour, which own the window.
@@ -12926,6 +13076,26 @@
     const timer = window.setTimeout(() => (launchOpen = true), LAUNCH_OPEN_DELAY_MS);
     return () => window.clearTimeout(timer);
   });
+  /** True @getindigo.ai gate (the host's is_indigo_user check), for staff-only tools. */
+  let isIndigoStaff = $state(false);
+  $effect(() => {
+    const identity = adapter?.identity;
+    if (!identity || adapter.kind !== "desktop") return;
+    let cancelled = false;
+    void identity.hasFeature("is_indigo_user").then((result) => {
+      if (!cancelled) isIndigoStaff = result.ok && result.value === true;
+    }).catch((err) => {
+      console.warn("[hq-desktop] staff check failed:", err);
+    });
+    return () => {
+      cancelled = true;
+    };
+  });
+  /** Staff replay from the command palette: open it now, whatever "seen" says. */
+  function replayLaunch(): void {
+    if (launchOpen || visualFirstRunOpen || tourStep) return;
+    launchOpen = true;
+  }
   function closeLaunch(): void {
     launchOpen = false;
     if (launchPreview()) {
@@ -13707,6 +13877,10 @@
       return { label: action.label, onselect: () => openExtraPage(id, action.param()) };
     })()}
     syncState={liveSyncState}
+    errorSummary={liveSync.recoveryHoldReason}
+    syncRecoveryReason={liveSync.recoveryHoldReason}
+    errorMessage={liveSync.recoveryHoldReason}
+    onretry={liveSync.recoveryHoldReason ? retrySyncRecovery : undefined}
     {lastSyncLabel}
     uploadsPaused={liveSync.uploadsPaused ?? []}
     cloudPaused={!cloudEnabled}
@@ -13719,7 +13893,9 @@
     hqFolderPath={hqFolderPath ?? liveSync.hqFolderPath}
     watchedCount={watched}
     {unreadCount}
-    {syncStatus}
+    syncStatus={liveSync.recoveryHoldReason
+      ? { ...syncStatus, phase: "error", message: liveSync.recoveryHoldReason }
+      : syncStatus}
     brand={brandState}
     {brandCompanyName}
     onopenSync={() => openSettings("sync")}
@@ -14187,7 +14363,6 @@
             if (onopenurl) onopenurl(url);
             else window.open(url, "_blank", "noopener,noreferrer");
           }}
-          loadClaudeProviderFlag={() => adapter.identity.hasFeature(CLAUDE_PROVIDER_FLAG)}
           humanOnly={humanOnlyConversations}
           loadCloudProvisionOptions={(companyUid) => adapter.agents.getProvisionOptions(companyUid)}
           directCloud={directCloudCreate}
@@ -14285,6 +14460,7 @@
         {:else if view === "shared-files"}
           <SharedFilesOverlay
             {adapter}
+            folder={sharedFolderFocus}
             onback={() => {
               void leaveCurrentDestination();
             }}
@@ -14347,6 +14523,7 @@
               selfEmail: self?.email ?? null,
               companyLabel: companyPaneCompany.label,
               avatarByUid,
+              usagePriced: companyPaneWorkspace?.usagePriced === true,
             }}
           >
             {#snippet skeleton()}
@@ -14382,7 +14559,7 @@
             companyUid={companyPaneCompany.uid}
             company={adapter.company ?? null}
             messaging={adapter.messaging ?? null}
-            seatLimit={railGate(RAIL_WORKFORCE_LIMITS_FLAG)}
+            billingState={companyPaneBillingState}
             files={adapter.files ?? null}
             targets={grantTargets}
           />
@@ -14468,6 +14645,9 @@
             deployAppPreview={adapter.company?.deployAppPreview}
             deployAppSnapshot={adapter.company?.deployAppSnapshot}
             companies={memberCompanies(companies)}
+            deployDomainRequest={adapter.company?.deployDomainRequest ?? null}
+            loadDomainPrices={deployDomainPrices}
+            domainCardEntryUrl={deployDomainCardEntryUrl}
             openExternal={onopenurl}
             actions={railGate(RAIL_DEPLOYMENTS_ACTIONS_FLAG)}
           />
@@ -14539,6 +14719,14 @@
             <p>{railPlaceholder.summary}</p>
             <p class="rail-placeholder-story">Built in {railPlaceholder.story}.</p>
           </section>
+        {:else if view === "extra" && extraPageId === OUTPOST_JOBS_ROUTE}
+          <CompanyJobsRailHost
+            companyUid={jobsCompanyUid}
+            outpostId={parseOutpostJobsParam(extraPageParam).outpostId}
+            role={jobsRole}
+            api={adapter.agents ?? null}
+            contact={contactAboutJobs}
+          />
         {:else if view === "extra" && extraPageId && extraPages?.[extraPageId]}
           {@const Page = extraPages[extraPageId].component}
           <div class="extra-page-host" data-testid="extra-page-host" data-page={extraPageId}>
@@ -14650,26 +14838,42 @@
                       />
                     </button>
                   {:else}
-                    <span
-                      class="channel-header-avatar"
-                      data-testid="channel-header-avatar"
+                    <!-- The person's avatar and name open their profile, the
+                         same one unit a bot's header already is (iOS #44: the
+                         identity in the bar opens the profile). -->
+                    <button
+                      type="button"
+                      class="channel-header-agent channel-header-person"
+                      data-testid="channel-header-person"
+                      aria-label={`View ${headerTitle}'s profile`}
+                      disabled={!(selectedRow.personUid ?? "").trim()}
+                      onclick={() =>
+                        openProfileForAuthor({
+                          personUid: selectedRow?.personUid ?? "",
+                          displayName: headerTitle,
+                        })}
                     >
-                      <IdentityMark
-                        kind="person"
-                        label={headerTitle}
-                        agentUid={selectedRow.personUid}
-                        avatarUrl={authorAvatarUrl(
-                          selectedRow.personUid,
-                          avatarByUid,
-                        )}
-                        size="small"
-                        online={presenceStatus(
-                          selectedRow.companyUid ?? "",
-                          selectedRow.personUid ?? "",
-                        ) === "online"}
-                      />
-                    </span>
-                    <h2 data-testid="channel-name">{headerTitle}</h2>
+                      <span
+                        class="channel-header-avatar"
+                        data-testid="channel-header-avatar"
+                      >
+                        <IdentityMark
+                          kind="person"
+                          label={headerTitle}
+                          agentUid={selectedRow.personUid}
+                          avatarUrl={authorAvatarUrl(
+                            selectedRow.personUid,
+                            avatarByUid,
+                          )}
+                          size="small"
+                          online={presenceStatus(
+                            selectedRow.companyUid ?? "",
+                            selectedRow.personUid ?? "",
+                          ) === "online"}
+                        />
+                      </span>
+                      <h2 data-testid="channel-name">{headerTitle}</h2>
+                    </button>
                   {/if}
                 {:else}
                   <h2 data-testid="channel-name">{headerTitle}</h2>
@@ -16453,6 +16657,13 @@
     min-width: 0;
   }
 
+  /* The title row aligns text on its baseline, and a baseline-aligned icon
+     box sits its bottom edge on that baseline, so the company mark rode
+     about 5px above the title's middle (owner, 2026-10-22). Centre it. */
+  .channel-title > :global(.company-icon) {
+    align-self: center;
+  }
+
   .channel-header-avatar {
     display: inline-flex;
     flex: 0 0 auto;
@@ -16471,6 +16682,10 @@
     color: inherit;
     font: inherit;
     cursor: pointer;
+  }
+
+  .channel-header-person:disabled {
+    cursor: default;
   }
 
   .channel-header-agent h2 {

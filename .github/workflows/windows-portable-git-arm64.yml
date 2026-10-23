@@ -1,0 +1,61 @@
+# HQ's managed PortableGit (crates/hq-desktop-core/src/windows_portable_git.rs)
+# on a native Windows ARM64 runner with the pinned ARM64 asset (clangarm64
+# layout, native ARM64 Git and Bash). x64 runners cannot execute ARM64
+# binaries, so this is the only place the ARM64 bundle runs before release.
+#
+# Release branches only. The x64 asset already runs on every Windows-relevant
+# PR in windows-check.yml; the ARM64 runner is reserved for release/* branches
+# (a push to one, or a PR into one), plus a manual dispatch. It is not a
+# required check, so the `branches:` filters here cannot leave a required
+# context pending on other PRs. scripts/ci-cost-contract.test.ts pins the
+# triggers and the job condition.
+name: Managed PortableGit (Windows ARM64, release branches)
+
+# Runner variables (repo-level Actions variables; docs/ci/self-hosted-runners.md).
+# Unset means the current hosted label:
+#   HQ_DESKTOP_RUNNER_WINDOWS_ARM64  ["self-hosted","Windows","ARM64","hq-windows-arm"]   default "windows-11-arm"
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['release/**']
+  pull_request:
+    branches: ['release/**']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows-portable-git-arm64:
+    # Repeats the trigger filters, so a trigger added to `on:` later cannot
+    # start the ARM64 runner on a non-release branch.
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/heads/release/') || startsWith(github.base_ref, 'release/') }}
+    name: Managed PortableGit (Windows ARM64)
+    runs-on: ${{ fromJSON(vars.HQ_DESKTOP_RUNNER_WINDOWS_ARM64 || '"windows-11-arm"') }}
+    timeout-minutes: 45
+    env:
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust (stable, aarch64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      # The download is its own step and hands the path to the test step
+      # through GITHUB_ENV, so the cargo invocation stays a one-line `run:`
+      # that fails the step on its own exit code.
+      - name: Download pinned PortableGit asset (ARM64)
+        shell: pwsh
+        run: |
+          $asset = Join-Path $env:RUNNER_TEMP 'PortableGit-2.54.0-arm64.7z.exe'
+          Invoke-WebRequest -UseBasicParsing -OutFile $asset -Uri 'https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/PortableGit-2.54.0-arm64.7z.exe'
+          "HQ_PORTABLE_GIT_ASSET=$asset" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Managed PortableGit tests (ARM64, real asset)
+        run: cargo test -p hq-desktop-core --lib windows_portable_git::tests -- --include-ignored --nocapture

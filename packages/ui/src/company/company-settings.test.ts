@@ -5,7 +5,6 @@ import {
   filterGrants,
   GRANT_LEVELS,
   metadata,
-  stripeDestination,
   approvedStripeUrl,
   type CompanyGroup,
   type PathGrant,
@@ -53,12 +52,15 @@ describe("US-030 company settings", () => {
     expect(deleteGroup(groups, "ops", true)).toEqual([]);
   });
 
-  it("hands upgrade to Stripe checkout and keeps no fixed portal link", async () => {
-    expect(new URL(stripeDestination("upgrade")).hostname).toBe("checkout.stripe.com");
+  it("keeps no fixed Stripe link: no plan checkout, no portal constant (US-024)", async () => {
     // The portal is minted per company by hq-pro; a constant link 404'd for everyone.
     const mod = (await import("./company-settings.js")) as Record<string, unknown>;
     expect(mod).not.toHaveProperty("STRIPE_PORTAL_URL");
-    expect(JSON.stringify(Object.values(mod).filter((v) => typeof v === "string"))).not.toContain("billing.stripe.com/p/login");
+    expect(mod).not.toHaveProperty("WORKFORCE_CHECKOUT_URL");
+    expect(mod).not.toHaveProperty("stripeDestination");
+    const strings = JSON.stringify(Object.values(mod).filter((v) => typeof v === "string"));
+    expect(strings).not.toContain("billing.stripe.com/p/login");
+    expect(strings).not.toContain("checkout.stripe.com/c/pay/hq-workforce");
     expect(approvedStripeUrl("http://checkout.stripe.com/c/pay/x")).toBeNull();
     expect(approvedStripeUrl("https://evil.example/checkout")).toBeNull();
   });

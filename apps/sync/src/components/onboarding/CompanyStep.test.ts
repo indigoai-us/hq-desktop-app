@@ -507,7 +507,7 @@ describe('CompanyStep: name, set up, plan', () => {
     }
     expect(byId('onboarding-plan-trial')?.textContent).toBe('30-day trial, usage capped at $500');
     expect(byId('onboarding-plan-choose-free')?.textContent).toBe('Sign up free');
-    expect(byId('onboarding-plan-enterprise')?.textContent).toBe('Request an enterprise demo');
+    expect(byId('onboarding-plan-enterprise')?.textContent).toBe('Book a setup call');
     expect(byId('onboarding-plan-self-hosted')?.textContent).toBe('Use HQ free, self-hosted or on-prem');
 
     click('onboarding-plan-choose-free');

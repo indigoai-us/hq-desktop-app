@@ -122,7 +122,7 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
     // tools-codex-only / tools-none) so the Ready screen can be previewed in
     // every machine state; the contract is that it still exists and stays
     // deterministic per scenario.
-    expect(mocks).toContain('detect_ai_tools: () => {');
+    expect(mocks).toContain('detect_ai_tools: async () => {');
     expect(mocks).toContain("scenario !== 'tools-codex-only'");
     expect(mocks).toContain(
       "harnessScenario() === 'onboarding-progress'",

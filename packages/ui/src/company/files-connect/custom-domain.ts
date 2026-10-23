@@ -100,18 +100,6 @@ export function domainInputProblem(domain: string): DomainInputProblem | null {
   return null;
 }
 
-const SECOND_LEVEL = new Set(["co", "com", "org", "net", "ac", "gov", "edu"]);
-
-/**
- * A root domain (example.com, example.co.uk) rather than a subdomain. Most DNS
- * hosts refuse a CNAME there, so the sheet adds ALIAS / flattening guidance.
- */
-export function isApexDomain(domain: string): boolean {
-  const labels = domain.split(".");
-  if (labels.length === 2) return true;
-  return labels.length === 3 && (labels[2] ?? "").length === 2 && SECOND_LEVEL.has(labels[1] ?? "");
-}
-
 function state(value: unknown): DomainState {
   return value === "validated" || value === "failed" ? value : "pending";
 }
@@ -128,9 +116,19 @@ export function domainRecordsFrom(body: unknown): DomainRecord[] {
 }
 
 /**
- * DNS records for one domain. The API returns them on add (certificate record
- * first, then the routing CNAME) and only the certificate record on refresh,
- * so the routing record is rebuilt from the app's own host when it is missing.
+ * Where a custom domain's routing CNAME points. hq-deploy hands out the
+ * provisioned base (`provisionedPlatformBaseDomain()`: indigo-hq.com even when
+ * the API advertises hq.work), so a rebuilt record names the same host the add
+ * reply did.
+ */
+export function routingTargetFor(appHost: string): string {
+  return appHost.endsWith(".hq.work") ? `${appHost.slice(0, -".hq.work".length)}.indigo-hq.com` : appHost;
+}
+
+/**
+ * DNS records for one domain. The API returns the routing CNAME only on add
+ * and the certificate record on add or refresh once ACM has made it, so the
+ * routing record is rebuilt from the app's own host when it is missing.
  */
 export function dnsRecordsFor(domain: string, appHost: string, instructions: unknown): DnsRecord[] {
   const out: DnsRecord[] = [];
@@ -145,7 +143,7 @@ export function dnsRecordsFor(domain: string, appHost: string, instructions: unk
     out.push({ type: text(raw.type) || "CNAME", name, value, purpose });
   }
   if (!out.some((r) => r.purpose === "routing") && appHost) {
-    out.push({ type: "CNAME", name: domain, value: appHost, purpose: "routing" });
+    out.push({ type: "CNAME", name: domain, value: routingTargetFor(appHost), purpose: "routing" });
   }
   return out.sort((a, b) => (a.purpose === b.purpose ? 0 : a.purpose === "ownership" ? -1 : 1));
 }
@@ -231,7 +229,7 @@ export function domainErrorCopy(err: unknown, prices: DomainPrices = DOMAIN_PRIC
         return { ...base, kind: "reserved", message: "That domain belongs to HQ. Use a domain your company owns." };
       case "DOMAIN_INVALID":
       case "VALIDATION_ERROR":
-        return { ...base, kind: "invalid", message: "Enter a domain like app.example.com, without https:// or a path." };
+        return { ...base, kind: "invalid", message: "Enter a domain like mysite.com, without https:// or a path." };
       case "DOMAIN_ALREADY_CLAIMED":
       case "DOMAIN_CROSS_TENANT":
         return { ...base, kind: "taken", message: "That domain is already linked to another deployment. Remove it there first, or use a different one." };
@@ -254,7 +252,7 @@ export function domainErrorCopy(err: unknown, prices: DomainPrices = DOMAIN_PRIC
 
 export function inputProblemCopy(problem: DomainInputProblem): string {
   if (problem === "reserved") return "That domain belongs to HQ. Use a domain your company owns.";
-  if (problem === "invalid") return "Enter a domain like app.example.com, without https:// or a path.";
+  if (problem === "invalid") return "Enter a domain like mysite.com, without https:// or a path.";
   return "";
 }
 
@@ -344,6 +342,71 @@ export async function listWithRetry(
       if (!stillWanted()) throw err;
     }
   }
+}
+
+/** True when the records carry the certificate (ownership) CNAME, not just the routing one. */
+export function hasOwnershipRecord(domain: string, instructions: unknown): boolean {
+  return dnsRecordsFor(domain, "", instructions).some((r) => r.purpose === "ownership");
+}
+
+/** Waits between the extra refresh reads that fetch a certificate record ACM has not made yet. */
+export const RECORD_RETRY_DELAYS_MS: readonly number[] = [1500, 2500, 4000, 6000];
+
+export interface OwnershipRecordResult {
+  /** Every DNS instruction seen so far, the known ones first. */
+  instructions: unknown[];
+  /** The last refresh reply, or null when none was read. */
+  last: RefreshResult | null;
+}
+
+/**
+ * Collect both DNS records for a pending domain before showing them. ACM fills
+ * in a new certificate's validation record a few seconds after the request,
+ * and hq-deploy's add reply reads it once, right away, so that reply often
+ * carries only the routing CNAME. Refresh returns the certificate record once
+ * it exists: read it now, then after each delay, until it shows up.
+ */
+export async function awaitOwnershipRecord(
+  client: Pick<DeployDomainClient, "refresh">,
+  appId: string,
+  domain: string,
+  known: unknown,
+  delays: readonly number[] = RECORD_RETRY_DELAYS_MS,
+  stillWanted: () => boolean = () => true,
+): Promise<OwnershipRecordResult> {
+  const instructions: unknown[] = Array.isArray(known) ? [...known] : [];
+  let last: RefreshResult | null = null;
+  for (let attempt = 0; !hasOwnershipRecord(domain, instructions); attempt += 1) {
+    if (attempt > 0) {
+      const wait = delays[attempt - 1];
+      if (wait === undefined || !stillWanted()) break;
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
+    if (!stillWanted()) break;
+    try {
+      last = await client.refresh(appId, domain);
+    } catch (err) {
+      console.warn("[custom-domain] certificate record read failed", err);
+      break;
+    }
+    if (Array.isArray(last.instructions)) instructions.push(...last.instructions);
+    if (last.serving) break;
+  }
+  return { instructions, last };
+}
+
+/** `https://<domain>` for the first live custom domain, or null when none is live yet. */
+export function liveCustomDomainUrl(records: readonly DomainRecord[]): string | null {
+  const live = records.find((r) => r.state === "validated");
+  return live ? `https://${live.domain}` : null;
+}
+
+/**
+ * The address a deployment's detail shows: its live custom domain when it has
+ * one, otherwise null so the caller keeps the app's own URL.
+ */
+export async function readLiveCustomDomainUrl(request: DeployDomainRequest, scope: string, appId: string): Promise<string | null> {
+  return liveCustomDomainUrl(await deployDomainClient(request, scope).list(appId));
 }
 
 /** Plain status line for a domain. */

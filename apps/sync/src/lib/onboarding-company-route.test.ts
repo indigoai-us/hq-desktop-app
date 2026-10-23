@@ -8,6 +8,7 @@ import {
   isPaidMembershipRow,
   maskEmail,
   otherIdentityFromLookup,
+  priorPlanFromHint,
   priorPlanFromPayload,
   provisioningStateFromEntity,
   type CompanyInviteOffer,
@@ -168,6 +169,23 @@ describe('priorPlanFromPayload', () => {
     expect(priorPlanFromPayload({ webIdentity: { plan: 'usage' } })).toBe('free');
   });
 
+  it('reads the website "Just me" pick under every alias it has used', () => {
+    for (const alias of ['solo', 'just-me', 'just_me', 'justme', 'individual', 'personal', 'Just-Me', ' SOLO ', 'Personal']) {
+      expect(priorPlanFromPayload({ planIntent: alias }), alias).toBe('free');
+      expect(priorPlanFromPayload({ webIdentity: { plan: alias } }), alias).toBe('free');
+    }
+  });
+
+  it('validates a desktop plan hint (sign-in link or download URL) with the same rule', () => {
+    expect(priorPlanFromHint('just-me')).toBe('free');
+    expect(priorPlanFromHint('Free')).toBe('free');
+    expect(priorPlanFromHint('team')).toBeNull();
+    expect(priorPlanFromHint('workforce')).toBeNull();
+    expect(priorPlanFromHint('')).toBeNull();
+    expect(priorPlanFromHint(null)).toBeNull();
+    expect(priorPlanFromHint(7)).toBeNull();
+  });
+
   it('ignores a Workforce or team pick: it closed to new signups, so the step shows the usage card', () => {
     expect(priorPlanFromPayload({ signupPlan: 'team' })).toBeNull();
     expect(priorPlanFromPayload({ planIntent: 'workforce' })).toBeNull();
@@ -177,8 +195,8 @@ describe('priorPlanFromPayload', () => {
   it('is unknown (the step asks) when nothing usable was sent', () => {
     expect(priorPlanFromPayload(null)).toBeNull();
     expect(priorPlanFromPayload({ memberships: [] })).toBeNull();
-    expect(priorPlanFromPayload({ planIntent: 'individual' })).toBeNull();
     expect(priorPlanFromPayload({ planIntent: 'individual-free' })).toBeNull();
+    expect(priorPlanFromPayload({ planIntent: 'just me' })).toBeNull();
     expect(priorPlanFromPayload({ planIntent: 42 })).toBeNull();
     // A paid company's tier is not a pick for a NEW company.
     expect(priorPlanFromPayload({ memberships: [{ planTier: 'team', teamPlanEnabled: true }] })).toBeNull();

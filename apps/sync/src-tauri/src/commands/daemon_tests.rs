@@ -143,6 +143,71 @@ fn test_start_daemon_refuses_while_cloud_paused() {
     // process-global and other tests exercise it concurrently.
 }
 
+/// Feedback 682e9187: after the person paused sync, the runner was killed and
+/// a new one was spawned 4-7 seconds later. With `cloudPaused` set and every
+/// other auto-sync switch on, neither the app-launch start nor the supervisor
+/// (normal respawn, owner preflight, or orphan-takeover respawn) may start a
+/// runner, under either sync host. The unpaused control proves the pause is
+/// what holds them back.
+#[test]
+fn paused_sync_blocks_app_launch_and_supervisor_respawn() {
+    use crate::commands::hq_daemon_host::{set_phase_for_test, HostPhase, TEST_PHASE_LOCK};
+    use hq_desktop_core::daemon::CLOUD_PAUSED_MESSAGE;
+
+    // Same lock order as the hq_daemon_host tests: phase, then env.
+    let _phase = TEST_PHASE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = TempDir::new().unwrap();
+    let menubar = tmp.path().join(".hq/menubar.json");
+    std::fs::create_dir_all(menubar.parent().unwrap()).unwrap();
+    let _home = scoped_home(tmp.path());
+
+    // Control: unpaused, the supervisor would respawn a dead watcher.
+    std::fs::write(
+        &menubar,
+        r#"{"cloudPaused":false,"realtimeSync":true,"autostartDaemon":true}"#,
+    )
+    .unwrap();
+    assert!(supervisor_respawn_wanted(false));
+    assert!(orphan_takeover_respawn_wanted(false));
+
+    // Paused.
+    std::fs::write(
+        &menubar,
+        r#"{"cloudPaused":true,"realtimeSync":true,"autostartDaemon":true}"#,
+    )
+    .unwrap();
+    assert!(!supervisor_respawn_wanted(false));
+    assert!(!orphan_takeover_respawn_wanted(false));
+
+    let spawns_before = crate::commands::process::sync_runner_spawn_attempts();
+    let app = tauri::test::mock_app();
+    let handle = app.handle().clone();
+    for phase in [HostPhase::Legacy, HostPhase::Daemon] {
+        set_phase_for_test(phase);
+        assert_eq!(
+            start_daemon_for_app_launch(handle.clone()).unwrap_err(),
+            CLOUD_PAUSED_MESSAGE,
+            "app-launch start under {phase:?}"
+        );
+        assert_eq!(
+            start_daemon_for_supervisor_respawn(handle.clone()).unwrap_err(),
+            CLOUD_PAUSED_MESSAGE,
+            "supervisor respawn under {phase:?}"
+        );
+    }
+    set_phase_for_test(HostPhase::Legacy);
+    assert_eq!(
+        crate::commands::hq_daemon_host::set_sync_enabled(true).unwrap_err(),
+        CLOUD_PAUSED_MESSAGE
+    );
+    assert_eq!(
+        crate::commands::process::sync_runner_spawn_attempts(),
+        spawns_before,
+        "no runner spawn may be attempted while sync is paused"
+    );
+}
+
 /// First-run VM report (v0.10.395): before setup finished, the app-launch
 /// start and the supervisor respawn both reached sync preflight and the
 /// runner pulled the cloud company into the default HQ folder. While HQ
@@ -645,7 +710,7 @@ fn rss_sampling_never_falls_back_to_the_recovery_pid_file() {
 #[test]
 fn windows_rss_sampler_records_a_live_working_set_in_exit_diagnostics() {
     let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    note_watcher_spawned();
+    note_watcher_spawned(Path::new("/synthetic-retry-test"));
 
     let rss_kb = sample_pid_rss_kb(std::process::id())
         .expect("GetProcessMemoryInfo should sample the live test process");
@@ -661,7 +726,7 @@ fn windows_rss_sampler_records_a_live_working_set_in_exit_diagnostics() {
     );
 
     // Clear the process-global sample so adjacent tests cannot observe it.
-    note_watcher_spawned();
+    note_watcher_spawned(Path::new("/synthetic-retry-test"));
 }
 
 #[test]
@@ -816,7 +881,7 @@ fn force_clear_keeps_the_stamp_that_triggered_its_liveness_probe() {
 // supervisor tick logged "respawn skipped: Daemon is already starting" and
 // sync never recovered (observed 7.5+ hours). These tests exercise the real
 // process registry + guard stamp on `DAEMON_HANDLE`, so serialize them.
-static GUARD_TEST_LOCK: Mutex<()> = Mutex::new(());
+pub(super) static GUARD_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn wedged_start_guard_is_cleared_so_respawn_proceeds() {
@@ -3857,7 +3922,7 @@ fn uncancelled_real_sigkill_reaches_the_production_capture_boundary() {
 
     let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     deregister_process(DAEMON_HANDLE);
-    note_watcher_spawned();
+    note_watcher_spawned(Path::new("/synthetic-retry-test"));
     let daemon_generation =
         try_register_handle_gen(DAEMON_HANDLE).expect("acquire daemon generation");
     let (ready_tx, ready_rx) = mpsc::channel();
@@ -4084,7 +4149,7 @@ fn external_kill_with_stall_record_stays_alertable() {
 
     let _serial = GUARD_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     deregister_process(DAEMON_HANDLE);
-    note_watcher_spawned();
+    note_watcher_spawned(Path::new("/synthetic-retry-test"));
     let daemon_generation =
         try_register_handle_gen(DAEMON_HANDLE).expect("acquire daemon generation");
     // Seed the record the watchdog's own cancellation publishes on ESRCH / a
@@ -6886,7 +6951,7 @@ fn preflight_failure_streak_resets_after_a_successful_spawn() {
     }
     assert_eq!(note_runner_preflight_failure(), 1);
     assert_eq!(note_runner_preflight_failure(), 2);
-    note_watcher_spawned();
+    note_watcher_spawned(Path::new("/synthetic-retry-test"));
     assert_eq!(
         note_runner_preflight_failure(),
         1,

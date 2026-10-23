@@ -128,3 +128,42 @@ describe("ChannelConversation message avatars", () => {
     expect(avatar?.querySelector(".monogram")?.textContent).toBe("AL");
   });
 });
+
+// iOS #44: a bot's name carries the app's one tag, BOT, in the bot hue, so a
+// bot reads as a bot without relying on its avatar's shape.
+describe("ChannelConversation bot tag", () => {
+  it("tags bot authors and leaves people untagged", async () => {
+    const root = mountWith({ messages });
+    await tick();
+    const metas = [...root.querySelectorAll(".dm-msg-meta")];
+    expect(metas).toHaveLength(3);
+    const tagged = metas.map((meta) => meta.querySelector('[data-testid="author-bot-tag"]'));
+    expect(tagged[0]?.classList.contains("hq-tag")).toBe(true);
+    expect(tagged[0]?.classList.contains("is-bot")).toBe(true);
+    expect(tagged[0]?.textContent).toBe("Bot");
+    expect(tagged[1]).not.toBeNull();
+    expect(tagged[2]).toBeNull();
+  });
+});
+
+// iOS #44: the thread card is a soft lift with the count as the link, a
+// caret, and a line that never wraps "3 replies" across rows.
+describe("ChannelConversation thread card", () => {
+  it("shows the count as its own unbreakable label with a caret", async () => {
+    const root = mountWith({
+      messages: [{ ...messages[2]!, eventId: "evt_thread", replyCount: 3 }],
+    });
+    await tick();
+    const card = root.querySelector('[data-testid="message-replies"]');
+    expect(card?.querySelector(".dm-replies-label")?.textContent).toBe("3 replies");
+    expect(card?.querySelector(".dm-replies-caret [data-rail-icon='caret-right']")).not.toBeNull();
+
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const css = readFileSync(resolve(process.cwd(), "src/chat/messaging/ChannelConversation.svelte"), "utf8");
+    const rule = css.match(/\n  \.dm-replies-count \{([^}]*)\}/)?.[1] ?? "";
+    expect(rule).toMatch(/white-space: nowrap/);
+    expect(rule).toMatch(/border: 1px solid transparent/);
+    expect(rule).toMatch(/--reply-card-fill/);
+  });
+});

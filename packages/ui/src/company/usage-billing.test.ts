@@ -77,7 +77,7 @@ describe("usage pricing formatting", () => {
 });
 
 describe("usage billing reads", () => {
-  it("trusts only pricingPlan usage-only", () => {
+  it("falls back to pricingPlan usage-only when the server sends no billingState", () => {
     expect(isUsageOnlySummary({ pricingPlan: "usage-only" })).toBe(true);
     expect(isUsageOnlySummary({ pricingPlan: "current" })).toBe(false);
     expect(isUsageOnlySummary({ plan: "usage" })).toBe(false);
@@ -138,5 +138,52 @@ describe("usage billing reads", () => {
     expect(degraded?.statement).toBeNull();
     expect(degraded?.pricing).toBe(USAGE_PRICING_FALLBACK);
     warn.mockRestore();
+  });
+});
+
+describe("billingState (US-024)", () => {
+  const usageTrialState = {
+    version: 1,
+    scope: "company",
+    kind: "usage-trial",
+    view: "full",
+    trial: { daysLeft: 12, endsAt: "2026-11-03T00:00:00.000Z", capCents: 2500, usedCents: 120 },
+    paused: null,
+  };
+
+  it("Desktop uses shared status when legacy pricingPlan conflicts (acceptance RED)", () => {
+    expect(
+      isUsageOnlySummary({ pricingPlan: "current", billingState: { version: 1, kind: "usage-trial", scope: "company", view: "full" } }),
+    ).toBe(true);
+    expect(isUsageOnlySummary({ pricingPlan: "usage-only", billingState: { version: 1, kind: "legacy-free", scope: "company", view: "full" } })).toBe(false);
+  });
+
+  it("ignores a billingState it cannot read and keeps the pricingPlan fallback", () => {
+    expect(isUsageOnlySummary({ pricingPlan: "usage-only", billingState: { version: 2, kind: "usage" } })).toBe(true);
+    expect(isUsageOnlySummary({ pricingPlan: "current", billingState: { version: 1, kind: "starter" } })).toBe(false);
+  });
+
+  it("reads the trial from billingState over a conflicting legacy record", () => {
+    expect(trialFromSummary({ billingState: usageTrialState, usageTrial: { status: "ended", endsAt: null, capCents: null } })).toEqual({
+      status: "active",
+      endsAt: "2026-11-03T00:00:00.000Z",
+      capCents: 2500,
+    });
+    expect(
+      trialFromSummary({ billingState: { ...usageTrialState, kind: "usage", trial: null }, usageTrial: { status: "active", endsAt: "x", capCents: 1 } }),
+    ).toBeNull();
+  });
+
+  it("carries the plan status and its pause into the view", async () => {
+    const paused = { ...usageTrialState, kind: "usage", trial: null, paused: { reason: "usage_card_required", resumesOn: null } };
+    const view = await readUsageBilling(
+      {
+        getBillingSummary: async () => ({ ok: true as const, value: { pricingPlan: "current", billingState: paused } }),
+        getUsageStatement: async () => ({ ok: true as const, value: STATEMENT }),
+      },
+      "cmp_a",
+    );
+    expect(view?.billingState?.kind).toBe("usage");
+    expect(view?.paused).toEqual({ reason: "usage_card_required", resumesOn: null });
   });
 });

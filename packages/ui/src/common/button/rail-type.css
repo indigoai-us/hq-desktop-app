@@ -37,8 +37,10 @@
 }
 
 /* Leading icon inside a labelled button that is not a RailButton: 14px glyph,
-   6px before the label, centred on the text. */
-button:not([data-rail-btn]) > svg.rail-icon:first-child {
+   6px before the label, centred on the text. Not in an icon-only button
+   (`data-icon-only`): there the 6px had no label to separate and pushed the
+   icon 3px left of centre (owner, 2026-10-22). */
+button:not([data-rail-btn]):not([data-icon-only]) > svg.rail-icon:first-child {
   display: inline-block;
   vertical-align: -2px;
   margin-inline-end: 6px;

@@ -278,6 +278,62 @@ describe("createSyncPlatformAdapter personal Outpost", () => {
     ]);
   });
 
+  it("posts company sign-in on the contract route and strips a code from a failure", async () => {
+    const code = "EXAMPLE-NOT-A-REAL-CODE";
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        return { status: 400, body: JSON.stringify({ code: "invalid_login_code", message: `rejected ${code}` }) };
+      },
+    });
+    const res = await adapter.agents.companyOutpostSignIn?.({
+      companyUid: "cmp_indigo",
+      outpostId: "opc_main",
+      action: "code",
+      code,
+    });
+    expect(calls).toEqual([
+      {
+        cmd: "hq_pro_fetch",
+        args: {
+          url: OUTPOST_PATHS.companySignIn,
+          method: "POST",
+          body: JSON.stringify({ companyUid: "cmp_indigo", outpostId: "opc_main", action: "code", code }),
+        },
+      },
+    ]);
+    expect(res?.ok).toBe(false);
+    expect(JSON.stringify(res)).not.toContain(code);
+    expect(res && !res.ok ? res.code : "").toBe("invalid_login_code");
+  });
+
+  it("sends a sign-in code once with no 503 retry, but still retries a status read", async () => {
+    const actions: string[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (_cmd, args) => {
+        const sent = JSON.parse(String((args as { body: string }).body)) as { action: string };
+        actions.push(sent.action);
+        return { status: 503, body: JSON.stringify({ code: "company_signin_unavailable" }) };
+      },
+      requestPolicy: { throttle: null, sleep: async () => {}, random: () => 0 },
+    });
+    const res = await adapter.agents.companyOutpostSignIn?.({
+      companyUid: "cmp_indigo",
+      action: "code",
+      code: "EXAMPLE-NOT-A-REAL-CODE",
+    });
+    expect(actions).toEqual(["code"]);
+    expect(res?.ok).toBe(false);
+    expect(res && !res.ok ? res.code : "").toBe("company_signin_unavailable");
+    expect(JSON.stringify(res)).not.toContain("EXAMPLE-NOT-A-REAL-CODE");
+
+    actions.length = 0;
+    await adapter.agents.companyOutpostSignIn?.({ companyUid: "cmp_indigo", action: "status" });
+    expect(actions.length).toBeGreaterThan(1);
+    expect(new Set(actions)).toEqual(new Set(["status"]));
+  });
+
   it("surfaces a missing Outpost as an http-404 failure", async () => {
     const adapter = createSyncPlatformAdapter({
       invoke: async () => ({ status: 404, body: JSON.stringify({ error: true, message: "not found" }) }),
@@ -285,6 +341,58 @@ describe("createSyncPlatformAdapter personal Outpost", () => {
     const res = await adapter.agents.getMyOutpostStatus?.();
     expect(res?.ok).toBe(false);
     expect(res && !res.ok ? res.code : "").toBe("http-404");
+  });
+});
+
+describe("createSyncPlatformAdapter company Outpost jobs", () => {
+  it("posts a job revision and reads health with the company and box in the query", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        return { status: 200, body: JSON.stringify({ jobs: [] }) };
+      },
+    });
+    const body = { companyUid: "cmp_1", action: "list" };
+    await adapter.agents.postCompanyJobs?.(body);
+    await adapter.agents.getCompanyJobsStatus?.("cmp_1", "opc 1");
+    expect(calls).toEqual([
+      { cmd: "hq_pro_fetch", args: { url: OUTPOST_PATHS.companyJobs, method: "POST", body: JSON.stringify(body) } },
+      {
+        cmd: "hq_pro_fetch",
+        args: { url: OUTPOST_PATHS.companyJobsStatus("cmp_1", "opc 1"), method: "GET", body: null },
+      },
+    ]);
+    expect(JSON.stringify(body)).not.toMatch(/registered_by/);
+    expect(calls[1]?.args?.url).toBe("/outpost/company/jobs/status?companyUid=cmp_1&outpostId=opc%201&include=pending");
+  });
+
+  it("keeps a 403 on a company job write", async () => {
+    const adapter = createSyncPlatformAdapter({
+      invoke: async () => ({ status: 403, body: JSON.stringify({ code: "admin_required" }) }),
+    });
+    const res = await adapter.agents.postCompanyJobs?.({ companyUid: "cmp_1", action: "create" });
+    expect(res).toMatchObject({ ok: false, status: 403, code: "admin_required" });
+  });
+
+  it("reads the company Outpost list and falls back to the legacy row", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        const url = String(args?.url ?? "");
+        if (url.includes("list=true")) {
+          return { status: 404, body: JSON.stringify({ code: "not_found" }) };
+        }
+        return { status: 200, body: JSON.stringify({ outpost: { outpostId: "outpost_cmp_1", name: "main" } }) };
+      },
+    });
+    const listed = await adapter.agents.listCompanyOutposts?.("cmp_1");
+    expect(listed).toMatchObject({ ok: true, value: { outpost: { outpostId: "outpost_cmp_1" } } });
+    expect(calls.map((call) => call.args?.url)).toEqual([
+      OUTPOST_PATHS.companyOutpostList("cmp_1"),
+      OUTPOST_PATHS.companyOutpostLegacy("cmp_1"),
+    ]);
   });
 });
 

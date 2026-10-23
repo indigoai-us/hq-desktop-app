@@ -7,7 +7,11 @@
   import type { ImagePreviewCache } from "./image-preview-cache";
   import type { FileAttachmentModel } from "./channelMessageModels";
   import { attachmentPreviewKind } from "./attachment-preview";
-  import { attachmentBadgeLabel } from "./chat-attachments";
+  import { fileKind, fileMetaLine } from "./chat-attachments";
+  import RailIcon from "../../common/button/RailIcon.svelte";
+  import "./doc-card.css";
+
+  const KIND_ICON = { folder: "folder", image: "image", document: "file-text" } as const;
 
   interface Props {
     attachments: FileAttachmentModel[];
@@ -125,21 +129,27 @@
           {/if}
         </button>
       {:else}
+        {@const kind = fileKind(item)}
+        <!-- The shared document card (doc-card.css), as on iOS: a fill with
+             no outline, an icon tile tinted by the file's kind, the name over
+             "PDF · 12 KB", and the whole card one button with a caret. -->
         <button
           type="button"
-          class="att-card"
+          class="doc-card is-compact att-card"
           data-testid="attachment-card"
+          data-kind={kind}
           aria-label={`Open ${item.name}`}
           onclick={() => onopen?.(item)}
         >
-          <span class="att-icon" aria-hidden="true"
-            >{attachmentBadgeLabel(item)}</span
-          >
-          <span class="att-copy">
-            <span class="att-name">{item.name}</span>
-            {#if item.sizeLabel}
-              <span class="att-meta">{item.sizeLabel}</span>
-            {/if}
+          <span class={`doc-card-icon is-${kind}`} aria-hidden="true">
+            <RailIcon name={KIND_ICON[kind]} size={16} />
+          </span>
+          <span class="doc-card-copy">
+            <span class="doc-card-title att-name">{item.name}</span>
+            <span class="doc-card-meta att-meta">{fileMetaLine(item)}</span>
+          </span>
+          <span class="doc-card-caret" aria-hidden="true">
+            <RailIcon name="caret-right" size={12} />
           </span>
         </button>
       {/if}
@@ -151,6 +161,9 @@
   .msg-attachments {
     display: flex;
     flex-wrap: wrap;
+    /* Each attachment keeps its own height. Stretched, a file card beside a
+       screenshot grew to the image's height and floated in a tall grey box. */
+    align-items: flex-start;
     gap: 8px;
     margin-top: 8px;
   }
@@ -169,10 +182,13 @@
     cursor: pointer;
   }
 
+  /* A lone image hugs its artwork. A fixed 320x220 tile letterboxed every
+     portrait or square image with dead margin down both sides (owner, #772);
+     only the cap constrains it now. */
   .att-thumb.is-single {
-    width: min(320px, 100%);
-    height: 220px;
-    max-width: 100%;
+    width: auto;
+    height: auto;
+    max-width: min(320px, 100%);
   }
 
   .att-thumb img {
@@ -182,10 +198,19 @@
     object-fit: cover;
   }
 
+  /* The image gives the tile its size. */
   .att-thumb.is-single img {
-    width: 100%;
-    height: 100%;
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: 220px;
     object-fit: contain;
+  }
+
+  /* Nothing to hug yet, so the placeholder keeps the old box. */
+  .att-thumb.is-single .att-thumb-fallback {
+    width: min(320px, 100%);
+    height: 168px;
   }
 
   .att-thumb-fallback {
@@ -197,58 +222,7 @@
     font: 400 13px/1.4 var(--font-ui);
   }
 
-  .att-card {
-    appearance: none;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 160px;
-    max-width: 240px;
-    padding: 8px 10px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
-    border-radius: 8px;
-    background: var(--sel, rgba(255, 255, 255, 0.05));
-    color: inherit;
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .att-card:hover,
   .att-thumb:hover {
     background: var(--hover, rgba(255, 255, 255, 0.08));
-  }
-
-  .att-icon {
-    flex: 0 0 auto;
-    display: grid;
-    place-items: center;
-    min-width: 28px;
-    height: 28px;
-    padding: 0 5px;
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.08);
-    color: var(--t2);
-    font: 700 9px/1 var(--font-mono, ui-monospace, Menlo, monospace);
-    letter-spacing: 0.04em;
-  }
-
-  .att-copy {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .att-name {
-    overflow: hidden;
-    color: var(--t1);
-    font: 500 12px/1.3 var(--font-ui);
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .att-meta {
-    color: var(--t3, var(--t2));
-    font: 400 11px/1.2 var(--font-ui);
   }
 </style>

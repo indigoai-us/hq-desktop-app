@@ -63,12 +63,6 @@
     currentCompanyUid?: string | null;
     runtimeReady?: Record<string, boolean> | null;
     loadProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
-    /**
-     * Whether the Claude provider is on. The same reader the "+" modal's
-     * create uses, so both flows agree. Without it, or until it answers yes,
-     * Claude is not offered.
-     */
-    loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
     oncreate?: ((companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>) | null;
     /**
      * True while the host looks for a bot whose create got no answer. The
@@ -132,7 +126,6 @@
     currentCompanyUid = null,
     runtimeReady = null,
     loadProvisionOptions = null,
-    loadClaudeProviderFlag = null,
     oncreate = null,
     checkingCreate = false,
     getStatus = null,
@@ -233,26 +226,6 @@
   // sidebar in the middle of a create (CardModal holds them the same way).
   onMount(() => suspendShortcuts());
 
-  /**
-   * Claude is offered only once the host says the provider is on. A read
-   * that fails, or no reader at all, leaves it off: the server answers a
-   * Claude create with a refusal for everyone who does not have it.
-   */
-  let claudeEnabled = $state(false);
-  onMount(() => {
-    if (!loadClaudeProviderFlag) return;
-    let active = true;
-    void loadClaudeProviderFlag()
-      .then((result) => {
-        if (active) claudeEnabled = result.ok && result.value === true;
-      })
-      .catch(() => {
-        if (active) claudeEnabled = false;
-      });
-    return () => {
-      active = false;
-    };
-  });
   let localWakingSession = $state<WakingBotSession | null>(null);
   /**
    * The host's session is shown only when the takeover opens on it (the
@@ -601,7 +574,6 @@
           {companies}
           {currentCompanyUid}
           {runtimeReady}
-          {claudeEnabled}
           loadProvisionOptions={loadProvisionOptions}
           oncreate={createBot}
           oncomplete={startWaking}
