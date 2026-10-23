@@ -369,6 +369,53 @@ describe('createReadyEngine layout', () => {
     expect(Math.min(...under.map((g) => g.y))).toBeGreaterThan(altBottom);
   });
 
+  // Ready at 390 wide with the free-plan disclosure: the content reaches the
+  // bottom edge, and the skyline's old two-row minimum drew over its last line
+  // ("Enable HQ Anywhere").
+  it('draws no skyline over the content when the content reaches the bottom edge (390 wide)', () => {
+    vi.stubGlobal('innerWidth', 390);
+    vi.stubGlobal('innerHeight', 844);
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+    // The alt box reads at top 0; its placed top comes from layout().
+    vi.stubGlobal('getComputedStyle', () => ({ top: '0px' }) as CSSStyleDeclaration);
+    const glyphs: Array<{ x: number; y: number }> = [];
+    const ctx = new Proxy(
+      {},
+      {
+        get: (_target, key) =>
+          key === 'fillText'
+            ? (_ch: string, x: number, y: number) => {
+                glyphs.push({ x, y });
+              }
+            : () => {},
+        set: () => true,
+      },
+    );
+    const canvas = document.createElement('canvas');
+    canvas.getContext = (() => ctx) as never;
+    const refs = {
+      canvas,
+      copy: sized(document.createElement('div'), 360, 480),
+      prog: sized(document.createElement('div'), 300, 34),
+      nav: sized(document.createElement('div'), 360, 120),
+      alt: sized(document.createElement('div'), 360, 60),
+    };
+    const engine = createReadyEngine(refs, { reveal: () => {} });
+    engine.size();
+    engine.enter(0);
+    engine.frame(30000);
+
+    const altTop = parseFloat(refs.alt.style.top);
+    expect(altTop + 60).toBeGreaterThan(844 - 24);
+    expect(glyphs.filter((g) => g.y < altTop + 60)).toEqual([]);
+  });
+
   // Under Reduce Motion the controller draws one settled frame and runs no
   // loop, so a skyline rebuilt after the alt block grows must be drawn at once.
   it('draws the skyline again when the alt block grows, with no frame loop running', () => {

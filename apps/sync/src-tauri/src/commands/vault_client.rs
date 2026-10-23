@@ -4,7 +4,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use crate::util::client_info::build_client;
 use hq_desktop_core::request_policy::RequestBuilderExt;
 use hq_desktop_core::routes::{
-    path_for, PERSON_SETTING_GET, PERSON_SETTING_PUT, TELEMETRY_DISCLOSURE_ACK,
+    path_for, PERSON_SETTING_GET, PERSON_SETTING_PUT, TELEMETRY_DISCLOSURE_ACK, TELEMETRY_NOTICE_SEEN,
     TELEMETRY_NOTICE_GET,
 };
 
@@ -353,6 +353,11 @@ pub struct TelemetryOptInResponse {
     /// this field double as the capability probe.
     #[serde(default)]
     pub unset: Option<bool>,
+    /// The answer the person actually stored (`false` = they opted out),
+    /// independent of what collection does on the free plan. `None` on servers
+    /// that do not send it yet; the free-plan card then stays hidden.
+    #[serde(default)]
+    pub stored_opt_in: Option<bool>,
     /// The `prs_*` this answer belongs to, so a client can refuse to replay a
     /// cached answer that belongs to a different account.
     #[serde(default)]
@@ -984,6 +989,31 @@ impl VaultClient {
                 "{}{}",
                 self.base_url,
                 path_for(TELEMETRY_DISCLOSURE_ACK, "")
+            ))
+            .bearer_auth(&self.auth_token)
+            .json(&serde_json::Value::Object(payload))
+            .send_retrying()
+            .await?;
+        self.handle_response(resp).await
+    }
+
+    /// `POST /v1/usage/telemetry-notice/seen` — record that the free-plan card
+    /// was shown. The server keeps the first write, so `seenAt` holds across
+    /// machines. Any non-2xx is an error.
+    pub async fn post_telemetry_notice_seen(
+        &self,
+        company_uid: Option<&str>,
+    ) -> Result<serde_json::Value, VaultClientError> {
+        let mut payload = serde_json::Map::new();
+        if let Some(uid) = company_uid.filter(|uid| !uid.is_empty()) {
+            payload.insert("companyUid".into(), serde_json::json!(uid));
+        }
+        let resp = self
+            .client
+            .post(format!(
+                "{}{}",
+                self.base_url,
+                path_for(TELEMETRY_NOTICE_SEEN, "")
             ))
             .bearer_auth(&self.auth_token)
             .json(&serde_json::Value::Object(payload))
@@ -2120,4 +2150,52 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, VaultClientError::Http { status: 403, .. }));
     }
+
+    #[tokio::test]
+    async fn post_telemetry_notice_seen_sends_company() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage/telemetry-notice/seen"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "seenAt": "2026-10-23T10:00:00Z",
+            })))
+            .mount(&server)
+            .await;
+        let reply = client(&server.uri())
+            .post_telemetry_notice_seen(Some("cmp_01ABC"))
+            .await
+            .unwrap();
+        assert_eq!(reply["seenAt"], "2026-10-23T10:00:00Z");
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body, json!({ "companyUid": "cmp_01ABC" }));
+    }
+
+    #[tokio::test]
+    async fn post_telemetry_notice_seen_non_2xx_is_an_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage/telemetry-notice/seen"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(&json!({ "error": "x" })))
+            .mount(&server)
+            .await;
+        let err = client(&server.uri()).post_telemetry_notice_seen(None).await.unwrap_err();
+        assert!(matches!(err, VaultClientError::Http { status: 500, .. }));
+    }
+
+    #[test]
+    fn telemetry_opt_in_stored_opt_in_is_optional() {
+        let missing: TelemetryOptInResponse = serde_json::from_value(json!({ "enabled": true })).unwrap();
+        assert_eq!(missing.stored_opt_in, None);
+        let off: TelemetryOptInResponse =
+            serde_json::from_value(json!({ "enabled": true, "storedOptIn": false })).unwrap();
+        assert_eq!(off.stored_opt_in, Some(false));
+        let null: TelemetryOptInResponse =
+            serde_json::from_value(json!({ "enabled": true, "storedOptIn": null })).unwrap();
+        assert_eq!(null.stored_opt_in, None);
+        let on: TelemetryOptInResponse =
+            serde_json::from_value(json!({ "enabled": true, "storedOptIn": true })).unwrap();
+        assert_eq!(on.stored_opt_in, Some(true));
+    }
+
 }

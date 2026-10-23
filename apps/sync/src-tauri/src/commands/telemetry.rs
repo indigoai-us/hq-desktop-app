@@ -578,6 +578,18 @@ pub async fn post_telemetry_disclosure_ack(
         .map_err(|e| e.to_string())
 }
 
+/// Record that the free-plan usage data card was shown (first write wins on
+/// the server). The caller falls back to a local guard on error.
+#[tauri::command]
+pub async fn post_telemetry_notice_seen(company_uid: Option<String>) -> Result<serde_json::Value, String> {
+    let access_token = crate::commands::cognito::get_valid_access_token().await?;
+    let api_url = resolve_vault_api_url()?;
+    VaultClient::new(&api_url, &access_token)
+        .post_telemetry_notice_seen(company_uid.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
 async fn resolve_telemetry_enabled(vault: &VaultClient) -> bool {
     match vault.get_telemetry_opt_in().await {
         Ok(resp) => resp.enabled,
@@ -618,6 +630,9 @@ pub struct TelemetryConsentStatus {
     pub consent_version: Option<u32>,
     /// The server has a row but no recorded answer for this caller.
     pub unset: bool,
+    /// The answer the person stored, when the server sends it (`None` on the
+    /// local-cache path and on servers that predate the field).
+    pub stored_opt_in: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -651,6 +666,7 @@ pub async fn get_telemetry_consent_status() -> Result<TelemetryConsentStatus, St
             updated_at: resp.updated_at,
             consent_version: resp.consent_version,
             unset: resp.unset == Some(true),
+            stored_opt_in: resp.stored_opt_in,
         }),
         Err(err) => {
             eprintln!("[telemetry] consent-status-fallback-local: {err}");
@@ -667,6 +683,7 @@ pub async fn get_telemetry_consent_status() -> Result<TelemetryConsentStatus, St
                 updated_at: None,
                 consent_version: None,
                 unset: cached.is_none(),
+                stored_opt_in: None,
             })
         }
     }
@@ -6966,6 +6983,7 @@ mod codex_telemetry_tests {
             enabled,
             updated_at: None,
             unset: Some(false),
+            stored_opt_in: None,
             person_uid: person_uid.map(|s| s.to_string()),
             consent_version: None,
             source: None,

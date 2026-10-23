@@ -6,7 +6,9 @@
 // its only way to opt out is upgrading. It is shown once (guard written when
 // displayed), never loops (an acknowledged notice never re-arms it), and a
 // paid company keeps its share/decline choice, so a paid person can still opt
-// out. The 390px layout check lives in e2e/browser/free-plan-telemetry-card.spec.ts.
+// out. Contract: plan from the notice `status`, opt-out from `storedOptIn`
+// (hq-pro PR 5201), shown-once from the server `seenAt` with a local offline
+// fallback. The 390px layout check lives in e2e/browser/free-plan-telemetry-card.spec.ts.
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -29,9 +31,9 @@ import { flushSync, mount, tick, unmount } from 'svelte';
 import OnboardingWizard from '../../src/components/onboarding/OnboardingWizard.svelte';
 import { __resetWizardRouterCompletionForTests, WIZARD_STEPS } from '../../src/lib/onboarding-wizard';
 import {
+  localGuardSet,
   markRequiredCardShown,
   readFreePlanTelemetry,
-  requiredCardAlreadyShown,
   shouldShowRequiredCard,
 } from '../../src/lib/free-plan-telemetry';
 
@@ -51,25 +53,38 @@ const DISCLOSURE = {
 type Plan = 'free' | 'paid';
 let plan: Plan = 'free';
 let noticeStatus = 'required';
-let consent: { enabled: boolean; unset: boolean } | 'fail' = { enabled: false, unset: false };
+let seenAt: string | null = null;
+let seenFails = false;
+/** `undefined` = the server did not send the field. */
+let storedOptIn: boolean | null | undefined = false;
+let consentFails = false;
 
 function stubInvoke() {
   invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
     switch (command) {
       case 'get_telemetry_notice':
         return {
-          status: noticeStatus,
-          hasCard: plan === 'paid',
+          status: plan === 'paid' ? 'opt-out-available' : noticeStatus,
+          // hasCard is deliberately false for every plan: the adapter must not read it.
+          hasCard: false,
+          seenAt,
           disclosure: noticeStatus === 'acked' ? null : DISCLOSURE,
         };
-      case 'get_telemetry_consent_status':
-        if (consent === 'fail') throw new Error('offline');
-        return consent;
+      case 'get_telemetry_consent_status': {
+        if (consentFails) throw new Error('offline');
+        const reply: Record<string, unknown> = { enabled: true, unset: false };
+        if (storedOptIn !== undefined) reply.storedOptIn = storedOptIn;
+        return reply;
+      }
+      case 'post_telemetry_notice_seen':
+        if (seenFails) throw new Error('offline');
+        seenAt ??= '2026-10-23T00:00:00Z';
+        return { seenAt };
       case 'post_telemetry_disclosure_ack':
         noticeStatus = 'acked';
         return { ackAt: '2026-10-23T00:00:00Z', version: DISCLOSURE.version };
       case 'post_telemetry_opt_in':
-        consent = { enabled: Boolean(args?.enabled), unset: false };
+        storedOptIn = Boolean(args?.enabled);
         return undefined;
       case 'get_machine_identity_status':
         return { available: false, active: false };
@@ -127,7 +142,10 @@ beforeEach(() => {
   invoke.mockReset();
   plan = 'free';
   noticeStatus = 'required';
-  consent = { enabled: false, unset: false };
+  seenAt = null;
+  seenFails = false;
+  storedOptIn = false;
+  consentFails = false;
   localStorage.clear();
   stubInvoke();
   document.body.innerHTML = '';
@@ -143,14 +161,37 @@ afterEach(() => {
 });
 
 describe('free-plan card: shown once to an opted-out free user', () => {
-  it('applies to a free company whose person opted out, and not again once shown', async () => {
-    const state = await readFreePlanTelemetry(null, invoke);
-    expect(state).toMatchObject({ freePlan: true, previouslyOptedOut: true });
-    expect(shouldShowRequiredCard(state)).toBe(true);
+  for (const status of ['required', 'notice-pending']) {
+    it(`a ${status} notice is a free company`, async () => {
+      noticeStatus = status;
+      const state = await readFreePlanTelemetry(null, invoke);
+      expect(state).toMatchObject({ plan: 'free', previouslyOptedOut: true });
+      expect(shouldShowRequiredCard(state)).toBe(true);
+    });
+  }
 
-    expect(markRequiredCardShown(DISCLOSURE.version)).toBe(true);
-    expect(requiredCardAlreadyShown(DISCLOSURE.version)).toBe(true);
+  it('not-applicable shows nothing', async () => {
+    noticeStatus = 'not-applicable';
+    const state = await readFreePlanTelemetry(null, invoke);
+    expect(state.plan).toBe('none');
+    expect(shouldShowRequiredCard(state)).toBe(false);
+  });
+
+  it('showing stamps seenAt on the server, and a notice with seenAt never shows again', async () => {
+    expect(shouldShowRequiredCard(await readFreePlanTelemetry(null, invoke))).toBe(true);
+    expect(await markRequiredCardShown(null, invoke)).toBe(true);
+    expect(calls('post_telemetry_notice_seen')).toHaveLength(1);
+    expect(localGuardSet()).toBe(false);
     expect(shouldShowRequiredCard(await readFreePlanTelemetry(null, invoke))).toBe(false);
+  });
+
+  it('offline: the seen stamp fails, the local guard keeps it to once on this machine', async () => {
+    seenFails = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await markRequiredCardShown(null, invoke)).toBe(true);
+    expect(localGuardSet()).toBe(true);
+    expect(shouldShowRequiredCard(await readFreePlanTelemetry(null, invoke))).toBe(false);
+    warn.mockRestore();
   });
 
   it('the card says the account is sending usage data and offers only Continue and Upgrade', async () => {
@@ -174,6 +215,21 @@ describe('free-plan card: shown once to an opted-out free user', () => {
   });
 });
 
+describe('free-plan card: storedOptIn', () => {
+  const cases: Array<[string, boolean | null | undefined, boolean]> = [
+    ['false (opted out)', false, true],
+    ['true', true, false],
+    ['null', null, false],
+    ['missing', undefined, false],
+  ];
+  for (const [label, value, shows] of cases) {
+    it(`storedOptIn ${label} ${shows ? 'shows' : 'does not show'} the card`, async () => {
+      storedOptIn = value;
+      expect(shouldShowRequiredCard(await readFreePlanTelemetry(null, invoke))).toBe(shows);
+    });
+  }
+});
+
 describe('free-plan card: no re-prompt loop', () => {
   it('Continue acknowledges, records sharing, marks the re-prompt shown, and finishes', async () => {
     await mountLaunchCard(true);
@@ -188,6 +244,7 @@ describe('free-plan card: no re-prompt loop', () => {
 
   it('an acknowledged notice never re-arms the card, even if the local guard is lost', async () => {
     noticeStatus = 'acked';
+    seenAt = '2026-10-23T00:00:00Z';
     localStorage.clear();
     expect(shouldShowRequiredCard(await readFreePlanTelemetry(null, invoke))).toBe(false);
   });
@@ -205,7 +262,7 @@ describe('free-plan card: no re-prompt loop', () => {
 
   it('a guard that does not persist keeps the card off (App defers it, never shows unguarded)', () => {
     const src = readFileSync(resolve(__dirname, '../../src/App.svelte'), 'utf8').replace(/\s+/g, ' ');
-    const guard = src.indexOf('if (!markRequiredCardShown(freePlan.notice.disclosure.version)) {');
+    const guard = src.indexOf('if (!(await markRequiredCardShown(null))) {');
     const arm = src.indexOf('consentReprompt = { personUid: status.personUid, freePlanOptedOut: true };');
     expect(guard).toBeGreaterThan(-1);
     expect(arm).toBeGreaterThan(guard);
@@ -216,7 +273,7 @@ describe('free-plan card: no re-prompt loop', () => {
   });
 
   it('a failed consent read never shows the card', async () => {
-    consent = 'fail';
+    consentFails = true;
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect(shouldShowRequiredCard(await readFreePlanTelemetry(null, invoke))).toBe(false);
     warn.mockRestore();
@@ -227,7 +284,7 @@ describe('free-plan card: paid users keep the choice', () => {
   it('a paid company never gets the card', async () => {
     plan = 'paid';
     const state = await readFreePlanTelemetry(null, invoke);
-    expect(state.freePlan).toBe(false);
+    expect(state.plan).toBe('paid');
     expect(shouldShowRequiredCard(state)).toBe(false);
   });
 

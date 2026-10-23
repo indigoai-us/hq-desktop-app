@@ -46,6 +46,9 @@ pub const TELEMETRY_NOTICE_GET: &str = "GET /v1/usage/telemetry-notice";
 /// `POST /v1/usage/telemetry-disclosure/ack`
 pub const TELEMETRY_DISCLOSURE_ACK: &str = "POST /v1/usage/telemetry-disclosure/ack";
 
+/// `POST /v1/usage/telemetry-notice/seen` (first write wins; stamps `seenAt`)
+pub const TELEMETRY_NOTICE_SEEN: &str = "POST /v1/usage/telemetry-notice/seen";
+
 /// Splits a `"METHOD /path/{companyUid}"` constant and substitutes
 /// `{companyUid}` with the caller's id, returning the request path (with
 /// leading `/`, no method, no base).
@@ -76,6 +79,10 @@ mod tests {
         assert_eq!(
             path_for(TELEMETRY_DISCLOSURE_ACK, ""),
             "/v1/usage/telemetry-disclosure/ack"
+        );
+        assert_eq!(
+            path_for(TELEMETRY_NOTICE_SEEN, ""),
+            "/v1/usage/telemetry-notice/seen"
         );
     }
 }

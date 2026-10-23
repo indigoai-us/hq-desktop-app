@@ -385,7 +385,11 @@ function createSkyline(cv: HTMLCanvasElement, keepOut: () => KeepOut, RISE0: num
     const maxH = Math.floor((H * SKY) / CELL);
     const ko = keepOut();
     const FADE = 190;
-    const freeRows = Math.max(2, Math.floor((H - ko.b - SKY_PAD) / CELL));
+    // Rows free under the content. When the content reaches the bottom (the
+    // free-plan disclosure on the Ready screen at 390 wide) this can be under
+    // two rows: towers under the content then get no rows at all, rather than
+    // the old two-row minimum that drew over the content's last line.
+    const freeRows = Math.max(0, Math.floor((H - ko.b - SKY_PAD) / CELL));
     function capAt(px: number) {
       if (freeRows >= maxH) return maxH;
       const d = px < ko.l ? ko.l - px : px > ko.r ? px - ko.r : 0;
@@ -411,7 +415,7 @@ function createSkyline(cv: HTMLCanvasElement, keepOut: () => KeepOut, RISE0: num
         const v = capAt(cx * CELL + CELL / 2);
         if (v < cap) cap = v;
       }
-      if (hh > cap) hh = Math.max(2, cap);
+      if (hh > cap) hh = cap < 2 ? 0 : cap;
       const delay = 0.25 + rnd(seed++) * 0.9;
       for (let x = c; x < Math.min(c + w, cols); x += 1)
         for (let y = 0; y < hh; y += 1) {

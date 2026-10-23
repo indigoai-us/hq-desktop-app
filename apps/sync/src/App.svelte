@@ -2180,8 +2180,8 @@
       // person never sees two prompts, and its own guard (written when it is
       // displayed) keeps it from coming back on later launches.
       const freePlan = await readFreePlanTelemetry(null);
-      if (shouldShowRequiredCard(freePlan) && freePlan.notice?.disclosure) {
-        if (!markRequiredCardShown(freePlan.notice.disclosure.version)) {
+      if (shouldShowRequiredCard(freePlan)) {
+        if (!(await markRequiredCardShown(null))) {
           console.warn('free-plan usage data card guard did not persist; deferring the card to a later launch');
           return;
         }

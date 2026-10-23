@@ -849,6 +849,7 @@ fn main() {
             commands::telemetry::post_telemetry_opt_in,
             commands::telemetry::get_telemetry_notice,
             commands::telemetry::post_telemetry_disclosure_ack,
+            commands::telemetry::post_telemetry_notice_seen,
             commands::telemetry::get_telemetry_consent_status,
             commands::telemetry::consent_reprompt_status,
             commands::telemetry::mark_consent_reprompt_shown,

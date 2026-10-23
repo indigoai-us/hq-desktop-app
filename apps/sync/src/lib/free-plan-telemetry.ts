@@ -1,29 +1,49 @@
 import { invoke } from '@tauri-apps/api/core';
-import { disclosureApplies, getTelemetryNotice, type TelemetryNotice } from './onboarding-telemetry';
+import { getTelemetryNotice, type TelemetryNotice } from './onboarding-telemetry';
 
 type InvokeCommand = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
 
 /**
  * Free-plan usage data: the ONE place the desktop app reads "is this a free
- * company" and "did this person opt out earlier". Everything else asks this
- * adapter, so when Platform publishes the final contract only this file moves.
+ * company", "did this person opt out" and "was the card already shown".
  *
- * Today's contract (from PR 1790 and the existing consent read):
- *   - plan:    `GET /v1/usage/telemetry-notice` via `get_telemetry_notice`.
- *              `hasCard: false` is read as the free plan. ASSUMED: Platform has
- *              not yet confirmed that hasCard is the plan flag.
- *   - opt-out: `get_telemetry_consent_status` (`/v1/telemetry/opt-in`).
- *              `enabled: false` with `unset: false` is a prior opt-out.
+ * Contract (Platform, 2026-10-23):
+ *   - plan: `status` from GET /v1/usage/telemetry-notice. `required` and
+ *     `notice-pending` mean a free company (card eligible); `opt-out-available`
+ *     means paid (keep share/decline); `not-applicable` means show nothing.
+ *     `hasCard` is NOT used: it is also false when the server skips the lookup.
+ *   - opt-out: `storedOptIn` from GET /v1/usage/opt-in (hq-pro PR 5201, not
+ *     live yet). Only `false` counts as an opt-out. `true`, `null` and a
+ *     missing field all mean no card.
+ *   - shown once: POST /v1/usage/telemetry-notice/seen when the card shows
+ *     (first write wins, holds across machines); a notice with `seenAt` is
+ *     never shown again. A local guard is kept only as the offline fallback.
  */
+export const FREE_PLAN_DISCLOSURE_VERSION = '2026-10-22';
+
+export type PlanKind = 'free' | 'paid' | 'none';
+
 export interface FreePlanTelemetryState {
   notice: TelemetryNotice | null;
-  freePlan: boolean;
+  plan: PlanKind;
+  /** The person's stored answer was an opt-out (`storedOptIn === false`). */
   previouslyOptedOut: boolean;
 }
 
 interface ConsentStatus {
-  enabled?: boolean;
-  unset?: boolean;
+  storedOptIn?: boolean | null;
+}
+
+export function planFromNotice(notice: TelemetryNotice | null): PlanKind {
+  switch (notice?.status) {
+    case 'required':
+    case 'notice-pending':
+      return 'free';
+    case 'opt-out-available':
+      return 'paid';
+    default:
+      return 'none';
+  }
 }
 
 export async function readFreePlanTelemetry(
@@ -33,18 +53,18 @@ export async function readFreePlanTelemetry(
   const [notice, consent] = await Promise.all([
     getTelemetryNotice(companyUid, invokeCommand),
     (invokeCommand('get_telemetry_consent_status') as Promise<ConsentStatus | null>).catch((err) => {
-      console.warn('[telemetry] consent status read failed; treating as not opted out:', err);
+      console.warn('[telemetry] consent status read failed; showing no free-plan card:', err);
       return null;
     }),
   ]);
   return {
     notice,
-    freePlan: notice !== null && notice.hasCard === false,
-    previouslyOptedOut: consent?.enabled === false && consent?.unset !== true,
+    plan: planFromNotice(notice),
+    previouslyOptedOut: consent?.storedOptIn === false,
   };
 }
 
-const SHOWN_KEY = 'hq.freePlanTelemetryCard.shownVersion';
+const LOCAL_GUARD_KEY = 'hq.freePlanTelemetryCard.shownVersion';
 
 function storage(): Storage | null {
   try {
@@ -54,35 +74,49 @@ function storage(): Storage | null {
   }
 }
 
-/** Whether the card was already shown for this disclosure version on this machine. */
-export function requiredCardAlreadyShown(version: string): boolean {
-  return storage()?.getItem(SHOWN_KEY) === version;
+/** Offline fallback only: the card was shown here but the server never heard. */
+export function localGuardSet(): boolean {
+  return storage()?.getItem(LOCAL_GUARD_KEY) === FREE_PLAN_DISCLOSURE_VERSION;
 }
 
-/**
- * Record that the card was shown. Written when the card is DISPLAYED, so
- * closing the window without answering does not bring it back next launch.
- * Returns whether the guard persisted; without it the caller must not show the
- * card, or it would nag every launch.
- */
-export function markRequiredCardShown(version: string): boolean {
+function setLocalGuard(): boolean {
   const s = storage();
   if (!s) return false;
   try {
-    s.setItem(SHOWN_KEY, version);
-    return s.getItem(SHOWN_KEY) === version;
-  } catch {
+    s.setItem(LOCAL_GUARD_KEY, FREE_PLAN_DISCLOSURE_VERSION);
+    return s.getItem(LOCAL_GUARD_KEY) === FREE_PLAN_DISCLOSURE_VERSION;
+  } catch (err) {
+    console.warn('[telemetry] free-plan card local guard write failed:', err);
     return false;
   }
 }
 
 /**
- * The launch-time card applies once: free company, person opted out earlier,
- * server says the notice applies (not yet acknowledged), and not already shown
- * for this disclosure version. A paid company never gets it.
+ * Record that the card was shown: the server stamp first, the local guard as
+ * the offline fallback. Returns whether either persisted. Without one the
+ * caller must not show the card, or it could nag every launch.
+ */
+export async function markRequiredCardShown(
+  companyUid: string | null | undefined,
+  invokeCommand: InvokeCommand = invoke as InvokeCommand,
+): Promise<boolean> {
+  try {
+    await invokeCommand('post_telemetry_notice_seen', { companyUid: companyUid ?? null });
+    return true;
+  } catch (err) {
+    console.warn('[telemetry] post_telemetry_notice_seen failed; using the local guard:', err);
+    return setLocalGuard();
+  }
+}
+
+/**
+ * The launch card applies once: a free company, a stored opt-out, a notice
+ * with its disclosure, and no earlier showing (server `seenAt`, or the local
+ * offline guard). Paid companies and missing data never get it.
  */
 export function shouldShowRequiredCard(state: FreePlanTelemetryState): boolean {
-  if (!state.freePlan || !state.previouslyOptedOut) return false;
-  if (!disclosureApplies(state.notice)) return false;
-  return !requiredCardAlreadyShown(state.notice.disclosure.version);
+  if (state.plan !== 'free' || !state.previouslyOptedOut) return false;
+  const notice = state.notice;
+  if (!notice?.disclosure || notice.seenAt) return false;
+  return !localGuardSet();
 }
