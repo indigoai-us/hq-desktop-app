@@ -277,6 +277,48 @@ describe('createReadyEngine layout', () => {
     expect(altBottom).toBeLessThanOrEqual(900);
   });
 
+  // The copy block can also grow after the screen is shown (late fonts, the
+  // notice text). Its height moves the alt block down without resizing it, so
+  // the copy is watched too and the stack is laid out again.
+  it('lays the stack out again when the copy block grows after the screen is shown', () => {
+    vi.stubGlobal('innerWidth', 1024);
+    vi.stubGlobal('innerHeight', 900);
+    const observed: Element[] = [];
+    const observers: Array<() => void> = [];
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(callback: () => void) {
+          observers.push(callback);
+        }
+        observe(el: Element) {
+          observed.push(el);
+        }
+        disconnect() {}
+      },
+    );
+    const canvas = document.createElement('canvas');
+    canvas.getContext = (() => null) as never;
+    const refs = {
+      canvas,
+      copy: sized(document.createElement('div'), 880, 40),
+      prog: sized(document.createElement('div'), 300, 34),
+      nav: sized(document.createElement('div'), 600, 120),
+      alt: sized(document.createElement('div'), 360, 18),
+    };
+    const engine = createReadyEngine(refs, { reveal: () => {} });
+    engine.enter(0);
+    expect(observed).toContain(refs.copy);
+    const altTopBefore = parseFloat(refs.alt.style.top);
+
+    sized(refs.copy, 880, 260);
+    for (const callback of observers) callback();
+    const altTopAfter = parseFloat(refs.alt.style.top);
+    const copyTop = parseFloat(refs.copy.style.top);
+    expect(altTopAfter).toBeGreaterThan(altTopBefore);
+    expect(altTopAfter).toBeGreaterThan(copyTop + 260);
+  });
+
   // Under Reduce Motion the controller draws one settled frame and runs no
   // loop, so a skyline rebuilt after the alt block grows must be drawn at once.
   it('draws the skyline again when the alt block grows, with no frame loop running', () => {
