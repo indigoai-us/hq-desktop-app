@@ -16,7 +16,9 @@
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import Caret from "../common/Caret.svelte";
   import UsageStackBar from "../home/UsageStackBar.svelte";
-  import { segmentColor } from "../home/usage-stack.js";
+  import UsageLevelChip from "../home/UsageLevelChip.svelte";
+  import { levelSegmentVars } from "../home/usage-level-theme.js";
+  import { observeAccountRow, usageLevelState, usageLevelViewer } from "../home/usage-levels.svelte.js";
   import {
     approvedCheckoutUrl,
     billingPortalHint,
@@ -150,11 +152,23 @@
     };
   });
 
+  // Reads still out when the pane closes (Try again, a switch, a return from
+  // billing) are dropped with it.
+  let closed = false;
+  $effect(() => () => {
+    closed = true;
+  });
+
   function loadRow(acct: UsageAccount, cancelled: () => boolean = () => false): void {
     const key = accountKey(acct);
+    // The person this read is for: an answer that arrives after a change of
+    // person is not folded into the next person's level.
+    const reader = usageLevelViewer();
     void readAccountRow(company, acct, untrack(() => pricing), undefined, untrack(() => retryOpts)).then((view) => {
-      if (cancelled()) return;
+      if (closed || cancelled()) return;
       views = { ...views, [key]: withPricing(view, untrack(() => pricing)) };
+      // US-019: every month read counts toward the account's level.
+      observeAccountRow(key, lineName(acct), view, { viewer: reader });
       // The spend limit is the line's marker and sets its colour, so it is
       // read with the line, not when it opens.
       if (view.kind === "ready" && (view.plan === "usage" || view.plan === "trial")) loadSpend(acct);
@@ -312,6 +326,7 @@
         {@const open = openKey === key}
         {@const bar = view.kind === "ready" ? lineBar(view, spendFor(key)) : null}
         {@const paused = view.kind === "ready" && isPaused(view)}
+        {@const lvl = usageLevelState(key)}
         <li class="account" class:open data-testid="usage-account-row" data-key={key}>
           <h3 class="head">
             <button
@@ -333,6 +348,7 @@
                 {#if roleTag(acct)}<span class="badge">{roleTag(acct)}</span>{/if}
                 <span class="badge plan" class:hidden={view.kind !== "ready"} data-testid="usage-account-plan" data-plan={view.kind === "ready" ? view.plan : view.kind}>{view.kind === "ready" ? view.planLabel : ""}</span>
                 {#if paused}<span class="badge alert" data-testid="usage-account-paused">Sync paused</span>{/if}
+                {#if lvl}<UsageLevelChip level={lvl.level} bestCents={lvl.bestCents} bestMonth={lvl.bestMonth} data-testid="usage-account-level" />{/if}
                 <span class="sum">
                   <span class="total" class:quiet={!bar} data-testid="usage-account-total">{rowTotalText(view)}</span>
                   {#if bar}<span class="helper">{bar.helper}</span>{/if}
@@ -341,6 +357,8 @@
               {#if bar}
                 <span class="bar-row">
                   <UsageStackBar
+                    level={lvl?.level ?? 0}
+                    celebrate={lvl?.freshAt ?? null}
                     segments={bar.segments}
                     scaleCents={bar.scaleCents}
                     includedCents={bar.includedCents}
@@ -389,10 +407,11 @@
                   <ul class="groups" aria-label="This month by group">
                     {#each view.usage.groups as group (group.id)}
                       <li class="group" class:show={metersOpen[key + ":" + group.id]} title={group.meters.map((m) => `${m.label}: ${m.waived ? "waived" : m.costCents === null ? "not reported" : formatUsd(m.costCents)}${m.rate ? ` (${m.rate})` : ""}`).join("\n")}>
-                        <button type="button" class="g-label g-toggle" aria-pressed={Boolean(metersOpen[key + ":" + group.id])} data-testid="usage-group-toggle" onclick={() => (metersOpen = { ...metersOpen, [key + ":" + group.id]: !metersOpen[key + ":" + group.id] })}><span class="dot" style={`background:${segmentColor(group.id)}`} aria-hidden="true"></span>{group.label}</button>
+                        <button type="button" class="g-label g-toggle" aria-pressed={Boolean(metersOpen[key + ":" + group.id])} data-testid="usage-group-toggle" onclick={() => (metersOpen = { ...metersOpen, [key + ":" + group.id]: !metersOpen[key + ":" + group.id] })}><span class="dot" style={levelSegmentVars("dot", group.id, lvl?.level ?? 0, bar.tone)} aria-hidden="true"></span>{group.label}</button>
                         <span class="g-amt" data-testid="usage-group" data-group={group.id}>{group.cents === null ? "Not reported" : `${group.partial ? "At least " : ""}${formatUsd(group.cents)}`}</span>
                         <span class="g-bar">
                           <UsageStackBar
+                            level={bar.tone === "ok" ? (lvl?.level ?? 0) : 0}
                             segments={[{ id: group.id, label: group.label, cents: group.cents ?? 0 }]}
                             scaleCents={bar.scaleCents}
                             size="sm"
@@ -737,6 +756,15 @@
     margin-right: 6px;
     border-radius: 2px;
     vertical-align: 0;
+    background: var(--dot);
+  }
+  @media (prefers-color-scheme: dark) {
+    .dot {
+      background: var(--dot-dark, var(--dot));
+    }
+  }
+  :global(:root[data-force-theme="light"]) .dot {
+    background: var(--dot);
   }
 
   /* Facts sit side by side at their natural width; labels never wrap. */

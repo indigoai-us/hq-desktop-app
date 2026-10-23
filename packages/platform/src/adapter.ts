@@ -1329,6 +1329,13 @@ export interface CompanyApi {
    * allowance left, bill so far and one line per meter.
    */
   getUsageStatement?(companyUid: string): AdapterPromise<Json>;
+  /**
+   * Owner-gated usage history (`GET /v1/billing/usage/history?companyUid=`,
+   * hq-pro #5087): `{ months: [{ month, usageCents, complete }] }`, the last
+   * 12 calendar months oldest first, current month included (never
+   * complete). Admins and members get 403. Company levels (US-019) read it.
+   */
+  getUsageHistory?(companyUid: string): AdapterPromise<Json>;
   /** Public price list (`GET /v1/pricing`), including the `usage` block. */
   getPricing?(): AdapterPromise<Json>;
   /**
@@ -1345,6 +1352,8 @@ export interface CompanyApi {
   getPersonalBillingSummary?(): AdapterPromise<Json>;
   /** `GET /v1/billing/usage?scope=person&window=month`: the personal month statement. */
   getPersonalUsageStatement?(): AdapterPromise<Json>;
+  /** `GET /v1/billing/usage/history?scope=person`: the personal account's usage history. */
+  getPersonalUsageHistory?(): AdapterPromise<Json>;
   /** `GET /v1/billing/person/spend-limit`: the personal spend limit. */
   getPersonalSpendLimit?(): AdapterPromise<Json>;
   /** `POST /v1/billing/checkout/person`: hosted card capture for the personal account. */

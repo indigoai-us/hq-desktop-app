@@ -1480,11 +1480,14 @@ export function createSyncPlatformAdapter(
         hqProJson('GET', WEB_PATHS.companyBillingSummary(companyUid)),
       getUsageStatement: (companyUid) =>
         hqProJson('GET', WEB_PATHS.companyUsageStatement(companyUid)),
+      getUsageHistory: (companyUid) =>
+        hqProJson('GET', WEB_PATHS.companyUsageHistory(companyUid)),
       getPricing: () => hqProJson('GET', WEB_PATHS.pricing),
       getSpendLimit: (companyUid) =>
         hqProJson('GET', WEB_PATHS.companySpendLimit(companyUid)),
       getPersonalBillingSummary: () => hqProJson('GET', WEB_PATHS.personalBillingSummary),
       getPersonalUsageStatement: () => hqProJson('GET', WEB_PATHS.personalUsageStatement),
+      getPersonalUsageHistory: () => hqProJson('GET', WEB_PATHS.personalUsageHistory),
       getPersonalSpendLimit: () => hqProJson('GET', WEB_PATHS.personalSpendLimit),
       createPersonalBillingCheckoutSession: () =>
         hqProJson<{ url: string }>('POST', WEB_PATHS.personalBillingCheckout, {}),

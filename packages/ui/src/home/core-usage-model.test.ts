@@ -343,6 +343,54 @@ describe("trial meter", () => {
     expect(runningTrialFromSummary({ usageTrial: { status: "owner-trial-used" } }, now)).toBeNull();
   });
 
+  it("reads the trial from billingState first, keeping the older usageTrial only as a fallback (US-024)", () => {
+    const state = (kind: string, trial: Record<string, unknown> | null) => ({ version: 1, scope: "company", kind, trial });
+    // billingState's trial block wins over a stale older record.
+    const fromState = runningTrialFromSummary(
+      {
+        billingState: state("usage-trial", { daysLeft: 9, endsAt: "2026-11-03T00:00:00Z", capCents: 40000, usedCents: 900 }),
+        usageTrial: { status: "active", endsAt: "2026-10-25T00:00:00Z", capCents: 50000, usedCents: 1234, unknownMeters: ["vault_storage"] },
+      },
+      now,
+    );
+    expect(fromState).toEqual({
+      endsAt: "2026-11-03T00:00:00Z",
+      daysLeft: 16,
+      capCents: 40000,
+      usedCents: 900,
+      unknownMeters: ["vault_storage"],
+    });
+    // The older record fills a cap or usage billingState leaves out.
+    expect(
+      runningTrialFromSummary(
+        {
+          billingState: state("usage-trial", { endsAt: "2026-11-03T00:00:00Z", capCents: null, usedCents: null }),
+          usageTrial: { status: "active", endsAt: "2026-11-03T00:00:00Z", capCents: 50000, usedCents: 1234 },
+        },
+        now,
+      ),
+    ).toEqual({ endsAt: "2026-11-03T00:00:00Z", daysLeft: 16, capCents: 50000, usedCents: 1234 });
+    // billingState says no trial: an "active" older record does not bring one back.
+    expect(
+      runningTrialFromSummary(
+        { billingState: state("usage", null), usageTrial: { status: "active", endsAt: "2026-11-03T00:00:00Z", capCents: 50000 } },
+        now,
+      ),
+    ).toBeNull();
+    // An ended billingState trial is not running.
+    expect(runningTrialFromSummary({ billingState: state("usage-trial", { endsAt: "2026-10-17T00:00:00Z" }) }, now)).toBeNull();
+    // A server without billingState (or with a version this app doesn't know) keeps the older record.
+    expect(
+      runningTrialFromSummary(
+        { billingState: { version: 2, kind: "usage" }, usageTrial: { status: "active", endsAt: "2026-11-03T00:00:00Z", capCents: 50000, usedCents: 1 } },
+        now,
+      ),
+    ).toEqual({ endsAt: "2026-11-03T00:00:00Z", daysLeft: 16, capCents: 50000, usedCents: 1 });
+    expect(
+      planLabelFromSummary({ billingState: state("usage-trial", { endsAt: "2026-11-03T00:00:00Z", capCents: 40000 }) }, now),
+    ).toBe("Trial, 16 days left");
+  });
+
   it("shows trial usage against the cap, amber near it and red at it", () => {
     const base = { endsAt: "2026-11-03T00:00:00Z", daysLeft: 16, capCents: 50000 };
     const view = trialMeterView({ ...base, usedCents: 12000 });

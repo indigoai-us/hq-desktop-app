@@ -1,3 +1,15 @@
+<script lang="ts" module>
+  /** Unlocks whose sweep has played, so a bar that mounts again later stays still. */
+  const playedSweeps = new Set<string>();
+  /** A sweep only plays this soon after its unlock; later it is old news. */
+  export const SWEEP_WINDOW_MS = 30_000;
+
+  /** Test seam. */
+  export function __resetUsageSweepsForTests(): void {
+    playedSweeps.clear();
+  }
+</script>
+
 <script lang="ts">
   /**
    * The usage bar shared by the Core menu meter and Settings > Usage (owner
@@ -14,9 +26,14 @@
    * - Fill: grows from the old total to the new one when a total changes, and
    *   from empty when `grow="mount"` (a line that just opened). Nothing moves
    *   on a first paint otherwise, and nothing moves under reduced motion.
+   * - Level (US-019): the account's company level picks the parts' palette
+   *   (usage-level-theme.ts). A limit state brings the plain group colours
+   *   back. At levels 6 and 7 a sheen crosses the bar once when the level has
+   *   just unlocked (`celebrate`) and on hover; never under reduced motion.
    */
-  import { onMount } from "svelte";
-  import { segmentColor, type StackMarker, type StackSegment, type StackTone } from "./usage-stack.js";
+  import { onMount, untrack } from "svelte";
+  import { type StackMarker, type StackSegment, type StackTone } from "./usage-stack.js";
+  import { levelHasSheen, levelPaletteActive, levelSegmentVars } from "./usage-level-theme.js";
 
   let {
     segments,
@@ -27,6 +44,8 @@
     size = "lg",
     grow = "change",
     label = "",
+    level = 0,
+    celebrate = null,
     ...rest
   }: {
     segments: readonly StackSegment[];
@@ -41,6 +60,15 @@
     grow?: "mount" | "change";
     /** Spoken summary; the default lists the parts. */
     label?: string;
+    /** The account's company level (0 to 7): picks the parts' palette. */
+    level?: number;
+    /**
+     * When the level unlocked (ms), or null. The sheen (levels 6 and 7)
+     * crosses once per unlock, shortly after it, on whichever bar shows it
+     * first: a bar already on screen when the level unlocks, or one opened
+     * just after. Never again on a later mount.
+     */
+    celebrate?: number | null;
     [key: string]: unknown;
   } = $props();
 
@@ -74,6 +102,26 @@
       parts.map((p) => `${p.label} ${(p.cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })}`).join(", "),
   );
 
+  const themed = $derived(levelPaletteActive(level, tone));
+  const sheen = $derived(levelHasSheen(level, tone));
+  /** The one-time unlock sweep; reduced motion never sets it. */
+  let sweep = $state(false);
+  $effect(() => {
+    const at = celebrate;
+    const on = sheen;
+    if (at === null || !on || typeof window === "undefined") return;
+    const key = `${at}:${level}`;
+    if (playedSweeps.has(key) || Date.now() - at > SWEEP_WINDOW_MS) return;
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    playedSweeps.add(key);
+    untrack(() => (sweep = true));
+    const id = setTimeout(() => (sweep = false), 1600);
+    return () => {
+      clearTimeout(id);
+      sweep = false;
+    };
+  });
+
   // What is drawn now. Starts at the real value (no motion on a first paint)
   // unless the bar grows on mount; later changes animate from the old value.
   let reveal = $state(0);
@@ -99,6 +147,8 @@
   class="stack"
   data-size={size}
   data-tone={tone}
+  data-level={themed ? level : 0}
+  data-sheen={sheen ? (sweep ? "play" : "hover") : "none"}
   role="img"
   aria-label={spoken}
   {...rest}
@@ -106,8 +156,9 @@
   <span class="track">
     <span class="fill" style={`--reveal:${reveal}%;`} data-reveal={Math.round(fillPct)}>
       {#each parts as part (part.id)}
-        <span class="seg" data-segment={part.id} style={`width:${part.pct}%;--seg:${segmentColor(part.id)};`}></span>
+        <span class="seg" data-segment={part.id} style={`width:${part.pct}%;${levelSegmentVars("seg", part.id, level, tone)}`}></span>
       {/each}
+      {#if sheen}<span class="sheen" aria-hidden="true" data-testid="usage-bar-sheen"></span>{/if}
     </span>
     {#if includedPct !== null}
       <span class="tick included" style={`left:${includedPct}%`} title="Included usage ends here"></span>
@@ -151,6 +202,7 @@
   /* The parts sit at their final widths; the clip reveals them up to the
      total, so a change grows from the old total to the new one. */
   .fill {
+    position: relative;
     display: flex;
     height: 100%;
     overflow: hidden;
@@ -163,6 +215,41 @@
     flex: none;
     height: 100%;
     background: var(--seg);
+  }
+
+  /* Each level has a dark palette, so the parts stay 3:1 on dark surfaces. */
+  @media (prefers-color-scheme: dark) {
+    .seg {
+      background: var(--seg-dark, var(--seg));
+    }
+  }
+  :global(:root[data-force-theme="light"]) .seg {
+    background: var(--seg);
+  }
+
+  /* Levels 6 and 7: a band of light that crosses the bar once on unlock and
+     on hover, so the special level reads as new and as yours. It sits inside
+     the clipped fill, so it only crosses the used part. */
+  .sheen {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(100deg, transparent 0%, rgba(255, 255, 255, 0) 35%, rgba(255, 255, 255, 0.55) 50%, rgba(255, 255, 255, 0) 65%, transparent 100%);
+    background-size: 220% 100%;
+    background-position: 160% 0;
+    opacity: 0;
+  }
+
+  .stack[data-sheen="play"] .sheen,
+  .stack[data-sheen="hover"]:hover .sheen {
+    animation: usage-sheen 1.4s cubic-bezier(0.3, 0.6, 0.3, 1) 1 both;
+  }
+
+  @keyframes usage-sheen {
+    0% { background-position: 160% 0; opacity: 0; }
+    15% { opacity: 1; }
+    85% { opacity: 1; }
+    100% { background-position: -60% 0; opacity: 0; }
   }
 
   /* A hairline between parts keeps the split readable at any tone. */
@@ -238,6 +325,11 @@
   @media (prefers-reduced-motion: reduce) {
     .fill {
       transition: none;
+    }
+
+    .stack .sheen {
+      animation: none !important;
+      opacity: 0;
     }
   }
 </style>
