@@ -9,7 +9,7 @@ Story: free-user-required-telemetry US-004, the desktop usage-data disclosure fo
 - Driver: Playwright 1.62.1 with system Chrome (`channel: 'chrome'`), headless, `reducedMotion: 'reduce'`, viewports 1280x800 and 390x844.
 - The live server flag is off, so every state is mocked through the harness `notice` query parameter.
 - BEFORE images come from origin/main (af35beb1f). The BEFORE consent image needs this branch's `mode=consent` harness patch, because origin/main's harness cannot open the consent run directly.
-- AFTER results: the disclosure shows in every image, and the consent run has no checkbox. Both lists end above the fold. Consent 1280: lists end at 439px, actions at 613px of 800. Consent 390: 592px and 766px of 844. Ready 1280: 554px and 666px of 800. Ready 390: 672px and 768px of 844. No page errors were logged.
+- AFTER results: the disclosure shows in every image, and the consent run has no checkbox. The harness mock carries the locked server text (TELEMETRY_DISCLOSURE, version 2026-10-22) word for word, and none of the images contains the word "anonymous". Both lists end above the fold in every image. Consent 1280: collects list ends at 490px, never-collects at 450px, actions at 645px of 800. Consent 390: 522px and 628px, actions at 802px of 844. Ready 1280: 605px and 571px, actions at 717px of 800. Ready 390: 665px and 756px of 844; the upgrade line and the actions sit below the fold at 884px, so that screen needs a scroll to reach Continue. No page errors were logged.
 - The single checkbox left on the ready screen is "Enable HQ Anywhere", which is also on origin/main.
 
 ## Native build

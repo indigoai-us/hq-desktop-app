@@ -45,14 +45,27 @@ import { HQ_CONSOLE_BASE } from '@hq/ui/hq-console';
 const READY_STEP = WIZARD_STEPS.find((s) => s.id === 'ready')!.index;
 const CONSENT_STEP = WIZARD_STEPS.find((s) => s.id === 'consent')!.index;
 
+// The locked server text (TELEMETRY_DISCLOSURE, version 2026-10-22), word for word.
 const DISCLOSURE = {
-  version: 'free-required-2026-10',
-  title: 'Usage data is part of the free plan',
-  summary: 'On the free plan, HQ shares anonymous usage data so we can keep the plan free.',
-  collected: ['Which skills and commands you run', 'Model names and token counts'],
-  neverCollected: ['Your prompts or replies', 'The contents of your files'],
-  offSwitch: 'You can turn this off any time by adding a card to your company.',
-  upgradePath: 'Add a card to your company to make sharing optional.',
+  version: '2026-10-22',
+  title: 'Usage data on the free plan',
+  summary: 'Using HQ for free includes sharing usage data with us. It helps us see what people use and fix what breaks. Adding a card to your company turns this into a setting you can switch off.',
+  collected: [
+    'usage counts',
+    'skill and command names',
+    'timings',
+    'model names',
+    'company and person ids',
+    'app version and operating system',
+  ],
+  neverCollected: [
+    'file contents',
+    'secrets',
+    'prompts and outputs',
+    'vault data',
+  ],
+  offSwitch: 'Add a card to your company and collection becomes a setting you can turn off.',
+  upgradePath: "Add a card or upgrade your company in HQ at https://hq.computer under your company's Billing page.",
 };
 
 type NoticeState = 'pending' | 'required' | 'card' | 'not-applicable' | 'fail';
@@ -209,6 +222,7 @@ describe('US-004 consent screen (consent-only run)', () => {
       await flushUntil(() => Boolean(byId('disclosure-continue')), 'the disclosure');
       const screen = byId<HTMLElement>('onboarding-consent')!;
       expectDisclosureCopy(screen);
+      expect(screen.textContent ?? '').not.toMatch(/anonymous/i);
       // The share/decline radios are hidden; only Continue and Add a card remain.
       const radios = [...screen.querySelectorAll<HTMLInputElement>('input[type="radio"]')];
       expect(radios.every((r) => !visible(r))).toBe(true);

@@ -860,22 +860,28 @@ const previewLocalBots: Array<Record<string, unknown>> = botsTablePreviewEnabled
 // US-004: the free-plan usage data notice. `&notice=pending|required` shows
 // the disclosure state, `card` answers a company with a card on file, `fail`
 // fails the read (the wizard keeps today's choice). Default: not-applicable.
+// The copy is the locked server text (TELEMETRY_DISCLOSURE, version 2026-10-22),
+// word for word, so harness screenshots show what the shipped app renders.
 const HARNESS_DISCLOSURE = {
-  version: '2026-10-preview',
-  title: 'Free plan includes usage data',
-  summary: 'On the free plan, HQ shares anonymous usage data with us so we can keep the plan free and see what helps.',
+  version: '2026-10-22',
+  title: 'Usage data on the free plan',
+  summary: 'Using HQ for free includes sharing usage data with us. It helps us see what people use and fix what breaks. Adding a card to your company turns this into a setting you can switch off.',
   collected: [
-    'Which HQ features you open and how often',
-    'Setup steps you finish or skip',
-    'App version, operating system, and crash reports',
+    'usage counts',
+    'skill and command names',
+    'timings',
+    'model names',
+    'company and person ids',
+    'app version and operating system',
   ],
   neverCollected: [
-    'Your files, prompts, or chat content',
-    'Passwords, keys, or secrets',
-    'Anything from your connected apps',
+    'file contents',
+    'secrets',
+    'prompts and outputs',
+    'vault data',
   ],
-  offSwitch: 'You can turn usage data off once your company has a paid plan.',
-  upgradePath: 'To keep usage data off, add a card for your company in Billing.',
+  offSwitch: 'Add a card to your company and collection becomes a setting you can turn off.',
+  upgradePath: "Add a card or upgrade your company in HQ at https://hq.computer under your company's Billing page.",
 };
 
 function harnessTelemetryNotice(): Record<string, unknown> {
@@ -897,7 +903,7 @@ function harnessTelemetryNotice(): Record<string, unknown> {
     requiredFrom: null,
     ackAt: null,
     hasCard: mode === 'card',
-    disclosure: null,
+    disclosure: mode === 'card' ? HARNESS_DISCLOSURE : null,
   };
 }
 
