@@ -381,14 +381,21 @@
     kind: "info" | "warn",
     text: string,
     upgradeUrl?: string,
+    consoleAction?: boolean,
+    upgradeLabel?: string,
   ): void {
     const revision = ++toastRevision;
     const nextToast: ToastDescriptor = {
       kind,
       text,
       ...(upgradeUrl ? { upgradeUrl } : {}),
+      ...(upgradeUrl && upgradeLabel ? { upgradeLabel } : {}),
+      ...(consoleAction ? { consoleAction } : {}),
     };
     toast = nextToast;
+    // The Console prompt stays until dismissed or Console opens, so its
+    // action button is not lost to the short auto-clear timer.
+    if (consoleAction) return;
     setTimeout(() => {
       if (toastRevision === revision) toast = null;
     }, 4000);
@@ -418,7 +425,7 @@
         actions: upgradeUrl
           ? [
               {
-                label: pending ? "Opening…" : "Upgrade",
+                label: pending ? "Opening…" : (current.upgradeLabel ?? "Upgrade"),
                 testId: "meetings-plan-upgrade",
                 primary: true,
                 disabled: pending,
@@ -426,7 +433,16 @@
                 onAction: () => void openToastUpgrade(upgradeUrl),
               },
             ]
-          : [],
+          : current.consoleAction
+            ? [
+                {
+                  label: "Open Console",
+                  testId: "meetings-open-console",
+                  primary: true,
+                  onAction: () => void openIntegrationsConsole(),
+                },
+              ]
+            : [],
       });
     });
   });
@@ -454,7 +470,7 @@
   $effect(() => {
     const notice = meetingsStore.connectNotice;
     if (!notice) return;
-    flashToast(notice.kind, notice.text);
+    flashToast(notice.kind, notice.text, undefined, notice.consoleAction);
     meetingsStore.clearConnectNotice();
   });
 
@@ -467,15 +483,15 @@
   // refresh-error banner (fetchError is store-owned and left untouched).
   async function onInvite(evt: MeetingEvent): Promise<void> {
     const t = await meetingsStore.inviteBot(evt);
-    if (t) flashToast(t.kind, t.text, t.upgradeUrl);
+    if (t) flashToast(t.kind, t.text, t.upgradeUrl, undefined, t.upgradeLabel);
   }
   async function onUninvite(evt: MeetingEvent): Promise<void> {
     const t = await meetingsStore.cancelBot(evt);
-    if (t) flashToast(t.kind, t.text, t.upgradeUrl);
+    if (t) flashToast(t.kind, t.text, t.upgradeUrl, undefined, t.upgradeLabel);
   }
   async function onJoinNow(evt: MeetingEvent): Promise<void> {
     const t = await meetingsStore.joinBotNow(evt);
-    if (t) flashToast(t.kind, t.text, t.upgradeUrl);
+    if (t) flashToast(t.kind, t.text, t.upgradeUrl, undefined, t.upgradeLabel);
   }
 
   // Ad-hoc "paste a meeting URL" invite — parity with the classic
@@ -501,7 +517,7 @@
           urlInput = "";
           urlInputCompanyId = null;
         }
-        flashToast(t.kind, t.text, t.upgradeUrl);
+        flashToast(t.kind, t.text, t.upgradeUrl, undefined, t.upgradeLabel);
       }
     } finally {
       urlInviting = false;

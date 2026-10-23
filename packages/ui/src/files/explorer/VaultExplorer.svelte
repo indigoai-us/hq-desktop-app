@@ -90,7 +90,8 @@
     const wantedPath = path;
     untrack(() => {
       if (wanted && wanted !== currentVaultId) switchVault(wanted, { report: false });
-      if (wantedPath && wantedPath !== activePath) openFile(wantedPath, { newTab: false, report: false });
+      if (wantedPath && isFolderPath(wantedPath)) openFolder(wantedPath);
+      else if (wantedPath && wantedPath !== activePath) openFile(wantedPath, { newTab: false, report: false });
     });
   });
 
@@ -211,6 +212,7 @@
     noteLinks = null;
     vaultMenuOpen = false;
     focus = null;
+    folderFromLocation = false;
     treeReload += 1;
     if (opts.report !== false) report();
   }
@@ -218,12 +220,16 @@
   // Open the initial file once.
   $effect(() => {
     untrack(() => {
-      if (path) openFile(path, { newTab: false, report: false });
+      if (path && isFolderPath(path)) openFolder(path);
+      else if (path) openFile(path, { newTab: false, report: false });
     });
   });
 
   function openFile(p: string, opts: { newTab: boolean; report?: boolean }): void {
     if (!pathInVault(vault, p)) return;
+    // Opening a file ends the folder-share view: where the host has no folder
+    // view, a later tree folder click only focuses the folder again.
+    folderFromLocation = false;
     const existing = tabs.indexOf(p);
     if (existing >= 0) {
       activeTab = existing;
@@ -242,11 +248,26 @@
   // ---- focus and folder view (OWNER-R13, OWNER-R17) -----------------------------
   /** The file or folder last selected; the Access section describes it. */
   let focus = $state<{ path: string; isDir: boolean } | null>(null);
-  const showFolder = $derived(folderView && focus?.isDir === true && !activePath);
+  // A location ending in `/` (a DM folder share) shows that folder's listing
+  // even where the folder view is not on by default (feedback 3e124bcd).
+  let folderFromLocation = $state(false);
+  const showFolder = $derived((folderView || folderFromLocation) && focus?.isDir === true && !activePath);
 
   function focusFolder(p: string): void {
     focus = { path: p, isDir: true };
-    if (folderView) activeTab = -1;
+    if (folderView || folderFromLocation) activeTab = -1;
+  }
+
+  function isFolderPath(p: string): boolean {
+    return p.endsWith("/");
+  }
+
+  function openFolder(p: string): void {
+    const dir = p.replace(/\/+$/, "");
+    if (!dir || !pathInVault(vault, dir)) return;
+    vaultFolderViewDoor.preload();
+    folderFromLocation = true;
+    focusFolder(dir);
   }
 
 

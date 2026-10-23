@@ -26,7 +26,6 @@
    * adapter + api seams and the ChatWakeBus.
    */
   import {
-    CLAUDE_PROVIDER_FLAG,
     DESKTOP_AGENT_CREATION_FLAG,
     HUMAN_ONLY_CONVERSATIONS_FLAG,
     READY_FIRST_ACTION_FLAG,
@@ -42,7 +41,7 @@
     type CloudFileEventPayload,
 } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
-  import { resolveUsageCompany, usageAccounts } from "../home/core-usage-model.js";
+  import { PERSONAL_ACCOUNT_KEY, resolveUsageCompany, setPreferredUsageAccount, usageAccounts } from "../home/core-usage-model.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
@@ -80,7 +79,6 @@
     RAIL_DEPLOYMENTS_ACTIONS_FLAG,
     RAIL_OUTPOST_FLAG,
     RAIL_TELEMETRY_FLAG,
-    RAIL_WORKFORCE_LIMITS_FLAG,
     isIndigoCompany,
     isIndigoOnlySurface,
     watchIndigoOnlyGates,
@@ -107,6 +105,7 @@
     shouldShowLaunch,
   } from "../badges/badge-launch.js";
   import { installBadgeLoader } from "../badges/badge-loader.svelte.js";
+  import { setUsageLevelHistoryLoader, setUsageLevelOpener, setUsageLevelViewer } from "../home/usage-levels.svelte.js";
   import { topBadge } from "../badges/badge-tier.js";
   import { resolveEarned, type ResolvedBadge } from "../badges/badge-catalog.js";
   import CompanySettingsHost from "./CompanySettingsHost.svelte";
@@ -562,7 +561,7 @@
     type TourEnterAction,
     type TourState,
   } from "../tour/guided-tour.js";
-  import { vaultsFor } from "../files/explorer/vault-model.js";
+  import { folderShareTarget, vaultsFor } from "../files/explorer/vault-model.js";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
   import LocalBotDetailPanel from "../chat/LocalBotDetailPanel.svelte";
@@ -605,6 +604,7 @@
     type NavigationEntry,
     type NavigationScrollState,
     type ProjectsFocusTab,
+    type SharedFolderFocus,
   } from "./navigation-history.js";
   import { settleThreadSidebarClose } from "./thread-sidebar-close.js";
   import { resetThreadComposerDrafts } from "../chat/messaging/thread-composer-draft.js";
@@ -640,6 +640,7 @@
     EMPTY_LIVE_SYNC,
     lastSyncLabelFromLive,
     readLiveSyncStatus,
+    retrySyncFromLive,
     syncStateFromLive,
     type LiveSyncStatus,
   } from "../settings/live-sync-status.js";
@@ -1511,6 +1512,18 @@
    */
   let syncStatus = $state<SyncStatusState>(emptySyncStatus());
 
+  async function retrySyncRecovery(): Promise<void> {
+    const before = syncStatus;
+    const retried = await retrySyncFromLive(adapter, liveSync);
+    liveSync = retried.status;
+    if (retried.error) {
+      syncStatus = reduceSyncEvent(syncStatus, "sync:error", { message: retried.error });
+    } else if (!retried.status.recoveryHoldReason && syncStatus === before) {
+      // Do not overwrite a newer native auth/error/progress event while awaiting retry.
+      syncStatus = reduceSyncEvent(emptySyncStatus(), "sync:plan", {});
+    }
+  }
+
   // OWNER-003: one "sync" toast that updates in place while files move and
   // turns into a quiet "Files up to date" when the run ends. Runs that move
   // nothing stay silent; attention states belong to the Core pill.
@@ -1962,6 +1975,8 @@
   /** Files explorer location (vault id + HQ-relative file). */
   let explorerVault = $state<string | null>(null);
   let explorerPath = $state<string | null>(null);
+  /** DM folder share the shared-files view lists remotely (company not synced here). */
+  let sharedFolderFocus = $state<SharedFolderFocus | null>(null);
   let extraPageId = $state<string | null>(null);
   let extraPageParam = $state<string | null>(null);
   /** Which pending request the Requests panel should bring into view first. */
@@ -5028,6 +5043,19 @@
           void navigate({ kind: "explorer" });
         },
       });
+      // Staff only (owner, 2026-10-16): see the accomplishments
+      // announcement again, as someone who has not seen it, without clearing
+      // the "seen" record. Needs badges on for you, like the real one.
+      if (isIndigoStaff && youBadgesEnabled) {
+        nav.push({
+          id: "command-replay-accomplishments",
+          label: "Replay accomplishments announcement",
+          detail: "Staff only: show the badges launch again",
+          action: () => {
+            window.setTimeout(replayLaunch, 0);
+          },
+        });
+      }
       nav.push({
         id: "command-take-tour",
         label: "Take the tour",
@@ -10560,7 +10588,7 @@
       case "library":
         return { kind: "library", tab: libraryTab, itemId: libraryItemId };
       case "shared-files":
-        return { kind: "shared-files" };
+        return { kind: "shared-files", folder: sharedFolderFocus };
       case "explorer":
         return { kind: "explorer", vault: explorerVault, path: explorerPath };
       case "projects":
@@ -11010,6 +11038,7 @@
         extraPageParam = null;
         break;
       case "shared-files":
+        sharedFolderFocus = next.folder ?? null;
         view = "shared-files";
         settingsSection = null;
         extraPageId = null;
@@ -12401,14 +12430,46 @@
     items: FileAttachmentModel[] = [],
   ): void {
     const companyUid = attachmentCompanyUid(selectedRow);
-    const stamped = (items.length > 0 ? items : [item]).map((entry) => ({
-      ...entry,
-      companyUid: entry.companyUid || companyUid || "",
-    }));
+    if (item.kind === "folder") {
+      openFolderShare(item, companyUid);
+      return;
+    }
+    // A folder key is a folder marker, not an object the tray can fetch.
+    const stamped = (items.length > 0 ? items : [item])
+      .filter((entry) => entry.kind !== "folder")
+      .map((entry) => ({
+        ...entry,
+        companyUid: entry.companyUid || companyUid || "",
+      }));
     attachTray = {
       selectedId: item.id || item.vaultPath,
       items: stamped,
     };
+  }
+
+  /**
+   * A DM folder share ("Shared a folder with you") opens that folder in Files.
+   * Its trailing-slash key is not an object, so the attachment preview would
+   * fail with "Could not load the file" (feedback 3e124bcd). Without a local
+   * copy of the company, the shared-with-me view lists the folder from the
+   * vault (ACL-filtered) and says which company to sync to open it in Files.
+   * An unknown company lands on the plain shared-with-me list.
+   */
+  function openFolderShare(item: FileAttachmentModel, companyUid: string | null): void {
+    const target = folderShareTarget(
+      { vaultPath: item.vaultPath, companyUid: item.companyUid || companyUid || "" },
+      effectiveCompanies,
+    );
+    if (target?.local) {
+      void navigate({ kind: "explorer", vault: target.local.vault, path: target.local.path });
+      return;
+    }
+    void navigate({
+      kind: "shared-files",
+      folder: target
+        ? { companyUid: target.companyUid, companyLabel: target.companyLabel, prefix: target.prefix }
+        : null,
+    });
   }
 
   async function resolveTrayUrl(
@@ -12848,6 +12909,12 @@
   // OWNER-R24: the caller's role in the open company, from the membership
   // roster. Grants and Billing show only to owners and admins.
   const companyPaneRole = $derived(callerRole(companyPaneCompany?.uid));
+  // US-024: the open company's plan status from the membership row, for the
+  // Billing pane (non-owners) and the Team seat chip.
+  const companyPaneWorkspace = $derived(
+    companyPaneCompany?.uid ? (companies ?? []).find((c) => (c.cloudUid ?? "").trim() === companyPaneCompany?.uid) : undefined,
+  );
+  const companyPaneBillingState = $derived(companyPaneWorkspace?.billingState ?? null);
   // US-007: the global Deployments page offers the company Custom domain sheet too.
   async function deployDomainPrices(): Promise<DomainPrices | null> {
     const read = adapter.company?.getPricing;
@@ -12924,6 +12991,35 @@
   const youBadges = $derived(badgesFor(youSubject));
 
   /**
+   * usage-only-pricing US-019: which level-up cards were shown is stored per
+   * signed-in person, and the card's "See usage" opens Settings > Usage on that account.
+   */
+  $effect(() => {
+    setUsageLevelViewer(self?.uid ?? null);
+  });
+  $effect(() => {
+    setUsageLevelOpener((accountKey) => {
+      setPreferredUsageAccount(accountKey);
+      openSettings("usage");
+    });
+    return () => setUsageLevelOpener(null);
+  });
+  // Levels follow the owner usage history (GET /v1/billing/usage/history,
+  // hq-pro #5087), read once per account. With no history there is no card.
+  $effect(() => {
+    const company = adapter.company;
+    setUsageLevelHistoryLoader(
+      company
+        ? (accountKey) =>
+            accountKey === PERSONAL_ACCOUNT_KEY
+              ? (company.getPersonalUsageHistory?.() ?? null)
+              : (company.getUsageHistory?.(accountKey) ?? null)
+        : null,
+    );
+    return () => setUsageLevelHistoryLoader(null);
+  });
+
+  /**
    * hq-accomplishment-badges US-016: the launch announcement, once, over the
    * whole window, when the server has badges on for you (badge-launch.ts).
    * It waits for first-run setup and the guided tour, which own the window.
@@ -12940,6 +13036,26 @@
     const timer = window.setTimeout(() => (launchOpen = true), LAUNCH_OPEN_DELAY_MS);
     return () => window.clearTimeout(timer);
   });
+  /** True @getindigo.ai gate (the host's is_indigo_user check), for staff-only tools. */
+  let isIndigoStaff = $state(false);
+  $effect(() => {
+    const identity = adapter?.identity;
+    if (!identity || adapter.kind !== "desktop") return;
+    let cancelled = false;
+    void identity.hasFeature("is_indigo_user").then((result) => {
+      if (!cancelled) isIndigoStaff = result.ok && result.value === true;
+    }).catch((err) => {
+      console.warn("[hq-desktop] staff check failed:", err);
+    });
+    return () => {
+      cancelled = true;
+    };
+  });
+  /** Staff replay from the command palette: open it now, whatever "seen" says. */
+  function replayLaunch(): void {
+    if (launchOpen || visualFirstRunOpen || tourStep) return;
+    launchOpen = true;
+  }
   function closeLaunch(): void {
     launchOpen = false;
     if (launchPreview()) {
@@ -13721,6 +13837,10 @@
       return { label: action.label, onselect: () => openExtraPage(id, action.param()) };
     })()}
     syncState={liveSyncState}
+    errorSummary={liveSync.recoveryHoldReason}
+    syncRecoveryReason={liveSync.recoveryHoldReason}
+    errorMessage={liveSync.recoveryHoldReason}
+    onretry={liveSync.recoveryHoldReason ? retrySyncRecovery : undefined}
     {lastSyncLabel}
     uploadsPaused={liveSync.uploadsPaused ?? []}
     cloudPaused={!cloudEnabled}
@@ -13733,7 +13853,9 @@
     hqFolderPath={hqFolderPath ?? liveSync.hqFolderPath}
     watchedCount={watched}
     {unreadCount}
-    {syncStatus}
+    syncStatus={liveSync.recoveryHoldReason
+      ? { ...syncStatus, phase: "error", message: liveSync.recoveryHoldReason }
+      : syncStatus}
     brand={brandState}
     {brandCompanyName}
     onopenSync={() => openSettings("sync")}
@@ -14201,7 +14323,6 @@
             if (onopenurl) onopenurl(url);
             else window.open(url, "_blank", "noopener,noreferrer");
           }}
-          loadClaudeProviderFlag={() => adapter.identity.hasFeature(CLAUDE_PROVIDER_FLAG)}
           humanOnly={humanOnlyConversations}
           loadCloudProvisionOptions={(companyUid) => adapter.agents.getProvisionOptions(companyUid)}
           directCloud={directCloudCreate}
@@ -14299,6 +14420,7 @@
         {:else if view === "shared-files"}
           <SharedFilesOverlay
             {adapter}
+            folder={sharedFolderFocus}
             onback={() => {
               void leaveCurrentDestination();
             }}
@@ -14361,6 +14483,7 @@
               selfEmail: self?.email ?? null,
               companyLabel: companyPaneCompany.label,
               avatarByUid,
+              usagePriced: companyPaneWorkspace?.usagePriced === true,
             }}
           >
             {#snippet skeleton()}
@@ -14396,7 +14519,7 @@
             companyUid={companyPaneCompany.uid}
             company={adapter.company ?? null}
             messaging={adapter.messaging ?? null}
-            seatLimit={railGate(RAIL_WORKFORCE_LIMITS_FLAG)}
+            billingState={companyPaneBillingState}
             files={adapter.files ?? null}
             targets={grantTargets}
           />

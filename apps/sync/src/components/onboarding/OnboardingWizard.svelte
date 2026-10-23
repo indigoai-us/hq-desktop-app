@@ -5,6 +5,7 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getVersion } from '@tauri-apps/api/app';
   import { safeUnlisten } from '../../lib/listener-registry';
+  import type { UsagePause } from '@hq/platform';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import { onDestroy, onMount, tick } from 'svelte';
   import '../../styles/design-system.css';
@@ -128,8 +129,26 @@
     type SetupStageRecoveryAction,
     type StageId,
     type StageState,
+    createDepsToolTracker,
+    isKnownDepsTool,
+    readInstallerRunsSnapshot,
+    type InstallerRunsSnapshot,
+    createStageClock,
+    createSetupBandPacer,
+    readyBodyCopy,
+    toolsWaitHint,
+    SETUP_BAND_DWELL_MS,
+    depsFailureRecovery,
+    depsStageErrorText,
+    setupHeading,
+    setupStepSummary,
+    type DepsFailureRecovery,
+    type ProgressTimeoutProgressOptions,
   } from '../../lib/onboarding-setup';
   import {
+    SHORTCUT_NEXT_BUSY_HINT,
+    depsExpectationCopy,
+    shortcutTryItHint,
     openHqShortcutChord,
     readOnboardingHostOs,
     setupExpectationCopy,
@@ -213,6 +232,8 @@
     hqProErrorCode,
     HqProRequestError,
     inviteErrorMessage,
+    inviteFailureView,
+    hqProUsagePause,
     isAlreadyExists,
     type InviteErrorKind,
     type InviteFailure,
@@ -542,6 +563,9 @@
   let inviteSending = $state(false);
   let inviteSent = $state(false);
   let inviteErrorKind = $state<InviteErrorKind | null>(null);
+  /** US-024: the usage pause behind the last invite refusal, shown instead of plan copy. */
+  let inviteUsagePause = $state<UsagePause | null>(null);
+  const inviteFailure = $derived(inviteErrorKind ? inviteFailureView({ kind: inviteErrorKind, usagePause: inviteUsagePause ?? undefined }) : null);
   /** Set when the address was already invited and HQ resent that invite. */
   let inviteResent = $state(false);
   let firstFolderSyncFlagResolution: Promise<boolean> | null = null;
@@ -558,6 +582,13 @@
   let stageElapsedMs = $state(0);
   /** Real backend progress text for the running stage, when one was reported. */
   let stageDetail = $state<string | null>(null);
+  // A long Windows installer run is never stopped; the screen says HQ keeps
+  // waiting instead. Git needs no Windows installer: HQ unpacks its own
+  // per-user PortableGit, so Windows never asks permission for it.
+  const depsTools = createDepsToolTracker();
+  let depsWaitingNotice = $state<string | null>(null);
+  let depsRecovery = $state<DepsFailureRecovery | null>(null);
+  let depsRecoveryResolve: (() => void) | null = null;
   /** Set while the active stage waits for its automatic next attempt. */
   let setupRetry = $state<{ stageId: StageId; attempt: SetupRetryAttempt } | null>(
     null,
@@ -588,6 +619,16 @@
   let activeInitialSyncTimeoutProgress: (() => void) | null = null;
   let activeDepsLockWaitTimeoutProgress: (() => void) | null = null;
   let activeDepsOutputTimeoutProgress: (() => void) | null = null;
+  // Gate 2 N1 and NEW-1: the installers running right now, as the backend
+  // reports them (a null id is an installer with no known tool). The backend
+  // keeps this list, so a reloaded window reads it on mount. While any runs,
+  // the deps timeout only changes the notice. It never cancels winget,
+  // because a killed installer can leave Git half installed and frees the
+  // installer lock for a second copy.
+  let installerRuns: InstallerRunsSnapshot = { seq: 0, running: [] };
+  let activeDepsInstallerDoneProgress:
+    | ((options?: ProgressTimeoutProgressOptions) => void)
+    | null = null;
   let activeContentTimeoutProgress: (() => void) | null = null;
   let activeIndexingOutputTimeoutProgress: (() => void) | null = null;
   const activeInstallHandles = new Set<string>();
@@ -785,6 +826,20 @@
     trackSetupProgress(setupProgressTracker, rawOverallPercent),
   );
   const setupBands = $derived(friendlySetupBands(overallPercent));
+  // Run 007 note-0022: show every setup step for a moment, so a jump from
+  // step 3 to step 5 still shows step 4. Only the step counter and the card
+  // bar are paced; the progressbar value stays the real one.
+  const setupBandPacer = createSetupBandPacer();
+  let setupBandTick = $state(0);
+  const shownPercent = $derived.by(() => {
+    void setupBandTick;
+    return setupBandPacer.pace(overallPercent, Date.now());
+  });
+  $effect(() => {
+    if (setupCompleted || shownPercent >= overallPercent) return;
+    const timer = setTimeout(() => (setupBandTick += 1), SETUP_BAND_DWELL_MS);
+    return () => clearTimeout(timer);
+  });
   // US-004: honest expectation-setting under "Getting your HQ ready". The UA
   // read is one-shot at render - the host cannot change during onboarding -
   // and stays neutral when the UA has not landed yet.
@@ -792,6 +847,22 @@
     readOnboardingHostOs(typeof navigator === 'undefined' ? null : navigator.userAgent),
   );
   const setupExpectation = $derived(setupExpectationCopy(setupHostOs));
+  const depsExpectation = $derived(depsExpectationCopy(setupHostOs));
+  const setupStep = $derived(
+    setupStepSummary(setupCompleted ? 100 : Math.min(99, shownPercent)),
+  );
+  // One line under the sub-status for the tools step: the Windows permission
+  // warning, a Try again reason, a long-install notice, or the Windows time.
+  const depsNotice = $derived(
+    depsRecovery
+      ? depsRecovery.message
+      : currentStageId === 'deps'
+        ? (depsWaitingNotice ?? depsExpectation)
+        : null,
+  );
+  const depsNoticeIsStatus = $derived(
+    Boolean(depsRecovery || depsWaitingNotice),
+  );
   const thisComputer = $derived(thisComputerNounFor(setupHostOs));
   // The global shortcut is Option-Shift-O on a Mac and Alt+Shift+O elsewhere.
   const yourComputer = $derived(yourComputerNounFor(setupHostOs));
@@ -801,6 +872,7 @@
   const shortcutChord = $derived(openHqShortcutChord(shortcutLayout));
   const chordKeys = $derived(shortcutChord.keys);
   const chordSpoken = $derived(shortcutChord.spoken);
+  const shortcutHint = $derived(shortcutTryItHint(shortcutChord));
   const setupSubStatusModel = $derived(
     setupSubStatus({
       stageId: currentStageId,
@@ -850,7 +922,7 @@
   );
   const installCard = $derived(
     installCardModel({
-      percent: overallPercent,
+      percent: shownPercent,
       completed: setupCompleted,
       retryText:
         setupRetry && setupRetry.stageId === currentStageId
@@ -871,6 +943,10 @@
     }),
   );
   const storyOrder = $derived(storyScenes(replay));
+  /** Run 007 note-0018: why the Claude Code and Codex buttons wait. */
+  const toolsHint = $derived(
+    installPending ? toolsWaitHint(installedToolSlots.map((slot) => toolName(slot.kind))) : null,
+  );
 
   $effect(() => {
     if (activeInitialStep === initialStep) return;
@@ -943,12 +1019,15 @@
     stageCreep = 0;
     stageElapsedMs = 0;
     stageDetail = null;
+    depsTools.reset();
+    depsWaitingNotice = null;
 
     if (done || activeId === null) return;
 
-    const startedAt = Date.now();
+    // Monotonic, so a wall-clock correction cannot make the cue run backward.
+    const clock = createStageClock();
     const interval = window.setInterval(() => {
-      const elapsed = Date.now() - startedAt;
+      const elapsed = clock.elapsed();
       stageElapsedMs = elapsed;
       stageCreep = stageCreepAt(elapsed);
     }, 1000);
@@ -1599,7 +1678,7 @@
       throw new Error('hq-pro returned an invalid response');
     }
     if (response.status < 200 || response.status >= 300) {
-      throw new HqProRequestError(response.status, hqProErrorCode(response.body));
+      throw new HqProRequestError(response.status, hqProErrorCode(response.body), hqProUsagePause(response.body));
     }
     const payload =
       typeof response.body === 'string' && response.body.trim()
@@ -1877,6 +1956,7 @@
 
   function recordInviteFailure(failure: InviteFailure): void {
     inviteErrorKind = failure.kind;
+    inviteUsagePause = failure.usagePause ?? null;
     void emitDesktopOperationalTelemetry(inviteFailedEvent(failure.kind));
     recordStep(INVITE_TEAMMATE_STEP_INDEX, 'failed', {
       errorKind: failure.kind,
@@ -1906,6 +1986,7 @@
 
     inviteSending = true;
     inviteErrorKind = null;
+    inviteUsagePause = null;
     inviteResent = false;
     try {
       let resend = inviteCreatedForEmail === inviteeEmail;
@@ -2148,6 +2229,8 @@
     stages = resetRetryingStages(stages);
     activeDepsLockWaitTimeoutProgress = null;
     activeDepsOutputTimeoutProgress = null;
+    activeDepsInstallerDoneProgress = null;
+    installerRuns = { seq: 0, running: [] };
     activeContentTimeoutProgress = null;
     activeIndexingOutputTimeoutProgress = null;
     activeInstallHandles.clear();
@@ -2159,13 +2242,18 @@
     return runId === currentRunId && !setupCancelled;
   }
 
-  async function cancelActiveInstallHandles(runId: number): Promise<void> {
+  /**
+   * `user` is true only when the person chose to stop setup. The backend
+   * stops a running installer only then (gate 2 NEW-1): a timeout, a closing
+   * window or a reload never does.
+   */
+  async function cancelActiveInstallHandles(runId: number, user: boolean): Promise<void> {
     if (runId !== currentRunId) return;
     const handles = [...activeInstallHandles];
     activeInstallHandles.clear();
     await Promise.allSettled(
       handles.map((handle) =>
-        invoke('cancel_install', { handle }),
+        invoke('cancel_install', user ? { handle, user: true } : { handle }),
       ),
     );
   }
@@ -2179,9 +2267,9 @@
     );
   }
 
-  async function cancelForegroundWork(runId: number): Promise<void> {
+  async function cancelForegroundWork(runId: number, user = false): Promise<void> {
     await Promise.allSettled([
-      cancelActiveInstallHandles(runId),
+      cancelActiveInstallHandles(runId, user),
       cancelActiveContentHandles(runId),
     ]);
   }
@@ -2202,6 +2290,36 @@
       payload.line?.trim()
     ) {
       activeDepsOutputTimeoutProgress?.();
+    }
+  }
+
+  /** A held deps timeout shows why setup is still waiting (gate 2 N1). */
+  function showInstallerWaiting(runId: number): void {
+    if (!isCurrentRun(runId)) return;
+    for (const id of installerRuns.running) {
+      if (isKnownDepsTool(id)) {
+        // An installer with no known tool is never named (gate 2 NEW-3).
+        depsTools.apply({ id, state: 'waiting' });
+      }
+    }
+    depsWaitingNotice = depsTools.waitingNotice();
+  }
+
+  /** Takes a backend snapshot only when it is newer than the one held. */
+  function applyInstallerRuns(snapshot: unknown): boolean {
+    const next = readInstallerRunsSnapshot(snapshot);
+    if (!next || next.seq <= installerRuns.seq) return false;
+    installerRuns = next;
+    return true;
+  }
+
+  /** A reloaded window learns which installers are still running. */
+  async function seedInstallerRuns(runId: number): Promise<void> {
+    try {
+      const snapshot = await invoke<unknown>('installer_runs_active');
+      if (isCurrentRun(runId)) applyInstallerRuns(snapshot);
+    } catch {
+      // Older backends do not report installer runs.
     }
   }
 
@@ -2262,9 +2380,39 @@
       unlistenCliLockWait();
       return;
     }
+    const unlistenDepsTool = safeUnlisten(await listen<{ id?: string; state?: string }>(
+      'setup:deps-tool',
+      (event) => {
+        if (!isCurrentRun(runId) || currentStageId !== 'deps') return;
+        depsTools.apply(event.payload);
+        depsWaitingNotice = depsTools.waitingNotice();
+        // Gate 2 N4: a finished or queued tool leaves the line at once.
+        stageDetail = depsTools.detail();
+      },
+    ));
+    const unlistenInstallerRun = safeUnlisten(await listen<{ state?: string }>(
+      'setup:installer-run',
+      (event) => {
+        if (!isCurrentRun(runId)) return;
+        if (!applyInstallerRuns(event.payload)) return;
+        if (event.payload?.state === 'done') {
+          // The steps after an installer get a full timeout window of their own.
+          activeDepsInstallerDoneProgress?.({ extendCeiling: true });
+        }
+      },
+    ));
+    if (!isCurrentRun(runId)) {
+      unlisten();
+      unlistenCliLockWait();
+      unlistenDepsTool();
+      unlistenInstallerRun();
+      return;
+    }
     unlistenInstallProgress = () => {
       unlisten();
       unlistenCliLockWait();
+      unlistenDepsTool();
+      unlistenInstallerRun();
     };
 
     const unlistenContent = safeUnlisten(await listen<ContentProgressPayload>(
@@ -2434,6 +2582,7 @@
             onTimeout,
             (onProgress) => {
               activeDepsLockWaitTimeoutProgress = onProgress;
+              activeDepsInstallerDoneProgress = onProgress;
               if (activityTimeoutEnabled) {
                 activeDepsOutputTimeoutProgress = onProgress;
               }
@@ -2443,6 +2592,9 @@
                 }
                 if (activeDepsOutputTimeoutProgress === onProgress) {
                   activeDepsOutputTimeoutProgress = null;
+                }
+                if (activeDepsInstallerDoneProgress === onProgress) {
+                  activeDepsInstallerDoneProgress = null;
                 }
               };
             },
@@ -2454,6 +2606,10 @@
             depsTimeoutRetryEnabled
               ? SETUP_TIMEOUT_NATIVE_SETTLE_TIMEOUT_MS
               : 0,
+            {
+              active: () => isCurrentRun(runId) && installerRuns.running.length > 0,
+              onHold: () => showInstallerWaiting(runId),
+            },
           );
         } else if (id === 'content' && activityTimeoutEnabled) {
           await withProgressTimeout(
@@ -2639,6 +2795,26 @@
     }
     if (result.kind === 'failed') {
       const message = errorMessage(result.err);
+      depsTools.reset();
+      depsWaitingNotice = null;
+      const userRecovery = id === 'deps' ? depsFailureRecovery(message) : null;
+      if (userRecovery) {
+        // A declined Windows prompt or an install the user can try again:
+        // the user starts the next attempt, so it never fails on its own.
+        stages = setStageStatus(stages, id, 'retrying', depsStageErrorText(message));
+        await journalStageFailure(id, message);
+        recordStep(SETUP_STEP_INDEX, 'failed', {
+          component: id,
+          failureStage: id,
+          attemptCount,
+          durationMs: Date.now() - startedAt,
+          outcome: 'stage_command_failed',
+          setupRunId,
+        });
+        await waitForDepsRetry(userRecovery);
+        if (!isCurrentRun(runId)) return CANCELLED_STAGE_RUN;
+        return runStage(id, runId, attemptCount + 1, depsTimeoutRetryStatus);
+      }
       // Decide recovery before the status lands: a stage that will try again
       // must never pass through 'failed', which would count it as settled and
       // then un-count it, jolting the ring forward and straight back.
@@ -2819,6 +2995,21 @@
         firstFolderSyncError = true;
       }
     }
+  }
+
+  function waitForDepsRetry(recovery: DepsFailureRecovery): Promise<void> {
+    depsRecovery = recovery;
+    return new Promise<void>((resolve) => {
+      depsRecoveryResolve = () => {
+        depsRecoveryResolve = null;
+        depsRecovery = null;
+        resolve();
+      };
+    });
+  }
+
+  function retryDepsInstall() {
+    depsRecoveryResolve?.();
   }
 
   async function runSetup(
@@ -3432,6 +3623,8 @@
       if (!isCurrentRun(runId)) return;
       if (installPath) effectiveInstallPath = installPath;
       await listenForProgress(runId);
+      await seedInstallerRuns(runId);
+      if (!isCurrentRun(runId)) return;
       let startStage: StageId = STAGE_ORDER[0];
       if (!recoveringMissingRoot) {
         try {
@@ -3455,7 +3648,8 @@
     }
   }
 
-  function cancelSetupRun() {
+  /** `user` is true only when the person chose to leave setup. */
+  function cancelSetupRun({ user = false }: { user?: boolean } = {}) {
     setupCancelled = true;
     unlistenInstallProgress?.();
     unlistenInstallProgress = null;
@@ -3468,6 +3662,8 @@
     activeInitialSyncTimeoutProgress = null;
     activeDepsLockWaitTimeoutProgress = null;
     activeDepsOutputTimeoutProgress = null;
+    activeDepsInstallerDoneProgress = null;
+    installerRuns = { seq: 0, running: [] };
     activeContentTimeoutProgress = null;
     activeIndexingOutputTimeoutProgress = null;
     // A stage that failed and is waiting on its auto-retry never settles once
@@ -3476,7 +3672,7 @@
     // next run owns it again.
     stages = resetRetryingStages(stages);
     setupRetry = null;
-    void cancelForegroundWork(currentRunId);
+    void cancelForegroundWork(currentRunId, user);
   }
 
   /** Any stage left waiting on a retry goes back to 'pending'. */
@@ -3765,7 +3961,7 @@
     furthestStep = Math.max(furthestStep, next);
 
     if (next < SETUP_STEP_INDEX && setupStarted && !setupCompleted) {
-      cancelSetupRun();
+      cancelSetupRun({ user: true });
       setupStarted = false;
       stages = buildInitialStages();
       // The only genuine start-over: the next run earns its percent again.
@@ -4619,8 +4815,15 @@
         type="button"
         disabled={leavingExplainers}
         aria-busy={leavingExplainers}
+        aria-describedby="welcome-shortcut-hint"
+        title={leavingExplainers ? SHORTCUT_NEXT_BUSY_HINT : undefined}
         onclick={forward}
       >{replay ? 'Done' : leavingExplainers ? 'One moment…' : 'Next'}</button>
+      <!-- Run 006 grid-0023: Next read as disabled. Say that the shortcut is
+           optional, and why Next waits once it is selected. -->
+      <p class="nav-hint" id="welcome-shortcut-hint" data-testid="welcome-shortcut-hint">
+        {leavingExplainers ? SHORTCUT_NEXT_BUSY_HINT : shortcutHint}
+      </p>
     </div>
   </section>
 
@@ -4897,7 +5100,18 @@
                 data-testid="onboarding-invite-error"
                 data-error-kind={inviteErrorKind}
                 role="alert"
-              >{inviteErrorMessage(inviteErrorKind)}</p>
+              >{inviteFailure?.message ?? inviteErrorMessage(inviteErrorKind)}</p>
+              {#if inviteFailure?.action?.kind === 'billing'}
+                {@const billingUrl = inviteFailure.action.url}
+                <button
+                  type="button"
+                  class="btn btn-secondary"
+                  data-testid="onboarding-invite-billing"
+                  onclick={() => void openExternal(billingUrl)}
+                >{inviteFailure.action.label}</button>
+              {:else if inviteFailure?.action?.kind === 'ask-owner'}
+                <p class="note inline-note" data-testid="onboarding-invite-ask-owner">{inviteFailure.action.hint}</p>
+              {/if}
             {/if}
             <form
               class="invite-form"
@@ -4982,10 +5196,10 @@
       <canvas bind:this={refs.readyCanvas} aria-hidden="true"></canvas>
       <div class="copy" bind:this={refs.readyCopy}>
         <h2 class="h h-lg" id="onboarding-title-ready" tabindex="-1" data-scene-heading>
-          {installPending ? 'Almost ready.' : 'HQ is ready.'}
+          {setupHeading({ installPending, step: setupStep })}
         </h2>
-        <p class="body">
-          HQ lives in your {setupHostOs === 'macos' ? 'menu bar' : 'system tray'} now and keeps everything in sync.<br />Open HQ Desktop and your setup bot will walk you through the rest.
+        <p class="body" data-testid="welcome-ready-body">
+          {#each readyBodyCopy({ installPending, os: setupHostOs }).split('\n') as line, i (i)}{#if i > 0}<br />{/if}{line}{/each}
         </p>
       </div>
       <div class="prog" class:done={!installPending} bind:this={refs.readyProg}>
@@ -5007,7 +5221,7 @@
           class="tool-card tool-card-desktop"
           type="button"
           data-testid="onboarding-open-desktop"
-          aria-label="Open HQ Desktop"
+          aria-label={openDesktop.label}
           disabled={!openDesktop.enabled}
           aria-busy={finishing || installPending}
           onclick={() => void handleFinish()}
@@ -5052,6 +5266,8 @@
                 type="button"
                 data-testid="onboarding-launch-{slot.kind}"
                 disabled={finishing || launching !== null || finishBlocked}
+                title={toolsHint ?? undefined}
+                aria-describedby={toolsHint ? 'onboarding-tools-wait-hint' : undefined}
                 aria-busy={finishing || launching === slot.kind || (launching === slot.kind && probeInFlight)}
                 aria-label={slot.label}
                 onclick={() => void handleLaunch(slot.kind)}
@@ -5069,6 +5285,9 @@
               </button>
             {/each}
           </div>
+          {#if toolsHint}
+            <p class="tools-wait-hint" id="onboarding-tools-wait-hint" data-testid="onboarding-tools-wait-hint">{toolsHint}</p>
+          {/if}
         {/if}
       </div>
       <div class="alt-block" bind:this={refs.readyAlt}>
@@ -5076,6 +5295,21 @@
           <p class="substatus" data-testid="welcome-ready-substatus">
             {setupSubStatusModel.text ?? setupExpectation}{#if setupSubStatusModel.elapsedLabel}<span class="elapsed">{setupSubStatusModel.elapsedLabel}</span>{/if}
           </p>
+          {#if depsNotice}
+            <p
+              class="substatus deps-notice"
+              role={depsNoticeIsStatus ? 'status' : undefined}
+              data-testid="welcome-ready-deps-notice"
+            >{depsNotice}</p>
+          {/if}
+          {#if depsRecovery}
+            <button
+              type="button"
+              class="deps-retry"
+              data-testid="welcome-ready-deps-retry"
+              onclick={retryDepsInstall}
+            >Try again</button>
+          {/if}
         {/if}
         {#if deferredConsent?.phase === 'failed'}
           <div class="note consent-error" role="alert" data-testid="consent-deferred-error">

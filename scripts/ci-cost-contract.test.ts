@@ -817,6 +817,84 @@ describe("Rust macOS path scope preserves the required check", () => {
   });
 });
 
+describe("the ARM64 PortableGit job runs on release branches only", () => {
+  // Owner decision (PR #1736 review, 2026-10-20): the windows-11-arm runner
+  // runs the managed PortableGit ARM64 test only on release/* branches (a push
+  // or a PR into one) and on a manual dispatch, never on every
+  // Windows-relevant feature PR.
+  const arm64Workflow = readFileSync(
+    resolve(rootDir, ".github/workflows/windows-portable-git-arm64.yml"),
+    "utf8",
+  );
+
+  it("triggers only on release/* pushes, PRs into release/*, and dispatch", () => {
+    const head = preamble(arm64Workflow);
+    const on = head.slice(head.indexOf("\non:\n"), head.indexOf("\nconcurrency:"));
+
+    expect(on).toBe(
+      [
+        "",
+        "on:",
+        "  workflow_dispatch:",
+        "  push:",
+        "    branches: ['release/**']",
+        "  pull_request:",
+        "    branches: ['release/**']",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("repeats the release-only condition on the job with string comparisons", () => {
+    const job = jobConfig(arm64Workflow, "windows-portable-git-arm64");
+
+    expect(job).toContain(
+      "if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/heads/release/') || startsWith(github.base_ref, 'release/') }}",
+    );
+    // No `vars.X == '0'` style gate: an unset variable coerces to 0.
+    const ifLines = job.split("\n").filter((line) => /^\s+if:/.test(line));
+    expect(ifLines).toHaveLength(1);
+    expect(ifLines[0]).not.toContain("vars.");
+    expect(job.match(/runs-on:.*windows-11-arm/g)).toHaveLength(1);
+  });
+
+  it("is the only workflow that uses the Windows ARM64 runner", () => {
+    const files = readdirSync(resolve(rootDir, ".github/workflows")).filter(
+      (name) => name.endsWith(".yml"),
+    );
+    const users = files.filter((file) =>
+      /^\s+runs-on:.*(?:windows-11-arm|HQ_DESKTOP_RUNNER_WINDOWS_ARM64)/m.test(
+        readFileSync(resolve(rootDir, ".github/workflows", file), "utf8"),
+      ),
+    );
+
+    expect(users).toEqual(["windows-portable-git-arm64.yml"]);
+  });
+
+  it("keeps the ARM64 cargo test a one-line, fail-fast step", () => {
+    const step = stepConfig(
+      arm64Workflow,
+      "windows-portable-git-arm64",
+      "Managed PortableGit tests (ARM64, real asset)",
+    );
+
+    expect(step).toMatch(
+      /\n\s+run: cargo test -p hq-desktop-core --lib windows_portable_git::tests -- --include-ignored --nocapture\n?$/,
+    );
+  });
+
+  it("gives the real-asset test a real global config file, not NUL", async () => {
+    // windows-11-arm Git fails `git init` with "unable to access 'NUL'".
+    const source = await readFile(
+      resolve(rootDir, "crates/hq-desktop-core/src/windows_portable_git.rs"),
+      "utf8",
+    );
+
+    expect(source).not.toMatch(/GIT_CONFIG_GLOBAL",\s*"NUL"/);
+    expect(source).toContain('.env("GIT_CONFIG_GLOBAL", &global_config)');
+  });
+});
+
 describe("every job reads its runner from a repo variable", () => {
   // Self-hosted pools are switched on by setting a repo variable. Until it is
   // set, each job must land on exactly the hosted label it used before, so
@@ -830,6 +908,7 @@ describe("every job reads its runner from a repo variable", () => {
     HQ_DESKTOP_RUNNER_MACOS: ["macos-latest", "macos-14"],
     HQ_DESKTOP_RUNNER_MACOS_RELEASE: ["macos-14"],
     HQ_DESKTOP_RUNNER_WINDOWS: ["windows-latest"],
+    HQ_DESKTOP_RUNNER_WINDOWS_ARM64: ["windows-11-arm"],
   };
 
   for (const file of files) {
@@ -996,7 +1075,8 @@ describe("the frontend gate splits across four parallel jobs", () => {
       "run: pnpm version:check",
       "pnpm --filter @hq/ui typecheck",
       "pnpm --filter @hq/ui test",
-      "pnpm exec playwright install --with-deps chromium webkit",
+      "./node_modules/.bin/playwright install-deps chromium webkit",
+      "run: pnpm exec playwright install chromium webkit",
       "run: pnpm test:e2e:browser",
       "run: pnpm coverage",
       "run: rm -rf apps/work/.svelte-kit/output apps/work/build",

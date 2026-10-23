@@ -84,7 +84,7 @@ export const SELF_HOSTED_URL = "https://docs.hq.computer/hq/guide/use-hq-for-fre
 export const SIGNUP_FALLBACK: SignupCopy = {
   options: [
     { id: "free", label: "Sign up free" },
-    { id: "enterprise", label: "Request an enterprise demo" },
+    { id: "enterprise", label: "Book a setup call" },
   ],
   selfHosted: { label: "Use HQ free, self-hosted or on-prem", url: SELF_HOSTED_URL },
 };

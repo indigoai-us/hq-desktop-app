@@ -160,7 +160,7 @@ describe("My Telemetry from /v1/telemetry/me", () => {
       { getMyTelemetry: async () => ({ ok: false as const, reason: "error" as const, code: "http-402", message: "personal-plan-required" }) },
       () => NOW,
     );
-    await expect(failing("30d")).rejects.toMatchObject({ reason: expect.stringContaining("Individual plan") });
+    await expect(failing("30d")).rejects.toMatchObject({ reason: "My Telemetry is not available on your personal account right now. Check Settings > Usage." });
   });
 });
 

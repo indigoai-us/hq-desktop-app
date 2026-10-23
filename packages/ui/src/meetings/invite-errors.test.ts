@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isPlanRequiredError, planRequiredUpgradeUrl } from "./invite-errors";
+import { meetingUsagePause, isPlanRequiredError, planRequiredUpgradeUrl } from "./invite-errors";
 
 const planError = (upgradeUrl: string) =>
   `bot/invite HTTP 402: {"code":"MEETING_PLAN_REQUIRED","upgradeUrl":${JSON.stringify(upgradeUrl)}}`;
@@ -28,5 +28,15 @@ describe("plan-required upgrade URL", () => {
     expect(
       planRequiredUpgradeUrl('bot/invite HTTP 402: {"upgradeUrl":"https://hq.computer'),
     ).toBeUndefined();
+  });
+});
+
+describe("meetingUsagePause (US-024)", () => {
+  it("reads a valid usagePause from the flattened 402 and ignores anything else", () => {
+    const pause = { code: "usage_paused", reason: "usage_spend_limit", message: "Cloud sync is paused.", actionUrl: "https://hq.computer/companies/acme/billing" };
+    expect(meetingUsagePause(`bot/invite HTTP 402: ${JSON.stringify({ code: "MEETING_PLAN_REQUIRED", usagePause: pause })}`)).toEqual(pause);
+    expect(meetingUsagePause(`bot/invite HTTP 402: ${JSON.stringify({ usagePause: { ...pause, actionUrl: "https://evil.example/x" } })}`)).toBeNull();
+    expect(meetingUsagePause("bot/invite HTTP 402: {not json")).toBeNull();
+    expect(meetingUsagePause("HTTP 500")).toBeNull();
   });
 });

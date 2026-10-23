@@ -155,3 +155,25 @@ describe("company invite requests", () => {
     expect(outcome).toMatchObject({ ok: false, upgradeUrl: null });
   });
 });
+
+describe("inviteClaimOutcome usage pause (US-024)", () => {
+  it("shows the server usage message and asks the joiner to contact an owner, with no link", () => {
+    const usagePause = {
+      code: "usage_paused" as const,
+      reason: "usage_card_required" as const,
+      message: "Cloud sync is paused. Acme used its $10.00 monthly allowance. Add a card on the Billing page to resume. Files on this computer are not affected.",
+      actionUrl: "https://hq.computer/companies/acme/billing",
+    };
+    const outcome = inviteClaimOutcome(
+      { ok: false, reason: "error", code: "PLAN_LIMIT_EXCEEDED", message: usagePause.message, upgradeUrl: usagePause.actionUrl, usagePause },
+      "cmp_acme",
+      [],
+    );
+    expect(outcome).toEqual({
+      ok: false,
+      message: `${usagePause.message} Ask a company owner or admin to add a card on the Billing page.`,
+      upgradeUrl: null,
+    });
+    expect(outcome.ok === false && outcome.message).not.toMatch(/plan limit|Upgrade|Starter|Workforce|Individual/);
+  });
+});

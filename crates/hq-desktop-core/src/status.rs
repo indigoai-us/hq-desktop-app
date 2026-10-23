@@ -24,6 +24,9 @@ pub struct SyncStatus {
     /// US-019). Always present on the wire; empty when nothing is paused.
     #[serde(default)]
     pub uploads_paused: Vec<UploadsPaused>,
+    /// Current legacy launcher hold; read from disk on every status request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_hold_reason: Option<String>,
 }
 
 /// Journal file structure at {HQ_FOLDER}/.hq-sync-journal.json.
@@ -84,6 +87,7 @@ fn journal_to_status(journal: SyncJournal) -> SyncStatus {
         daemon_running: journal.daemon_running.unwrap_or(false),
         source: "journal".to_string(),
         uploads_paused: journal.uploads_paused,
+        recovery_hold_reason: None,
     }
 }
 
@@ -218,6 +222,30 @@ pub fn merge_engine_sync_at(
     status
 }
 
+/// Project persisted legacy recovery into the existing startup/poll response.
+/// Hosted CLI daemon status remains authoritative when that host is selected.
+pub fn with_recovery_hold(
+    mut status: SyncStatus,
+    root: &Path,
+    version: &str,
+    legacy_host: bool,
+) -> SyncStatus {
+    status.recovery_hold_reason = None;
+    if !legacy_host {
+        return status;
+    }
+    // A persisted PID can be stale or reused by an unrelated process. It must
+    // never hide this durable hold; status observation does not claim ownership.
+    status.recovery_hold_reason =
+        match crate::sync_retry_episode::persisted_hold_reason(root, version) {
+            Ok(reason) => reason.map(str::to_string),
+            Err(reason) => Some(reason),
+        };
+    if status.recovery_hold_reason.is_some() {
+        status.daemon_running = false;
+    }
+    status
+}
 /// Default status when neither CLI nor journal is available.
 pub fn default_status() -> SyncStatus {
     SyncStatus {
@@ -227,6 +255,7 @@ pub fn default_status() -> SyncStatus {
         daemon_running: false,
         source: "none".to_string(),
         uploads_paused: Vec::new(),
+        recovery_hold_reason: None,
     }
 }
 
@@ -285,6 +314,121 @@ pub fn write_journal(hq_folder_path: &str, journal: &SyncJournal) -> Result<(), 
 mod tests {
     use super::*;
 
+    #[test]
+    fn persisted_recovery_is_reported_after_restart_without_lifecycle_events() {
+        let root = tempfile::tempdir().unwrap();
+        crate::sync_retry_episode::record_failure(
+            root.path(),
+            "test-version",
+            "npm error code ETARGET",
+        )
+        .unwrap();
+        let state_path = root.path().join(".hq-sync-retry.json");
+        let saved = std::fs::read(&state_path).unwrap();
+        // A fresh startup has neither a journal nor in-memory failure state.
+        for _restart in 0..2 {
+            let status = with_recovery_hold(default_status(), root.path(), "test-version", true);
+            let wire = serde_json::to_value(status).unwrap();
+            assert_eq!(
+                wire["recoveryHoldReason"],
+                crate::sync_retry_episode::TERMINAL_RESOLUTION
+            );
+            assert_eq!(wire["daemonRunning"], false);
+            assert_eq!(
+                std::fs::read(&state_path).unwrap(),
+                saved,
+                "observing must never reset a hold"
+            );
+        }
+        crate::sync_retry_episode::allow_start(root.path(), "test-version", true).unwrap();
+        assert!(
+            with_recovery_hold(default_status(), root.path(), "test-version", true)
+                .recovery_hold_reason
+                .is_none()
+        );
+        crate::sync_retry_episode::record_failure(
+            root.path(),
+            "test-version",
+            "npm error code ETARGET",
+        )
+        .unwrap();
+        assert!(
+            with_recovery_hold(default_status(), root.path(), "test-version", true)
+                .recovery_hold_reason
+                .is_some(),
+            "failed retry remains visible"
+        );
+    }
+
+    #[test]
+    fn recovery_status_preserves_host_and_does_not_trust_reused_live_pids() {
+        let root = tempfile::tempdir().unwrap();
+        let missing = root.path().join("not-created");
+        assert!(with_recovery_hold(default_status(), &missing, "v", true)
+            .recovery_hold_reason
+            .is_none());
+        assert!(
+            !missing.exists(),
+            "status must not materialize a missing HQ root"
+        );
+        let mut running = default_status();
+        running.daemon_running = true;
+        assert!(
+            with_recovery_hold(running, &missing, "v", true).daemon_running,
+            "without a hold existing running status is unchanged"
+        );
+        crate::sync_retry_episode::record_failure(root.path(), "v", "npm error code ETARGET").unwrap();
+        let saved = std::fs::read(root.path().join(".hq-sync-retry.json")).unwrap();
+        assert!(
+            with_recovery_hold(default_status(), root.path(), "v", false)
+                .recovery_hold_reason
+                .is_none(),
+            "CLI daemon owns its separate recovery state"
+        );
+        assert!(
+            with_recovery_hold(default_status(), root.path(), "new-version", true)
+                .recovery_hold_reason
+                .is_none()
+        );
+        assert_eq!(
+            std::fs::read(root.path().join(".hq-sync-retry.json")).unwrap(),
+            saved,
+            "version observation is read-only"
+        );
+        std::fs::write(
+            root.path().join(".hq-sync.pid"),
+            std::process::id().to_string(),
+        )
+        .unwrap();
+        let live = with_recovery_hold(default_status(), root.path(), "v", true);
+        assert!(!live.daemon_running);
+        assert!(
+            live.recovery_hold_reason.is_some(),
+            "an unrelated live PID must not hide the hold"
+        );
+        std::fs::remove_file(root.path().join(".hq-sync.pid")).unwrap();
+        assert!(with_recovery_hold(default_status(), root.path(), "v", true)
+            .recovery_hold_reason
+            .is_some());
+    }
+
+    #[test]
+    fn recovery_status_bounds_invalid_metadata_and_keeps_old_wire_shape() {
+        let root = tempfile::tempdir().unwrap();
+        let old = serde_json::to_value(default_status()).unwrap();
+        assert!(old.get("recoveryHoldReason").is_none());
+        for raw in [b"not-json".to_vec(), vec![b'x'; 4097]] {
+            std::fs::write(root.path().join(".hq-sync-retry.json"), &raw).unwrap();
+            let state = with_recovery_hold(default_status(), root.path(), "v", true);
+            assert!(state.recovery_hold_reason.is_some());
+            assert!(!state.recovery_hold_reason.unwrap().contains("not-json"));
+            assert_eq!(
+                std::fs::read(root.path().join(".hq-sync-retry.json")).unwrap(),
+                raw
+            );
+        }
+    }
+
     // ── SyncStatus serialization ──────────────────────────────────────────
 
     #[test]
@@ -296,6 +440,7 @@ mod tests {
             daemon_running: true,
             source: "cli".to_string(),
             uploads_paused: Vec::new(),
+            recovery_hold_reason: None,
         };
         let json = serde_json::to_string(&status).unwrap();
         assert!(json.contains("\"lastSyncAt\""));
@@ -315,6 +460,7 @@ mod tests {
             daemon_running: true,
             source: "cli".to_string(),
             uploads_paused: Vec::new(),
+            recovery_hold_reason: None,
         };
         let json = serde_json::to_string(&status).unwrap();
         let parsed: SyncStatus = serde_json::from_str(&json).unwrap();
@@ -330,6 +476,7 @@ mod tests {
             daemon_running: false,
             source: "none".to_string(),
             uploads_paused: Vec::new(),
+            recovery_hold_reason: None,
         };
         let json = serde_json::to_string(&status).unwrap();
         assert!(json.contains("\"lastSyncAt\":null"));
@@ -725,6 +872,7 @@ mod tests {
             daemon_running: true,
             source: "journal".to_string(),
             uploads_paused: Vec::new(),
+            recovery_hold_reason: None,
         };
         let merged = merge_engine_sync_at(status.clone(), Some("2026-07-30T18:04:11Z".to_string()));
         assert_eq!(merged, status, "an older engine stamp must not win");
@@ -739,6 +887,7 @@ mod tests {
             daemon_running: true,
             source: "journal".to_string(),
             uploads_paused: Vec::new(),
+            recovery_hold_reason: None,
         };
         let merged = merge_engine_sync_at(status, Some("2026-07-30T18:04:11Z".to_string()));
         assert_eq!(
@@ -773,6 +922,7 @@ mod tests {
             company: "Acme".to_string(),
             upgrade_url: Some("https://hq.computer/companies/acme/billing?upgrade=1".to_string()),
             last_notice_at_ms: 42,
+            usage_pause: None,
         }];
         let mut journal = journal_for_daemon_sync_complete("2026-09-28T12:00:00.000Z", 0);
         journal.uploads_paused = paused.clone();

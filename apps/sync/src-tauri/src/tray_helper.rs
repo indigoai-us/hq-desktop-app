@@ -104,8 +104,9 @@ fn status_file() -> Option<PathBuf> {
 }
 
 /// The helper's view of the plan-limit upload pause. Carries only what the
-/// menu shows: the company label and whether an upgrade row is offered. The
-/// upgrade link itself stays in the app; the helper asks for it by name.
+/// menu shows: the company label, whether an upgrade row is offered, and
+/// whether the entry is a usage pause (US-024, Billing wording). The link
+/// itself stays in the app; the helper asks for it by name.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn tray_status_json(
     paused: &[hq_desktop_core::uploads_paused::UploadsPaused],
@@ -116,6 +117,7 @@ pub(crate) fn tray_status_json(
             serde_json::json!({
                 "company": entry.company,
                 "canUpgrade": entry.upgrade_url.is_some(),
+                "usagePause": entry.usage_pause.is_some(),
             })
         })
         .collect();
@@ -347,11 +349,13 @@ mod uploads_paused_tests {
                 company: "Acme".into(),
                 upgrade_url: Some("https://hq.computer/companies/acme/billing?upgrade=1".into()),
                 last_notice_at_ms: 1,
+                usage_pause: None,
             },
             UploadsPaused {
                 company: "Beta".into(),
                 upgrade_url: None,
                 last_notice_at_ms: 2,
+                usage_pause: None,
             },
         ]);
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -359,13 +363,40 @@ mod uploads_paused_tests {
             value,
             serde_json::json!({
                 "uploadsPaused": [
-                    { "company": "Acme", "canUpgrade": true },
-                    { "company": "Beta", "canUpgrade": false },
+                    { "company": "Acme", "canUpgrade": true, "usagePause": false },
+                    { "company": "Beta", "canUpgrade": false, "usagePause": false },
                 ]
             })
         );
         assert!(!json.contains("hq.computer"));
         assert_eq!(tray_status_json(&[]), r#"{"uploadsPaused":[]}"#);
+    }
+
+    #[test]
+    fn status_json_flags_a_usage_pause_without_its_link_or_message() {
+        let billing = "https://hq.computer/companies/acme/billing";
+        let json = tray_status_json(&[UploadsPaused {
+            company: "Acme".into(),
+            upgrade_url: Some(billing.into()),
+            last_notice_at_ms: 1,
+            usage_pause: Some(hq_desktop_core::plan_limit::UsagePause {
+                code: "usage_paused".into(),
+                reason: "usage_spend_limit".into(),
+                message: "Cloud sync is paused.".into(),
+                action_url: billing.into(),
+            }),
+        }]);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "uploadsPaused": [
+                    { "company": "Acme", "canUpgrade": true, "usagePause": true },
+                ]
+            })
+        );
+        assert!(!json.contains("hq.computer"));
+        assert!(!json.contains("Cloud sync is paused"));
     }
 
     #[test]

@@ -153,6 +153,62 @@ describe("gatherBriefInput", () => {
     expect(adapter.bodies).not.toContain("u-s");
   });
 
+  it("a source that never answers counts as failed after the timeout, and the rest still render", async () => {
+    const log = vi.fn();
+    const adapter = fakeAdapter();
+    adapter.notifications = { fetchDmThreads: () => new Promise(() => {}) };
+    const started = Date.now();
+    const { input, failures } = await gatherBriefInput(adapter, { now: NOW, companies, log, sourceTimeoutMs: 30 });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(failures).toContain("dm threads");
+    expect(log).toHaveBeenCalledWith("dm threads failed", "dm threads: no answer in 30 ms");
+    expect(input.team).toEqual([]);
+    expect(input.userName).toBe("Corey");
+    expect(input.meetingsYesterday).toHaveLength(1);
+  });
+
+  it("reads every company's meetings at the same time, not one after another", async () => {
+    const adapter = fakeAdapter();
+    const inFlight: string[] = [];
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((r) => (release = r));
+    adapter.meetings!.listRecorded = async (companyId) => {
+      inFlight.push(companyId ?? "");
+      if (inFlight.length === companies.length) release?.();
+      await gate;
+      return { ok: true as const, value: { meetings: [] } };
+    };
+    const pending = gatherBriefInput(adapter, { now: NOW, companies, log: () => {}, sourceTimeoutMs: 5_000 });
+    await gate;
+    expect(inFlight).toEqual(["cmp_indigo", "cmp_liverecover"]);
+    const { input } = await pending;
+    expect(input.meetingsYesterday).toEqual([]);
+  });
+
+  it("with live off, reads only the run files and touches no adapter source", async () => {
+    const adapter = fakeAdapter();
+    const calendar = vi.spyOn(adapter.meetings!, "listUpcoming");
+    const recorded = vi.spyOn(adapter.meetings!, "listRecorded");
+    const dms = vi.spyOn(adapter.notifications!, "fetchDmThreads");
+    const reads: string[] = [];
+    const sweep = {
+      readHqFile: async (p: string) => {
+        reads.push(p);
+        if (p.endsWith("brief.json")) return JSON.stringify({ items: { decisions: [{ id: "d1", title: "Stored call" }] } });
+        if (p.endsWith("brief-data.json")) return "{}";
+        return null;
+      },
+    };
+    const { input, failures } = await gatherBriefInput(adapter, { now: NOW, companies, log: () => {}, live: false, sweep, runId: "brief-20261008-070000" });
+    expect(calendar).not.toHaveBeenCalled();
+    expect(recorded).not.toHaveBeenCalled();
+    expect(dms).not.toHaveBeenCalled();
+    expect(failures).toEqual([]);
+    expect(reads).toContain("workspace/brief/brief-20261008-070000/brief.json");
+    expect(input.decisions.map((d) => d.title)).toEqual(["Stored call"]);
+    expect(input.userName).toBe("");
+  });
+
   it("serves the seed instead of the adapter when one is configured", async () => {
     configureBriefSeed(() => octoberEightBrief(NOW));
     const adapter = fakeAdapter();

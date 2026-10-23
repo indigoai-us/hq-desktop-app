@@ -87,6 +87,9 @@ pub struct ReferralAck {
     pub referral: ReferralAckReferral,
     #[serde(default)]
     pub anon_id: Option<String>,
+    /// The plan the visitor picked on the website (`planIntent`), sanitized.
+    #[serde(default)]
+    pub plan_intent: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +133,7 @@ pub fn parse_referral_ack(status: u16, body: &str) -> Option<ReferralAck> {
     Some(ReferralAck {
         referral,
         anon_id: anon_id.map(str::to_string),
+        plan_intent: crate::desktop_signin_link::plan_intent_from_link_body(&body),
     })
 }
 
@@ -718,6 +722,24 @@ mod tests {
             let ack = parse_referral_ack(status, body).expect("recognized status is terminal");
             assert_eq!(ack.referral.status, expected);
             assert_eq!(ack.anon_id, None);
+        }
+    }
+
+    #[test]
+    fn desktop_referral_ack_carries_an_optional_plan_intent() {
+        let ack = parse_referral_ack(
+            200,
+            r#"{"referral":{"status":"bound"},"anonId":"vyg-1","planIntent":"Just-Me"}"#,
+        )
+        .unwrap();
+        assert_eq!(ack.anon_id.as_deref(), Some("vyg-1"));
+        assert_eq!(ack.plan_intent.as_deref(), Some("just-me"));
+        for body in [
+            r#"{"referral":{"status":"bound"}}"#,
+            r#"{"referral":{"status":"bound"},"planIntent":7}"#,
+            r#"{"referral":{"status":"bound"},"planIntent":"<b>"}"#,
+        ] {
+            assert_eq!(parse_referral_ack(200, body).unwrap().plan_intent, None);
         }
     }
 

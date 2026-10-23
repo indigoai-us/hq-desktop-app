@@ -194,7 +194,16 @@ fn shared_client(slot: &ClientSlot, version: &str, ui: Option<String>) -> Client
     client
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test seam: how many clients `new_client` has built on this thread.
+    /// Thread-local so concurrent tests on other threads cannot move it.
+    static CLIENTS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn new_client((version, ui): &ClientKey) -> Client {
+    #[cfg(test)]
+    CLIENTS_BUILT.with(|n| n.set(n.get() + 1));
     Client::builder()
         .default_headers(headers_for(version, ui.as_deref()))
         .timeout(REQUEST_TIMEOUT)
@@ -323,57 +332,48 @@ mod tests {
         );
     }
 
-    /// Every `build_client()` call shares one connection pool: two requests
-    /// to the same server go over one TCP connection, not one per call.
-    /// Before, each call built a new client, so each hq-pro request paid a
-    /// fresh TCP and TLS handshake.
+    /// Every `build_client()` call shares one client (one connection pool):
+    /// only the first call builds a client, later calls hand back a clone of
+    /// it. Before, each call built a new client, so each hq-pro request paid
+    /// a fresh TCP and TLS handshake. This counts client builds rather than
+    /// TCP connections, because hyper returns a connection to its idle pool
+    /// asynchronously and a busy machine can open a second socket even on a
+    /// shared pool.
     #[tokio::test]
     async fn build_client_reuses_one_connection_pool() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Arc;
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let built = || CLIENTS_BUILT.with(|n| n.get());
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let accepted = Arc::new(AtomicUsize::new(0));
-        let counter = accepted.clone();
-        tokio::spawn(async move {
-            loop {
-                let Ok((mut socket, _)) = listener.accept().await else {
-                    return;
-                };
-                counter.fetch_add(1, Ordering::SeqCst);
-                tokio::spawn(async move {
-                    let mut buf = vec![0u8; 4096];
-                    loop {
-                        match socket.read(&mut buf).await {
-                            Ok(0) | Err(_) => return,
-                            Ok(_) => {
-                                let reply: &[u8] = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: keep-alive\r\n\r\nok";
-                                if socket.write_all(reply).await.is_err() {
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                });
-            }
-        });
+        // The slot is keyed by the app version, a set-once global that
+        // `client_headers_stamp_the_desktop_app_name_not_hq_sync` sets to
+        // this same value. Pin it first so a concurrent first set cannot
+        // change the key (and legitimately rebuild) mid-test.
+        set_client_version("0.10.190");
+        assert_eq!(client_version(), "0.10.190");
+        // Prime the process-global slot (it may already hold a client from
+        // another test; either way it holds one after this call).
+        let _first = build_client();
+        let before = built();
+        let clients: Vec<Client> = (0..5).map(|_| build_client()).collect();
+        assert_eq!(
+            built(),
+            before,
+            "build_client() built a new client on a repeat call; the client is not shared",
+        );
 
-        let url = format!("http://{addr}/v1/ping");
-        for _ in 0..2 {
-            let resp = build_client()
-                .get(&url)
+        // The shared client is usable: a request through it succeeds.
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::any())
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+        for client in &clients {
+            let resp = client
+                .get(format!("{}/v1/ping", server.uri()))
                 .send()
                 .await
                 .expect("request should succeed");
             assert_eq!(resp.text().await.unwrap(), "ok");
         }
-        assert_eq!(
-            accepted.load(Ordering::SeqCst),
-            1,
-            "two build_client() calls opened separate connections; the client is not shared",
-        );
     }
 
     /// The same versions get the same shared client back; a changed UI

@@ -32,6 +32,7 @@
       name: item.name,
       contentType: item.contentType,
       kind: item.kind,
+      vaultPath: item.vaultPath,
     }),
   );
 
@@ -77,7 +78,13 @@
       text = "";
       sheet = [];
       error = null;
-    } else if (resolveFailed) {
+    }
+    // A folder share is not an object: never presign, fetch or download it.
+    if (preview === "folder") {
+      loading = false;
+      return;
+    }
+    if (resolveFailed) {
       loading = false;
       return;
     } else if (previewUrl && !src && !previewDead) {
@@ -176,6 +183,11 @@
   </div>
 
   <div class="att-preview-stage">
+    {#if kind === "folder"}
+      <p class="att-preview-status" data-testid="attachment-folder-note">
+        This is a shared folder. Open it in Files to see what is in it.
+      </p>
+    {:else}
     <button
       type="button"
       class="att-download"
@@ -194,6 +206,7 @@
         />
       </svg>
     </button>
+    {/if}
     {#if kind === "image" && (src || (!error && !thumbnailFailed && thumbnailUrl))}
       <img
         class="att-preview-image"

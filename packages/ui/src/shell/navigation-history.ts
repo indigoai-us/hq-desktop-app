@@ -19,6 +19,14 @@ export const NAVIGATION_HISTORY_CAP = 100;
 export type ChannelSurfaceTab = "chat" | "board" | "files";
 export type AgentSurfaceTab = "chat" | "details";
 
+/** One shared folder the shared-files view lists remotely. */
+export interface SharedFolderFocus {
+  companyUid: string;
+  companyLabel: string;
+  /** Company-relative folder prefix with a trailing slash; `""` for the whole company. */
+  prefix: string;
+}
+
 export interface NavigationScope {
   accountId: string;
   companyUid: string | null;
@@ -63,7 +71,11 @@ export type NavigationDestination =
   | { kind: "atlas" }
   | { kind: "library"; tab: LibraryTab; itemId?: string | null }
   | { kind: "settings"; section?: EmbeddedSettingsSection | null }
-  | { kind: "shared-files" }
+  /**
+   * The shared-with-me list; `folder` focuses it on one DM folder share whose
+   * company is not synced on this computer (listed remotely, read-only).
+   */
+  | { kind: "shared-files"; folder?: SharedFolderFocus | null }
   /** The Files explorer; `vault` is `personal` or `company:<slug>`. */
   | { kind: "explorer"; vault?: string | null; path?: string | null }
   /**
@@ -254,8 +266,18 @@ export function canonicalizeDestination(
   switch (destination.kind) {
     case "messages":
     case "notifications":
-    case "shared-files":
       return { kind: destination.kind };
+    case "shared-files":
+      return destination.folder
+        ? {
+            kind: "shared-files",
+            folder: {
+              companyUid: destination.folder.companyUid.trim(),
+              companyLabel: destination.folder.companyLabel,
+              prefix: destination.folder.prefix,
+            },
+          }
+        : { kind: "shared-files" };
     case "atlas":
       // Older history/deep links point at Atlas, which is no longer a desktop
       // destination. Keep those links usable by landing on the messages view.
@@ -372,8 +394,11 @@ export function canonicalDestinationKey(
     case "messages":
     case "notifications":
     case "atlas":
-    case "shared-files":
       return dest.kind;
+    case "shared-files":
+      return dest.folder
+        ? ["shared-files", dest.folder.companyUid, dest.folder.prefix].join("|")
+        : dest.kind;
     case "channel":
       return [
         "channel",
@@ -481,7 +506,7 @@ export function destinationLabel(destination: NavigationDestination): string {
     case "settings":
       return dest.section ? `Settings · ${settingsSectionLabel(dest.section)}` : "Settings";
     case "shared-files":
-      return "Shared files";
+      return dest.folder ? "Shared folder" : "Shared files";
     case "explorer":
       return dest.path ? `Files · ${dest.path.split("/").pop()}` : "Files";
     case "projects":

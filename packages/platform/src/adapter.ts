@@ -22,6 +22,7 @@
  * error (bad arguments).
  */
 
+import type { UsagePause } from "./billing-state.js";
 import type { Capabilities, Capability } from "./capabilities.js";
 import type { BadgesPayload } from "./badges.js";
 import type {
@@ -44,6 +45,12 @@ export interface AdapterFailure {
    * every other failure.
    */
   upgradeUrl?: string;
+  /**
+   * Usage pause carried by a refusal (usage-only-pricing US-024): the server
+   * message, reason and Billing link. Surfaces show the message and an action
+   * for the reader's role (`usagePauseAction`) instead of a plan upgrade.
+   */
+  usagePause?: UsagePause;
   /**
    * The running machine named by a refused bot removal (code
    * `AGENTS_V2_BOX_PROTECTED`). The server removes the bot only when the
@@ -247,6 +254,8 @@ export function normalizeNotificationsFeed(value: unknown): NotificationsFeed {
 }
 
 export interface SyncStatus {
+  /** Persisted legacy launcher hold; absent on older or hosted-daemon backends. */
+  recoveryHoldReason?: string | null;
   running?: boolean;
   lastSyncAt?: string | null;
   pendingFiles?: number;
@@ -1273,6 +1282,23 @@ export interface CompanyApi {
   /** OWNER-R9: remove a member or revoke an invite (`POST /membership/revoke`). Server keeps the last owner. */
   revokeMembership?(companyUid: string, membershipKey: string): AdapterPromise<Json>;
   /**
+   * DEV-5255: invite a person by email (`POST /membership/invite` with
+   * `sendEmail: true`, surface `desktop`). hq-pro writes the pending invite
+   * and sends the invitation email; the 201 answers `{ membership, emailSent,
+   * emailSkipped, emailError? }`. A refusal (plan limit, duplicate, not
+   * allowed) comes back as a failure with the server's code and sentence.
+   * Desktop only.
+   */
+  inviteMember?(input: {
+    companyUid: string;
+    inviteeEmail: string;
+    role: string;
+    /** Guest invites only: the vault prefixes the guest may reach. */
+    allowedPrefixes?: string[];
+    /** Secret groups the invitee joins on claim. */
+    groupIds?: string[];
+  }): AdapterPromise<Json>;
+  /**
    * Company telemetry; `range` is a `YYYY-MM-DD` window (the host defaults to
    * the last 30 days). `range.tz` is an IANA zone sent to hq-pro as `tz`; the
    * host sends this machine's zone when it is absent.
@@ -1320,6 +1346,13 @@ export interface CompanyApi {
    * allowance left, bill so far and one line per meter.
    */
   getUsageStatement?(companyUid: string): AdapterPromise<Json>;
+  /**
+   * Owner-gated usage history (`GET /v1/billing/usage/history?companyUid=`,
+   * hq-pro #5087): `{ months: [{ month, usageCents, complete }] }`, the last
+   * 12 calendar months oldest first, current month included (never
+   * complete). Admins and members get 403. Company levels (US-019) read it.
+   */
+  getUsageHistory?(companyUid: string): AdapterPromise<Json>;
   /** Public price list (`GET /v1/pricing`), including the `usage` block. */
   getPricing?(): AdapterPromise<Json>;
   /**
@@ -1336,6 +1369,8 @@ export interface CompanyApi {
   getPersonalBillingSummary?(): AdapterPromise<Json>;
   /** `GET /v1/billing/usage?scope=person&window=month`: the personal month statement. */
   getPersonalUsageStatement?(): AdapterPromise<Json>;
+  /** `GET /v1/billing/usage/history?scope=person`: the personal account's usage history. */
+  getPersonalUsageHistory?(): AdapterPromise<Json>;
   /** `GET /v1/billing/person/spend-limit`: the personal spend limit. */
   getPersonalSpendLimit?(): AdapterPromise<Json>;
   /** `POST /v1/billing/checkout/person`: hosted card capture for the personal account. */
@@ -1592,6 +1627,8 @@ export interface AgentProfilePatch {
 export const OUTPOST_PATHS = {
   status: "/outpost/status",
   jobsStatus: "/outpost/jobs/status",
+  /** Person actions: status, code, regenerate. regenerate drops the current link. */
+  companySignIn: "/outpost/company/signin",
 } as const;
 
 /**
@@ -1872,6 +1909,16 @@ export interface AgentsApi {
   getMyOutpostStatus?(): AdapterPromise<Json>;
   /** GET /outpost/jobs/status — the caller's scheduled-job status rows. */
   listMyOutpostJobs?(): AdapterPromise<Json>;
+  /**
+   * POST /outpost/company/signin. `regenerate` invalidates the current
+   * sign-in link. `code` is a verification code and must not be logged.
+   */
+  companyOutpostSignIn?(body: {
+    companyUid: string;
+    action: "status" | "code" | "regenerate";
+    outpostId?: string;
+    code?: string;
+  }): AdapterPromise<Json>;
   /** GET /v1/google/accounts — the caller's connected Google accounts. */
   listMyGoogleAccounts?(): AdapterPromise<Json>;
   /** GET /v1/slack/personal/accounts — the caller's personal Slack accounts. */

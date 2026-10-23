@@ -40,11 +40,11 @@ import {
   normalizeNotificationsFeed,
   ok,
   unavailable,
+  withoutSecret,
   validateFetchReplyThread,
   validateSendReply,
   vaultPutIntegrityFields,
   withHttpStatus,
-  withoutSecret,
   localIanaZone,
 } from '../adapter.js';
 import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
@@ -92,6 +92,7 @@ import {
 import { hqProFailure, parseHqProErrorBody } from '../plan-limit.js';
 import { scrubTransportFailure } from '../api-error.js';
 import { dispatchPostReadyAction } from '../post-ready-actions.js';
+import { SYNC_HQ_PRO_ROUTES, splitRoute } from './hq-pro-routes.js';
 
 export type SyncInvokeFn = (
   cmd: string,
@@ -573,6 +574,19 @@ export function createSyncPlatformAdapter(
   ): AdapterPromise<T> {
     const attempted = await hqProAttemptWithRetries<T>(method, path, body);
     // A reply that was not JSON is not the server refusing: it keeps no status.
+    if (!attempted.result.ok && attempted.result.code === 'network') {
+      return attempted.result;
+    }
+    return withHttpStatus(attempted.result, attempted.status);
+  }
+
+  /**
+   * One POST with the HTTP status on a failure and no 429/503 retry. For a
+   * write that must not be repeated, such as a single-use sign-in code: a
+   * retry after the server consumed it would come back as a rejection.
+   */
+  async function hqProPostOnceWithStatus<T>(path: string, body?: unknown): AdapterPromise<T> {
+    const attempted = await hqProAttempt<T>('POST', path, body);
     if (!attempted.result.ok && attempted.result.code === 'network') {
       return attempted.result;
     }
@@ -1355,6 +1369,14 @@ export function createSyncPlatformAdapter(
         call('list_local_sessions', { from: range.from, to: range.to, offset: page?.offset ?? 0, limit: page?.limit ?? 50 }),
       getMyOutpostStatus: () => hqProJson('POST', OUTPOST_PATHS.status, {}),
       listMyOutpostJobs: () => hqProJson('GET', OUTPOST_PATHS.jobsStatus),
+      companyOutpostSignIn: (body) => {
+        const sent = typeof body.code === 'string' ? body.code : '';
+        // The code action is single-use, so it is sent once and never retried.
+        const request = body.action === 'code'
+          ? hqProPostOnceWithStatus<Json>(OUTPOST_PATHS.companySignIn, body)
+          : hqProRequestWithStatus<Json>('POST', OUTPOST_PATHS.companySignIn, body);
+        return sent ? request.then((result) => withoutSecret(result, sent)) : request;
+      },
       listMyGoogleAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.googleAccounts),
       listMySlackAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.slackAccounts),
     },
@@ -1429,6 +1451,16 @@ export function createSyncPlatformAdapter(
         hqProJson('POST', '/membership/role', { companyUid, membershipKey, newRole }),
       revokeMembership: (companyUid, membershipKey) =>
         hqProJson('POST', '/membership/revoke', { companyUid, membershipKey }),
+      inviteMember: ({ companyUid, inviteeEmail, role, allowedPrefixes, groupIds }) =>
+        hqProJson(...splitRoute(SYNC_HQ_PRO_ROUTES.membershipInvite), {
+          companyUid,
+          inviteeEmail,
+          role,
+          sendEmail: true,
+          inviteSurface: 'desktop',
+          ...(allowedPrefixes && allowedPrefixes.length > 0 ? { allowedPrefixes } : {}),
+          ...(groupIds && groupIds.length > 0 ? { groupIds } : {}),
+        }),
       getTeamTelemetry: (slug, range) => {
         // hq-pro cuts days in `tz` when it can; this Mac's zone is the default.
         const tz = range?.tz ?? localIanaZone();
@@ -1459,11 +1491,14 @@ export function createSyncPlatformAdapter(
         hqProJson('GET', WEB_PATHS.companyBillingSummary(companyUid)),
       getUsageStatement: (companyUid) =>
         hqProJson('GET', WEB_PATHS.companyUsageStatement(companyUid)),
+      getUsageHistory: (companyUid) =>
+        hqProJson('GET', WEB_PATHS.companyUsageHistory(companyUid)),
       getPricing: () => hqProJson('GET', WEB_PATHS.pricing),
       getSpendLimit: (companyUid) =>
         hqProJson('GET', WEB_PATHS.companySpendLimit(companyUid)),
       getPersonalBillingSummary: () => hqProJson('GET', WEB_PATHS.personalBillingSummary),
       getPersonalUsageStatement: () => hqProJson('GET', WEB_PATHS.personalUsageStatement),
+      getPersonalUsageHistory: () => hqProJson('GET', WEB_PATHS.personalUsageHistory),
       getPersonalSpendLimit: () => hqProJson('GET', WEB_PATHS.personalSpendLimit),
       createPersonalBillingCheckoutSession: () =>
         hqProJson<{ url: string }>('POST', WEB_PATHS.personalBillingCheckout, {}),

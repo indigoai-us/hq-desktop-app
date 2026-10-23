@@ -248,12 +248,16 @@ export const WEB_PATHS = {
   /** GET, owner-gated: this calendar month's usage statement. */
   companyUsageStatement: (companyUid: string) =>
     `/v1/billing/usage?companyUid=${encodeURIComponent(companyUid)}&window=month`,
+  /** GET, owner-gated: the last 12 months of usage (hq-pro #5087). */
+  companyUsageHistory: (companyUid: string) =>
+    `/v1/billing/usage/history?companyUid=${encodeURIComponent(companyUid)}`,
   /** GET, owner-gated: the monthly spend limit and this month's measured spend. */
   companySpendLimit: (companyUid: string) =>
     `/v1/billing/spend-limit?companyUid=${encodeURIComponent(companyUid)}`,
   /** Personal account (the caller, from the JWT). */
   personalBillingSummary: "/v1/billing/person/summary",
   personalUsageStatement: "/v1/billing/usage?scope=person&window=month",
+  personalUsageHistory: "/v1/billing/usage/history?scope=person",
   personalSpendLimit: "/v1/billing/person/spend-limit",
   personalBillingCheckout: "/v1/billing/checkout/person",
   personalBillingPortal: "/v1/billing/person/portal",
@@ -1216,11 +1220,14 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.get(WEB_PATHS.companyBillingSummary(companyUid)),
     getUsageStatement: (companyUid) =>
       this.get(WEB_PATHS.companyUsageStatement(companyUid)),
+    getUsageHistory: (companyUid) =>
+      this.get(WEB_PATHS.companyUsageHistory(companyUid)),
     getPricing: () => this.get(WEB_PATHS.pricing),
     getSpendLimit: (companyUid) =>
       this.get(WEB_PATHS.companySpendLimit(companyUid)),
     getPersonalBillingSummary: () => this.get(WEB_PATHS.personalBillingSummary),
     getPersonalUsageStatement: () => this.get(WEB_PATHS.personalUsageStatement),
+    getPersonalUsageHistory: () => this.get(WEB_PATHS.personalUsageHistory),
     getPersonalSpendLimit: () => this.get(WEB_PATHS.personalSpendLimit),
     createPersonalBillingCheckoutSession: () => this.post(WEB_PATHS.personalBillingCheckout, {}),
     createPersonalBillingPortalSession: () => this.post(WEB_PATHS.personalBillingPortal, {}),

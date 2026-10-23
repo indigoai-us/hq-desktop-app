@@ -22,8 +22,10 @@
   import {
     INVITE_ROLES,
     TEAM_FILTERS,
-    addInvite,
+    confirmedInvite,
     emptyInviteDraft,
+    inviteFailureText,
+    inviteRequest,
     inviteRoleFields,
     inviteRoleLabel,
     inviteSummary,
@@ -32,6 +34,7 @@
     readTeamCache,
     revokeInvite,
     seatCounts,
+    withConfirmedInvite,
     writeTeamCache,
     type InviteDraft,
     type PendingInvite,
@@ -63,6 +66,11 @@
     companyLabel?: string;
     /** personUid/agentUid → photo URL, from the app's identity cache. */
     avatarByUid?: Readonly<Record<string, string>>;
+    /**
+     * US-024: the company is on usage pricing (membership `billingState`).
+     * Usage pricing has no seats, so the seat chip is not shown.
+     */
+    usagePriced?: boolean;
   }
 
   let {
@@ -79,6 +87,7 @@
     selfEmail = null,
     companyLabel = "",
     avatarByUid = {},
+    usagePriced = false,
   }: Props = $props();
 
   const emptyView: TeamTelemetryView = {
@@ -95,6 +104,8 @@
   let filter = $state<TeamFilter>("all");
   let inviteOpen = $state(false);
   let draft = $state<InviteDraft>(emptyInviteDraft());
+  let inviteSending = $state(false);
+  let inviteError = $state("");
   let revokeId = $state<string | null>(null);
   let menuFor = $state<string | null>(null);
   let removeId = $state<string | null>(null);
@@ -223,7 +234,9 @@
         }
         const next = read.view;
         view = next;
-        if (read.invites.length > 0) invites = read.invites;
+        // DEV-5255: a successful pending read is the truth, including an
+        // empty one. Without it, keep what is shown rather than blank it.
+        if (read.pendingFresh || read.invites.length > 0) invites = read.invites;
         phase = "ready";
         writeTeamCache(key, { view: next, invites });
       } catch (err) {
@@ -324,8 +337,45 @@
     return "Idle";
   }
 
-  function submitInvite(): void {
-    invites = addInvite(invites, draft, senderName);
+  /**
+   * DEV-5255: Send invite goes to hq-pro (`POST /membership/invite`, which
+   * saves the invite and emails it). The pending row appears only after the
+   * server confirms the invite; a refusal keeps the sheet open with the reason.
+   */
+  async function submitInvite(): Promise<void> {
+    if (inviteSending) return;
+    const sent = { ...draft, groups: [...draft.groups] };
+    if (!sent.email.trim()) {
+      inviteError = "Enter an email address.";
+      return;
+    }
+    if (!companyUid || !company?.inviteMember) {
+      inviteError = "Invites can't be sent from here right now. Try again after the company finishes loading.";
+      return;
+    }
+    inviteError = "";
+    actionNote = "";
+    inviteSending = true;
+    const res = await Promise.resolve(company.inviteMember(inviteRequest(companyUid, sent))).catch((err: unknown) => {
+      console.warn("[team] invite rejected", err);
+      return { ok: false as const, reason: "error" as const, code: "network", message: "" };
+    });
+    inviteSending = false;
+    if (!res.ok) {
+      console.warn("[team] invite failed", res.code ?? res.reason);
+      inviteError = inviteFailureText(res);
+      return;
+    }
+    const confirmed = confirmedInvite(res.value, sent, senderName);
+    if (!confirmed) {
+      console.warn("[team] invite answer had no membership");
+      inviteError = inviteFailureText(null);
+      return;
+    }
+    invites = withConfirmedInvite(invites, confirmed.invite);
+    if (!confirmed.emailSent) {
+      actionNote = `The invite for ${confirmed.invite.email} is saved, but the email didn't send. They can still join by signing in with that address.`;
+    }
     draft = emptyInviteDraft();
     inviteOpen = false;
     remember();
@@ -380,7 +430,9 @@
     <span class="meta-line" data-meta-line data-testid="team-live-chip">
       <i class="meta-dot dot" class:live={liveMembers > 0}></i>{liveMembers} live
     </span>
-    <span class="meta-line" data-meta-line data-testid="team-seat-chip">{seatLine}</span>
+    {#if !usagePriced}
+      <span class="meta-line" data-meta-line data-testid="team-seat-chip">{seatLine}</span>
+    {/if}
     {/if}
     {#if refreshing}
       <span class="meta-line" data-meta-line aria-live="polite" data-testid="team-refreshing">Refreshing…</span>
@@ -549,10 +601,21 @@
             <input id="invite-groups" class="fld" placeholder="Search groups…" bind:value={groupQuery} />
           </div>
         {/if}
+        {#if inviteError}
+          <p class="note invite-error" role="alert" data-testid="invite-error">{inviteError}</p>
+        {/if}
         <footer class="sf">
           <span class="grow"></span>
           <RailButton icon="x" type="button" onclick={() => (inviteOpen = false)}>Cancel</RailButton>
-          <RailButton icon="send" variant="primary" type="button" data-testid="invite-send" onclick={submitInvite}>Send invite</RailButton>
+          <RailButton
+            icon="send"
+            variant="primary"
+            type="button"
+            data-testid="invite-send"
+            disabled={inviteSending}
+            aria-busy={inviteSending}
+            onclick={() => void submitInvite()}
+          >{inviteSending ? "Sending…" : "Send invite"}</RailButton>
         </footer>
       </div>
     </div>

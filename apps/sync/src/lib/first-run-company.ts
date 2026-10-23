@@ -27,6 +27,7 @@ import {
   decideCompanyRoute,
   inviteOffers,
   otherIdentityFromLookup,
+  priorPlanFromHint,
   priorPlanFromPayload,
   provisioningStateFromEntity,
   summarizeRoute,
@@ -218,6 +219,18 @@ export async function resolveFirstRunCompanyRoute(deps: {
       priorPlan = priorPlan ?? priorPlanFromPayload(lookup);
     } catch (error) {
       console.warn('onboarding: visitor identity lookup failed', error);
+    }
+  }
+  if (priorPlan === null && companies.length === 0) {
+    // hq-pro had no plan: fall back to what the desktop kept from the website,
+    // the sign-in link reply's planIntent first, then the download URL's plan.
+    try {
+      const hints = await deps.invoke<unknown>('web_visitor_plan_hints');
+      if (isRecord(hints)) {
+        priorPlan = priorPlanFromHint(hints.signinPlanIntent) ?? priorPlanFromHint(hints.downloadPlan);
+      }
+    } catch (error) {
+      console.warn('onboarding: plan hint lookup failed', error);
     }
   }
   const route = decideCompanyRoute({ companies, invites, signedInEmail, otherIdentity });

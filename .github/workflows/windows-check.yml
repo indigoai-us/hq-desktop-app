@@ -299,6 +299,29 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml runner_target::tests
 
+      # HQ's managed PortableGit (windows_portable_git): the unit tests, then
+      # the real pinned x64 asset end to end on this runner. The ignored test
+      # checks the SHA-256, extracts the 7z payload in process, runs the
+      # bundle's post-install.bat, proves git and bash from the staged copy,
+      # activates over a MinGit-shaped folder, commits through a Bash-shebang
+      # hook with only the bundle on PATH, then upgrades and rolls back.
+      # The ARM64 asset runs in windows-portable-git-arm64.yml, on release
+      # branches only.
+      #
+      # The download is its own step and hands the path to the test step
+      # through GITHUB_ENV, so the cargo invocation stays a one-line `run:`
+      # that fails the step on its own exit code.
+      - name: Download pinned PortableGit asset (x64)
+        shell: pwsh
+        run: |
+          $asset = Join-Path $env:RUNNER_TEMP 'PortableGit-2.54.0-64-bit.7z.exe'
+          Invoke-WebRequest -UseBasicParsing -OutFile $asset -Uri 'https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/PortableGit-2.54.0-64-bit.7z.exe'
+          "HQ_PORTABLE_GIT_ASSET=$asset" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Managed PortableGit tests (x64, real asset)
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml windows_portable_git::tests -- --include-ignored --nocapture
+
   # Everything that runs against the app's bins under DEFAULT features, so the
   # binaries built by `cargo test --bins --no-run` below are compiled once and
   # reused by every step after it. `Rust check` is kept rather than folded into

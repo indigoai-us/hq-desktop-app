@@ -861,6 +861,63 @@ describe("meetings store in-app calendar connect", () => {
     }
   });
 
+  for (const [selected, expected] of [
+    [[] as string[], { kind: "info", text: "Connected. Choose your calendars in Console to finish setup", consoleAction: true }],
+    [["cal-1"], { kind: "info", text: "Calendar connected." }],
+  ] as const) {
+    it(`after Google OAuth, ${selected.length ? "says connected when a calendar selection is saved" : "asks to choose calendars in Console when none are selected"}`, async () => {
+      vi.useFakeTimers();
+      try {
+        let polls = 0;
+        call.mockImplementation((method: string) => {
+          if (method === "connectCalendar") return Promise.resolve(ok({ url: consentUrl }));
+          if (method === "listAccounts") {
+            polls += 1;
+            return Promise.resolve(ok(polls < 2 ? [] : [newAccount]));
+          }
+          if (method === "listCalendars") {
+            return Promise.resolve(
+              ok({ calendars: [{ id: "cal-1", summary: "Primary", primary: true }], selectedCalendarIds: [...selected] }),
+            );
+          }
+          return Promise.resolve(ok([]));
+        });
+        await meetingsStore.beginCalendarConnect();
+        await vi.advanceTimersByTimeAsync(3_000);
+        await vi.runOnlyPendingTimersAsync();
+        expect(meetingsStore.connectPending).toBe(false);
+        expect(meetingsStore.connectNotice).toEqual(expected);
+      } finally {
+        meetingsStore.stopCalendarConnectWatch();
+        vi.useRealTimers();
+      }
+    });
+  }
+
+  it("after Google OAuth, says connected when the calendar selection lookup fails", async () => {
+    vi.useFakeTimers();
+    try {
+      let polls = 0;
+      call.mockImplementation((method: string) => {
+        if (method === "connectCalendar") return Promise.resolve(ok({ url: consentUrl }));
+        if (method === "listAccounts") {
+          polls += 1;
+          return Promise.resolve(ok(polls < 2 ? [] : [newAccount]));
+        }
+        if (method === "listCalendars") return Promise.resolve(failure("calendar lookup failed"));
+        return Promise.resolve(ok([]));
+      });
+      await meetingsStore.beginCalendarConnect();
+      await vi.advanceTimersByTimeAsync(3_000);
+      await vi.runOnlyPendingTimersAsync();
+      expect(meetingsStore.connectPending).toBe(false);
+      expect(meetingsStore.connectNotice).toEqual({ kind: "info", text: "Calendar connected." });
+    } finally {
+      meetingsStore.stopCalendarConnectWatch();
+      vi.useRealTimers();
+    }
+  });
+
   it("baselines connect watch from live listAccounts when store accounts are empty", async () => {
     vi.useFakeTimers();
     try {
