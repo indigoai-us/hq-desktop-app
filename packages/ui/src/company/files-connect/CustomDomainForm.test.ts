@@ -174,6 +174,53 @@ describe("US-007 CustomDomainForm", () => {
     expect(q(target, "custom-domain-record-routing")?.textContent).toContain("hq-lifecycle-email-map.indigo-hq.com");
   });
 
+  it("lays each record out as a titled card with its purpose, Name and Value, and a copy button for each", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const { target } = render((method) => (method === "GET" ? pending() : refreshPending([certRecord()])));
+    await settleTimers();
+    const status = q(target, "custom-domain-status");
+    expect(status?.textContent).toBe("Waiting for DNS");
+    expect(status?.dataset.tone).toBe("waiting");
+
+    const cert = q(target, "custom-domain-record-ownership")!;
+    const site = q(target, "custom-domain-record-routing")!;
+    expect(cert.textContent).toContain("Certificate record");
+    expect(cert.textContent).toContain("confirm you own app.example.com");
+    expect(site.textContent).toContain("Website record");
+    expect(site.textContent).toContain("Sends people who visit app.example.com to launch-notes");
+    // Long values wrap once, after the random first label; the rest stays whole.
+    const valueParts = [...(cert.querySelectorAll("dd")[1]?.querySelectorAll(".seg") ?? [])].map((el) => el.textContent);
+    expect(valueParts).toEqual(["_xyz.", "acm-validations.aws"]);
+
+    (site.querySelector("[data-testid='custom-domain-copy-name']") as HTMLButtonElement).click();
+    await settle();
+    expect(writeText).toHaveBeenCalledWith("app.example.com");
+    expect(q(target, "custom-domain-name-tip")?.textContent).toContain("@");
+  });
+
+  it("shows Verifying while a check runs and once the certificate is issued", async () => {
+    let release: (v: { status: number; body: unknown }) => void = () => {};
+    let refreshes = 0;
+    const request = vi.fn(async (_scope: string, method: string) => {
+      if (method === "GET") return ok(pending());
+      refreshes += 1;
+      if (refreshes === 1) return ok(refreshPending([certRecord()]));
+      return ok(await new Promise<{ status: number; body: unknown }>((resolve) => (release = resolve)));
+    });
+    const { target } = render(() => ({ status: 200, body: {} }), { request });
+    await settleTimers();
+    (q(target, "custom-domain-refresh") as HTMLButtonElement).click();
+    await settle();
+    expect(q(target, "custom-domain-status")?.textContent).toBe("Verifying");
+    release({ status: 200, body: { ok: true, certStatus: "ISSUED", validationState: "pending", serving: false } });
+    await settle();
+    // Certificate issued, serving not attached yet: still Verifying, not Waiting for DNS.
+    expect(q(target, "custom-domain-status")?.textContent).toBe("Verifying");
+    expect(q(target, "custom-domain-status")?.dataset.tone).toBe("verifying");
+    expect(q(target, "custom-domain-verifying")?.textContent).toContain("HQ found your records");
+  });
+
   it("never steers people to a subdomain", async () => {
     const empty = render(() => none());
     await settle();
@@ -313,7 +360,7 @@ describe("US-007 CustomDomainForm", () => {
     await settleTimers();
     const button =target.querySelector("[data-testid='custom-domain-record-routing'] [data-testid='custom-domain-copy']") as HTMLButtonElement;
     expect(button.querySelector("svg")).not.toBeNull();
-    expect(button.getAttribute("aria-label")).toBe("Copy target");
+    expect(button.getAttribute("aria-label")).toBe("Copy value");
     button.click();
     await settle();
     expect(writeText).toHaveBeenCalledWith("launch-notes.indigo-hq.com");

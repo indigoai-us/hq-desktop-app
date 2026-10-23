@@ -14,6 +14,7 @@ const STATES = [
   { name: 'card-required', state: 'empty', type: 'mysite.com', press: 'custom-domain-add' },
   { name: 'waiting-for-dns', state: 'pending' },
   { name: 'root-domain', state: 'apex' },
+  { name: 'verifying', state: 'issued' },
   { name: 'live', state: 'live' },
   { name: 'remove-confirm', state: 'pending', press: 'custom-domain-remove' },
   { name: 'member', state: 'member' },

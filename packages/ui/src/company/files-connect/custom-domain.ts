@@ -410,12 +410,40 @@ export async function readLiveCustomDomainUrl(request: DeployDomainRequest, scop
 }
 
 /** Plain status line for a domain. */
-export function domainStatusCopy(record: DomainRecord, serving: boolean, certStatus = ""): string {
-  if (serving || record.state === "validated") return "Live";
+export function domainStatusCopy(record: DomainRecord, serving: boolean, certStatus = "", checking = false): string {
+  return domainStatus(record, serving, certStatus, checking).label;
+}
+
+export type DomainStatusTone = "waiting" | "verifying" | "live" | "failed";
+
+/**
+ * Where a domain is in setup, for the status chip. Verifying covers a check in
+ * progress and the stretch after the certificate is issued while HQ finishes
+ * pointing the domain at the deployment.
+ */
+export function domainStatus(
+  record: DomainRecord,
+  serving: boolean,
+  certStatus = "",
+  checking = false,
+): { tone: DomainStatusTone; label: string } {
+  if (serving || record.state === "validated") return { tone: "live", label: "Live" };
+  if (checking || certStatus === "ISSUED") return { tone: "verifying", label: "Verifying" };
   if (record.state === "failed" || certStatus === "FAILED" || certStatus === "VALIDATION_TIMED_OUT") {
-    return "Couldn't verify. Check the DNS records, then check again";
+    return { tone: "failed", label: "Couldn't verify. Check the DNS records, then check again" };
   }
-  return "Waiting for DNS";
+  return { tone: "waiting", label: "Waiting for DNS" };
+}
+
+/**
+ * A DNS name or value in at most two pieces: the first label with its dot,
+ * then the rest. Long ACM names wrap once, after the random label, and keep
+ * the domain (or `acm-validations.aws`) whole on the next line.
+ */
+export function hostSegments(value: string): string[] {
+  const dot = value.indexOf(".");
+  if (dot <= 0 || dot === value.length - 1) return [value];
+  return [value.slice(0, dot + 1), value.slice(dot + 1)];
 }
 
 /** Owners and admins manage domains; everyone else sees status only. */

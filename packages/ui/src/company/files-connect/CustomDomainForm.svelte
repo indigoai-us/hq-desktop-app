@@ -18,8 +18,9 @@
     dnsRecordsFor,
     domainErrorCopy,
     domainInputProblem,
-    domainStatusCopy,
+    domainStatus,
     formatUsd,
+    hostSegments,
     inputProblemCopy,
     listWithRetry,
     LIST_RETRY_DELAYS_MS,
@@ -246,9 +247,14 @@
     }
   }
 
-  function status(d: DomainRecord): string {
-    return domainStatusCopy(d, serving[d.domain] === true, certStatus[d.domain] ?? "");
+  function status(d: DomainRecord) {
+    return domainStatus(d, serving[d.domain] === true, certStatus[d.domain] ?? "", busy === "refresh");
   }
+  const recordTitle = (r: DnsRecord) => (r.purpose === "ownership" ? "Certificate record" : "Website record");
+  const recordWhy = (r: DnsRecord, domain: string) =>
+    r.purpose === "ownership"
+      ? `Lets HQ confirm you own ${domain} and set up its secure (https) certificate.`
+      : `Sends people who visit ${domain} to ${appName}.`;
   const isLive = (d: DomainRecord) => serving[d.domain] === true || d.state === "validated";
 </script>
 
@@ -264,17 +270,14 @@
   {:else}
     {#each domains as d (d.domain)}
       <div class="domain" data-testid="custom-domain-row" data-domain={d.domain}>
-        <div class="fr">
-          <span class="lb">Domain</span>
-          <span class="dline">
-            <span class="mono">{d.domain}</span>
-            <span class="st" class:live={isLive(d)} data-testid="custom-domain-status">{status(d)}</span>
-          </span>
+        <div class="head">
+          <span class="mono name">{d.domain}</span>
+          <span class="chip" data-tone={status(d).tone} data-testid="custom-domain-status"><i class="dot" aria-hidden="true"></i>{status(d).label}</span>
         </div>
         {#if canManage && confirmRemove === d.domain}
           <div class="confirm" data-testid="custom-domain-confirm">
             <p class="sec">Remove {d.domain}?</p>
-            <p class="hint flat">Visitors to {d.domain} will stop reaching {appName}, and the {price} charge stops. {appHost ? `${appHost} keeps working.` : ""}</p>
+            <p class="flat body">Visitors to {d.domain} will stop reaching {appName}, and the {price} charge stops. {appHost ? `${appHost} keeps working.` : ""}</p>
             <div class="row-actions">
               <RailButton icon="arrow-left" disabled={busy === "remove"} onclick={() => (confirmRemove = null)}>Back</RailButton>
               <RailButton icon="trash" variant="danger" data-testid="custom-domain-remove-confirm" disabled={busy === "remove"} aria-busy={busy === "remove"} onclick={() => void remove(d.domain)}>{busy === "remove" ? "Removing…" : "Remove domain"}</RailButton>
@@ -286,29 +289,48 @@
               {#if preparing[d.domain]}
                 <p class="hint flat" role="status" data-testid="custom-domain-records-loading">Getting the DNS records for {d.domain}…</p>
               {:else}
-                <p class="hint flat">Add {(records[d.domain] ?? []).length === 1 ? "this record" : "these records"} at the company that hosts DNS for {d.domain}:</p>
-                <div class="grid" role="table" aria-label={`DNS records for ${d.domain}`}>
-                  <div class="gh" role="row"><span role="columnheader">Type</span><span role="columnheader">Name</span><span role="columnheader">Value</span><span></span></div>
-                  {#each records[d.domain] ?? [] as r (r.name)}
-                    <div class="gr" role="row" data-testid={`custom-domain-record-${r.purpose}`}>
-                      <span role="cell">{r.type}</span>
-                      <span role="cell" class="mono">{r.name}</span>
-                      <span role="cell" class="mono">{r.value}</span>
-                      <button data-icon-only class="copy" type="button" data-testid="custom-domain-copy" aria-label={copied === r.value ? "Copied" : `Copy ${r.purpose === "routing" ? "target" : "value"}`} title={copied === r.value ? "Copied" : "Copy"} onclick={() => void copy(r.value)}><RailIcon name={copied === r.value ? "check" : "copy"} /></button>
-                    </div>
-                    <p class="why">{r.purpose === "ownership" ? "Proves you own the domain so HQ can issue its certificate." : "Sends visitors to this deployment."}</p>
-                  {/each}
-                </div>
+                {#if status(d).tone === "verifying" && busy !== "refresh"}
+                  <p class="lead" data-testid="custom-domain-verifying">HQ found your records and is finishing setup. This usually takes a few minutes. Keep the records in place.</p>
+                {:else}
+                  <p class="lead">Add {(records[d.domain] ?? []).length === 1 ? "this record" : `these ${(records[d.domain] ?? []).length} records`} where you manage DNS for {d.domain}, usually the site where you bought it. Then choose Check again.</p>
+                {/if}
+                {#each records[d.domain] ?? [] as r, i (r.name)}
+                  <section class="rec" aria-label={recordTitle(r)} data-testid={`custom-domain-record-${r.purpose}`}>
+                    <header class="rh">
+                      <span class="num" aria-hidden="true">{i + 1}</span>
+                      <span class="rt">{recordTitle(r)}</span>
+                      <span class="type" title="Record type">{r.type}</span>
+                    </header>
+                    <p class="why">{recordWhy(r, d.domain)}</p>
+                    <dl class="kv">
+                      {#each [["Name", r.name], ["Value", r.value]] as [label, text] (label)}
+                        <dt>{label}</dt>
+                        <dd class="mono" title={text}>{#each hostSegments(text) as part, j (j)}<span class="seg">{part}</span><wbr />{/each}</dd>
+                        <button
+                          data-icon-only
+                          class="copy"
+                          type="button"
+                          data-testid={label === "Name" ? "custom-domain-copy-name" : "custom-domain-copy"}
+                          aria-label={copied === text ? "Copied" : `Copy ${label.toLowerCase()}`}
+                          title={copied === text ? "Copied" : `Copy ${label.toLowerCase()}`}
+                          onclick={() => void copy(text)}
+                        ><RailIcon name={copied === text ? "check" : "copy"} /></button>
+                      {/each}
+                    </dl>
+                  </section>
+                {/each}
                 {#if !(records[d.domain] ?? []).some((r) => r.purpose === "ownership")}
                   <p class="hint flat" data-testid="custom-domain-records-partial">The certificate record isn't ready yet. Check again in a minute to see it.</p>
                 {/if}
+                {#if status(d).tone !== "verifying"}<p class="tip" data-testid="custom-domain-name-tip">If your DNS site adds {d.domain} to names by itself, enter only the part before it, or @ for {d.domain} itself.</p>{/if}
               {/if}
             </div>
           {/if}
           <div class="row-actions">
             {#if !isLive(d)}<RailButton icon="refresh" data-testid="custom-domain-refresh" disabled={busy !== null || preparing[d.domain] === true} aria-busy={busy === "refresh"} onclick={() => void refresh(d.domain)}>{busy === "refresh" ? "Checking…" : "Check again"}</RailButton>{/if}
             {#if isLive(d)}<RailButton icon="external" onclick={() => openExternal?.(`https://${d.domain}`)}>Open</RailButton>{/if}
-            <RailButton icon="trash" data-testid="custom-domain-remove" disabled={busy !== null} onclick={() => { confirmRemove = d.domain; actionError = null; notice = null; }}>Remove</RailButton>
+            <span class="grow"></span>
+            <RailButton icon="trash" variant="ghost" data-testid="custom-domain-remove" disabled={busy !== null} onclick={() => { confirmRemove = d.domain; actionError = null; notice = null; }}>Remove</RailButton>
           </div>
         {/if}
       </div>
@@ -373,20 +395,38 @@
   .mono { font-family: var(--font-mono, ui-monospace, monospace); overflow-wrap: anywhere; }
   .loading { padding: 6px 12px; }
   .domain { border-bottom: 1px solid var(--panel-border, var(--v4-rowline)); }
-  .domain .fr { border-bottom: 0; }
-  .dline { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
-  .st { color: var(--t3, var(--v4-text-3)); }
-  .st.live { color: var(--ok-ink, var(--t1)); }
-  .dns { display: flex; flex-direction: column; gap: 8px; padding: 0 20px 10px; }
-  .grid { display: grid; grid-template-columns: 56px minmax(0, 1fr) minmax(0, 1.4fr) auto; gap: 4px 10px; align-items: start; }
-  .gh, .gr { display: contents; }
-  .gh span { color: var(--t3, var(--v4-text-3)); }
-  .why { grid-column: 2 / -1; margin: -2px 0 6px; color: var(--t3, var(--v4-text-3)); }
+  /* Domain status: the name, then a chip. Weight and tone carry the hierarchy; 13px throughout. */
+  .head { display: flex; align-items: center; gap: 12px; min-height: 28px; padding: 14px 20px 10px; }
+  .head .name { flex: 1; min-width: 0; font-weight: 500; color: var(--t1, var(--v4-text-1)); }
+  .chip { display: inline-flex; align-items: center; gap: 6px; flex: none; height: 22px; padding: 0 9px; border-radius: 11px; border: 1px solid var(--line2, var(--v4-control-border)); color: var(--t2, var(--v4-text-2)); white-space: nowrap; }
+  .chip[data-tone="failed"] { white-space: normal; height: auto; padding: 3px 9px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--t2, var(--v4-text-2)); }
+  .chip[data-tone="verifying"] .dot, .chip[data-tone="failed"] .dot { background: var(--warn, var(--v4-warn)); }
+  .chip[data-tone="live"] { color: var(--ok-ink, var(--t1)); }
+  .chip[data-tone="live"] .dot { background: var(--ok, var(--v4-ok)); }
+  .dns { display: flex; flex-direction: column; gap: 12px; padding: 0 20px 14px; }
+  .lead { margin: 0; color: var(--t2, var(--v4-text-2)); }
+  /* One card per record: number, plain title, type; a purpose line; Name and Value with copy. */
+  .rec { border: 1px solid var(--line2, var(--v4-control-border)); border-radius: 6px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .rh { display: flex; align-items: center; gap: 8px; }
+  .num { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line2, var(--v4-control-border)); color: var(--t2, var(--v4-text-2)); flex: none; }
+  .rt { flex: 1; font-weight: 500; }
+  .type { color: var(--t3, var(--v4-text-3)); font-family: var(--font-mono, ui-monospace, monospace); }
+  .why { margin: 0; color: var(--t2, var(--v4-text-2)); }
+  .kv { display: grid; grid-template-columns: 44px minmax(0, 1fr) 24px; gap: 8px; align-items: start; margin: 0; padding-top: 10px; border-top: 1px solid var(--panel-border, var(--v4-rowline)); }
+  /* Label, first line of the value and the copy icon share one 24px line. */
+  .kv dt { color: var(--t2, var(--v4-text-2)); line-height: 24px; }
+  .kv dd { margin: 0; padding: 3px 0; line-height: 18px; color: var(--t1, var(--v4-text-1)); }
+  .kv .seg { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
+  .kv .copy { align-self: start; }
+  .tip { margin: 2px 0 0; color: var(--t2, var(--v4-text-2)); }
   .copy { display: inline-grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: 6px; padding: 0; background: transparent; color: var(--t2, var(--v4-text-2)); cursor: pointer; }
   .copy:hover { background: var(--hover, var(--v4-hover)); color: var(--t1, var(--v4-text-1)); }
   .copy:focus-visible { outline: 2px solid var(--v4-focus, currentColor); outline-offset: 2px; border-radius: 3px; }
-  .row-actions { display: flex; gap: 8px; padding: 0 20px 10px; }
+  .row-actions { display: flex; align-items: center; gap: 8px; padding: 0 20px 12px; }
   .hint.note .row-actions, .confirm .row-actions { padding: 0; }
-  .confirm { display: flex; flex-direction: column; gap: 8px; padding: 0 20px 10px; }
+  .confirm { display: flex; flex-direction: column; gap: 8px; padding: 0 20px 14px; }
   .confirm .sec { margin: 0; font-weight: 500; }
+  .confirm .body { color: var(--t2, var(--v4-text-2)); }
+  .confirm .row-actions { padding-top: 4px; }
 </style>

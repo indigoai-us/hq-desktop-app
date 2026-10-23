@@ -9,7 +9,9 @@ import {
   domainInputProblem,
   domainPricesFromFeed,
   awaitOwnershipRecord,
+  domainStatus,
   hasOwnershipRecord,
+  hostSegments,
   liveCustomDomainUrl,
   normalizeDomainInput,
   routingTargetFor,
@@ -66,6 +68,18 @@ describe("US-007 custom-domain model", () => {
     const partial = await awaitOwnershipRecord({ refresh: empty }, "app_1", "app.example.com", [routing], [0, 0]);
     expect(empty).toHaveBeenCalledTimes(3);
     expect(hasOwnershipRecord("app.example.com", partial.instructions)).toBe(false);
+  });
+
+  it("reports Waiting for DNS, Verifying and Live, and splits long names after dots", () => {
+    const pendingRecord = { domain: "mysite.com", state: "pending" as const };
+    expect(domainStatus(pendingRecord, false).tone).toBe("waiting");
+    expect(domainStatus(pendingRecord, false, "PENDING_VALIDATION", true)).toEqual({ tone: "verifying", label: "Verifying" });
+    expect(domainStatus(pendingRecord, false, "ISSUED").label).toBe("Verifying");
+    expect(domainStatus(pendingRecord, true).label).toBe("Live");
+    expect(domainStatus({ domain: "mysite.com", state: "failed" }, false).tone).toBe("failed");
+    expect(hostSegments("_3f1c9a.mysite.com")).toEqual(["_3f1c9a.", "mysite.com"]);
+    expect(hostSegments("localhost")).toEqual(["localhost"]);
+    expect(hostSegments("launch-notes.indigo-hq.com").join("")).toBe("launch-notes.indigo-hq.com");
   });
 
   it("names the first live custom domain as the deployment's address", () => {

@@ -1,6 +1,6 @@
 <!--
   Custom domain sheet on fixture data, for screenshots:
-  ?view=custom-domain-shot&state=empty|card|pending|apex|live|member|failed
+  ?view=custom-domain-shot&state=empty|card|pending|apex|issued|live|member|failed
   Answers follow hq-deploy's /api/apps/:id/domains shapes; names are fictional.
 -->
 <script lang="ts">
@@ -13,7 +13,7 @@
   const state = params.get('state') ?? 'empty';
   const ok = <T,>(value: T) => ({ ok: true as const, value });
   const domain = state === 'apex' ? 'mysite.com' : 'app.mysite.com';
-  const listed = state === 'pending' || state === 'apex' || state === 'live' || state === 'member';
+  const listed = state === 'pending' || state === 'apex' || state === 'issued' || state === 'live' || state === 'member';
   const validationState = state === 'live' ? 'validated' : 'pending';
 
   async function request(_scope: string, method: string, path: string) {
@@ -25,7 +25,7 @@
       return ok({ status: 402, body: { error: { status: 402, code: 'PAYMENT_METHOD_REQUIRED', message: 'A payment method is required' } } });
     }
     if (method === 'POST') {
-      return ok({ status: 200, body: { ok: true, validationState: 'pending', certStatus: 'PENDING_VALIDATION', serving: false, dnsInstructions: [{ type: 'CNAME', name: `_3f1c9a.${domain}.`, value: '_8d2e47.acm-validations.aws.' }] } });
+      return ok({ status: 200, body: { ok: true, validationState: 'pending', certStatus: state === 'issued' ? 'ISSUED' : 'PENDING_VALIDATION', serving: false, dnsInstructions: [{ type: 'CNAME', name: `_a79865eb4cd1a6ab990a45779b4e0b96.${domain}.`, value: '_424c7224e9b0146f9a8808af955727d5.djqtsrsxkq.acm-validations.aws.' }] } });
     }
     return ok({ status: 200, body: { ok: true, remaining: 0 } });
   }
