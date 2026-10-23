@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Marketplace: clicking a creator's @handle on a pack card or in the pack details now opens their profile on hqforwork.com. Before, it opened a page on hq.computer that did not exist.
 - Messages: opening a folder someone shared with you now works when that company is not synced on this Mac. Before, the card dropped you on the general Shared files list with no explanation. Now HQ lists the folder's contents from the cloud (names only, so nothing is downloaded), shows which company and folder it came from, and says "<Company> isn't synced on this Mac yet. Sync it to open this folder in Files." Companies already on this Mac still open the folder in Files as before.
 
 ## [0.11.16] — 2026-10-22
