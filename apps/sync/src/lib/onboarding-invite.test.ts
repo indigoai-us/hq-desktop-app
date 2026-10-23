@@ -3,7 +3,9 @@ import {
   classifyInviteError,
   hqProErrorCode,
   HqProRequestError,
+  hqProUsagePause,
   inviteErrorMessage,
+  inviteFailureView,
   INVITE_ERROR_KINDS,
   isAlreadyExists,
   isInviteNotPending,
@@ -71,5 +73,43 @@ describe('onboarding invite errors', () => {
     expect(normalizeHttpStatus(600)).toBeUndefined();
     expect(normalizeHttpStatus('409')).toBeUndefined();
     expect(normalizeHttpStatus(409.5)).toBeUndefined();
+  });
+});
+
+describe('usage pause on an invite (US-024)', () => {
+  const ACTION_URL = 'https://hq.computer/companies/acme/billing';
+  const MESSAGE =
+    'Cloud sync is paused. Acme reached its monthly spend limit of $50.00. Raise the limit on the Billing page to resume. Files on this computer are not affected.';
+  const body = JSON.stringify({
+    error: 'plan_limit_reached',
+    code: 'PLAN_LIMIT_EXCEEDED',
+    message: 'New members cannot be added by your plan limit.',
+    upgradeUrl: ACTION_URL,
+    usagePause: { code: 'usage_paused', reason: 'usage_spend_limit', message: MESSAGE, actionUrl: ACTION_URL },
+  });
+
+  it('shows the server usage message and a Billing action, not plan copy', () => {
+    const failure = classifyInviteError(new HqProRequestError(402, 'PLAN_LIMIT_EXCEEDED', hqProUsagePause(body)));
+    expect(failure.kind).toBe('plan_limit');
+    expect(failure.usagePause?.reason).toBe('usage_spend_limit');
+    const view = inviteFailureView(failure);
+    expect(view.message).toBe(MESSAGE);
+    expect(view.action).toEqual({ kind: 'billing', label: 'Open Billing', url: ACTION_URL });
+    expect(view.message).not.toMatch(/plan|Upgrade|Starter|Workforce|Individual/);
+  });
+
+  it('asks a member to contact an owner', () => {
+    const failure = classifyInviteError(new HqProRequestError(402, null, hqProUsagePause(body)));
+    expect(inviteFailureView(failure, 'member').action).toEqual({
+      kind: 'ask-owner',
+      hint: 'Ask a company owner or admin to raise the spend limit.',
+    });
+  });
+
+  it('keeps the plain copy without a usage pause', () => {
+    expect(hqProUsagePause('{"code":"PLAN_LIMIT_EXCEEDED"}')).toBeNull();
+    expect(hqProUsagePause('not json')).toBeNull();
+    const view = inviteFailureView(classifyInviteError(new HqProRequestError(402, 'PLAN_LIMIT_EXCEEDED')));
+    expect(view).toEqual({ message: inviteErrorMessage('plan_limit'), action: null });
   });
 });

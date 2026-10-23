@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   botConnectionAccessState,
+  botConnectionGrantState,
   botConnectionIsInteractive,
   botConnectionIsOn,
   readConnectionAccess,
@@ -214,6 +215,28 @@ describe("botConnectionAccessState", () => {
         }),
       ),
     ).toBe("off");
+  });
+});
+
+describe("botConnectionGrantState", () => {
+  it("reports the bot's grant whether or not the caller can manage the connection", () => {
+    const entries = [{ granteeType: "person", granteeId: "agt_nova", permission: "read" }];
+    for (const canManage of [true, false]) {
+      expect(botConnectionGrantState(input({ mode: "shared", access: { mode: "shared", canManage, entries } }))).toBe("on");
+      expect(botConnectionGrantState(input({ mode: "shared", access: { mode: "shared", canManage, entries: [] } }))).toBe("off");
+      expect(botConnectionGrantState(input({ mode: "everyone", access: { mode: "everyone", canManage, entries: [] } }))).toBe("on-everyone");
+      expect(botConnectionGrantState(input({ botRole: "Admin", access: { ...EMPTY_ACCESS, canManage } }))).toBe("on-admin");
+    }
+  });
+
+  it("matches botConnectionAccessState whenever the caller can manage the connection", () => {
+    const cases: BotConnectionAccessInput[] = [
+      input({ botRole: "owner" }),
+      input({ mode: "legacy-open" }),
+      input({ mode: "shared", access: { mode: "shared", canManage: true, entries: [{ granteeType: "person", granteeId: "agt_nova", permission: "read" }] } }),
+      input({ mode: "shared" }),
+    ];
+    for (const value of cases) expect(botConnectionGrantState(value)).toBe(botConnectionAccessState(value));
   });
 });
 

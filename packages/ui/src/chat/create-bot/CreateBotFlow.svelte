@@ -61,7 +61,6 @@
     botHandle,
     canAdvance,
     canCreate,
-    claudeAllowedForCloud,
     companyTemplates,
     defaultCloudRuntime,
     firstBlockingStep,
@@ -120,7 +119,6 @@
      * card sequence, so the host PATCHes it onto the agent profile after.
      */
     onCloudCreate?: ((companyUid: string, draft: CloudBotDraft) => void | Promise<void>) | null;
-    loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
     loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
     /** Local: the host creates through the CLI and opens the DM. */
     oncreate?: ((input: LocalBotCreateInput, extras: CreateBotExtras) => void | Promise<LocalBotEntryResult | void>) | null;
@@ -205,7 +203,6 @@
     agentTargets = null,
     botCompanies = null,
     onCloudCreate = null,
-    loadClaudeProviderFlag = null,
     loadCloudProvisionOptions = null,
     oncreate = null,
     onback = null,
@@ -278,7 +275,6 @@
     return blocked.every(Boolean) ? (blocked[0] ?? null) : null;
   });
   const canCloud = $derived(!!onCloudCreate && companies.length > 0 && !cloudBlocked);
-  let claudeProviderEnabled = $state(false);
   let cloudProvisionOptions = $state<AgentProvisionOptionsView | null>(null);
   let cloudQuoteStatus = $state<"loading" | "ready" | "error">("loading");
   let quoteReloadToken = $state(0);
@@ -293,7 +289,6 @@
     companies,
     ownerCompanies,
     templates,
-    claudeProviderEnabled,
     directCloudOn,
     cloudProvisionOptions,
     cloudQuoteStatus,
@@ -583,13 +578,6 @@
     };
   });
 
-  // The direct-create flag resolves after the draft is seeded: a Cloud bot the
-  // user has not picked a brain for moves to the Claude default then.
-  $effect(() => {
-    if (!directCloudOn || draft.home !== "cloud" || untrack(() => runtimeAnswered)) return;
-    if (draft.runtime !== "claude") draft = { ...draft, runtime: "claude" };
-  });
-
   // A company that cannot take a cloud bot is never the selected one while
   // another can.
   $effect(() => {
@@ -598,28 +586,6 @@
     if (uid && !companyBlocks[uid]) return;
     const open = companies.find((c) => !companyBlocks[c.companyUid]);
     if (open && open.companyUid !== uid) draft = { ...draft, companyUid: open.companyUid };
-  });
-
-  onMount(() => {
-    if (!loadClaudeProviderFlag) return;
-    let active = true;
-    void loadClaudeProviderFlag()
-      .then((result) => {
-        if (!active) return;
-        claudeProviderEnabled = result.ok && result.value === true;
-        if (!claudeAllowedForCloud(ctx) && draft.home === "cloud" && draft.runtime === "claude") {
-          draft = { ...draft, runtime: "codex" };
-        }
-        if (!result.ok && result.reason === "error") {
-          console.warn("[hq-desktop] Claude provider flag unavailable", result.code ?? result.message ?? "unknown error");
-        }
-      })
-      .catch((error: unknown) => {
-        if (!active) return;
-        claudeProviderEnabled = false;
-        console.warn("[hq-desktop] Claude provider flag lookup failed", error);
-      });
-    return () => { active = false; };
   });
 
   $effect(() => {
@@ -675,10 +641,8 @@
     draft = { ...draft, ...p };
     if (phase === "steps") stepsTouched = true;
     if (p.runtime !== undefined) runtimeAnswered = true;
-    if (p.home === "cloud" && !runtimeAnswered) {
-      draft = { ...draft, runtime: defaultCloudRuntime(ctx) };
-    } else if (p.home === "cloud" && draft.runtime === "claude" && !claudeAllowedForCloud(ctx)) {
-      draft = { ...draft, runtime: "codex" };
+    if (p.home === "cloud" && (!runtimeAnswered || draft.runtime === "claude")) {
+      draft = { ...draft, runtime: defaultCloudRuntime() };
     }
     if (p.scope !== undefined) scopeAnswered = true;
     // A company template is a company bot for that company unless the user
@@ -955,7 +919,6 @@
         <CloudDetailsStep
           {draft}
           companyLabel={cloudCompany?.label ?? "your company"}
-          claudeProviderEnabled={claudeAllowedForCloud(ctx)}
           cloudProvisionOptions={cloudProvisionOptions}
           cloudQuoteStatus={cloudQuoteStatus}
           onretryquote={() => (quoteReloadToken += 1)}

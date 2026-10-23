@@ -34,4 +34,19 @@ describe('PlanUpgradeAction', () => {
     button?.click();
     expect(onUpgrade).toHaveBeenCalledWith(upgradeUrl);
   });
+
+  it('shows Open Billing for a usage pause (US-024)', () => {
+    const billingUrl = 'https://hq.computer/companies/acme/billing';
+    const onUpgrade = vi.fn();
+    component = mount(PlanUpgradeAction, {
+      target: document.body,
+      props: { upgradeUrl: billingUrl, onUpgrade, label: 'Open Billing' },
+    });
+    flushSync();
+    const button = document.querySelector<HTMLButtonElement>('[data-testid="plan-upgrade-action"]');
+    expect(button?.textContent).toBe('Open Billing');
+    expect(button?.getAttribute('aria-label')).toBe('Open Billing');
+    button?.click();
+    expect(onUpgrade).toHaveBeenCalledWith(billingUrl);
+  });
 });

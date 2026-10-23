@@ -8,7 +8,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
 import UsageSettingsPane from "./UsageSettingsPane.svelte";
 import UsageSettingsPaneAccountsProbe from "./UsageSettingsPaneAccountsProbe.test.svelte";
-import { setPreferredUsageAccount } from "../home/core-usage-model";
+import { PERSONAL_ACCOUNT_KEY, setPreferredUsageAccount } from "../home/core-usage-model";
+import { __resetUsageLevelsForTests, setUsageLevelViewer, usageLevelState } from "../home/usage-levels.svelte.js";
 
 const ok = (value: unknown) => ({ ok: true as const, value });
 const fail = (code: string, message = code) => ({ ok: false as const, reason: "error" as const, code, message });
@@ -147,11 +148,11 @@ describe("UsageSettingsPane: one line per account", () => {
     const src = source();
     await render(src);
     expect(lines()).toEqual([
-      ["Personal", "Starter (free)", "No usage bill"],
+      ["Personal", "Free plan", "No usage bill"],
       ["Aspen", "", "Owner only"],
       ["Birch", "Trial, 12 days left", "$420.00"],
       ["Cedar", "Legacy plan", "No usage bill"],
-      ["Dogwood", "Starter (free)", "No usage bill"],
+      ["Dogwood", "Free plan", "No usage bill"],
       ["Elm", "Usage plan", "$1.20"],
       ["Northwind", "Usage plan", "$8.00"],
     ]);
@@ -397,7 +398,7 @@ describe("UsageSettingsPane: Switch to usage pricing (hq-pro #5081)", () => {
     );
     expect(q("usage-switch-confirm")).toBeNull();
     expect(q("usage-switch", detail()!)?.dataset.state).toBe("refused");
-    expect(clean(header("cmp_dogwood").querySelector('[data-testid="usage-account-plan"]'))).toBe("Starter (free)");
+    expect(clean(header("cmp_dogwood").querySelector('[data-testid="usage-account-plan"]'))).toBe("Free plan");
   });
 
   it("a conflict keeps the confirm open and asks to try again", async () => {
@@ -591,5 +592,52 @@ describe("UsageSettingsPane: re-reads only when the account set changes", () => 
     (host.querySelector('[data-testid="probe-add"]') as HTMLElement).click();
     await settle();
     expect(src.getBillingSummary).toHaveBeenCalledWith("cmp_oak");
+  });
+});
+
+describe("UsageSettingsPane: levels belong to the person who asked (US-019)", () => {
+  afterEach(() => __resetUsageLevelsForTests());
+
+  it("a Try again that answers after the pane closed and the person changed is not folded into the new person's level", async () => {
+    setUsageLevelViewer("prs_first");
+    let summaryCalls = 0;
+    let answerLate: ((value: unknown) => void) | null = null;
+    const src = source({
+      // The first read fails, so the line offers Try again.
+      getPersonalBillingSummary: vi.fn(async () =>
+        summaryCalls++ === 0 ? fail("http-500") : ok({ cardOnFile: true, subscriptionStatus: null, personalUsage: { cardOnFile: true } }),
+      ),
+      getPersonalUsageStatement: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            answerLate = resolve;
+          }),
+      ),
+    });
+    await render(src);
+    await open(PERSONAL_ACCOUNT_KEY);
+    q("usage-retry", detail()!)!.click();
+    await settle();
+    expect(answerLate).not.toBeNull();
+
+    // The pane closes, then a different person signs in, before the first
+    // person's read answers.
+    await unmount(component!);
+    component = null;
+    setUsageLevelViewer("prs_second");
+    answerLate!(ok(statement(1_200_000)));
+    await settle();
+
+    expect(usageLevelState(PERSONAL_ACCOUNT_KEY)).toBeNull();
+  });
+
+  it("a read that answers while the same person is signed in still counts toward the level", async () => {
+    setUsageLevelViewer("prs_first");
+    const src = source({
+      getPersonalBillingSummary: vi.fn(async () => ok({ cardOnFile: true, subscriptionStatus: null, personalUsage: { cardOnFile: true } })),
+      getPersonalUsageStatement: vi.fn(async () => ok(statement(1_200_000))),
+    });
+    await render(src);
+    expect(usageLevelState(PERSONAL_ACCOUNT_KEY)).toMatchObject({ level: 7, viewer: "prs_first" });
   });
 });

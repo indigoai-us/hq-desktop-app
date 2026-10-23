@@ -26,7 +26,6 @@
    * adapter + api seams and the ChatWakeBus.
    */
   import {
-    CLAUDE_PROVIDER_FLAG,
     DESKTOP_AGENT_CREATION_FLAG,
     HUMAN_ONLY_CONVERSATIONS_FLAG,
     READY_FIRST_ACTION_FLAG,
@@ -42,7 +41,7 @@
     type CloudFileEventPayload,
 } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
-  import { resolveUsageCompany, usageAccounts } from "../home/core-usage-model.js";
+  import { PERSONAL_ACCOUNT_KEY, resolveUsageCompany, setPreferredUsageAccount, usageAccounts } from "../home/core-usage-model.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
@@ -80,7 +79,6 @@
     RAIL_DEPLOYMENTS_ACTIONS_FLAG,
     RAIL_OUTPOST_FLAG,
     RAIL_TELEMETRY_FLAG,
-    RAIL_WORKFORCE_LIMITS_FLAG,
     isIndigoCompany,
     isIndigoOnlySurface,
     watchIndigoOnlyGates,
@@ -107,6 +105,7 @@
     shouldShowLaunch,
   } from "../badges/badge-launch.js";
   import { installBadgeLoader } from "../badges/badge-loader.svelte.js";
+  import { setUsageLevelHistoryLoader, setUsageLevelOpener, setUsageLevelViewer } from "../home/usage-levels.svelte.js";
   import { topBadge } from "../badges/badge-tier.js";
   import { resolveEarned, type ResolvedBadge } from "../badges/badge-catalog.js";
   import CompanySettingsHost from "./CompanySettingsHost.svelte";
@@ -5044,6 +5043,19 @@
           void navigate({ kind: "explorer" });
         },
       });
+      // Staff only (owner, 2026-10-16): see the accomplishments
+      // announcement again, as someone who has not seen it, without clearing
+      // the "seen" record. Needs badges on for you, like the real one.
+      if (isIndigoStaff && youBadgesEnabled) {
+        nav.push({
+          id: "command-replay-accomplishments",
+          label: "Replay accomplishments announcement",
+          detail: "Staff only: show the badges launch again",
+          action: () => {
+            window.setTimeout(replayLaunch, 0);
+          },
+        });
+      }
       nav.push({
         id: "command-take-tour",
         label: "Take the tour",
@@ -12897,6 +12909,12 @@
   // OWNER-R24: the caller's role in the open company, from the membership
   // roster. Grants and Billing show only to owners and admins.
   const companyPaneRole = $derived(callerRole(companyPaneCompany?.uid));
+  // US-024: the open company's plan status from the membership row, for the
+  // Billing pane (non-owners) and the Team seat chip.
+  const companyPaneWorkspace = $derived(
+    companyPaneCompany?.uid ? (companies ?? []).find((c) => (c.cloudUid ?? "").trim() === companyPaneCompany?.uid) : undefined,
+  );
+  const companyPaneBillingState = $derived(companyPaneWorkspace?.billingState ?? null);
   // US-007: the global Deployments page offers the company Custom domain sheet too.
   async function deployDomainPrices(): Promise<DomainPrices | null> {
     const read = adapter.company?.getPricing;
@@ -12973,6 +12991,35 @@
   const youBadges = $derived(badgesFor(youSubject));
 
   /**
+   * usage-only-pricing US-019: which level-up cards were shown is stored per
+   * signed-in person, and the card's "See usage" opens Settings > Usage on that account.
+   */
+  $effect(() => {
+    setUsageLevelViewer(self?.uid ?? null);
+  });
+  $effect(() => {
+    setUsageLevelOpener((accountKey) => {
+      setPreferredUsageAccount(accountKey);
+      openSettings("usage");
+    });
+    return () => setUsageLevelOpener(null);
+  });
+  // Levels follow the owner usage history (GET /v1/billing/usage/history,
+  // hq-pro #5087), read once per account. With no history there is no card.
+  $effect(() => {
+    const company = adapter.company;
+    setUsageLevelHistoryLoader(
+      company
+        ? (accountKey) =>
+            accountKey === PERSONAL_ACCOUNT_KEY
+              ? (company.getPersonalUsageHistory?.() ?? null)
+              : (company.getUsageHistory?.(accountKey) ?? null)
+        : null,
+    );
+    return () => setUsageLevelHistoryLoader(null);
+  });
+
+  /**
    * hq-accomplishment-badges US-016: the launch announcement, once, over the
    * whole window, when the server has badges on for you (badge-launch.ts).
    * It waits for first-run setup and the guided tour, which own the window.
@@ -12989,6 +13036,26 @@
     const timer = window.setTimeout(() => (launchOpen = true), LAUNCH_OPEN_DELAY_MS);
     return () => window.clearTimeout(timer);
   });
+  /** True @getindigo.ai gate (the host's is_indigo_user check), for staff-only tools. */
+  let isIndigoStaff = $state(false);
+  $effect(() => {
+    const identity = adapter?.identity;
+    if (!identity || adapter.kind !== "desktop") return;
+    let cancelled = false;
+    void identity.hasFeature("is_indigo_user").then((result) => {
+      if (!cancelled) isIndigoStaff = result.ok && result.value === true;
+    }).catch((err) => {
+      console.warn("[hq-desktop] staff check failed:", err);
+    });
+    return () => {
+      cancelled = true;
+    };
+  });
+  /** Staff replay from the command palette: open it now, whatever "seen" says. */
+  function replayLaunch(): void {
+    if (launchOpen || visualFirstRunOpen || tourStep) return;
+    launchOpen = true;
+  }
   function closeLaunch(): void {
     launchOpen = false;
     if (launchPreview()) {
@@ -14256,7 +14323,6 @@
             if (onopenurl) onopenurl(url);
             else window.open(url, "_blank", "noopener,noreferrer");
           }}
-          loadClaudeProviderFlag={() => adapter.identity.hasFeature(CLAUDE_PROVIDER_FLAG)}
           humanOnly={humanOnlyConversations}
           loadCloudProvisionOptions={(companyUid) => adapter.agents.getProvisionOptions(companyUid)}
           directCloud={directCloudCreate}
@@ -14417,6 +14483,7 @@
               selfEmail: self?.email ?? null,
               companyLabel: companyPaneCompany.label,
               avatarByUid,
+              usagePriced: companyPaneWorkspace?.usagePriced === true,
             }}
           >
             {#snippet skeleton()}
@@ -14452,7 +14519,7 @@
             companyUid={companyPaneCompany.uid}
             company={adapter.company ?? null}
             messaging={adapter.messaging ?? null}
-            seatLimit={railGate(RAIL_WORKFORCE_LIMITS_FLAG)}
+            billingState={companyPaneBillingState}
             files={adapter.files ?? null}
             targets={grantTargets}
           />

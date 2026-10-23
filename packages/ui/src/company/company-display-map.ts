@@ -6,6 +6,7 @@
  * surface without rewriting cached project documents.
  */
 
+import { isUsageBillingKind, isUsagePricedRecord, parseBillingState } from "@hq/platform";
 import type { Workspace } from "../chat/workspaces.js";
 
 const COMPANY_UID = /^(cmp|co)_[A-Za-z0-9]+$/i;
@@ -157,6 +158,17 @@ function isWorkspaceRow(row: Record<string, unknown>): boolean {
  *   company named after the user, became the default "In" target of the
  *   create modal, and the server refused it with "not an active member".
  */
+/**
+ * The plan status a membership row carries (US-024). `billingState` wins;
+ * a row without it may still carry the legacy `pricingPlan`.
+ */
+function billingFields(row: Record<string, unknown>): Pick<Workspace, "billingState" | "usagePriced"> {
+  const billingState = parseBillingState(row.billingState);
+  if (billingState) return { billingState, usagePriced: isUsageBillingKind(billingState.kind) };
+  if (typeof row.pricingPlan === "string") return { usagePriced: isUsagePricedRecord(row) };
+  return {};
+}
+
 export function workspacesFromMembershipRows(raw: unknown): Workspace[] {
   const seen = new Set<string>();
   const out: Workspace[] = [];
@@ -196,6 +208,7 @@ export function workspacesFromMembershipRows(raw: unknown): Workspace[] {
         // something to paper over with "active".
         membershipStatus: optStr(row.membershipStatus) ?? optStr(row.status),
         role: optStr(row.role),
+        ...billingFields(row),
         ...(typeof row.syncEnabled === "boolean"
           ? { syncEnabled: row.syncEnabled }
           : {}),
@@ -232,6 +245,7 @@ export function workspacesFromMembershipRows(raw: unknown): Workspace[] {
       localPath: null,
       membershipStatus: str(row.status) || "active",
       role: typeof row.role === "string" ? row.role : null,
+      ...billingFields(row),
       lastSyncedAt: null,
       brokenReason: null,
       invitedBy: null,

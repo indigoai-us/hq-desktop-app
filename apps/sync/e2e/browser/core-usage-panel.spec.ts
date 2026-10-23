@@ -125,7 +125,7 @@ test('Settings > Usage lists one line per account and opens one at a time, and a
   const lines = page.getByTestId('usage-account');
   await expect(lines).toHaveCount(9);
   await expect(lines.nth(0)).toContainText('Personal');
-  await expect(lines.nth(0)).toContainText('Starter (free)');
+  await expect(lines.nth(0)).toContainText('Free plan');
   const line = (uid: string) => page.locator(`[data-testid="usage-account"][data-key="${uid}"]`);
   await expect(line('cmp_ux_aspen')).toContainText('Owner only');
   await expect(line('cmp_ux_birch')).toContainText('Trial, 12 days left', { timeout: 10_000 });

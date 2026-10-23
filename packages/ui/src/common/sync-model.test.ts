@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Workspace } from "../chat/workspaces";
 import {
   buildAttentionItems,
+  usagePauseFromSyncError,
   buildSourceRows,
   currentSyncLabel,
   emptyWorkspaceStats,
@@ -345,5 +346,37 @@ describe("desktop-alt sources Connect affordance", () => {
     }
     expect(rows["acme"].showSyncMode).toBe(true);
     expect(rows["cloud-only"].showSyncMode).toBe(true);
+  });
+});
+
+describe("friendlySyncError usage pause (US-024)", () => {
+  const MESSAGE =
+    "Cloud sync is paused. Acme used its $10.00 monthly allowance. Add a card on the Billing page to resume. Files on this computer are not affected.";
+
+  it("shows the server message from a usagePause body instead of raw runner text", () => {
+    const raw = `VaultClientError code=PLAN_LIMIT_EXCEEDED http=402 ${JSON.stringify({
+      code: "PLAN_LIMIT_EXCEEDED",
+      usagePause: { code: "usage_paused", reason: "usage_card_required", message: MESSAGE, actionUrl: "https://hq.computer/companies/acme/billing" },
+    })}`;
+    const out = friendlySyncError(raw);
+    expect(out).toEqual({ summary: "Cloud sync is paused for this company.", detail: MESSAGE });
+    expect(`${out.summary} ${out.detail}`).not.toMatch(/VaultClientError|http=402|plan limit|Upgrade|Starter/);
+  });
+
+  it("reads the server sentence the desktop core passes on", () => {
+    expect(friendlySyncError(MESSAGE)).toEqual({
+      summary: "Cloud sync is paused for this company.",
+      detail: "Acme used its $10.00 monthly allowance. Add a card on the Billing page to resume. Files on this computer are not affected.",
+    });
+  });
+
+  it("falls back to plain copy for a bare reason code", () => {
+    const out = friendlySyncError("VaultClientError http=402 usage_spend_limit");
+    expect(out.summary).toBe("Cloud sync is paused for this company.");
+    expect(out.detail).toBe("Open Billing to add a card or raise the spend limit. Files on this computer are not affected.");
+  });
+
+  it("leaves other errors alone", () => {
+    expect(usagePauseFromSyncError("Connection reset")).toBeNull();
   });
 });

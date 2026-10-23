@@ -958,22 +958,57 @@ fn process_start_time_ms(pid: u32) -> Option<u64> {
         .ok()?;
     // `btime` is only whole-second precision; uptime plus the current wall clock
     // recovers the sub-second boot epoch needed to compare against Node's origin.
-    let uptime = fs::read_to_string("/proc/uptime")
-        .ok()?
-        .split_whitespace()
-        .next()?
-        .parse::<f64>()
-        .ok()?;
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_millis() as u64;
+    let (uptime, now_ms) = linux_uptime_and_now_ms()?;
     let boot_epoch_ms = linux_boot_epoch_ms(boot, uptime, now_ms)?;
     let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
     if hz <= 0 {
         return None;
     }
     Some(boot_epoch_ms.saturating_add(ticks.saturating_mul(1000) / hz as u64))
+}
+
+/// Uptime in seconds and the wall clock in ms, sampled together.
+///
+/// The boot epoch is the difference of the two, so any delay between reading
+/// them shifts it. `/proc/uptime` has 10 ms resolution, and a thread
+/// descheduled between that read and the wall-clock read adds its whole
+/// delay, which on a loaded machine exceeds the 20 ms liveness tolerance and
+/// makes a live holder look stale. Read the boot clock (the clock behind
+/// `/proc/uptime` and the stat start time) on both sides of the wall-clock
+/// read and keep the tightest bracket.
+#[cfg(target_os = "linux")]
+fn linux_uptime_and_now_ms() -> Option<(f64, u64)> {
+    fn boottime_ns() -> Option<u64> {
+        let mut ts: libc::timespec = unsafe { std::mem::zeroed() };
+        if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) } != 0 {
+            return None;
+        }
+        Some((ts.tv_sec as u64).saturating_mul(1_000_000_000) + ts.tv_nsec as u64)
+    }
+    let mut best: Option<(u64, f64, u64)> = None;
+    for _ in 0..8 {
+        let before = boottime_ns()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
+        let after = boottime_ns()?;
+        let width = after.saturating_sub(before);
+        // `now_ms` is truncated to whole milliseconds; move the dropped
+        // fraction into the uptime so their difference stays exact.
+        let uptime = (before + width / 2) as f64 / 1e9;
+        let now_ms = now.as_secs_f64() * 1000.0;
+        if best.map_or(true, |(best_width, _, _)| width < best_width) {
+            best = Some((
+                width,
+                uptime - (now_ms - now_ms.floor()) / 1000.0,
+                now_ms as u64,
+            ));
+        }
+        if width < 1_000_000 {
+            break;
+        }
+    }
+    best.map(|(_, uptime, now_ms)| (uptime, now_ms))
 }
 
 #[cfg(target_os = "linux")]
@@ -1871,6 +1906,25 @@ mod tests {
         let mut request = PackageUseUpdateRequest::begin_at(paths).unwrap();
         assert!(request.try_acquire().unwrap().is_some());
         assert!(!file.exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_own_start_time_is_stable_across_samples() {
+        // Sampling across several 10 ms `/proc/uptime` steps exposed the old
+        // separate reads. No load threads: they would starve other
+        // timing-sensitive tests running in parallel.
+        let pid = std::process::id();
+        let first = process_start_time_ms(pid).unwrap();
+        let mut worst = 0;
+        for _ in 0..60 {
+            std::thread::sleep(Duration::from_millis(1));
+            worst = worst.max(process_start_time_ms(pid).unwrap().abs_diff(first));
+        }
+        assert!(
+            worst < process_start_tolerance_ms() / 4,
+            "own start time drifted {worst}ms between samples"
+        );
     }
 
     #[cfg(target_os = "linux")]

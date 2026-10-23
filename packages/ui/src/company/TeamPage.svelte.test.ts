@@ -145,6 +145,26 @@ describe("TeamPage roster (QA-022)", () => {
     expect(target.querySelector("[data-testid='team-seat-chip']")?.textContent?.trim()).toBe("1 seat");
   });
 
+  it("shows no seat chip for a company on usage pricing (US-024)", async () => {
+    const company = {
+      getTeamTelemetry: vi.fn(async () => ({ ok: true as const, value: { perMember: [] } })),
+      listMembers: vi.fn(async () => ({ ok: true as const, value: [] })),
+    };
+    const messaging = {
+      listContacts: vi.fn(async () => ({
+        ok: true as const,
+        value: [{ personUid: "prs_ana", displayName: "Ana Ruiz", email: "ana@example.com" }],
+      })),
+    };
+    const target = render({ slug: "amass-usage-roster", companyUid: "cmp_amass", company, messaging, usagePriced: true });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(target.querySelectorAll("[data-testid='team-row']")).toHaveLength(1);
+    });
+    expect(target.querySelector("[data-testid='team-seat-chip']")).toBeNull();
+    expect(target.textContent).not.toMatch(/\bseats?\b/);
+  });
+
   it("still shows the roster when the telemetry read fails, without raw error text", async () => {
     const company = {
       getTeamTelemetry: vi.fn(async () => ({ ok: false as const, reason: "http", message: "HTTP 404 Not Found {\"error\":\"x\"}" })),

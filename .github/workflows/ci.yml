@@ -328,9 +328,68 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --no-frozen-lockfile
+      # The old single `playwright install --with-deps` step apt-installs ~181
+      # packages (~119 MB) from the runner's Ubuntu mirror. On 2026-10-22
+      # (run 39856307669) that mirror served ~45-50 KB/s and the step ran out
+      # the whole 30-minute job. It normally takes 37-53s. The system deps are
+      # now their own step: apt gives up on a stalled connection after 20s,
+      # each attempt is capped at 2 minutes, there are 3 attempts, and the step
+      # is capped at 8 minutes, so a bad mirror fails the job fast instead.
+      # Worst case is 3 x (120s + 10s kill grace) + 2 x 10s sleep = 410s, so
+      # the 8-minute cap leaves room for the explicit ::error below to print.
+      - name: Resolve Playwright version
+        id: playwright-version
+        working-directory: apps/sync
+        run: echo "version=$(pnpm exec playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright-version.outputs.version }}-chromium-webkit
+      - name: Install layout regression browser system deps
+        working-directory: apps/sync
+        timeout-minutes: 8
+        run: |
+          # install-deps shells out to apt-get without a way to pass `-o`, so the
+          # same options go in an apt.conf.d drop-in that every apt call reads.
+          printf 'Acquire::http::Timeout "20";\nAcquire::https::Timeout "20";\nAcquire::Retries "2";\n' \
+            | sudo tee /etc/apt/apt.conf.d/99ci-timeouts >/dev/null
+          # `timeout` runs inside sudo, as root, so its kill reaches apt-get.
+          # Run as a normal user, playwright calls sudo itself, sudo moves apt-get
+          # into its own pty session, and a timed-out apt-get kept the dpkg lock
+          # and made every retry fail at once (run 39875625204). Playwright skips
+          # its own sudo when it is already root.
+          for attempt in 1 2 3; do
+            if sudo env "PATH=$PATH" timeout --kill-after=10 120 \
+              ./node_modules/.bin/playwright install-deps chromium webkit; then
+              exit 0
+            fi
+            echo "::warning::playwright install-deps attempt ${attempt}/3 failed or timed out"
+            # Anything that outlived the kill still holds the dpkg lock.
+            sudo pkill -KILL -x apt-get || true
+            sudo pkill -KILL -x dpkg || true
+            # A kill mid-unpack can leave dpkg half-configured; repair before retrying.
+            sudo dpkg --configure -a || true
+            # apt only moves to the next mirror in apt-mirrors.txt when one
+            # errors, not when it is slow. On run 39877207461 the Azure mirror
+            # served package files at ~50 KB/s while its index files came at
+            # 11 MB/s, so every retry hit the same slow pool. Drop the Azure
+            # entry so retries use archive.ubuntu.com, the file's next entry.
+            # Only when another entry is left, so the list never ends up empty.
+            if [ -f /etc/apt/apt-mirrors.txt ] \
+              && grep -q azure.archive.ubuntu.com /etc/apt/apt-mirrors.txt \
+              && grep -v azure.archive.ubuntu.com /etc/apt/apt-mirrors.txt | grep -q '^http'; then
+              sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
+              echo "Retrying without the Azure Ubuntu mirror:"
+              cat /etc/apt/apt-mirrors.txt
+            fi
+            [ "$attempt" -lt 3 ] && sleep 10
+          done
+          echo "::error::playwright install-deps failed after 3 attempts (slow or unreachable Ubuntu mirror?)"
+          exit 1
       - name: Install layout regression browsers
         working-directory: apps/sync
-        run: pnpm exec playwright install --with-deps chromium webkit
+        run: pnpm exec playwright install chromium webkit
       # No `pnpm build` first: playwright.config.ts starts its own vite preview
       # server, so this suite never reads the dist the old serial job produced.
       - name: Desktop scroll containment (Chromium + WebKit)

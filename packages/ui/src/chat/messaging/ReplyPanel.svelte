@@ -75,7 +75,9 @@
     formatComposerSendError,
     isTerminalSendError,
   } from "./composer-send-error";
-  import { uploadErrorUpgradeUrl } from "./upload-chat-attachments";
+  import { uploadErrorUpgradeUrl, uploadErrorUsagePause } from "./upload-chat-attachments";
+  import { callerRole } from "../../company/company-roles.svelte.js";
+  import type { UsagePause } from "@hq/platform";
   import AgentTaskStrip from "../tasks/AgentTaskStrip.svelte";
   import type { AgentTask } from "../tasks/agent-tasks";
   import {
@@ -433,6 +435,8 @@
   // Upgrade link for a plan-limit upload refusal; only shown beside the
   // attach error it came with (hard-stop US-018).
   let attachUpgradeUrl = $state<string | null>(null);
+  /** US-024: the usage pause behind the last refused attachment or send. */
+  let attachUsagePause = $state<UsagePause | null>(null);
   let pasteCounter = 0;
   let composerEl = $state<HTMLTextAreaElement | null>(null);
   let selectedMentions = $state<MentionTarget[]>([]);
@@ -754,12 +758,14 @@
     pendingFiles = next;
     attachError = errors[0] ?? null;
     attachUpgradeUrl = null;
+    attachUsagePause = null;
   }
 
   function removePendingFile(index: number): void {
     pendingFiles = pendingFiles.filter((_, i) => i !== index);
     attachError = null;
     attachUpgradeUrl = null;
+    attachUsagePause = null;
   }
 
   function namePastedFile(file: File): File {
@@ -840,6 +846,9 @@
         const raw = err instanceof Error ? err.message.trim() : "";
         attachError = formatComposerSendError(raw, true);
         attachUpgradeUrl = uploadErrorUpgradeUrl(err);
+        attachUsagePause = uploadErrorUsagePause(err);
+        // US-024: a usage pause shows the server's own message.
+        if (attachUsagePause) attachError = attachUsagePause.message;
         sending = false;
         return;
       }
@@ -868,6 +877,7 @@
     writeThreadComposerDraft(composerDraftKey, { text: "", files: [] });
     attachError = null;
     attachUpgradeUrl = null;
+    attachUsagePause = null;
     const echoToChannel = alsoSendToChannel && canAlsoSend;
     alsoSendToChannel = false;
     try {
@@ -1567,6 +1577,8 @@
           files={pendingFiles}
           error={attachError}
           upgradeUrl={attachUpgradeUrl}
+          usagePause={attachUsagePause}
+          billingRole={callerRole(linkCompanyUid) ?? null}
           onupgrade={onopenurl}
           testid="reply-panel-pending"
           onremove={removePendingFile}

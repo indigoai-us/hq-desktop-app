@@ -369,7 +369,7 @@ describe("DesktopApp New bot: the Cloud option", () => {
     },
   ];
 
-  it("creates a Claude subscription agent from the cloud flow and opens its authorization page", async () => {
+  it("creates a Codex agent from the cloud flow with every flag on, never offers Claude, and opens no authorization page", async () => {
     let posted = [TURNS[0]!];
     const runCompanyTabAction = vi.fn(async () =>
       ok({ cardId: "card_create_agent_1", actionId: "add_agent", state: "open", channelId: "chn_acme" }),
@@ -454,8 +454,8 @@ describe("DesktopApp New bot: the Cloud option", () => {
       nameField!.dispatchEvent(new Event("input", { bubbles: true }));
       await settle(10);
       expect(document.querySelector('[data-testid="cloud-bot-size-basic"]')?.parentElement?.textContent).toContain("$42.00/month");
-      document.querySelector<HTMLInputElement>('[data-testid="cloud-bot-runtime-claude"]')!.click();
-      await settle(10);
+      expect(document.querySelector('[data-testid="cloud-bot-runtime-claude"]')).toBeNull();
+      expect(document.querySelector<HTMLInputElement>('[data-testid="cloud-bot-runtime-codex"]')?.checked).toBe(true);
       clickAnywhere('[data-testid="chat-bot-create"]');
 
       // The server's own sequence runs, and the shell opens the bot's channel.
@@ -466,7 +466,7 @@ describe("DesktopApp New bot: the Cloud option", () => {
       expect(runCompanyTabAction).toHaveBeenCalledWith(
         expect.objectContaining({ tab: "team", cardId: "team:spend", actionId: "add_agent" }),
       );
-      expect(hasFeature).toHaveBeenCalledWith("agents.claude-provider");
+      expect(hasFeature).not.toHaveBeenCalledWith("agents.claude-provider");
       expect(runCardAction).toHaveBeenCalledTimes(3);
       // The name the person typed reaches the server as-is: no cloud bot is
       // ever created under a suggestion they never saw.
@@ -477,7 +477,7 @@ describe("DesktopApp New bot: the Cloud option", () => {
       });
       expect(runCardAction.mock.calls[1]![0]).toMatchObject({
         cardId: "card_create_agent_2",
-        values: { runtime: "claude" },
+        values: { runtime: "codex" },
       });
       expect(runCardAction.mock.calls[2]![0]).toMatchObject({
         cardId: "card_create_agent_3",
@@ -486,7 +486,7 @@ describe("DesktopApp New bot: the Cloud option", () => {
       });
       expect(runCardAction.mock.calls[2]![0].values).not.toHaveProperty("apiKey");
       expect(runCardAction.mock.calls[2]![0].values).not.toHaveProperty("authMode");
-      expect(onopenurl).toHaveBeenCalledWith("https://hq.getindigo.ai/resolve/agents/agt_polar");
+      expect(onopenurl).not.toHaveBeenCalled();
 
       // Nothing was ever drawn: the card that collects these details is a
       // retired timeline kind, and nothing was focused on it either.

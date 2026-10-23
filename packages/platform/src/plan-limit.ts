@@ -22,6 +22,7 @@
  */
 
 import type { AdapterFailure } from "./adapter.js";
+import { parseUsagePause, type UsagePause } from "./billing-state.js";
 
 /** Current hard-stop code (and the legacy membership code). */
 export const PLAN_LIMIT_EXCEEDED = "PLAN_LIMIT_EXCEEDED";
@@ -185,6 +186,12 @@ export interface HqProErrorDetails {
   instanceId?: string;
   /** Present only when the body names the service behind hq-pro that refused. */
   upstreamCode?: string;
+  /**
+   * Present when usage state (trial cap, card required, spend limit) refused
+   * the request (usage-only-pricing US-024). `message` and `upgradeUrl` then
+   * repeat its message and Billing link.
+   */
+  usagePause?: UsagePause;
 }
 
 /** Server code for a bot removal refused because its machine is running. */
@@ -221,6 +228,20 @@ export function hqProErrorFromRecord(
   rec: Record<string, unknown>,
   defaults: { code: string; message: string },
 ): HqProErrorDetails {
+  // A usage pause carries the legacy plan-limit fields for older clients.
+  // Read its block first so the person sees the server's usage message and
+  // Billing link, never a plan-limit sentence.
+  const usagePause = parseUsagePause(rec.usagePause);
+  if (usagePause) {
+    const legacyCode = typeof rec.code === "string" && isPlanLimitCode(rec.code) ? rec.code.trim() : PLAN_LIMIT_EXCEEDED;
+    return {
+      code: legacyCode,
+      message: usagePause.message,
+      planLimit: true,
+      upgradeUrl: usagePause.actionUrl,
+      usagePause,
+    };
+  }
   // Other 402s (a plan-required feature gate such as MEETING_PLAN_REQUIRED)
   // keep their own code and text; they still keep an approved upgrade link.
   const upgradeUrl = approvedPlanUpgradeUrl(rec.upgradeUrl);
@@ -287,5 +308,6 @@ export function hqProFailure(details: HqProErrorDetails): AdapterFailure {
     ...(details.upgradeUrl ? { upgradeUrl: details.upgradeUrl } : {}),
     ...(details.instanceId ? { instanceId: details.instanceId } : {}),
     ...(details.upstreamCode ? { upstreamCode: details.upstreamCode } : {}),
+    ...(details.usagePause ? { usagePause: details.usagePause } : {}),
   };
 }
