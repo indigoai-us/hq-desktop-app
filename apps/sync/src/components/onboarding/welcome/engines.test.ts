@@ -235,6 +235,47 @@ describe('createReadyEngine layout', () => {
     for (const callback of observers) callback();
     expect(parseFloat(refs.alt.style.top)).toBeGreaterThanOrEqual(navTop() + 160 + 18);
   });
+  // free-user-required-telemetry US-004: the usage-data notice replaces the
+  // one-line checkbox after the notice read, so the alt block grows late and
+  // the stack has to re-center (and the skyline re-cap) under it.
+  it('lays the stack out again when the alt block grows after the screen is shown', () => {
+    vi.stubGlobal('innerWidth', 1024);
+    vi.stubGlobal('innerHeight', 900);
+    const observed: Element[] = [];
+    const observers: Array<() => void> = [];
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(callback: () => void) {
+          observers.push(callback);
+        }
+        observe(el: Element) {
+          observed.push(el);
+        }
+        disconnect() {}
+      },
+    );
+    const canvas = document.createElement('canvas');
+    canvas.getContext = (() => null) as never;
+    const refs = {
+      canvas,
+      copy: sized(document.createElement('div'), 880, 132),
+      prog: sized(document.createElement('div'), 300, 34),
+      nav: sized(document.createElement('div'), 600, 120),
+      alt: sized(document.createElement('div'), 360, 18),
+    };
+    const engine = createReadyEngine(refs, { reveal: () => {} });
+    engine.enter(0);
+    expect(observed).toContain(refs.alt);
+    const topBefore = parseFloat(refs.copy.style.top);
+
+    sized(refs.alt, 640, 240);
+    for (const callback of observers) callback();
+    const topAfter = parseFloat(refs.copy.style.top);
+    expect(topAfter).toBeLessThan(topBefore);
+    const altBottom = parseFloat(refs.alt.style.top) + 240;
+    expect(altBottom).toBeLessThanOrEqual(900);
+  });
 });
 
 describe('createPanelEngine', () => {

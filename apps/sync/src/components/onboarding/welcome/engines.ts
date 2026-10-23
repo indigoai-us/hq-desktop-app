@@ -1065,14 +1065,19 @@ export function createReadyEngine(refs: ReadyRefs, options: { reveal: () => void
   const sky = createSkyline(refs.canvas, keepOut, 0.5);
   // The nav grows after the screen is shown (the "Checking for AI tools" row
   // comes and goes with each probe), so its height is watched, not read once.
+  // The alt line grows too (the free-plan usage-data notice arrives after the
+  // notice read), so the skyline is rebuilt under its new bottom.
   let observer: ResizeObserver | null = null;
   let active = false;
   function watch() {
-    if (observer || !refs.nav || typeof ResizeObserver === 'undefined') return;
+    if (observer || typeof ResizeObserver === 'undefined') return;
     observer = new ResizeObserver(() => {
-      if (active) layout();
+      if (!active) return;
+      layout();
+      sky.build();
     });
-    observer.observe(refs.nav);
+    if (refs.nav) observer.observe(refs.nav);
+    observer.observe(refs.alt);
   }
   // the whole stack (title, body, progress, button, alt line) is one block,
   // centred in the window; the skyline caps itself under it
