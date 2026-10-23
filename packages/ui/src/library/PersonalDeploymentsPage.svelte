@@ -580,7 +580,7 @@
     <header class="sh">
       <span>Custom domain</span>
       <span class="grow"></span>
-      <button class="icon" type="button" aria-label="Close" onclick={() => (domainRow = null)}><RailIcon name="x" /></button>
+      <button data-icon-only class="icon" type="button" aria-label="Close" onclick={() => (domainRow = null)}><RailIcon name="x" /></button>
     </header>
     <CustomDomainForm
       appId={row.appId!}

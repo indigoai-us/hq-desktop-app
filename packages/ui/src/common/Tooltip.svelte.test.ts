@@ -76,3 +76,47 @@ describe("Tooltip bubble text", () => {
     expect(style).toMatch(/font-weight: 400;/);
   });
 });
+
+describe("Tooltip at a window edge", () => {
+  const rect = (left: number, width: number) =>
+    ({ left, right: left + width, width, top: 0, bottom: 20, height: 20, x: left, y: 0, toJSON() {} }) as DOMRect;
+
+  function openNear(triggerLeft: number, triggerWidth: number, bubbleWidth: number): HTMLElement {
+    const wrap = render(false);
+    wrap.getBoundingClientRect = () => rect(triggerLeft, triggerWidth);
+    const proto = HTMLElement.prototype.getBoundingClientRect;
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+      return this.classList.contains("tooltip-bubble") ? rect(0, bubbleWidth) : proto.call(this);
+    };
+    try {
+      wrap.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+      flushSync();
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = proto;
+    }
+    return host!.querySelector('[role="tooltip"]') as HTMLElement;
+  }
+
+  // Owner, 2026-09: "when it's at the edge and the tooltip will bleed off
+  // screen we shouldnt center the tooltip — we should right align".
+  it("aligns to the trigger's right edge instead of overhanging the window", () => {
+    // 1024px window, a 24px button 10px from the right, a 120px bubble.
+    const bubble = openNear(990, 24, 120);
+    const centredLeft = 990 + 12 - 60;
+    const flushRight = 990 + 24 - 120;
+    expect(bubble.style.getPropertyValue("--tooltip-x")).toBe(`${flushRight - centredLeft}px`);
+  });
+
+  it("aligns to the trigger's left edge near the left of the window", () => {
+    const bubble = openNear(4, 24, 120);
+    const centredLeft = 4 + 12 - 60;
+    // Left-aligned with the trigger would sit at x=4, inside the 8px margin,
+    // so the margin backstop wins.
+    expect(bubble.style.getPropertyValue("--tooltip-x")).toBe(`${8 - centredLeft}px`);
+  });
+
+  it("stays centred when it fits", () => {
+    const bubble = openNear(400, 24, 120);
+    expect(bubble.style.getPropertyValue("--tooltip-x")).toBe("");
+  });
+});

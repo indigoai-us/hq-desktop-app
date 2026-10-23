@@ -50,7 +50,7 @@
 
 {#if loading}<BotTabSkeleton kind="channels" onretry={onrefresh} />{:else}
 <section class="channels" aria-label="Bot channels" data-testid="bot-channels">
-  <div class="overview"><div><span>{loading ? 'Checking connections…' : `${connected} connected`}</span></div><button class="icon-button" type="button" aria-label="Refresh channel status" disabled={loading || !onrefresh || !!pending} onclick={() => onrefresh?.()}><RailIcon name="refresh" /></button></div>
+  <div class="overview"><div><span>{loading ? 'Checking connections…' : `${connected} connected`}</span></div><button data-icon-only class="icon-button" type="button" aria-label="Refresh channel status" disabled={loading || !onrefresh || !!pending} onclick={() => onrefresh?.()}><RailIcon name="refresh" /></button></div>
   {#if error}<p class="notice" role="alert">{error}</p>{/if}
   <div class="list" aria-busy={loading}>
     {#each visible as channel (channel.id)}
@@ -82,7 +82,7 @@
 {#if current}
   <div class="overlay">
     <div class="connection-dialog" tabindex="-1" role="dialog" aria-modal="true" aria-label={`${current.name} connection`} use:dismissable={{ onclose: close, outside: true }}>
-      <header><span class="logo"><ConnectionCardLogo logo={appLogo(current.domain)} size={44} /></span><div><h3>{current.name}</h3><p>{CHANNEL_STATUS[current.state]}</p></div><button type="button" class="icon-button" aria-label="Close channel details" disabled={!!pending} onclick={close}><RailIcon name="x" /></button></header>
+      <header><span class="logo"><ConnectionCardLogo logo={appLogo(current.domain)} size={44} /></span><div><h3>{current.name}</h3><p>{CHANNEL_STATUS[current.state]}</p></div><button data-icon-only type="button" class="icon-button" aria-label="Close channel details" disabled={!!pending} onclick={close}><RailIcon name="x" /></button></header>
       <p>{current.description}</p>
       <div class="connection-note">{current.detail ?? (current.state === 'connected' ? 'This channel is connected to your bot.' : 'Continue to the guided connection flow. The channel is marked connected only after confirmation.')}</div>
       {#if actionError}<p class="notice" role="alert">{actionError}</p>{/if}

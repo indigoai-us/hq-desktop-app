@@ -9,6 +9,9 @@
   import { loadPickerRoster, readPickerRoster } from "./people-picker.js";
   import type { ChatSidebarApi } from "./chat-api.js";
   import type { ConversationRow, DmContactInput, ScopeCompany } from "./sidebar-model.js";
+  import { findExistingConversation } from "./new-message-model.js";
+  import { relativeActivity } from "../common/relative-activity.js";
+  import RailIcon from "../common/button/RailIcon.svelte";
 
   let {
     api,
@@ -60,6 +63,17 @@
       .map((id) => allItems.find((item) => item.id === id))
       .filter((item): item is RecipientItem => !!item),
   );
+  // People only: picking a channel or a group already names the conversation.
+  const existing = $derived(
+    selected.length > 0 && selected.every((entry) => entry.kind !== "channel" && entry.kind !== "group")
+      ? findExistingConversation(rows, selected.map((entry) => entry.principalUid ?? entry.id))
+      : null,
+  );
+  const existingAge = $derived.by(() => {
+    if (!existing) return "";
+    const age = relativeActivity(new Date(existing.lastActivityAt).toISOString());
+    return age === "now" ? "active now" : `active ${age} ago`;
+  });
   // Personal ("") carries no company context and shows everyone, as before.
   const scopes = $derived<RecipientScopeOption[]>([
     { id: "", label: "Personal" },
@@ -94,6 +108,13 @@
         if (!row?.channelId) return;
         if (body) await api.sendChannelMessage({ channelId: row.channelId, body });
         onopen(row);
+        return;
+      }
+      // Two or more people you already have a group with: send there, as the
+      // card under the picker says, instead of starting a duplicate.
+      if (selected.length > 1 && existing?.channelId) {
+        if (body) await api.sendChannelMessage({ channelId: existing.channelId, body });
+        onopen(existing);
         return;
       }
       if (selected.length === 1) {
@@ -165,8 +186,8 @@
   <header class="sh">
     New message
     <span class="grow"></span>
-    <button type="button" class="icon" aria-label="Close" onclick={onclose}>
-      <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
+    <button data-icon-only type="button" class="icon" aria-label="Close" onclick={onclose}>
+      <RailIcon name="x" size={14} />
     </button>
   </header>
   <div class="sb">
@@ -181,12 +202,34 @@
       label={null}
       autofocus
       busy={sending}
-      status={error ?? (selected.length > 1 ? "Two or more people start a group · ⌘↵ sends" : "⌘↵ sends")}
+      status={error ??
+        (existing && selected.length > 1
+          ? "Sends to your existing group · ⌘↵ sends"
+          : selected.length > 1
+            ? "Two or more people start a group · ⌘↵ sends"
+            : "⌘↵ sends")}
       onsubmit={() => void send()}
       oncancel={onclose}
       testid="new-message-picker"
       submitTestid="new-message-send"
     >
+      {#if existing}
+        <!-- iOS #44: if a conversation with these people exists, say so and
+             offer it, instead of quietly starting a second one. -->
+        <button
+          type="button"
+          class="existing"
+          data-testid="new-message-existing"
+          onclick={() => onopen(existing)}
+        >
+          <span class="existing-icon" aria-hidden="true"><RailIcon name="arrow-right" /></span>
+          <span class="existing-copy">
+            <span class="existing-title">{existing.title}</span>
+            <span class="existing-meta">You already have this conversation · {existingAge}</span>
+          </span>
+          <span class="existing-caret" aria-hidden="true"><RailIcon name="caret-right" size={12} /></span>
+        </button>
+      {/if}
       <textarea
         class="ta"
         rows="2"
@@ -251,6 +294,38 @@
     padding: 7px 10px;
     resize: vertical;
   }
+  /* An inset card with an icon, as iOS's New message states are. */
+  .existing {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    box-sizing: border-box;
+    width: 100%;
+    margin: 0 0 8px;
+    padding: 8px 10px 8px 8px;
+    appearance: none;
+    -webkit-appearance: none;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    background: var(--raised, var(--v4-raised));
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .existing:hover { background: var(--hover, var(--v4-active-row)); }
+  .existing:focus-visible { outline: none; border-color: var(--t3, var(--v4-text-3)); }
+  .existing-icon {
+    flex: none; display: grid; place-items: center; width: 28px; height: 28px;
+    border-radius: 8px; background: var(--btn-bg, var(--v4-control-faint)); color: var(--t2, var(--v4-text-2));
+  }
+  .existing-copy { flex: 1 1 auto; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .existing-title {
+    overflow: hidden; color: var(--t1, var(--v4-text-1)); font: 500 13px/1.35 var(--font-ui);
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  .existing-meta { color: var(--t3, var(--v4-text-3)); font: 400 13px/1.35 var(--font-ui); }
+  .existing-caret { flex: none; display: grid; place-items: center; color: var(--t3, var(--v4-text-3)); }
   .ta::placeholder { color: var(--t3, var(--v4-text-3)); }
   .ta:focus-visible { outline: none; border-color: var(--t3, var(--v4-text-3)); }
 </style>

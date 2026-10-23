@@ -17,12 +17,31 @@
   let placeBelow = $state(false);
   let alignRight = $state(false);
 
+  /**
+   * The pane clips before the viewport does. The trigger sits at the right
+   * edge of a message, well inside a window that is far wider, so measuring
+   * against `window.innerWidth` never flipped the picker and it opened
+   * straight into the scroller's clip, losing half its columns. Measure
+   * against the nearest scroller instead (owner, #772).
+   */
+  function clipBox(el: HTMLElement): { top: number; right: number } {
+    const host = el.closest<HTMLElement>(
+      '[data-testid="conversation-thread"], [data-testid="reply-panel-list"]',
+    );
+    if (host) {
+      const r = host.getBoundingClientRect();
+      return { top: r.top, right: r.right };
+    }
+    return { top: 0, right: window.innerWidth };
+  }
+
   $effect(() => {
     const el = rootEl;
     if (!el) return;
     const rect = el.getBoundingClientRect();
-    if (!placeBelow && rect.top < 8) placeBelow = true;
-    if (!alignRight && rect.right > window.innerWidth - 8) alignRight = true;
+    const box = clipBox(el);
+    if (!placeBelow && rect.top < box.top + 8) placeBelow = true;
+    if (!alignRight && rect.right > box.right - 8) alignRight = true;
   });
 
   function onDocPointerDown(e: PointerEvent): void {

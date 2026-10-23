@@ -1070,10 +1070,12 @@ describe('US-103 embedded desktop window', () => {
       const calls: MessagingCall[] = [];
       mountMessagingSidebar(messagingInvoke(calls));
       await flush();
-      await vi.waitFor(() => expect(host.querySelector('[data-testid="chat-show-history"]')).not.toBeNull());
-      (host.querySelector('[data-testid="chat-show-history"]') as HTMLButtonElement).click();
+      // Message search is the one search box now; "Show all history" expands
+      // the rail instead of opening a search dialog.
+      await vi.waitFor(() => expect(host.querySelector('[data-testid="chat-search"]')).not.toBeNull());
+      (host.querySelector('[data-testid="chat-search"]') as HTMLButtonElement).click();
       await flush();
-      setInput('chat-history-search', 'known');
+      setInput('chat-switcher-input', 'known');
       await new Promise((resolve) => setTimeout(resolve, 260));
       await flush();
 

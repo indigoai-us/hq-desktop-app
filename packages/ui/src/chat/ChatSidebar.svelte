@@ -140,16 +140,15 @@
     applySidebarFilters,
     clearDmDot,
     clearPairUnread,
-    conversationKindLabel,
     distinctDmPeople,
     duplicateHumanDmTitles,
     formatSearchHitTime,
+    highlightMatches,
     companyScopedChannels,
     groupByDay,
     omitCompanyScopedChannels,
     railInboxRows,
     groupByType,
-    historySearchScopeLabel,
     initialsFor,
     buildScopeOptions,
     loadConversationCache,
@@ -185,8 +184,6 @@
     scopePillLabel,
     startOfLocalDay,
     searchCompanyUidFromScope,
-    searchHistory,
-    historyDayGroups,
     searchHitSnippet,
     takeRailConversations,
     takeAllScopeRailRows,
@@ -839,13 +836,15 @@
   }
 
   let lastWeekExpanded = $state(false);
-  let historyOpen = $state(false);
-  let historyQuery = $state("");
+  /** The rail is showing every filtered row, not just the live budget. */
+  let historyExpanded = $state(false);
   /** Server message-content hits for non-empty history query (US-013). */
   let messageSearchHits = $state<MessageSearchHit[]>([]);
   let messageSearchLoading = $state(false);
   let messageSearchError = $state<string | null>(null);
   let messageSearchSeq = 0;
+  /** Bumped by "Try again" to re-run the same message search. */
+  let messageSearchRetry = $state(0);
   /**
    * The unified create modal (search-first: DM ↔ channel is inferred from what
    * the user types). Replaces the old "+" dropdown and BOTH the new-message and
@@ -868,11 +867,10 @@
   /**
    * Debounced mirrors of the free-text query inputs. The result-computing
    * `$derived`s read these, not the raw bound values, so the O(n) client
-   * filters (`filterSwitcher`/`searchHistory` over the full roster) run at most
+   * filters (`filterSwitcher` over the full roster) run at most
    * once per idle window instead of on every keystroke. The inputs stay bound
    * to the raw values, so typing/cursor/IME are unaffected.
    */
-  let historyQueryDebounced = $state("");
   /** Right-click conversation context menu (anchored at the cursor). */
   let contextMenu = $state<{
     row: ConversationRow;
@@ -945,16 +943,6 @@
   let activeId = $state<string | null>(null);
   $effect(() => {
     activeId = selectedId;
-  });
-
-  // History searches are debounced; conversation completion stays synchronous
-  // so Enter can never open a result from the previous query.
-  $effect(() => {
-    const h = historyQuery;
-    const timer = setTimeout(() => {
-      historyQueryDebounced = h;
-    }, 110);
-    return () => clearTimeout(timer);
   });
 
   const scopeCompanies = $derived(
@@ -1527,7 +1515,7 @@
   const inboxRows = $derived(railInboxRows(filteredRows, scope));
   const chronologicalScope = $derived(scope === "all" || companyScoped);
   const railRows = $derived(
-    sortMode === "type" || companyScoped
+    sortMode === "type" || companyScoped || historyExpanded
       ? inboxRows
       : scope === "all"
         ? takeAllScopeRailRows(inboxRows, {
@@ -1846,7 +1834,9 @@
       openNewMessage: () => openCreateAction("message"),
       openNewChannel,
       openSearch,
-      openHistory,
+      // One search box covers conversations and messages, so "Search
+      // messages" (⌘F) and "Jump to conversation" open the same dialog.
+      openHistory: openSearch,
       openNewAgent,
     });
     return () => emit(null);
@@ -1868,8 +1858,18 @@
   const switcherResults = $derived(
     filterSwitcher(liveSwitcherRows, searchQuery).slice(0, 200),
   );
+  /**
+   * Conversations then messages, as ONE list. The arrow keys and Enter run
+   * over this, not over the two sections separately — a highlight that
+   * stopped at a section boundary would make the second half unreachable
+   * from the keyboard.
+   */
+  const searchItems = $derived([
+    ...switcherResults.map((row) => ({ kind: "row" as const, row })),
+    ...messageSearchHits.map((hit) => ({ kind: "hit" as const, hit })),
+  ]);
   $effect(() => {
-    switcherResults;
+    searchItems.length;
     activeSearchIndex = 0;
   });
 
@@ -1886,26 +1886,24 @@
       closeSearch();
     } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
-      if (!switcherResults.length) return;
-      activeSearchIndex = (activeSearchIndex + (event.key === "ArrowDown" ? 1 : -1) + switcherResults.length) % switcherResults.length;
-      document.getElementById(`conversation-search-${activeSearchIndex}`)?.scrollIntoView?.({ block: "nearest" });
-    } else if (event.key === "Enter" && switcherResults[activeSearchIndex]) {
+      if (!searchItems.length) return;
+      activeSearchIndex =
+        (activeSearchIndex +
+          (event.key === "ArrowDown" ? 1 : -1) +
+          searchItems.length) %
+        searchItems.length;
+      document
+        .getElementById(`conversation-search-${activeSearchIndex}`)
+        ?.scrollIntoView?.({ block: "nearest" });
+    } else if (event.key === "Enter" && searchItems[activeSearchIndex]) {
       event.preventDefault();
-      selectSwitcherRow(switcherResults[activeSearchIndex]);
+      const item = searchItems[activeSearchIndex];
+      if (item.kind === "row") selectSwitcherRow(item.row);
+      else openSearchHit(item.hit);
     }
   }
-  const historyRows = $derived(
-    searchHistory(filteredRows, historyQueryDebounced, humanOnly),
-  );
-  const historyGroups = $derived(
-    historyDayGroups(historyRows, new Date(), humanOnly),
-  );
-  const historyScopeLabel = $derived(
-    historySearchScopeLabel(scope, scopeCompanies),
-  );
-  const historyCompanyUid = $derived(searchCompanyUidFromScope(scope));
-  const historyHasQuery = $derived(historyQuery.trim().length > 0);
-  const historyQueryProblem = $derived(messageSearchQueryProblem(historyQuery));
+  const searchCompanyUid = $derived(searchCompanyUidFromScope(scope));
+  const searchQueryProblem = $derived(messageSearchQueryProblem(searchQuery.trim()));
   const scopeLabel = $derived(scopePillLabel(scope, scopeCompanies));
   const scopeOptions = $derived(buildScopeOptions(scopeCompanies));
   const displayName = $derived(accountLabel?.trim() || "Account");
@@ -3063,7 +3061,6 @@
   }
 
   function scopeAvatarLabel(option: { id: string; label: string }): string {
-    if (option.id === "all") return "AL";
     if (option.id === "personal") return "PE";
     return initialsFor(option.label);
   }
@@ -3077,7 +3074,7 @@
   }
 
   $effect(() => {
-    if (searchOpen || historyOpen || createOpen) return;
+    if (searchOpen || createOpen) return;
     document
       .querySelectorAll(
         "[data-testid='chat-search-overlay'], [data-testid='chat-create-modal']",
@@ -3170,9 +3167,13 @@
     };
   });
 
+  // One search box, two kinds of answer. Conversation names match locally and
+  // synchronously; message text is a debounced server call. They share the
+  // query so the user never has to say which one they meant.
   $effect(() => {
-    if (!historyOpen) return;
-    const q = historyQuery.trim();
+    if (!searchOpen) return;
+    void messageSearchRetry;
+    const q = searchQuery.trim();
     const seq = ++messageSearchSeq;
     if (!q) {
       messageSearchHits = [];
@@ -3186,7 +3187,7 @@
       messageSearchLoading = false;
       return;
     }
-    const companyUid = historyCompanyUid;
+    const companyUid = searchCompanyUid;
     messageSearchLoading = true;
     messageSearchError = null;
     const handle = setTimeout(() => {
@@ -3978,23 +3979,12 @@
     requestDmRequestsOpen();
   }
 
-  function openHistory() {
-    historyOpen = true;
-    historyQuery = "";
-    messageSearchHits = [];
-    messageSearchError = null;
-    messageSearchLoading = false;
-  }
-
-  function closeHistory() {
-    historyOpen = false;
-    historyQuery = "";
-    messageSearchHits = [];
-    messageSearchError = null;
-  }
-
   function openSearchHit(hit: MessageSearchHit) {
     const row = resolveSearchHitRow(hit, allRows, peerDirectory);
+    // Closed without `closeSearch()`: that hands focus back to the search
+    // button, and the point of this click is to land on the message.
+    searchOpen = false;
+    searchQuery = "";
     void openRow(row, {
       messageId: hit.messageId,
       createdAt: hit.createdAt,
@@ -4056,35 +4046,7 @@
       >
         {#if scope === "all"}
           <span class="chat-scope-tile all" aria-hidden="true">
-            <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
-              <rect
-                x="1.75"
-                y="8.25"
-                width="5.5"
-                height="5.5"
-                rx="1"
-                stroke="currentColor"
-                stroke-width="1.3"
-              />
-              <rect
-                x="8.75"
-                y="8.25"
-                width="5.5"
-                height="5.5"
-                rx="1"
-                stroke="currentColor"
-                stroke-width="1.3"
-              />
-              <rect
-                x="5.25"
-                y="2.25"
-                width="5.5"
-                height="5.5"
-                rx="1"
-                stroke="currentColor"
-                stroke-width="1.3"
-              />
-            </svg>
+            <RailIcon name="squares-four" size={13} />
           </span>
         {:else}
           <span class="chat-scope-tile" aria-hidden="true"
@@ -4119,6 +4081,12 @@
               {#if scopeOptionIcon(option.id)}
                 <!-- Real company favicon in place of the initials tile. -->
                 <CompanyIcon iconUrl={scopeOptionIcon(option.id)} size={24} />
+              {:else if option.id === "all"}
+                <!-- The same mark the scope button shows for All, not "AL"
+                     initials (owner, 2026-10-22). -->
+                <span class="chat-scope-avatar is-all" aria-hidden="true">
+                  <RailIcon name="squares-four" size={14} />
+                </span>
               {:else}
                 <span
                   class={`chat-scope-avatar tone-${scopeAvatarTone(option.label)}`}
@@ -4149,14 +4117,7 @@
               onclick={() => void newCompanyFromSwitcher()}
             >
               <span class="chat-scope-avatar chat-scope-plus" aria-hidden="true">
-                <svg viewBox="0 0 16 16" fill="none">
-                  <path
-                    d="M8 3.5v9M3.5 8h9"
-                    stroke="currentColor"
-                    stroke-width="1.3"
-                    stroke-linecap="round"
-                  />
-                </svg>
+                <RailIcon name="plus" size={12} />
               </span>
               <span class="chat-scope-row-label">New company</span>
             </button>
@@ -4175,7 +4136,7 @@
     </div>
 
     <div class="chat-header-actions">
-      <button
+      <button data-icon-only
         type="button"
         class="chat-icon-btn"
         bind:this={plusBtnEl}
@@ -4187,14 +4148,7 @@
         aria-controls="chat-create-menu"
         onclick={openCreateFromButton}
       >
-        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path
-            d="M8 3v10M3 8h10"
-            stroke="currentColor"
-            stroke-width="1.3"
-            stroke-linecap="round"
-          />
-        </svg>
+        <RailIcon name="plus" size={14} />
       </button>
       {#if createMenuOpen}
         <div
@@ -4221,7 +4175,7 @@
           <p class="chat-create-foot">Scope follows the selected row · {scopeLabel}</p>
         </div>
       {/if}
-      <button
+      <button data-icon-only
         type="button"
         class="chat-icon-btn"
         data-testid="chat-search"
@@ -4230,24 +4184,10 @@
         onclick={openSearch}
         bind:this={searchButton}
       >
-        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <circle
-            cx="7"
-            cy="7"
-            r="4.5"
-            stroke="currentColor"
-            stroke-width="1.25"
-          />
-          <path
-            d="m10.5 10.5 3 3"
-            stroke="currentColor"
-            stroke-width="1.25"
-            stroke-linecap="round"
-          />
-        </svg>
+        <RailIcon name="search" size={14} />
       </button>
       <div class="chat-filter-wrap" bind:this={filterWrapEl}>
-        <button
+        <button data-icon-only
           type="button"
           class="chat-icon-btn"
           class:on={showFilter !== "mine" || personFilter != null}
@@ -4257,14 +4197,7 @@
           title="Filter"
           onclick={openFilterMenu}
         >
-          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <path
-              d="M2.5 4h11M4.5 8h7M6.5 12h3"
-              stroke="currentColor"
-              stroke-width="1.25"
-              stroke-linecap="round"
-            />
-          </svg>
+          <RailIcon name="funnel-simple" size={14} />
         </button>
         {#if filterOpen}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -4524,7 +4457,7 @@
     {#if !companiesOnRail && (companies ?? []).length > 0}
       <div class="chat-section-label chat-companies-label" id="chat-companies-label">
         <span>COMPANIES</span>
-        <button
+        <button data-icon-only
           type="button"
           class="chat-companies-edit"
           data-testid="chat-companies-edit"
@@ -4534,11 +4467,7 @@
           title="Pin companies"
           onclick={() => (companiesSectionMenuOpen = !companiesSectionMenuOpen)}
         >
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <circle cx="4" cy="8" r="1.3" fill="currentColor" />
-            <circle cx="8" cy="8" r="1.3" fill="currentColor" />
-            <circle cx="12" cy="8" r="1.3" fill="currentColor" />
-          </svg>
+          <RailIcon name="dots-three" size={12} />
         </button>
       </div>
       {#if companiesSectionMenuOpen}
@@ -4658,11 +4587,7 @@
     {#if grouped.pinned.length > 0}
       <div class="chat-section-label" id="chat-pinned-label">
         <span class="chat-pin-ic" aria-hidden="true">
-          <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
-            <path
-              d="M10.2 2.4 13.6 5.8a.8.8 0 0 1-.15 1.26l-2.2 1.27-.7 3.15a.6.6 0 0 1-.98.32L7.2 9.43 4.3 12.32a.55.55 0 0 1-.78-.78L6.4 8.66 4.05 6.3a.6.6 0 0 1 .32-.98l3.15-.7 1.27-2.2A.8.8 0 0 1 10.2 2.4Z"
-            />
-          </svg>
+          <RailIcon name="push-pin" size={10} />
         </span>
         PINNED
       </div>
@@ -4743,16 +4668,24 @@
       </div>
     {/if}
 
-    <button
-      type="button"
-      class="chat-history-affordance"
-      data-testid="chat-show-history"
-      onclick={openHistory}
-    ><RailIcon name="chevron-down" />
-      Show all history{historyHiddenCount > 0
-        ? ` (${historyHiddenCount})`
-        : ""}…
-    </button>
+    <!-- Expands the rail in place. It used to open a search dialog, which
+         was the top search button's job wearing a different hat — and the
+         question this row answers ("what else is in here?") is one you want
+         answered in the list you are already reading. Text only: it is a
+         list's own footer, not a control competing with the rows. -->
+    {#if historyExpanded || historyHiddenCount > 0}
+      <button
+        type="button"
+        class="chat-history-affordance"
+        data-testid="chat-show-history"
+        aria-expanded={historyExpanded}
+        onclick={() => (historyExpanded = !historyExpanded)}
+      >
+        {historyExpanded
+          ? "Show less"
+          : `Show all history${historyHiddenCount > 0 ? ` (${historyHiddenCount})` : ""}`}
+      </button>
+    {/if}
 
     {#if loadError && !hasNonSetupRows}
       <div class="chat-empty" role="alert" data-testid="chat-load-error">
@@ -4903,176 +4836,6 @@
     {/if}
   {/if}
 
-  {#if historyOpen}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="chat-overlay top"
-      data-testid="chat-history-view"
-      use:portal
-      onclick={(e) => {
-        if (e.target === e.currentTarget) closeHistory();
-      }}
-      onkeydown={(e) => {
-        if (e.key === "Escape") closeHistory();
-      }}
-    >
-      <div
-        class="chat-switcher"
-        role="dialog"
-        aria-label="Conversation history"
-        tabindex="-1"
-      >
-        <div class="chat-switcher-search">
-          <span class="chat-switcher-search-ic" aria-hidden="true">
-            <svg viewBox="0 0 16 16" fill="none">
-              <circle
-                cx="7"
-                cy="7"
-                r="4.5"
-                stroke="currentColor"
-                stroke-width="1.25"
-              />
-              <path
-                d="m10.5 10.5 3 3"
-                stroke="currentColor"
-                stroke-width="1.25"
-                stroke-linecap="round"
-              />
-            </svg>
-          </span>
-          <input
-            class="chat-switcher-input"
-            type="text"
-            use:focusOnMount
-            placeholder="Search history…"
-            bind:value={historyQuery}
-            aria-label="Search conversation history"
-            data-testid="chat-history-search"
-          />
-          <span class="chat-history-scope" data-testid="chat-history-scope">
-            {historyScopeLabel}
-          </span>
-        </div>
-        <p class="chat-history-helper" data-testid="chat-history-helper">
-          Searches recent messages (about the last 1,000)
-        </p>
-        <div
-          class="chat-switcher-list chat-history-list"
-          role="list"
-          data-testid="chat-history-results"
-        >
-          {#if historyHasQuery}
-            {#if historyQueryProblem === "too-short"}
-              <div class="chat-empty" role="status">Type at least 2 characters</div>
-            {:else if historyQueryProblem === "too-long"}
-              <div class="chat-empty" role="status">Search is limited to 100 characters</div>
-            {:else if messageSearchLoading && messageSearchHits.length === 0}
-              <div class="chat-empty" role="status">Searching…</div>
-            {:else if messageSearchError}
-              <div class="chat-empty" role="alert">{messageSearchError}</div>
-            {:else if messageSearchHits.length === 0}
-              <div class="chat-empty">No matching messages</div>
-            {:else}
-              {#each messageSearchHits as hit (hit.messageId + (hit.createdAt ?? ""))}
-                {@const row = resolveSearchHitRow(hit, allRows, peerDirectory)}
-                <div role="listitem" class="chat-li">
-                  <button
-                    type="button"
-                    class="chat-row chat-search-hit"
-                    data-testid="chat-search-hit"
-                    onclick={() => openSearchHit(hit)}
-                  >
-                    {#if row.kind === "channel"}
-                      <span class="chat-glyph" aria-hidden="true">#</span>
-                    {:else if row.kind === "group"}
-                      <span class="chat-avatar group" aria-hidden="true">
-                        {row.memberCount ?? row.members?.length ?? 0}
-                      </span>
-                    {:else}
-                      {@const avatar = rowAvatar(row, avatarByUid)}
-                      <span
-                        class="chat-avatar"
-                        aria-hidden="true"
-                        data-avatar={avatar.kind}
-                      >
-                        {#if avatar.src}
-                          <img src={avatar.src} alt="" />
-                        {:else}
-                          {avatar.initials}
-                        {/if}
-                      </span>
-                    {/if}
-                    <span class="chat-search-hit-copy">
-                      <span class="chat-search-hit-title">
-                        {#if draftIdSet.has(row.id)}
-                          {@render draftMark()}
-                        {/if}
-                        <span class="chat-row-title">{row.title}</span>
-                      </span>
-                      <span class="chat-search-snippet"
-                        >{searchHitSnippet(hit)}</span
-                      >
-                    </span>
-                    <span class="chat-search-meta">
-                      <span class="chat-type-tag"
-                        >{conversationKindLabel(row.kind)}</span
-                      >
-                      <span class="chat-search-time"
-                        >{formatSearchHitTime(hit.createdAt)}</span
-                      >
-                    </span>
-                  </button>
-                </div>
-              {/each}
-            {/if}
-          {:else}
-            {#each historyGroups as group (group.label)}
-              <div
-                class="chat-history-day"
-                data-testid="chat-history-day"
-                aria-hidden="true"
-              >
-                {group.label}
-              </div>
-              {#each group.rows as row (row.id)}
-                <button
-                  type="button"
-                  class="chat-switcher-row"
-                  role="listitem"
-                  class:unread={!!row.unreadCount || row.unreadDot}
-                  onclick={() => void openRow(row)}
-                >
-                  {#if row.kind === "channel"}
-                    <span class="chat-switcher-hash" aria-hidden="true">#</span>
-                  {:else if row.kind === "group"}
-                    <span class="chat-switcher-avatar" aria-hidden="true">
-                      {row.memberCount ?? row.members?.length ?? 0}
-                    </span>
-                  {:else}
-                    {@const avatar = rowAvatar(row, avatarByUid)}
-                    <span
-                      class="chat-switcher-avatar"
-                      aria-hidden="true"
-                      data-avatar={avatar.kind}
-                    >
-                      {#if avatar.src}
-                        <img src={avatar.src} alt="" />
-                      {:else}
-                        {avatar.initials}
-                      {/if}
-                    </span>
-                  {/if}
-                  <span class="chat-switcher-name">{row.title}</span>
-                </button>
-              {/each}
-            {:else}
-              <div class="chat-empty">No conversations</div>
-            {/each}
-          {/if}
-        </div>
-      </div>
-    </div>
-  {/if}
   {#if searchOpen}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
@@ -5094,27 +4857,14 @@
       >
         <div class="chat-switcher-search">
           <span class="chat-switcher-search-ic" aria-hidden="true">
-            <svg viewBox="0 0 16 16" fill="none">
-              <circle
-                cx="7"
-                cy="7"
-                r="4.5"
-                stroke="currentColor"
-                stroke-width="1.25"
-              />
-              <path
-                d="m10.5 10.5 3 3"
-                stroke="currentColor"
-                stroke-width="1.25"
-                stroke-linecap="round"
-              />
-            </svg>
+            <RailIcon name="search" size={15} />
           </span>
           <input
             class="chat-switcher-input"
             type="text"
             use:focusOnMount
             placeholder="Search or jump to…"
+            data-testid="chat-switcher-input"
             bind:value={searchQuery}
             aria-label="Search or jump to a conversation"
             role="combobox"
@@ -5125,7 +4875,20 @@
             onkeydown={searchKeydown}
           />
         </div>
-        <div class="chat-switcher-list" id="conversation-search-results" role="listbox" aria-label="Conversations">
+        <div
+          class="chat-switcher-list"
+          id="conversation-search-results"
+          role="listbox"
+          aria-label="Search results"
+        >
+          <!-- Conversations resolve instantly; messages arrive from the
+               server a beat later. Both live in this one list so nobody has
+               to decide up front which kind of thing they are looking for. -->
+          {#if switcherResults.length > 0}
+            <div class="chat-switcher-caption" aria-hidden="true">
+              Conversations
+            </div>
+          {/if}
           {#each switcherResults as row, index (row.id)}
             <button
               type="button"
@@ -5147,11 +4910,101 @@
               <span class="chat-switcher-name">{row.name}</span>
               <span class="chat-switcher-company"><CompanyLabel name={row.company} /></span>
             </button>
-          {:else}
-            <div class="chat-empty">
-              {searchQuery.trim() ? "No matches" : "No conversations"}
-            </div>
           {/each}
+
+          <!-- The Messages caption only appears when there is something
+               under it. A caption over "no matching messages" labelled an
+               absence, and read as a failure of the message search rather
+               than of the query. -->
+          {#if searchQueryProblem === "too-long"}
+            <div class="chat-empty" role="status">Message search is limited to 100 characters</div>
+          {/if}
+          {#if searchQuery.trim() && (messageSearchLoading || messageSearchError || messageSearchHits.length > 0)}
+            <div class="chat-switcher-caption" aria-hidden="true">
+              Messages
+              {#if messageSearchLoading}
+                <span class="chat-switcher-caption-note">searching…</span>
+              {/if}
+            </div>
+            {#if messageSearchError}
+              <div class="chat-empty chat-search-error" role="alert">
+                <span>{messageSearchError}</span>
+                <button
+                  type="button"
+                  class="chat-search-retry"
+                  data-testid="chat-search-retry"
+                  onclick={() => (messageSearchRetry += 1)}>Try again</button
+                >
+              </div>
+            {:else}
+              {#each messageSearchHits as hit, hitIndex (hit.messageId + (hit.createdAt ?? ""))}
+                {@const row = resolveSearchHitRow(hit, allRows, peerDirectory)}
+                {@const index = switcherResults.length + hitIndex}
+                <button
+                  type="button"
+                  class="chat-switcher-row chat-switcher-hit"
+                  role="option"
+                  id={`conversation-search-${index}`}
+                  aria-selected={index === activeSearchIndex}
+                  class:active={index === activeSearchIndex}
+                  tabindex="-1"
+                  data-testid="chat-search-hit"
+                  onclick={() => openSearchHit(hit)}
+                >
+                  <!-- The glyph belongs to the NAME, not to the whole
+                       two-line block — centred beside both lines it read as
+                       an icon for the snippet as much as for the channel. -->
+                  <span class="chat-switcher-hit-copy">
+                    <span class="chat-switcher-hit-title">
+                      {#if row.kind === "channel"}
+                        <span class="chat-switcher-hash" aria-hidden="true"
+                          >#</span
+                        >
+                      {:else}
+                        {@const avatar = rowAvatar(row, avatarByUid)}
+                        <span
+                          class="chat-switcher-avatar"
+                          aria-hidden="true"
+                          data-avatar={avatar.kind}
+                        >
+                          {#if avatar.src}
+                            <img src={avatar.src} alt="" />
+                          {:else}
+                            {avatar.initials}
+                          {/if}
+                        </span>
+                      {/if}
+                      <span class="chat-switcher-name">{row.title}</span>
+                    </span>
+                    <span class="chat-switcher-snippet">
+                      {#each highlightMatches(searchHitSnippet(hit), searchQuery) as part}
+                        {#if part.match}
+                          <mark class="chat-switcher-mark">{part.text}</mark>
+                        {:else}{part.text}{/if}
+                      {/each}
+                    </span>
+                  </span>
+                  <span class="chat-switcher-company"
+                    >{formatSearchHitTime(hit.createdAt)}</span
+                  >
+                </button>
+              {/each}
+            {/if}
+          {/if}
+
+          <!-- One line for the whole dialog, not one per empty section: with
+               a query that matches nothing, "no conversations" and "no
+               messages" stacked to say the same thing twice. -->
+          {#if searchItems.length === 0 && !messageSearchLoading && !messageSearchError && searchQueryProblem !== "too-long"}
+            <!-- Names the query, as iOS's empty search does: "no results" on its
+                 own reads as the search having failed rather than the words
+                 matching nothing. -->
+            <div class="chat-empty" data-testid="chat-search-empty">
+              {searchQuery.trim()
+                ? `No matching results for “${searchQuery.trim()}”`
+                : "No conversations"}
+            </div>
+          {/if}
         </div>
       </div>
     </div>
@@ -5310,18 +5163,20 @@
      Shared by the rail row and the search-hit row; colour comes from
      `.chat-row-draft` (`var(--t3)`). -->
 {#snippet filterIcon(name: string)}
-  <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
-    {#if name === "clock"}<circle cx="8" cy="8" r="5.5" /><path d="M8 5v3l2 1.5" />
-    {:else if name === "list"}<path d="M3 4.5h10M3 8h10M3 11.5h10" />
-    {:else if name === "home"}<path d="M3 7.5 8 3.5l5 4v5H3z" />
-    {:else if name === "hash"}<path d="M6.5 3 5.5 13M10.5 3l-1 10M3.5 6.5h9.5M3 9.5h9.5" />
-    {:else if name === "bubble"}<path d="M3 4h10v6.5H7.5L4.5 13v-2.5H3z" />
-    {:else if name === "target"}<circle cx="8" cy="8" r="5.5" /><circle cx="8" cy="8" r="2" />
-    {:else if name === "archive"}<path d="M2.5 4h11v2.5h-11zM3.5 6.5v6h9v-6M6.5 9h3" />
-    {:else if name === "check"}<path d="M3.5 8.5l3 3 6-7" />
-    {:else if name === "requests"}<circle cx="6.5" cy="5.5" r="2.5" /><path d="M2 13c.6-2.4 2.3-3.5 4.5-3.5s3.9 1.1 4.5 3.5M12.5 5v4M10.5 7h4" />
-    {/if}
-  </svg>
+  <!-- Phosphor regular, like every other icon in the rail (owner,
+       2026-10-22: the hand-drawn set read as a different family). -->
+  {@const icon = ({
+    clock: "clock",
+    list: "list",
+    home: "house",
+    hash: "hash",
+    bubble: "chat-circle",
+    target: "target",
+    archive: "archive",
+    check: "check",
+    requests: "user-plus",
+  } as const)[name as "clock"]}
+  {#if icon}<RailIcon name={icon} size={14} />{/if}
 {/snippet}
 
 {#snippet draftMark()}
@@ -5360,9 +5215,14 @@
   {@const childrenOpen = childrenAreOpen(row.id, extras?.childrenExpandedByDefault === true)}
   <div class="chat-row-group" data-testid="chat-row-group">
     <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <!-- `.chat-li`, not `.chat-row`, carries the hover and selected fill: the
+         pin is a sibling of the row button (a button cannot nest a button),
+         so on the button the pin hung off the highlight's right edge
+         (owner, #772, restored 2026-10-22). -->
     <div
       role={selectionMode ? "presentation" : "listitem"}
       class="chat-li"
+      class:active={activeId === row.id && !extras?.children?.some((child) => child.selected)}
       class:gutter-open={showSelectGutter}
       onmouseenter={(e) => showHoverCard(row, e.currentTarget)}
       onmouseleave={scheduleHoverCardHide}
@@ -5381,7 +5241,7 @@
         />
       </span>
       {#if hasChildren}
-        <button
+        <button data-icon-only
           type="button"
           class="chat-row-children-toggle"
           class:open={childrenOpen}
@@ -5390,9 +5250,7 @@
           aria-expanded={childrenOpen}
           onclick={() => toggleChildren(row.id, extras?.childrenExpandedByDefault === true)}
         >
-          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-            <path d="M3 2 7 5 3 8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
+          <RailIcon name="caret-right" size={10} />
         </button>
       {/if}
       <button
@@ -5514,14 +5372,6 @@
             >
           {/if}
         </span>
-        {#if scopeLabel}
-          <span
-            class="chat-row-reveal"
-            data-testid="chat-row-reveal"
-            aria-hidden="true"
-            use:titleWhenTruncated={scopeLabel.text}>{scopeLabel.text}</span
-          >
-        {/if}
         {#if row.notifyLevel === "muted"}
           <span
             class="chat-row-muted"
@@ -5530,36 +5380,18 @@
             aria-label="Muted"
             title="Notifications muted"
           >
-            <svg viewBox="0 0 16 16" width="12" height="12" fill="none" aria-hidden="true">
-              <path
-                d="M5.2 3.6A3.6 3.6 0 0 1 11.6 6v2.6l1.2 2H5.4M3.9 10.6l.5-.9V6.9"
-                stroke="currentColor"
-                stroke-width="1.2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-              <path d="M6.6 12.6a1.5 1.5 0 0 0 2.8 0" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-              <path d="M2.5 2.5l11 11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-            </svg>
+            <RailIcon name="bell-slash" size={12} />
           </span>
         {/if}
+        <!-- The visible count sits outside the button (below); this keeps it
+             in the row's accessible name. -->
         {#if row.unreadCount != null && row.unreadCount > 0}
-          <span
-            class="chat-unread-badge"
-            data-testid="chat-unread-badge"
-            aria-label={`${row.unreadCount} unread`}
-          >
-            {row.unreadCount > 99 ? "99+" : row.unreadCount}
-          </span>
+          <span class="chat-row-sr">{row.unreadCount > 99 ? "99+" : row.unreadCount} unread</span>
         {:else if row.unreadDot}
-          <span
-            class="chat-unread-dot"
-            data-testid="chat-unread-dot"
-            aria-label="Unread"
-          ></span>
+          <span class="chat-row-sr">Unread</span>
         {/if}
       </button>
-      <button
+      <button data-icon-only
         type="button"
         class="chat-pin-btn"
         class:pinned={row.pinned}
@@ -5568,16 +5400,26 @@
         data-testid="chat-pin"
         onclick={() => handlePin(row)}
       >
-        <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
-          <path
-            d="M6.2 1.8h3.6l.4 4.2 2.2 1.4v1.4H8.6v5.4h-1.2V8.8H3.6V7.4l2.2-1.4.4-4.2Z"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.4"
-            stroke-linejoin="round"
-          />
-        </svg>
+        <RailIcon name="push-pin" size={12} />
       </button>
+      <!-- The count or dot sits at the row's right edge, after the pin, so the
+           pin appears to its LEFT on hover (owner, #772, restored 2026-10-22).
+           Siblings of the row button for the same reason as the pin. -->
+      {#if row.unreadCount != null && row.unreadCount > 0}
+        <span
+          class="chat-unread-badge"
+          data-testid="chat-unread-badge"
+          aria-hidden="true"
+        >
+          {row.unreadCount > 99 ? "99+" : row.unreadCount}
+        </span>
+      {:else if row.unreadDot}
+        <span
+          class="chat-unread-dot"
+          data-testid="chat-unread-dot"
+          aria-hidden="true"
+        ></span>
+      {/if}
     </div>
     {#if hasChildren && childrenOpen}
       <div
@@ -5605,13 +5447,9 @@
               aria-hidden="true"
             >
               {#if child.kind === "action"}
-                <svg width="12" height="12" viewBox="0 0 10 10">
-                  <path d="M5 1v8M1 5h8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-                </svg>
+                <RailIcon name="plus" size={12} />
               {:else}
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round">
-                  <path d="M3 3h10v7H7l-4 3V3Z" />
-                </svg>
+                <RailIcon name="chat-circle" size={14} />
               {/if}
             </span>
             <span class="chat-row-child-label" use:titleWhenTruncated={child.label}
@@ -5721,7 +5559,10 @@
     place-items: center;
     width: 22px;
     height: 22px;
-    margin-right: 2px;
+    margin-right: 4px;
+    /* A 22px hit target that does not set the row's height (31px, from the
+       13px title); unclamped it pushed every row to 34px. */
+    margin-block: -2px;
     padding: 0;
     border: none;
     border-radius: 6px;
@@ -5731,16 +5572,17 @@
     cursor: pointer;
   }
 
+  /* Hover or focus only, pinned or not: the PINNED section header already
+     says a row is pinned, so at rest the control stays out of the way. */
   .chat-li:hover .chat-pin-btn,
-  .chat-pin-btn.pinned,
+  .chat-li:focus-within .chat-pin-btn,
   .chat-pin-btn:focus-visible {
     opacity: 1;
   }
 
-  .chat-pin-btn:hover,
-  .chat-pin-btn.pinned {
+  .chat-pin-btn:hover {
     color: var(--t1);
-    background: var(--hover);
+    background: var(--btn-bg, var(--hover));
   }
 
   .chat-scope-pill {
@@ -5775,7 +5617,11 @@
 
   /* S3: 252px panel, 32px single-line rows (tile + label + chord inline),
      no wrap and no resting scrollbar artifact — token contract §6 scopePanel. */
-  .chat-scope-menu {
+  /* Doubled class: the shared `.chat-popover` rule comes later in this sheet
+     and, on equal specificity, its `right: 0` and `min-width: 160px` won,
+     so the menu stretched edge to edge or shrank to 160px instead of its
+     252px. */
+  .chat-popover.chat-scope-menu {
     left: 0;
     right: auto;
     width: 252px;
@@ -6045,6 +5891,15 @@
     display: flex;
     align-items: center;
     min-width: 0;
+    border-radius: 8px;
+  }
+
+  .chat-li:hover {
+    background: var(--hover);
+  }
+
+  .chat-li.active {
+    background: var(--sel);
   }
 
   .chat-row-children-toggle {
@@ -6062,11 +5917,11 @@
     cursor: pointer;
   }
 
-  .chat-row-children-toggle svg {
+  .chat-row-children-toggle :global(svg) {
     transition: transform 120ms ease;
   }
 
-  .chat-row-children-toggle.open svg {
+  .chat-row-children-toggle.open :global(svg) {
     transform: rotate(90deg);
   }
 
@@ -6199,9 +6054,9 @@
   }
 
   /* Skip style/layout/paint for rows scrolled out of the rail. Safe to
-     contain: the row draws no focus outline of its own, `.chat-row-reveal` is
-     absolutely positioned INSIDE the row, and the row's menus are portaled to
-     the shell so containment cannot clip them. See chat/scroll-perf.css.
+     contain: the row draws no focus outline of its own, its hover fill is on
+     `.chat-li` outside it, and the row's menus are portaled to the shell so
+     containment cannot clip them. See chat/scroll-perf.css.
 
      A one-line row is 14px of text plus 6px padding each side, about 32px. */
   .chat-row {
@@ -6240,13 +6095,19 @@
     color: var(--t2);
   }
 
+  /* The fill is on `.chat-li` for list rows. Standalone rows (Connection
+     requests, Create or join a company) have no `.chat-li` around them and
+     keep their own. */
   .chat-row:hover {
     background: var(--hover);
     color: var(--t1);
   }
 
+  .chat-li > .chat-row:hover {
+    background: transparent;
+  }
+
   .chat-row.active {
-    background: var(--sel);
     box-shadow: none;
     color: var(--t1);
   }
@@ -6304,39 +6165,10 @@
     font-weight: 400;
   }
 
-  .chat-row-reveal {
-    display: none;
-    position: absolute;
-    right: 8px;
-    top: 50%;
-    transform: translateY(-50%);
-    max-width: 46%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    padding: 1px 7px;
-    border-radius: 4px;
-    background: var(--elevated);
-    box-shadow: -10px 0 8px 0 var(--elevated);
-    color: var(--t3);
-    font-size: 12px;
-    font-weight: 400;
-    line-height: 1.3;
-    pointer-events: none;
-    z-index: 1;
-  }
-
-  .chat-li:hover .chat-row:not(.has-badge) .chat-row-reveal,
-  .chat-li:focus-within .chat-row:not(.has-badge) .chat-row-reveal,
-  .chat-row:focus-visible:not(.has-badge) .chat-row-reveal {
-    display: inline-block;
-  }
-
-  .chat-li:hover .chat-row:not(.has-badge) .chat-row-scope,
-  .chat-li:focus-within .chat-row:not(.has-badge) .chat-row-scope,
-  .chat-row:focus-visible:not(.has-badge) .chat-row-scope {
-    visibility: hidden;
-  }
+  /* No hover overlay copy of the label. A second, boxed "Indigo" laid over
+     the row's own title on hover read as a glitch; the label stays where it
+     is, and a truncated one carries its full text as a tooltip
+     (titleWhenTruncated). Owner, #772, restored 2026-10-22. */
 
   .chat-row-draft {
     flex: 0 0 auto;
@@ -6395,7 +6227,11 @@
     border-radius: 50%;
     background: var(--line2);
     color: var(--t2);
-    font: 600 9px var(--font-ui);
+    /* Two capitals have to clear the circle's curve, not just its box: at
+       9px "MA" ran into the edge of a 16px circle (owner, 2026-10-22). 7px
+       keeps them inside the circle's inscribed square (~11px). Medium, the
+       app's weight cap, as on IdentityMark. */
+    font: 500 7px var(--font-ui);
     /* `line-height: 1`, as IdentityMark does. The `font:` shorthand resets
        line-height to `normal`, and `normal` is the font's own line box —
        WebKit folds the line gap into it where Chromium does not, so a
@@ -6463,6 +6299,24 @@
     line-height: 1;
   }
 
+  /* At the row's right edge, after the pin (siblings of the row button, so
+     the row's own padding no longer insets them). */
+  .chat-li > .chat-unread-badge,
+  .chat-li > .chat-unread-dot {
+    margin-left: 0;
+    margin-right: 8px;
+  }
+
+  .chat-row-sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
   .chat-unread-dot {
     flex: 0 0 16px;
     display: flex;
@@ -6511,6 +6365,9 @@
   }
 
   .chat-history-affordance {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     width: 100%;
     margin-top: 8px;
     padding: 6px 8px;
@@ -6949,60 +6806,37 @@
   /* The history results own their scroll region — without this the (up to
      ~1000-row) list overflows the fixed-height glass sidebar (overflow:hidden)
      and renders clipped and un-scrollable. */
-  .chat-history-list {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-y: auto;
-  }
-
-  .chat-history-head {
+  /* Section captions inside the unified search. Same mark as the filter
+     popover's `.chat-filter-caption`. */
+  .chat-switcher-caption {
     display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 0 4px 8px;
-  }
-
-  .chat-history-scope {
-    margin-left: auto;
-    color: var(--v4-text-3);
-    font-size: var(--type-metadata, 11px);
-    font-weight: 500;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-
-  .chat-history-day {
-    margin: 10px 0 2px;
-    padding: 0 10px;
+    align-items: baseline;
+    gap: 6px;
+    margin: 0;
+    padding: 10px 10px 4px;
     color: var(--t3);
-    font-size: 10px;
+    font-family: var(--font-mono);
+    font-size: 9px;
     font-weight: 600;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
   }
 
-  .chat-history-day:first-child {
-    margin-top: 2px;
-  }
-
-  .chat-history-helper {
-    /* Align with the switcher rows: 6px list inset + 10px row padding. */
-    margin: 0 6px 8px;
-    padding: 0 10px;
-    color: var(--v4-text-3);
-    font-size: var(--type-metadata, 11px);
+  .chat-switcher-caption-note {
     font-weight: 400;
-    line-height: 1.35;
+    letter-spacing: 0.04em;
+    text-transform: none;
   }
 
-  .chat-search-hit {
+  /* A message hit is two lines — where it was said, then what was said —
+     so it sits taller than a conversation row and tops-aligns its icon. */
+  .chat-switcher-hit {
     align-items: flex-start;
-    min-height: 44px;
-    padding-top: 6px;
-    padding-bottom: 6px;
+    padding-top: 7px;
+    padding-bottom: 7px;
   }
 
-  .chat-search-hit-copy {
+  .chat-switcher-hit-copy {
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
@@ -7010,66 +6844,64 @@
     min-width: 0;
   }
 
-  .chat-search-hit-title {
+  .chat-switcher-hit-title {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 8px;
     min-width: 0;
   }
 
-  .chat-search-snippet {
+  .chat-switcher-snippet {
+    /* 20px glyph + the title row's 8px gap: the snippet starts under the
+       channel NAME, not under its icon, so the two lines share a margin. */
+    padding-left: 28px;
     overflow: hidden;
-    color: var(--v4-text-3);
-    font-size: var(--type-secondary, 12px);
+    color: var(--t3, var(--t2));
+    font-size: 12px;
     font-weight: 400;
     line-height: 1.3;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .chat-search-meta {
-    display: flex;
-    flex: 0 0 auto;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 2px;
-    max-width: 88px;
-  }
-
-  .chat-type-tag {
-    color: var(--v4-text-3);
-    font-size: 10px;
+  /* Shows WHY a message matched. Without it a hit is a line of prose you
+     have to re-read to find your own query in. Weight 500: the app's cap. */
+  .chat-switcher-mark {
+    border-radius: 3px;
+    background: var(--sel, rgba(99, 102, 241, 0.18));
+    color: var(--t1);
     font-weight: 500;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
   }
 
-  .chat-search-time {
-    color: var(--v4-text-3);
-    font-size: 10px;
-    font-weight: 400;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
+  /* Shares the caption's inset so an empty result starts on the same left
+     margin as the section labels above it. */
+  .chat-switcher-list .chat-empty {
+    padding: 12px 10px;
   }
 
-  .chat-search-input {
-    box-sizing: border-box;
-    width: calc(100% - 8px);
-    margin: 0 4px 8px;
-    height: 30px;
-    padding: 0 10px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-field);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-1);
-    font: inherit;
-    font-size: var(--type-secondary, 13px);
-    font-weight: 400;
+  .chat-search-error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
   }
 
-  .chat-search-input:focus {
-    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
-    outline-offset: -2px;
+  .chat-search-retry {
+    flex: none;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
+    appearance: none;
+    -webkit-appearance: none;
+    border: 1px solid transparent;
+    border-radius: var(--hq-btn-radius);
+    background: var(--btn-bg);
+    color: var(--t1);
+    font: var(--hq-btn-font-weight) var(--hq-btn-font-size) / var(--hq-btn-line-height) var(--font-ui);
+    cursor: pointer;
+  }
+
+  .chat-search-retry:hover {
+    border-color: var(--line2);
   }
 
   .chat-text-btn {

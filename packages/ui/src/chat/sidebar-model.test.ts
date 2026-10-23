@@ -1146,6 +1146,10 @@ describe("typeahead / history / people helpers", () => {
   it("initialsFor builds monograms", () => {
     expect(initialsFor("Alex Rivera")).toBe("AR");
     expect(initialsFor("Bo")).toBe("BO");
+    // Owner, 2026-10-22: no punctuation in a monogram.
+    expect(initialsFor("Corey (you)")).toBe("CO");
+    expect(initialsFor("Ana-Maria O'Neil")).toBe("AO");
+    expect(initialsFor("(you)")).toBe("?");
   });
 });
 

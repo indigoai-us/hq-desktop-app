@@ -20,6 +20,7 @@ const card = ui('src/chat/messaging/ArtifactCard.svelte');
 const panel = ui('src/chat/messaging/ArtifactPanel.svelte');
 const model = ui('src/chat/messaging/artifact-model.ts');
 const prose = ui('src/chat/messaging/artifact-prose.css');
+const docCard = ui('src/chat/messaging/doc-card.css');
 const copy = ui('src/chat/messaging/conversation-copy.ts');
 const shell = ui('src/shell/DesktopApp.svelte');
 const conversation = ui('src/chat/messaging/ChannelConversation.svelte');
@@ -34,16 +35,21 @@ describe('artifact card replaces the dead-end clamp', () => {
     expect(preview).not.toContain('…');
   });
 
-  it('collapses to a handle: mesh tile, title, one-line summary, size — no preview body', () => {
+  it('collapses to a handle: neutral icon tile, title, one-line summary, size — no preview body', () => {
     expect(model).toContain('export function artifactSummary');
-    expect(card).toContain('artifact-tile-mesh');
-    expect(card).toMatch(/\.artifact-tile-mesh\s*\{[\s\S]*?radial-gradient\(/);
+    // The animated gradient mesh tile is gone; the card uses the shared
+    // doc-card icon tile, neutral (not kind-tinted) for artifacts.
+    expect(card).not.toContain('artifact-tile-mesh');
+    expect(card).toContain('<span class="doc-card-icon" aria-hidden="true">');
+    expect(card).toContain('<RailIcon name={kind === "prompt" ? "terminal" : "file-text"} size={16} />');
+    expect(docCard).toMatch(/\.doc-card-icon\s*\{[\s\S]*?width:\s*32px/);
     expect(card).toContain("data-testid=\"artifact-card-preview\"");
     // The card never hard-cuts with an ellipsis of its own; the summary is
     // one line clipped by CSS and the full text lives in the pane.
     expect(card).not.toContain('artifact-card-fade');
-    expect(card).toMatch(/\.artifact-card-summary\s*\{[\s\S]*?white-space:\s*nowrap/);
-    expect(card).toMatch(/\.artifact-card-summary\s*\{[\s\S]*?text-overflow:\s*ellipsis/);
+    expect(card).toContain('class="doc-card-summary artifact-card-summary"');
+    expect(docCard).toMatch(/\.doc-card-summary\s*\{[\s\S]*?white-space:\s*nowrap/);
+    expect(docCard).toMatch(/\.doc-card-summary\s*\{[\s\S]*?text-overflow:\s*ellipsis/);
   });
 
   it('renders title, kind label and size hint in the card header', () => {
@@ -63,10 +69,18 @@ describe('artifact card replaces the dead-end clamp', () => {
     expect(card).toContain("data-testid=\"artifact-card-open\"");
   });
 
-  it('keeps desktop-alt chrome: 13px card, hairline border, UI face (no mono prose)', () => {
-    expect(card).toMatch(/\.artifact-card\s*\{[\s\S]*?border:\s*1px solid var\(--line/);
-    expect(card).toMatch(/\.artifact-card\s*\{[\s\S]*?font-size:\s*13px/);
-    expect(card).toMatch(/\.artifact-card-open\s*\{[\s\S]*?color:\s*var\(--vio-ink/);
+  it('shares the doc-card chrome with file cards: soft fill, 13px UI-face title, no mono prose', () => {
+    // One card style for artifacts and file attachments (doc-card.css).
+    expect(card).toContain('import "./doc-card.css";');
+    expect(card).toContain('class="doc-card artifact-card chat-shell"');
+    expect(ui('src/chat/messaging/MessageAttachments.svelte')).toContain('doc-card');
+    // No outline: a transparent 1px border that focus paints, over a raised fill.
+    expect(docCard).toMatch(/\.doc-card\s*\{[\s\S]*?border:\s*1px solid transparent/);
+    expect(docCard).toMatch(/\.doc-card\s*\{[\s\S]*?background:\s*var\(--raised/);
+    expect(docCard).toMatch(/\.doc-card:focus-visible\s*\{[\s\S]*?border-color:/);
+    expect(docCard).toMatch(/\.doc-card-title\s*\{[\s\S]*?font:\s*500 13px\/1\.35 var\(--font-ui\)/);
+    expect(card).toContain('class="doc-card-btn artifact-card-btn artifact-card-open"');
+    expect(docCard).not.toMatch(/\.doc-card-(summary|title|meta)\s*\{[^}]*font-mono/);
     expect(card).not.toMatch(/\.artifact-card-summary\s*\{[^}]*font-mono/);
     expect(card).not.toMatch(/\.artifact-card-title\s*\{[^}]*font-mono/);
   });
