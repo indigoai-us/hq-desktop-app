@@ -196,3 +196,36 @@ describe("IdentityMark non-person kinds", () => {
     expect(host.querySelector('[data-kind="channel"] .channel-lock')).not.toBeNull();
   });
 });
+
+// The online dot sits in a gap cut out of the avatar (iOS, hq-native-mobile
+// #37), so it reads on any surface. A border painted in the window's ground
+// colour matched one surface and drew a grey ring on hovered or selected rows.
+describe("IdentityMark presence", () => {
+  it("cuts the avatar around the online dot instead of ringing the dot", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(IdentityMark, {
+      target: host,
+      props: { kind: "person", label: "Ada", online: true },
+    });
+    flushSync();
+    expect(host.querySelector(".identity")?.classList.contains("has-presence")).toBe(true);
+    expect(host.querySelector(".presence")).not.toBeNull();
+
+    // happy-dom cannot paint a mask, so the CSS contract is read from source.
+    const css = readFileSync(resolve(process.cwd(), "src/chat/messaging/IdentityMark.svelte"), "utf8");
+    const rule = (sel: string) => css.match(new RegExp(`\\n  ${sel.replace(/\./g, "\\.")} \\{([^}]*)\\}`))?.[1] ?? "";
+    expect(rule(".identity.has-presence")).toMatch(/mask:/);
+    expect(rule(".presence")).not.toMatch(/border:/);
+  });
+
+  it("has no cut-out when the person is offline", () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(IdentityMark, { target: host, props: { kind: "person", label: "Ada" } });
+    flushSync();
+    expect(host.querySelector(".identity")?.classList.contains("has-presence")).toBe(false);
+  });
+});

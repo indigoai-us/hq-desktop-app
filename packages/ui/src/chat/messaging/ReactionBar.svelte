@@ -5,6 +5,7 @@
   // pills and bubbles a (messageId, emoji) toggle up.
   import { type ReactionAggregate, reactionAttribution } from "./reactions";
   import EmojiPicker from "./EmojiPicker.svelte";
+  import RailIcon from "../../common/button/RailIcon.svelte";
 
   interface Props {
     messageId: string;
@@ -68,8 +69,12 @@
       aria-label="Add a reaction"
       title="Add a reaction"
     >
-      <span class="reaction-add-glyph" aria-hidden="true">☺</span>
-      <span class="reaction-add-plus" aria-hidden="true">+</span>
+      <!-- One Phosphor mark (owner, #772). The typed ☺ and + were font
+           glyphs, not icons, so they sat at a different weight and baseline
+           from everything around them. -->
+      <span class="reaction-add-glyph" aria-hidden="true"
+        ><RailIcon name="smiley" size={14} /></span
+      >
     </button>
     {#if pickerOpen}
       <EmojiPicker onpick={pick} onclose={() => (pickerOpen = false)} />
@@ -135,15 +140,23 @@
     outline: none;
   }
 
+  /* Yours reads as a SELECTED control, in the same ice tint every other
+     selected thing in the shell uses (owner, #772). A neutral fill one shade
+     off the resting one left a pill you had reacted to and one you had not
+     nearly indistinguishable. */
   .reaction-pill.reacted {
-    background: var(--c-field-bg);
-    border-color: var(--c-field-border);
+    background: var(--ice-tile);
+    border-color: color-mix(in srgb, var(--ice-ink) 30%, transparent);
     color: var(--pop-text);
+  }
+
+  .reaction-pill.reacted .reaction-count {
+    color: var(--ice-ink);
   }
 
   .reaction-pill.reacted:hover,
   .reaction-pill.reacted:focus-visible {
-    background: var(--pop-hover);
+    border-color: color-mix(in srgb, var(--ice-ink) 55%, transparent);
   }
 
   .reaction-emoji {
@@ -190,14 +203,9 @@
   }
 
   .reaction-add-glyph {
-    font-size: var(--text-base);
-    line-height: 1;
-  }
-
-  .reaction-add-plus {
-    font-size: var(--text-base);
-    font-weight: 600;
-    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .reaction-bar.compact {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * A company's identity mark: its website favicon when hq-pro has resolved
    * one, otherwise a building glyph.
@@ -66,31 +67,13 @@
       onerror={() => (brokenSrc = safeSrc)}
     />
   {:else}
-    <!-- Matches the house stroke dialect: 16-unit viewBox, 1.5px stroke,
-         currentColor, round joins. Same office mark as the Settings
-         "companies" nav icon so the two never disagree. -->
-    <svg
+    <!-- Phosphor House, the same family as every other icon in the app. -->
+    <span
       class="company-icon-glyph"
-      viewBox="0 0 16 16"
-      fill="none"
       role={decorative ? "presentation" : "img"}
       aria-label={decorative ? undefined : alt}
+      ><RailIcon name="house" size={Math.round(size * 0.82)} /></span
     >
-      <path
-        d="M2.5 13.5V6.5L8 3l5.5 3.5v7H2.5Z"
-        stroke="currentColor"
-        stroke-width="1.5"
-        stroke-linejoin="round"
-        stroke-linecap="round"
-      />
-      <path
-        d="M6.5 13.5v-4h3v4"
-        stroke="currentColor"
-        stroke-width="1.5"
-        stroke-linejoin="round"
-        stroke-linecap="round"
-      />
-    </svg>
   {/if}
 </span>
 
@@ -117,7 +100,8 @@
     box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 12%, transparent);
   }
   .company-icon-glyph {
-    display: block;
+    display: grid;
+    place-items: center;
     width: 100%;
     height: 100%;
   }

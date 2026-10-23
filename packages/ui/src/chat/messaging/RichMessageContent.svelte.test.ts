@@ -119,7 +119,9 @@ describe("RichMessageContent renders each block type from fixture data", () => {
     expect(el.querySelector("td")?.textContent).toContain("<img");
   });
 
-  it("renders a badge pill with its tone class", async () => {
+  // A badge is the app's one tag (common/tag.css), the same style as BOT and
+  // board status (iOS #44: "make sure all of the tags have the same style").
+  it("renders a badge as the shared tag in its tone", async () => {
     const el = render({
       v: 1,
       blocks: [{ kind: "badge", label: "Live", tone: "success" }],
@@ -127,7 +129,8 @@ describe("RichMessageContent renders each block type from fixture data", () => {
     await tick();
     const badge = el.querySelector('[data-testid="rich-badge"] .rich-badge');
     expect(badge?.textContent?.trim()).toBe("Live");
-    expect(badge?.classList.contains("tone-success")).toBe(true);
+    expect(badge?.classList.contains("hq-tag")).toBe(true);
+    expect(badge?.classList.contains("is-ok")).toBe(true);
   });
 
   it("renders a keyValue definition list as inline pairs, not table rows", async () => {

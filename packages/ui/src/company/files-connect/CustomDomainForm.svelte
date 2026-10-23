@@ -254,7 +254,7 @@
                     <span role="cell">{r.type}</span>
                     <span role="cell" class="mono">{r.name}</span>
                     <span role="cell" class="mono">{r.value}</span>
-                    <button class="copy" type="button" data-testid="custom-domain-copy" aria-label={copied === r.value ? "Copied" : `Copy ${r.purpose === "routing" ? "target" : "value"}`} title={copied === r.value ? "Copied" : "Copy"} onclick={() => void copy(r.value)}><RailIcon name={copied === r.value ? "check" : "copy"} /></button>
+                    <button data-icon-only class="copy" type="button" data-testid="custom-domain-copy" aria-label={copied === r.value ? "Copied" : `Copy ${r.purpose === "routing" ? "target" : "value"}`} title={copied === r.value ? "Copied" : "Copy"} onclick={() => void copy(r.value)}><RailIcon name={copied === r.value ? "check" : "copy"} /></button>
                   </div>
                   <p class="why">{r.purpose === "ownership" ? "Proves you own the domain so HQ can issue its certificate." : "Sends visitors to this deployment."}</p>
                 {/each}

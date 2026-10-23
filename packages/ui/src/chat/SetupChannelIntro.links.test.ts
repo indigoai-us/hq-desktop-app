@@ -148,6 +148,13 @@ describe("SetupChannelIntro welcome experience", () => {
         `[data-testid="setup-resource-${resource.id}"]`,
       );
       expect(link, `${resource.id} link renders`).toBeTruthy();
+      // A real icon in every card (owner, 2026-10-22): the old glyphs were
+      // `{@html}` paths inside an <svg>, which Svelte parses as HTML, so the
+      // tiles painted empty.
+      expect(
+        link?.querySelector(".resource-glyph svg[data-rail-icon] path")?.getAttribute("d"),
+        `${resource.id} icon`,
+      ).toMatch(/^M/);
       expect(link?.getAttribute("href")).toBe(resource.href);
       expect(link?.getAttribute("rel")).toBe("noopener noreferrer");
       expect(link?.textContent).toContain(resource.title);

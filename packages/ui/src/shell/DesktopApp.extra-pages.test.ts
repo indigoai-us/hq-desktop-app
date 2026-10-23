@@ -10,7 +10,7 @@
  * loud failure for an id no host registered.
  */
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
@@ -243,5 +243,61 @@ describe("DesktopApp extraPages", () => {
     expect(
       host.querySelector('[data-testid="embedded-navigation-error"]')?.textContent,
     ).toContain("Unknown destination: probe");
+  });
+
+  it("mounts company jobs on outpost-jobs when the host registers no extra page", async () => {
+    await mountShell();
+    await navigateEmbedded({ kind: "extra", page: "outpost-jobs", param: null });
+    await vi.waitFor(() => {
+      expect(host.querySelector("[data-testid='company-jobs-page']")).toBeTruthy();
+    });
+    expect(host.querySelector("[data-testid='company-jobs-route']")?.getAttribute("data-route")).toBe("outpost-jobs");
+    expect(host.querySelector("[data-testid='embedded-navigation-error']")).toBeNull();
+    expect(host.textContent).toContain("Choose a company to see its jobs.");
+    expect(host.querySelector("[data-testid='company-jobs-add']")).toBeNull();
+  });
+
+  it("sends Contact us on the jobs not-available-yet state through the in-app report path", async () => {
+    // The live trigger is the box list. The jobs routes answer normally.
+    const submitBugReport = vi.fn(async () => ok({}));
+    const adapter = {
+      ...webAdapter(),
+      agents: {
+        postCompanyJobs: async () => ok({ jobs: [] }),
+        getCompanyJobsStatus: async () => ok({ companyUid: "cmp_jobs", jobs: [] }),
+        listCompanyOutposts: async () =>
+          ok({ outposts: [{ outpostId: "opc_1", name: "main", lifecycle: "blocked", blockedReason: "billing_required" }] }),
+      },
+      feedback: { submitBugReport },
+    } as unknown as PlatformAdapter;
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(DesktopApp, {
+      target: host,
+      props: {
+        adapter,
+        sidebarApi: createFixtureChatSidebarApi(),
+        notificationsApi: createEmptyNotificationsApi(),
+        self: { uid: "prs_test", displayName: "Stefan Johnson", email: "stefan@example.com" },
+        coreFixtures: false,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
+    await navigateEmbedded({ kind: "extra", page: "outpost-jobs", param: "company=cmp_jobs" });
+    await vi.waitFor(() => {
+      expect(host.querySelector("[data-testid='company-jobs-not-available-copy']")?.textContent).toBe(
+        "Outposts are not available for this company yet.",
+      );
+    });
+    (host.querySelector("[data-testid='company-jobs-contact-us']") as HTMLButtonElement).click();
+    await vi.waitFor(() => {
+      expect(host.querySelector("[data-testid='company-jobs-contact-sent']")).toBeTruthy();
+    });
+    expect(submitBugReport).toHaveBeenCalledTimes(1);
+    const [title, body] = submitBugReport.mock.calls[0] as unknown as [string, string];
+    expect(title).toBe("Outposts not available for a company");
+    expect(body).toContain("cmp_jobs");
+    expect(body).not.toMatch(/\bA (unknown|admin|owner)\b/);
   });
 });

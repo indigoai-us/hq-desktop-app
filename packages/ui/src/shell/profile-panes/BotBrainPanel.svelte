@@ -42,7 +42,7 @@
 </script>
 {#if loading}<BotTabSkeleton kind="brain" onretry={onrefresh} />{:else}
 <section class="brain" aria-label="Manage brain">
-  <div class="active"><div><span class="eyebrow">Current brain</span><h4>{loading ? 'Checking configuration…' : active ? `${active.name} · ${active.models.find(choice => choice.value === active.model)?.label ?? active.model}` : 'Current provider not reported'}</h4><p>{active?.effort ? `Thinking level: ${effortLabel(active.effort, false)}` : active ? 'Thinking level: Provider default' : 'Refresh to check the latest configuration.'}</p>{#if switching}<p class="switching" role="status" data-testid="brain-switching">{switching.status === 'waiting' ? `Switching to ${switchingName} once the bot finishes its current reply…` : `Switching to ${switchingName}…`}</p>{/if}</div><button aria-label="Refresh brain" disabled={loading || busy || !onrefresh} onclick={() => onrefresh?.()}><RailIcon name="refresh" /></button></div>
+  <div class="active"><div><span class="eyebrow">Current brain</span><h4>{loading ? 'Checking configuration…' : active ? `${active.name} · ${active.models.find(choice => choice.value === active.model)?.label ?? active.model}` : 'Current provider not reported'}</h4><p>{active?.effort ? `Thinking level: ${effortLabel(active.effort, false)}` : active ? 'Thinking level: Provider default' : 'Refresh to check the latest configuration.'}</p>{#if switching}<p class="switching" role="status" data-testid="brain-switching">{switching.status === 'waiting' ? `Switching to ${switchingName} once the bot finishes its current reply…` : `Switching to ${switchingName}…`}</p>{/if}</div><button data-icon-only aria-label="Refresh brain" disabled={loading || busy || !onrefresh} onclick={() => onrefresh?.()}><RailIcon name="refresh" /></button></div>
   {#if error}<p class="notice" role="alert">{error}</p>{/if}
   {#if notice}<p class="notice" role="status">{notice}</p>{/if}
   <div class="section-head"><h4>Providers</h4></div>
@@ -56,7 +56,7 @@
 {/if}
 {#if current}
 <div class="overlay" use:portal><div class="dialog" tabindex="-1" role="dialog" aria-modal="true" aria-label={`${current.name} brain settings`} use:focusOnMount use:dismissable={{ onclose: close }}>
-  <header><span class="logo"><RailIcon name={current.id === 'claude' ? 'claude-code' : current.id} size={32} /></span><div><span class="eyebrow">Brain settings</span><h3>{current.name}</h3></div><button disabled={busy} aria-label="Close brain settings" onclick={close}><RailIcon name="x" /></button></header>
+  <header><span class="logo"><RailIcon name={current.id === 'claude' ? 'claude-code' : current.id} size={32} /></span><div><span class="eyebrow">Brain settings</span><h3>{current.name}</h3></div><button data-icon-only disabled={busy} aria-label="Close brain settings" onclick={close}><RailIcon name="x" /></button></header>
   <p>{current.detail}</p>
   {#if current.state !== 'connected'}<div class="notice"><p>{current.state === 'unknown' ? 'Verify or connect your provider before using its models.' : 'Sign in to use models from this provider.'}</p><button class="primary" disabled={busy || !current.canConnect || !onconnect} onclick={() => act(true)}>Connect {current.name}</button></div>{/if}
   {#if current.active}

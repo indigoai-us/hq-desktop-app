@@ -39,14 +39,16 @@ describe('company icon — component contract', () => {
     expect(component).toMatch(/brokenSrc\s*=\s*safeSrc/);
   });
 
-  it('draws the building as inline SVG with the house stroke dialect', () => {
-    // 16-unit viewBox + currentColor + round joins, matching the icon set. No
-    // icon dependency is introduced.
-    expect(component).toContain('viewBox="0 0 16 16"');
-    expect(component).toContain('stroke="currentColor"');
-    expect(component).toContain('stroke-width="1.5"');
-    // The same office mark the Settings "companies" nav icon uses.
-    expect(component).toContain('M2.5 13.5V6.5L8 3l5.5 3.5v7H2.5Z');
+  it('draws the fallback as the Phosphor house glyph from the shared icon set', () => {
+    // The fallback uses the same Phosphor family as every other icon in the
+    // app, through the in-repo RailIcon (no icon package dependency).
+    expect(component).toContain('import RailIcon from "../common/button/RailIcon.svelte"');
+    expect(component).toMatch(/<RailIcon name="house" size=\{Math\.round\(size \* 0\.82\)\} \/>/);
+    // The old hand-drawn office mark is gone, not rendered alongside.
+    expect(component).not.toContain('M2.5 13.5V6.5L8 3l5.5 3.5v7H2.5Z');
+    const icons = ui('src/common/button/rail-icons.ts');
+    expect(icons).toMatch(/\|\s*"house"/);
+    expect(icons).toMatch(/"house":\s*"M/);
   });
 
   it('rounds the icon at 4px', () => {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import "../../common/tag.css";
   import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * Trusted renderer for structured agent message content (stat / table /
@@ -216,6 +217,19 @@
     danger: "tone-danger",
   };
 
+  /** A badge is the app's one tag (common/tag.css), in its tone. */
+  const TAG_TONE_CLASS: Record<BadgeTone, string> = {
+    neutral: "",
+    success: "is-ok",
+    warning: "is-warn",
+    danger: "is-danger",
+    accent: "is-accent",
+  };
+
+  function badgeTagClass(tone: BadgeTone | undefined): string {
+    return TAG_TONE_CLASS[tone ?? "neutral"] ?? "";
+  }
+
   function badgeToneClass(tone: BadgeTone | undefined): string {
     return TONE_CLASS[tone ?? "neutral"] ?? TONE_CLASS.neutral;
   }
@@ -432,7 +446,7 @@
       </div>
     {:else if block.kind === "badge"}
       <div class="rich-badge-row" data-testid="rich-badge">
-        <span class="rich-badge {badgeToneClass(block.tone)}">
+        <span class="hq-tag rich-badge {badgeTagClass(block.tone)}">
           <RichLabelIcon name={block.icon ?? DEFAULT_BLOCK_ICON.badge} size={12} /><span>{block.label}</span>
         </span>
       </div>
@@ -517,7 +531,7 @@
               {/if}
               <span class="rich-decision-btn-label">{option.label}</span>
               {#if option.recommended}
-                <span class="rich-decision-tag">Recommended</span>
+                <span class="hq-tag is-accent rich-decision-tag">Recommended</span>
               {/if}
               {#if option.description}
                 <span class="rich-decision-desc">{option.description}</span>
@@ -751,21 +765,6 @@
     flex-wrap: wrap;
     gap: 6px;
   }
-  .rich-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 9px;
-    border-radius: 999px;
-    border: 1px solid var(--tone-line);
-    background: var(--tone-tint);
-    color: var(--tone-ink);
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.01em;
-    line-height: 1.5;
-    white-space: nowrap;
-  }
 
   /* ── Key/value definition list ──────────────────────────────────────── */
   .rich-kv {
@@ -971,13 +970,6 @@
   }
   .rich-decision-btn.is-chosen .rich-decision-btn-label {
     font-weight: 500;
-  }
-  .rich-decision-tag {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--vio-ink);
-    text-transform: uppercase;
-    letter-spacing: 0.02em;
   }
   .rich-decision-desc {
     flex-basis: 100%;

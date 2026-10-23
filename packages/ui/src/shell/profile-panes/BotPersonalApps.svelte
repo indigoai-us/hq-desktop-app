@@ -134,7 +134,7 @@
 <section class="personal" aria-label="Personal apps">
   <div class="section-head">
     <div><h4>Personal apps</h4><p class="muted">Apps this bot signs in to on its own. Only this bot can use them.</p></div>
-    <button class="icon-button" disabled={loading || !!signingIn} onclick={() => void refresh()} aria-label="Refresh personal apps" title="Refresh personal apps"><RailIcon name="refresh" /></button>
+    <button data-icon-only class="icon-button" disabled={loading || !!signingIn} onclick={() => void refresh()} aria-label="Refresh personal apps" title="Refresh personal apps"><RailIcon name="refresh" /></button>
     <button disabled={!!signingIn} onclick={() => { adding = true; actionError = ''; }}>Add by address</button>
     <button class="primary" disabled={!!signingIn} aria-haspopup="dialog" onclick={() => void browse()}><RailIcon name="plus" />Browse apps</button>
   </div>
@@ -154,7 +154,7 @@
 </section>
 {#if browsing && !picked}
   <div class="overlay" use:portal><div class="dialog catalog-dialog" role="dialog" aria-modal="true" aria-label="Browse personal apps" tabindex="-1" use:dismissable={{ onclose: close, outside: true }}>
-    <header><div><h3>Add a personal app</h3><p class="muted">Apps this bot’s runtime knows how to connect. The bot signs in with your account, and only this bot can use it.</p></div><button class="icon-button" aria-label="Close app browser" onclick={close}><RailIcon name="x" /></button></header>
+    <header><div><h3>Add a personal app</h3><p class="muted">Apps this bot’s runtime knows how to connect. The bot signs in with your account, and only this bot can use it.</p></div><button data-icon-only class="icon-button" aria-label="Close app browser" onclick={close}><RailIcon name="x" /></button></header>
     <label class="search catalog-search"><RailIcon name="search" /><input use:focusOnMount aria-label="Search personal apps" bind:value={catalogQuery} placeholder="Search {catalog.length || ''} apps…" /></label>
     <div class="catalog-results">
       {#if catalogLoading}<p class="muted" role="status">Loading the bot’s app catalog…</p>{:else if catalogError}<p class="notice" role="alert">{catalogError}</p>{:else if shownCatalog.length === 0}<p class="muted">No apps match.</p>{/if}
@@ -170,7 +170,7 @@
 {/if}
 {#if picked}
   <div class="overlay" use:portal><div class="dialog" role="dialog" aria-modal="true" aria-label="Add {picked.name}" tabindex="-1" use:focusOnMount use:dismissable={{ onclose: () => { if (!busy) picked = null; } }}>
-    <header><span class="logo"><ConnectionCardLogo logo={botAppLogo({ domain: domainOf(picked.url), name: picked.name, provider: picked.name })} size={44} /></span><div><h3>{picked.name}</h3><p class="muted">{picked.url}</p></div><button class="icon-button" aria-label="Close" disabled={busy} onclick={() => picked = null}><RailIcon name="x" /></button></header>
+    <header><span class="logo"><ConnectionCardLogo logo={botAppLogo({ domain: domainOf(picked.url), name: picked.name, provider: picked.name })} size={44} /></span><div><h3>{picked.name}</h3><p class="muted">{picked.url}</p></div><button data-icon-only class="icon-button" aria-label="Close" disabled={busy} onclick={() => picked = null}><RailIcon name="x" /></button></header>
     <p>{picked.description}</p>
     <p class="notice">{picked.auth === 'oauth' ? 'You’ll sign in to this app in your browser. The bot keeps that sign-in for itself.' : 'This app doesn’t need a sign-in. The bot reloads to pick up its tools.'}</p>
     {#if actionError}<p class="notice" role="alert">{actionError}</p>{/if}
@@ -179,7 +179,7 @@
 {/if}
 {#if adding}
   <div class="overlay" use:portal><div class="dialog" role="dialog" aria-modal="true" aria-label="Add personal app" tabindex="-1" use:dismissable={{ onclose: close }}>
-    <header><div><h3>Add a personal app</h3><p class="muted">The bot signs in with your account for this app. Nobody else in the company can use it.</p></div><button class="icon-button" aria-label="Close" disabled={busy} onclick={close}><RailIcon name="x" /></button></header>
+    <header><div><h3>Add a personal app</h3><p class="muted">The bot signs in with your account for this app. Nobody else in the company can use it.</p></div><button data-icon-only class="icon-button" aria-label="Close" disabled={busy} onclick={close}><RailIcon name="x" /></button></header>
     <form onsubmit={event => { event.preventDefault(); void add(); }}>
       <label>Name<input use:focusOnMount bind:value={name} placeholder="notion" autocomplete="off" /></label>
       <label>MCP address<input bind:value={url} placeholder="https://mcp.notion.com/mcp" autocomplete="off" /></label>
@@ -190,7 +190,7 @@
 {/if}
 {#if current}
   <div class="overlay" use:portal><div class="dialog" role="dialog" aria-modal="true" aria-label="Manage personal app" tabindex="-1" use:focusOnMount use:dismissable={{ onclose: close }}>
-    <header><span class="logo"><ConnectionCardLogo logo={botAppLogo({ domain: domainOf(current.url), name: current.name, provider: current.name })} size={44} /></span><div><h3>{current.name}</h3><p class="muted">{current.url}</p></div><button class="icon-button" aria-label="Close" disabled={busy} onclick={close}><RailIcon name="x" /></button></header>
+    <header><span class="logo"><ConnectionCardLogo logo={botAppLogo({ domain: domainOf(current.url), name: current.name, provider: current.name })} size={44} /></span><div><h3>{current.name}</h3><p class="muted">{current.url}</p></div><button data-icon-only class="icon-button" aria-label="Close" disabled={busy} onclick={close}><RailIcon name="x" /></button></header>
     <p class="status-line">{statusOf(current)}</p>
     <p class="muted">This app runs in the bot itself and uses the bot’s own sign-in. Removing it also deletes that saved sign-in.</p>
     {#if confirmRemove}<p class="notice">Remove {current.name} from this bot?</p>{/if}

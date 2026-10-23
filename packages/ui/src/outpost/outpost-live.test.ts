@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OUTPOST_PATHS, type AdapterResult, type Json } from "@hq/platform";
@@ -167,7 +167,7 @@ describe("Outpost live read (QA-069)", () => {
       for (const name of readdirSync(dir)) {
         const path = join(dir, name);
         if (statSync(path).isDirectory()) walk(path);
-        else if (/\.(ts|svelte)$/.test(name) && !/\.(test|fixture)\./.test(name) && path.includes("outpost")) {
+        else if (/\.(ts|svelte)$/.test(name) && !/\.(test|fixture)\./.test(name) && relative(root, path).split(/[/\\]/).includes("outpost")) {
           const text = readFileSync(path, "utf8");
           for (const word of banned) if (text.includes(word)) offenders.push(`${path}: ${word}`);
         }

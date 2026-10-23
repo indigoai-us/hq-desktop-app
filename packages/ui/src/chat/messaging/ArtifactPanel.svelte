@@ -115,21 +115,14 @@
       ><RailIcon name="copy" />
         {copied ? "Copied" : "Copy"}
       </button>
-      <button
+      <button data-icon-only
         type="button"
         class="artifact-panel-btn artifact-panel-close"
         data-testid="artifact-panel-close"
         onclick={onclose}
         aria-label="Close artifact"
       >
-        <svg viewBox="0 0 12 12" width="12" height="12" focusable="false" aria-hidden="true">
-          <path
-            d="M3 3l6 6M9 3l-6 6"
-            stroke="currentColor"
-            stroke-width="1.4"
-            stroke-linecap="round"
-          />
-        </svg>
+        <RailIcon name="x" size={12} />
       </button>
     </span>
   </header>
@@ -302,10 +295,16 @@
   }
 
   /* Reading measure. Long single-line content wraps; the pane never scrolls
-     horizontally. */
+     horizontally.
+
+     13px is the chat body's size, not a reading size of its own. The pane
+     opens beside the message the artifact came from, so 14px made the same
+     words look bigger on one side of the divider than the other — it read as
+     a different document rather than the rest of that one. The extra leading
+     is what carries the longer read. */
   .artifact-panel-content {
     max-width: 70ch;
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1.6;
     color: var(--t1, rgba(255, 255, 255, 0.92));
     word-break: break-word;
