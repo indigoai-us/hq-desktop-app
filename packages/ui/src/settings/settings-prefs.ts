@@ -174,7 +174,8 @@ export function readStoredUiSize(
 /**
  * Sound effects (the accomplishments announcement's card sounds) are a
  * device-wide preference like Interface size, so they read the same in every
- * company. On unless the person turned them off.
+ * company. Off unless the person turned them on: HQ is quiet by default
+ * (owner preference; issue #1784).
  */
 export const SOUND_EFFECTS_STORAGE_KEY = "hq-work-sound-effects";
 
@@ -182,9 +183,9 @@ export function readSoundEffectsEnabled(
   storage: Pick<Storage, "getItem"> | null | undefined = defaultStorage(),
 ): boolean {
   try {
-    return storage?.getItem(SOUND_EFFECTS_STORAGE_KEY) !== "off";
+    return storage?.getItem(SOUND_EFFECTS_STORAGE_KEY) === "on";
   } catch {
-    return true;
+    return false;
   }
 }
 
