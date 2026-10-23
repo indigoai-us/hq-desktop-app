@@ -8,8 +8,11 @@ import {
   domainErrorCopy,
   domainInputProblem,
   domainPricesFromFeed,
-  isApexDomain,
+  awaitOwnershipRecord,
+  hasOwnershipRecord,
+  liveCustomDomainUrl,
   normalizeDomainInput,
+  routingTargetFor,
   trustedBillingUrl,
 } from "./custom-domain.js";
 
@@ -34,11 +37,41 @@ describe("US-007 custom-domain model", () => {
     expect(domainInputProblem("app.yousufkalim.com")).toBeNull();
   });
 
-  it("tells root domains from subdomains", () => {
-    expect(isApexDomain("example.com")).toBe(true);
-    expect(isApexDomain("example.co.uk")).toBe(true);
-    expect(isApexDomain("app.example.com")).toBe(false);
-    expect(isApexDomain("demo.yousufkalim.com")).toBe(false);
+  it("points the routing record at the provisioned indigo-hq.com host, as hq-deploy does", () => {
+    expect(routingTargetFor("hq-lifecycle-email-map.hq.work")).toBe("hq-lifecycle-email-map.indigo-hq.com");
+    expect(routingTargetFor("launch-notes.indigo-hq.com")).toBe("launch-notes.indigo-hq.com");
+    expect(dnsRecordsFor("yousufkalim.com", "hq-lifecycle-email-map.hq.work", [])).toEqual([
+      { type: "CNAME", name: "yousufkalim.com", value: "hq-lifecycle-email-map.indigo-hq.com", purpose: "routing" },
+    ]);
+  });
+
+  it("waits for the certificate record before handing back the DNS records", async () => {
+    const routing = { type: "CNAME", name: "app.example.com", value: "launch-notes.indigo-hq.com" };
+    const cert = { type: "CNAME", name: "_a.app.example.com.", value: "_b.acm-validations.aws." };
+    const pendingReply = (instructions: unknown[]) => ({ state: "pending" as const, serving: false, certStatus: "PENDING_VALIDATION", instructions });
+    const refresh = vi.fn().mockResolvedValueOnce(pendingReply([])).mockResolvedValueOnce(pendingReply([cert]));
+    const result = await awaitOwnershipRecord({ refresh }, "app_1", "app.example.com", [routing], [0, 0, 0]);
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(hasOwnershipRecord("app.example.com", result.instructions)).toBe(true);
+    expect(dnsRecordsFor("app.example.com", "", result.instructions).map((r) => r.purpose)).toEqual(["ownership", "routing"]);
+    expect(result.last?.certStatus).toBe("PENDING_VALIDATION");
+
+    // Already complete: no extra read.
+    const unused = vi.fn();
+    await awaitOwnershipRecord({ refresh: unused }, "app_1", "app.example.com", [cert, routing], [0]);
+    expect(unused).not.toHaveBeenCalled();
+
+    // Never arrives: stops after the last delay with what it has.
+    const empty = vi.fn().mockResolvedValue(pendingReply([]));
+    const partial = await awaitOwnershipRecord({ refresh: empty }, "app_1", "app.example.com", [routing], [0, 0]);
+    expect(empty).toHaveBeenCalledTimes(3);
+    expect(hasOwnershipRecord("app.example.com", partial.instructions)).toBe(false);
+  });
+
+  it("names the first live custom domain as the deployment's address", () => {
+    expect(liveCustomDomainUrl([{ domain: "yousufkalim.com", state: "validated" }])).toBe("https://yousufkalim.com");
+    expect(liveCustomDomainUrl([{ domain: "yousufkalim.com", state: "pending" }])).toBeNull();
+    expect(liveCustomDomainUrl([])).toBeNull();
   });
 
   it("labels the certificate and routing records and rebuilds routing when missing", () => {

@@ -94,6 +94,25 @@ describe("PersonalDeploymentsPage custom domain (US-007)", () => {
     expect(host!.querySelector("[data-testid='custom-domain-input']")).toBeNull();
   });
 
+  it("shows and visits the live custom domain instead of the default address", async () => {
+    const openExternal = vi.fn();
+    const deployDomainRequest = vi.fn(async () =>
+      ({ ok: true, value: { status: 200, body: { appId: "app_1", domains: [{ domain: "yousufkalim.com", validationState: "validated" }] } } }) as never,
+    );
+    render({ deployDomainRequest, openExternal });
+    await expect.poll(() => rows().length).toBe(2);
+    pick("domain-demo").click();
+    flushSync();
+    await expect.poll(() => host!.querySelector("[data-testid='deploy-url']")?.textContent).toBe("https://yousufkalim.com");
+    (host!.querySelector("[data-testid='deploy-visit']") as HTMLButtonElement).click();
+    expect(openExternal).toHaveBeenCalledWith("https://yousufkalim.com");
+
+    // A personal row has no custom domain and keeps its own address.
+    pick("my-notes").click();
+    flushSync();
+    await expect.poll(() => host!.querySelector("[data-testid='deploy-url']")?.textContent).toBe("https://my-notes.indigo-hq.com");
+  });
+
   it("hides it on a host without the domain routes", async () => {
     render({ deployDomainRequest: null });
     await expect.poll(() => rows().length).toBe(2);

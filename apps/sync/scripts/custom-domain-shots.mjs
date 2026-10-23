@@ -9,9 +9,9 @@ mkdirSync(out, { recursive: true });
 const base = 'http://localhost:1422/?view=custom-domain-shot&state=';
 
 const STATES = [
-  { name: 'add', state: 'empty', type: 'app.example.com' },
+  { name: 'add', state: 'empty', type: 'mysite.com' },
   { name: 'reserved', state: 'empty', type: 'mine.hq.work' },
-  { name: 'card-required', state: 'empty', type: 'app.example.com', press: 'custom-domain-add' },
+  { name: 'card-required', state: 'empty', type: 'mysite.com', press: 'custom-domain-add' },
   { name: 'waiting-for-dns', state: 'pending' },
   { name: 'root-domain', state: 'apex' },
   { name: 'live', state: 'live' },
