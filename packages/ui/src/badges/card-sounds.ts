@@ -8,9 +8,15 @@
  * takes at random and never the same take twice in a row, so a hand of five
  * cards does not sound like one sample repeated.
  *
- * Nothing plays when the person turned sound effects off in Settings
- * (Appearance), or when the system asks for reduced motion. The files are
- * mastered quiet; the player adds no gain of its own.
+ * Sound is off by default: nothing plays until the person turns sound
+ * effects on in Settings (Appearance), and nothing plays when the system asks
+ * for reduced motion. The files are mastered quiet; the player adds no gain of
+ * its own.
+ *
+ * The pointer tick is throttled, so sweeping across the hand does not rattle,
+ * and the closing sound is decoded as soon as the player opens the audio
+ * device, so it is ready when the announcement closes and still rings out
+ * after the component is gone.
  */
 import { readSoundEffectsEnabled } from "../settings/settings-prefs.js";
 import { prefersReducedMotion } from "./badge-card.js";
@@ -82,6 +88,13 @@ export interface SoundContextLike {
 /** A sound that cannot start within this long of its moment is dropped. */
 const LATE_MS = 250;
 
+/**
+ * The least time between two plays of an action, in wall-clock milliseconds.
+ * Only the pointer tick needs one: a sweep across the hand fires a
+ * pointerenter per card.
+ */
+export const MIN_INTERVAL_MS: Readonly<Partial<Record<CardSoundAction, number>>> = { hover: 150 };
+
 export interface CardSoundsOptions {
   /** Defaults to the stored Settings value and the reduced-motion query. */
   enabled?: () => boolean;
@@ -128,6 +141,7 @@ export function createCardSounds(options: CardSoundsOptions = {}): CardSounds {
     (Object.keys(CARD_SOUNDS) as CardSoundAction[]).map((action) => [action, createRandomCycler(CARD_SOUNDS[action], options.random)]),
   ) as Record<CardSoundAction, () => string>;
   const buffers = new Map<string, Promise<unknown>>();
+  const lastPlayedAt = new Map<CardSoundAction, number>();
   let context: SoundContextLike | null = null;
   let disposed = false;
 
@@ -145,7 +159,18 @@ export function createCardSounds(options: CardSoundsOptions = {}): CardSounds {
   return {
     play(action, delayMs = 0) {
       if (disposed || !enabled()) return;
-      context ??= createContext();
+      const minInterval = MIN_INTERVAL_MS[action];
+      if (minInterval !== undefined) {
+        const last = lastPlayedAt.get(action);
+        if (last !== undefined && now() - last < minInterval) return;
+        lastPlayedAt.set(action, now());
+      }
+      if (!context) {
+        context = createContext();
+        // Decode the closing takes up front: the announcement closes and
+        // unmounts within a fraction of a second, too soon for a first load.
+        if (context) for (const take of CARD_SOUNDS.dismiss) void decoded(context, take).catch(() => undefined);
+      }
       const ctx = context;
       if (!ctx) return;
       const url = cyclers[action]();
@@ -157,7 +182,9 @@ export function createCardSounds(options: CardSoundsOptions = {}): CardSounds {
       decoded(ctx, url)
         .then((buffer) => {
           const late = now() - due;
-          if (disposed || ctx.state !== "running" || late > LATE_MS) return;
+          // A sound asked for before dispose() still plays: dispose keeps the
+          // device open for a moment so the closing sound can ring out.
+          if (ctx.state !== "running" || late > LATE_MS) return;
           const source = ctx.createBufferSource();
           source.buffer = buffer;
           source.connect(ctx.destination);
