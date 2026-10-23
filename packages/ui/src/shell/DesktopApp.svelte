@@ -89,6 +89,8 @@
   import DeploymentsRailHost from "./DeploymentsRailHost.svelte";
   import PersonalRailHost from "./PersonalRailHost.svelte";
   import OutpostRailHost from "./OutpostRailHost.svelte";
+  import CompanyJobsRailHost from "./CompanyJobsRailHost.svelte";
+  import { OUTPOST_JOBS_ROUTE, parseOutpostJobsParam } from "../outpost/company-jobs-model.js";
   import AtlasLandingHost from "./AtlasLandingHost.svelte";
   import type { AtlasLocalSource, AtlasVaultSource } from "./atlas-landing.js";
   import ActivityRailHost from "./ActivityRailHost.svelte";
@@ -10829,6 +10831,12 @@
       };
     }
     if (destination.kind === "extra") {
+      if (destination.page === OUTPOST_JOBS_ROUTE) {
+        const jobsCompany = destination.companyUid ?? extraParamCompanyKey(destination.param);
+        const jobsDenied = accessOutcome(destination, jobsCompany);
+        if (jobsDenied) return jobsDenied;
+        return { status: "ready", destination };
+      }
       if (companyRowForPage(destination.page) === "office") {
         const uid = destination.companyUid;
         const denied = accessOutcome(destination, uid);
@@ -12915,6 +12923,38 @@
     companyPaneCompany?.uid ? (companies ?? []).find((c) => (c.cloudUid ?? "").trim() === companyPaneCompany?.uid) : undefined,
   );
   const companyPaneBillingState = $derived(companyPaneWorkspace?.billingState ?? null);
+  const jobsCompanyUid = $derived.by(() => {
+    if (extraPageId !== OUTPOST_JOBS_ROUTE) return null;
+    return parseOutpostJobsParam(extraPageParam).companyUid ?? tenantCompanyId;
+  });
+  const jobsRole = $derived.by(() => {
+    const uid = jobsCompanyUid;
+    if (!uid) return "unknown" as const;
+    const role = callerRole(uid);
+    if (role === "Owner") return "owner" as const;
+    if (role === "Admin") return "admin" as const;
+    if (role === undefined) return "unknown" as const;
+    return "member" as const;
+  });
+  /** Contact us on the jobs not-available-yet state. Reaches HQ through the in-app report path. */
+  function contactAboutJobs(companyUid: string) {
+    const who =
+      jobsRole === "owner" ? "An owner" : jobsRole === "admin" ? "An admin" : jobsRole === "member" ? "A member" : "Someone";
+    return adapter.feedback.submitBugReport(
+      "Outposts not available for a company",
+      `${who} asked about Outposts from the Jobs screen.\n\nCompany: ${companyUid}`,
+    );
+  }
+  $effect(() => {
+    const uid = jobsCompanyUid;
+    if (!uid) return;
+    loadCallerRole({
+      companyUid: uid,
+      selfUid: self?.uid ?? null,
+      selfEmail: self?.email ?? null,
+      company: adapter.company ?? null,
+    });
+  });
   // US-007: the global Deployments page offers the company Custom domain sheet too.
   async function deployDomainPrices(): Promise<DomainPrices | null> {
     const read = adapter.company?.getPricing;
@@ -14679,6 +14719,14 @@
             <p>{railPlaceholder.summary}</p>
             <p class="rail-placeholder-story">Built in {railPlaceholder.story}.</p>
           </section>
+        {:else if view === "extra" && extraPageId === OUTPOST_JOBS_ROUTE}
+          <CompanyJobsRailHost
+            companyUid={jobsCompanyUid}
+            outpostId={parseOutpostJobsParam(extraPageParam).outpostId}
+            role={jobsRole}
+            api={adapter.agents ?? null}
+            contact={contactAboutJobs}
+          />
         {:else if view === "extra" && extraPageId && extraPages?.[extraPageId]}
           {@const Page = extraPages[extraPageId].component}
           <div class="extra-page-host" data-testid="extra-page-host" data-page={extraPageId}>
@@ -14790,26 +14838,42 @@
                       />
                     </button>
                   {:else}
-                    <span
-                      class="channel-header-avatar"
-                      data-testid="channel-header-avatar"
+                    <!-- The person's avatar and name open their profile, the
+                         same one unit a bot's header already is (iOS #44: the
+                         identity in the bar opens the profile). -->
+                    <button
+                      type="button"
+                      class="channel-header-agent channel-header-person"
+                      data-testid="channel-header-person"
+                      aria-label={`View ${headerTitle}'s profile`}
+                      disabled={!(selectedRow.personUid ?? "").trim()}
+                      onclick={() =>
+                        openProfileForAuthor({
+                          personUid: selectedRow?.personUid ?? "",
+                          displayName: headerTitle,
+                        })}
                     >
-                      <IdentityMark
-                        kind="person"
-                        label={headerTitle}
-                        agentUid={selectedRow.personUid}
-                        avatarUrl={authorAvatarUrl(
-                          selectedRow.personUid,
-                          avatarByUid,
-                        )}
-                        size="small"
-                        online={presenceStatus(
-                          selectedRow.companyUid ?? "",
-                          selectedRow.personUid ?? "",
-                        ) === "online"}
-                      />
-                    </span>
-                    <h2 data-testid="channel-name">{headerTitle}</h2>
+                      <span
+                        class="channel-header-avatar"
+                        data-testid="channel-header-avatar"
+                      >
+                        <IdentityMark
+                          kind="person"
+                          label={headerTitle}
+                          agentUid={selectedRow.personUid}
+                          avatarUrl={authorAvatarUrl(
+                            selectedRow.personUid,
+                            avatarByUid,
+                          )}
+                          size="small"
+                          online={presenceStatus(
+                            selectedRow.companyUid ?? "",
+                            selectedRow.personUid ?? "",
+                          ) === "online"}
+                        />
+                      </span>
+                      <h2 data-testid="channel-name">{headerTitle}</h2>
+                    </button>
                   {/if}
                 {:else}
                   <h2 data-testid="channel-name">{headerTitle}</h2>
@@ -16593,6 +16657,13 @@
     min-width: 0;
   }
 
+  /* The title row aligns text on its baseline, and a baseline-aligned icon
+     box sits its bottom edge on that baseline, so the company mark rode
+     about 5px above the title's middle (owner, 2026-10-22). Centre it. */
+  .channel-title > :global(.company-icon) {
+    align-self: center;
+  }
+
   .channel-header-avatar {
     display: inline-flex;
     flex: 0 0 auto;
@@ -16611,6 +16682,10 @@
     color: inherit;
     font: inherit;
     cursor: pointer;
+  }
+
+  .channel-header-person:disabled {
+    cursor: default;
   }
 
   .channel-header-agent h2 {

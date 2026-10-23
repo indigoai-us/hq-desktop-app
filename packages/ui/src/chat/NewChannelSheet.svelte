@@ -125,8 +125,8 @@
       >{#if companyUid}<CompanyLabel name={company?.label ?? "Personal"} {companyUid} />{:else}Personal{/if}</span
     >
     <span class="grow"></span>
-    <button type="button" class="icon" aria-label="Close" onclick={() => onclose()}>
-      <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
+    <button data-icon-only type="button" class="icon" aria-label="Close" onclick={() => onclose()}>
+      <RailIcon name="x" size={14} />
     </button>
   </header>
   <div class="sb">

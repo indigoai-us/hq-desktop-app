@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   import CompanyLabel from "../../company/CompanyLabel.svelte";
   /**
    * Forward a message to one or more destinations (US-009). Candidates are
@@ -360,10 +361,8 @@
   >
     <div class="forward-head">
       <h2 class="forward-title" id="forward-title">Forward message</h2>
-      <button type="button" class="forward-close" aria-label="Close" data-testid="forward-close" onclick={onclose}>
-        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">
-          <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-        </svg>
+      <button data-icon-only type="button" class="forward-close" aria-label="Close" data-testid="forward-close" onclick={onclose}>
+        <RailIcon name="x" size={14} />
       </button>
     </div>
 
@@ -415,9 +414,7 @@
               }}
             >
               <span class="forward-chip-name">{scopeLabel}</span>
-              <svg viewBox="0 0 10 10" width="9" height="9" fill="none" aria-hidden="true">
-                <path d="M2 3.5l3 3 3-3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-              </svg>
+              <RailIcon name="chevron-down" size={10} />
             </button>
             {#if scopeOpen}
               <div class="forward-scope-menu" role="listbox" aria-label="Scope" data-testid="forward-company-menu">
@@ -524,9 +521,7 @@
               <span class="forward-option-kind">{KIND_LABEL[candidate.kind]}</span>
               <span class="forward-option-check" aria-hidden="true">
                 {#if picked}
-                  <svg viewBox="0 0 16 16" width="14" height="14" fill="none">
-                    <path d="M3.5 8.5l3 3 6-6.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-                  </svg>
+                  <RailIcon name="check" size={14} />
                 {/if}
               </span>
             </button>

@@ -448,7 +448,7 @@
                   </svg>
                 </span>
               {:else if kind === "failed"}
-                <button
+                <button data-icon-only
                   type="button"
                   class="row-icon-btn row-icon-invite notetaker-toggle"
                   data-testid="meeting-notetaker-toggle"

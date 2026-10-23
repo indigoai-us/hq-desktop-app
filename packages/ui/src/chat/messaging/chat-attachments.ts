@@ -1,3 +1,4 @@
+import { attachmentPreviewKind } from "./attachment-preview";
 /**
  * Client helpers for chat file attachments.
  *
@@ -267,6 +268,38 @@ export function attachmentBadgeLabel(item: {
   kind?: string | null;
 }): string {
   return item.kind === "folder" ? "FOLDER" : fileTypeLabel(item.name, item.contentType);
+}
+
+/**
+ * The three kinds a file card tells apart by colour, as the iOS app does
+ * (hq-native-mobile `FileKindTint`): folders, images, and every other file.
+ */
+export type FileKind = "folder" | "image" | "document";
+
+export function fileKind(item: {
+  name: string;
+  contentType: string;
+  kind?: string | null;
+}): FileKind {
+  if (item.kind === "folder") return "folder";
+  return attachmentPreviewKind(item) === "image" ? "image" : "document";
+}
+
+/**
+ * A file card's second line: the kind, then the size — "PDF · 12 KB",
+ * "Folder", or just "PDF" when the size is unknown. Never a bare "File"
+ * standing in for information the card does have.
+ */
+export function fileMetaLine(item: {
+  name: string;
+  contentType: string;
+  kind?: string | null;
+  sizeLabel?: string | null;
+}): string {
+  if (item.kind === "folder") return "Folder";
+  const type = fileTypeLabel(item.name, item.contentType);
+  const size = item.sizeLabel?.trim();
+  return size ? `${type} · ${size}` : type;
 }
 
 export function newAttachmentId(): string {

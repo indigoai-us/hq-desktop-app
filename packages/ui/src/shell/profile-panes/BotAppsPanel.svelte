@@ -71,14 +71,14 @@
 <section class="apps" aria-label="Manage apps">
   <div class="section-head">
     <div>{#if title}<h4>{title}</h4>{/if}<p class="muted">Shared company accounts this bot can use. Browse apps to add more.</p></div>
-    <button class="icon-button" disabled={loading || busy || !onrefresh} onclick={() => onrefresh?.()} aria-label="Refresh apps" title="Refresh apps"><RailIcon name="refresh" /></button>
+    <button data-icon-only class="icon-button" disabled={loading || busy || !onrefresh} onclick={() => onrefresh?.()} aria-label="Refresh apps" title="Refresh apps"><RailIcon name="refresh" /></button>
     <button class="primary browse-button" aria-haspopup="dialog" onclick={browse}><RailIcon name="plus" />Browse apps</button>
   </div>
   {#if mine.length}<div class="toolbar">
     <label class="search"><RailIcon name="search" /><input aria-label="Filter bot apps" bind:value={query} placeholder="Search apps…" /></label>
     <div class="view-toggle" role="group" aria-label="App view">
-      <button class="icon-button" class:active={view === 'list'} aria-label="List view" title="List view" aria-pressed={view === 'list'} onclick={() => view = 'list'}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 5h10M7 10h10M7 15h10M3 5h.01M3 10h.01M3 15h.01" /></svg></button>
-      <button class="icon-button" class:active={view === 'grid'} aria-label="Grid view" title="Grid view" aria-pressed={view === 'grid'} onclick={() => view = 'grid'}><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="3" width="5" height="5" rx="1" /><rect x="12" y="3" width="5" height="5" rx="1" /><rect x="3" y="12" width="5" height="5" rx="1" /><rect x="12" y="12" width="5" height="5" rx="1" /></svg></button>
+      <button data-icon-only class="icon-button" class:active={view === 'list'} aria-label="List view" title="List view" aria-pressed={view === 'list'} onclick={() => view = 'list'}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 5h10M7 10h10M7 15h10M3 5h.01M3 10h.01M3 15h.01" /></svg></button>
+      <button data-icon-only class="icon-button" class:active={view === 'grid'} aria-label="Grid view" title="Grid view" aria-pressed={view === 'grid'} onclick={() => view = 'grid'}><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="3" width="5" height="5" rx="1" /><rect x="12" y="3" width="5" height="5" rx="1" /><rect x="3" y="12" width="5" height="5" rx="1" /><rect x="12" y="12" width="5" height="5" rx="1" /></svg></button>
     </div>
     <span class="muted count">{`${shown.length}${shown.length !== mine.length ? ` of ${mine.length}` : ''} apps`}</span>
   </div>{/if}
@@ -92,7 +92,7 @@
 {/if}
 {#if browsing && !selectedCatalog && !current}
   <div class="overlay" use:portal><div class="dialog catalog-dialog" role="dialog" aria-modal="true" aria-label="Browse apps" tabindex="-1" use:dismissable={{ onclose: closeBrowse, outside: true }}>
-    <header><div><h3>Find your next app</h3><p class="muted">Add one of the company’s apps to this bot, or connect a new app to the company.</p></div><button class="icon-button" aria-label="Close app browser" disabled={!!adding} onclick={closeBrowse}><RailIcon name="x" /></button></header>
+    <header><div><h3>Find your next app</h3><p class="muted">Add one of the company’s apps to this bot, or connect a new app to the company.</p></div><button data-icon-only class="icon-button" aria-label="Close app browser" disabled={!!adding} onclick={closeBrowse}><RailIcon name="x" /></button></header>
     <form class="search catalog-search" onsubmit={event => { event.preventDefault(); search(); }}><RailIcon name="search" /><input use:focusOnMount aria-label="Search supported apps" bind:value={catalogQuery} placeholder="Search apps…" /><button disabled={catalogLoading || !onsearch}>{catalogLoading ? 'Searching…' : 'Search'}</button></form>
     {#if browseError}<p class="notice browse-error" role="alert">{browseError}</p>{/if}
     <div class="catalog-results">
@@ -118,7 +118,7 @@
 {/if}
 {#if current || selectedCatalog}
   <div class="overlay" use:portal><div class="dialog" role="dialog" aria-modal="true" tabindex="-1" aria-label={current ? 'Manage app' : 'Connect app'} use:focusOnMount use:dismissable={{ onclose: close }}>
-    <header><span class="logo"><ConnectionCardLogo logo={botAppLogo(current ?? selectedCatalog!)} size={44} /></span><div><h3>{current?.name ?? selectedCatalog?.name}</h3><p class="muted">{current?.domain ?? selectedCatalog?.domain}</p></div><button disabled={busy} aria-label="Close app details" onclick={close}><RailIcon name="x" /></button></header>
+    <header><span class="logo"><ConnectionCardLogo logo={botAppLogo(current ?? selectedCatalog!)} size={44} /></span><div><h3>{current?.name ?? selectedCatalog?.name}</h3><p class="muted">{current?.domain ?? selectedCatalog?.domain}</p></div><button data-icon-only disabled={busy} aria-label="Close app details" onclick={close}><RailIcon name="x" /></button></header>
     {#if current}<p class="status">{labels[current.status]}</p><p>{current.detail}</p>{#if current.tools !== null}<p class="muted">{current.tools} tools reported by this bot.</p>{/if}
       {#if confirmation}<p class="notice">Remove this bot’s access? The company connection and other people’s access will remain.</p>{/if}
     {:else if selectedCatalog}<p>{selectedCatalog.description}</p><p class="notice">{selectedCatalog.authClass === 'oauth' ? 'Sign in securely in your browser, then return here. HQ will verify the connection.' : selectedCatalog.authClass === 'key' ? 'Continue to enter the provider’s API key securely.' : 'This MCP does not require a sign-in.'}</p>{#if !canConnect}<p class="muted">Connecting apps requires company admin access and an available connection flow.</p>{/if}{/if}
