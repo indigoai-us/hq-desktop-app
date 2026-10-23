@@ -1056,11 +1056,17 @@ export function createReadyEngine(refs: ReadyRefs, options: { reveal: () => void
   const PROGH = 34;
   let t0 = 0;
   let beats: Beat[] = [];
+  // Where layout() put the alt line. Under Reduce Motion every style change
+  // runs as a 0.01ms transition, so for a frame the box still reads at its
+  // old top; the bottom is taken from the placed top instead.
+  let altTop: number | null = null;
   function keepOut(): KeepOut {
     const a = rect(refs.copy);
     const b = rect(refs.alt);
     const p = rect(refs.prog);
-    return { l: Math.min(a.left, p.left, b.left), r: Math.max(a.right, p.right, b.right), b: b.bottom };
+    const shown = parseFloat(getComputedStyle(refs.alt).top);
+    const bottom = altTop !== null && Number.isFinite(shown) ? b.bottom - shown + altTop : b.bottom;
+    return { l: Math.min(a.left, p.left, b.left), r: Math.max(a.right, p.right, b.right), b: bottom };
   }
   const sky = createSkyline(refs.canvas, keepOut, 0.5);
   // The nav grows after the screen is shown (the "Checking for AI tools" row
@@ -1102,7 +1108,8 @@ export function createReadyEngine(refs: ReadyRefs, options: { reveal: () => void
     refs.prog.style.top = `${pt}px`;
     const nt = pt + PROGH + G2;
     placeNav(refs.nav, nt);
-    refs.alt.style.top = `${Math.round(nt + navH + ALTGAP)}px`;
+    altTop = Math.round(nt + navH + ALTGAP);
+    refs.alt.style.top = `${altTop}px`;
   }
   return {
     size() {

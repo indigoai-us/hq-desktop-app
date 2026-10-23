@@ -319,6 +319,56 @@ describe('createReadyEngine layout', () => {
     expect(altTopAfter).toBeGreaterThan(copyTop + 260);
   });
 
+  // Under Reduce Motion every style change runs as a 0.01ms transition, so
+  // right after the alt line is placed its box still reads at the old top.
+  // The skyline must stay below where the line was placed, not where it reads.
+  it('keeps the skyline below the alt line while the line is still moving into place', () => {
+    vi.stubGlobal('innerWidth', 1024);
+    vi.stubGlobal('innerHeight', 800);
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+    // Mid-transition: the box and its computed top both still read 0.
+    vi.stubGlobal('getComputedStyle', () => ({ top: '0px' }) as CSSStyleDeclaration);
+    const glyphs: Array<{ x: number; y: number }> = [];
+    const ctx = new Proxy(
+      {},
+      {
+        get: (_target, key) =>
+          key === 'fillText'
+            ? (_ch: string, x: number, y: number) => {
+                glyphs.push({ x, y });
+              }
+            : () => {},
+        set: () => true,
+      },
+    );
+    const canvas = document.createElement('canvas');
+    canvas.getContext = (() => ctx) as never;
+    const refs = {
+      canvas,
+      copy: sized(document.createElement('div'), 880, 400),
+      prog: sized(document.createElement('div'), 300, 34),
+      nav: sized(document.createElement('div'), 600, 120),
+      alt: sized(document.createElement('div'), 360, 18),
+    };
+    const engine = createReadyEngine(refs, { reveal: () => {} });
+    engine.size();
+    engine.enter(0);
+    engine.frame(30000);
+
+    // The tall notice puts the alt line low enough that the city must be capped.
+    const altBottom = parseFloat(refs.alt.style.top) + 18;
+    expect(altBottom).toBeGreaterThan(600);
+    const under = glyphs.filter((g) => g.x <= 880);
+    expect(under.length).toBeGreaterThan(0);
+    expect(Math.min(...under.map((g) => g.y))).toBeGreaterThan(altBottom);
+  });
+
   // Under Reduce Motion the controller draws one settled frame and runs no
   // loop, so a skyline rebuilt after the alt block grows must be drawn at once.
   it('draws the skyline again when the alt block grows, with no frame loop running', () => {
