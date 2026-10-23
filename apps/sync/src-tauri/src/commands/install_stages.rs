@@ -726,6 +726,17 @@ pub fn git_probe_user() -> Result<Option<GitUser>, String> {
     }
 }
 
+/// Argv for the onboarding `indexing` stage.
+///
+/// It must stay an interactive `hq reindex` (no `--from-hook`). hq-cli's
+/// interactive reindex installs or refreshes the pinned core-skills pack
+/// (hq-pack-core-skills) before hq-cloud links its skills into the Claude
+/// skills folder, and a pack failure is one stderr line, not a stage failure.
+/// `--from-hook` only reads local state and at most starts a detached refresh,
+/// so a fresh install would finish setup with no core skills (skills-cli-pack
+/// US-008, design section 5 onboarding risk).
+pub const ONBOARDING_REINDEX_ARGS: &[&str] = &["reindex"];
+
 /// Build the local search index and refresh CLI-generated registries.
 #[tauri::command]
 pub async fn register_search_index(
@@ -737,11 +748,16 @@ pub async fn register_search_index(
     let hq_root = PathBuf::from(resolve_hq_path()?);
     let result = match (activity_timeout_enabled.unwrap_or(false), failure_scope.as_ref()) {
         (true, Some(scope)) => {
-            run_hq_output_with_reindex_progress(&app, &["reindex"], &hq_root, &scope.setup_run_id)
-                .await
-                .map(|_| ())
+            run_hq_output_with_reindex_progress(
+                &app,
+                ONBOARDING_REINDEX_ARGS,
+                &hq_root,
+                &scope.setup_run_id,
+            )
+            .await
+            .map(|_| ())
         }
-        _ => run_hq(&["reindex"], &hq_root).await,
+        _ => run_hq(ONBOARDING_REINDEX_ARGS, &hq_root).await,
     };
     match result {
         Ok(()) => Ok(()),
@@ -1922,6 +1938,26 @@ mod tests {
         assert_eq!(
             initial_cloud_sync_failure_message(Some("permission denied")),
             "Initial cloud sync could not be verified. Please retry this setup step."
+        );
+    }
+
+    /// The indexing stage is the only onboarding step that installs the
+    /// core-skills pack. A hook-mode reindex would leave a fresh HQ without
+    /// core skills, so both indexing branches must run this interactive argv.
+    #[test]
+    fn onboarding_indexing_runs_interactive_reindex_that_installs_core_skills() {
+        assert_eq!(ONBOARDING_REINDEX_ARGS, &["reindex"]);
+        assert!(!ONBOARDING_REINDEX_ARGS.contains(&"--from-hook"));
+        let source = include_str!("install_stages.rs");
+        let body = source
+            .split("pub async fn register_search_index(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("register_search_index body");
+        assert_eq!(
+            body.matches("ONBOARDING_REINDEX_ARGS").count(),
+            2,
+            "both the progress and the plain indexing branch use the shared argv"
         );
     }
 

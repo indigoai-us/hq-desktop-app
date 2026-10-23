@@ -776,6 +776,28 @@
 /// floor, and `RESCUE_CONTRACT_FLOOR` stays 6.18.0.
 pub const HQ_CLOUD_VERSION: &str = "~6.18.80";
 
+/// First `@indigoai-us/hq-cloud` release that carries the core-skills pack
+/// ownership work (skills-cli-pack US-005/US-006/US-007/US-009,
+/// hq-cloud#1045): rescue treats only the target release's
+/// `coreResidentSkills` as `.claude/skills` release content, refreshes the
+/// pack through `hq packs update hq-pack-core-skills --from-rescue` (using the
+/// `HQ_CLI_BIN` the desktop already passes), migrates inline core skills into
+/// the pack or `personal/skills` forks, and reindex creates the bare pack
+/// links. The desktop Update / Restore and replace-from-staging paths both run
+/// that engine through [`HQ_CLOUD_VERSION`].
+///
+/// `None` while that release is not on npm (6.18.100 is the newest published
+/// and predates it). When it publishes as the next 6.18.x, set this to its
+/// exact version and raise [`HQ_CLOUD_VERSION`] to `~<that version>` in the
+/// same commit. `~6.18.80` already admits it, but npx caches by the spec
+/// string, so only a lower-bound bump delivers it to installed desktops; see
+/// `core_skills_ownership_floor_is_delivered_once_published` below.
+pub const CORE_SKILLS_OWNERSHIP_MIN_HQ_CLOUD: Option<&str> = None;
+
+/// Newest published hq-cloud without the core-skills ownership work. The floor
+/// above must be strictly greater.
+pub const CORE_SKILLS_OWNERSHIP_LAST_WITHOUT_HQ_CLOUD: &str = "6.18.100";
+
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
 ///
@@ -1010,6 +1032,50 @@ mod tests {
                     "HQ_CLOUD_VERSION `{HQ_CLOUD_VERSION}` has lower bound {}, below the \
                      manifest-upload release {floor}; bump the pin so the npx cache key \
                      moves, not merely so semver admits it",
+                    pin_lower_bound()
+                );
+            }
+        }
+    }
+
+    /// Core-skills ownership floor (skills-cli-pack US-008). While the hq-cloud
+    /// release is unpublished the pin stays put and its range must still admit
+    /// the next 6.18 patch. Once the floor is recorded, the pin's LOWER BOUND
+    /// must reach it so the npx cache key moves.
+    #[test]
+    fn core_skills_ownership_floor_is_delivered_once_published() {
+        let last_without = semver::Version::parse(CORE_SKILLS_OWNERSHIP_LAST_WITHOUT_HQ_CLOUD)
+            .expect("CORE_SKILLS_OWNERSHIP_LAST_WITHOUT_HQ_CLOUD must be an exact version");
+        let req = semver::VersionReq::parse(HQ_CLOUD_VERSION).expect("valid pin");
+        match CORE_SKILLS_OWNERSHIP_MIN_HQ_CLOUD {
+            None => {
+                assert_eq!(
+                    HQ_CLOUD_VERSION, "~6.18.80",
+                    "the core-skills hq-cloud release is unpublished; when it ships, set \
+                     CORE_SKILLS_OWNERSHIP_MIN_HQ_CLOUD and bump HQ_CLOUD_VERSION together"
+                );
+                let next_patch = semver::Version::new(
+                    last_without.major,
+                    last_without.minor,
+                    last_without.patch + 1,
+                );
+                assert!(
+                    req.matches(&next_patch),
+                    "HQ_CLOUD_VERSION `{HQ_CLOUD_VERSION}` must admit {next_patch}"
+                );
+            }
+            Some(published) => {
+                let floor = semver::Version::parse(published)
+                    .expect("CORE_SKILLS_OWNERSHIP_MIN_HQ_CLOUD must be an exact version");
+                assert!(
+                    floor > last_without,
+                    "the core-skills floor {floor} must be newer than {last_without}"
+                );
+                assert!(
+                    pin_lower_bound() >= floor,
+                    "HQ_CLOUD_VERSION `{HQ_CLOUD_VERSION}` has lower bound {}, below the \
+                     core-skills ownership release {floor}; bump the pin so the npx cache \
+                     key moves, not merely so semver admits it",
                     pin_lower_bound()
                 );
             }

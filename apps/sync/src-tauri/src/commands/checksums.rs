@@ -29,13 +29,22 @@
 //!   3. Splice the new `checksums:` block (alphabetical by key) and a
 //!      fresh `updatedAt: "<UTC ISO 8601>"` into `core.yaml`, preserving
 //!      everything else (comments, ordering, whitespace) verbatim.
+//!
+//! Core-skills pack (skills-cli-pack US-008): when `core.yaml` has a top-level
+//! `coreResidentSkills` list, a directory walk skips every file whose
+//! HQ-root-relative path is `.claude/skills/<name>` or below it with `<name>`
+//! not in the list. Those paths belong to the core-skills pack, forks or the
+//! user, not to the release. Without the list nothing is skipped.
+//! `core/scripts/compute-checksums.sh` must apply the same rule.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{SecondsFormat, Utc};
+use hq_desktop_core::drift_scope::{is_non_resident_skill_rel, parse_core_resident_skills};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
@@ -82,6 +91,7 @@ pub fn compute_checksums_at(install_root: &Path) -> Result<ChecksumResult, Strin
         fs::read_to_string(&yaml_path).map_err(|e| format!("read {yaml_path:?}: {e}"))?;
     let locked_paths = parse_locked(&yaml_src)
         .map_err(|e| format!("parse rules.locked from {yaml_path:?}: {e}"))?;
+    let resident_skills = parse_core_resident_skills(&yaml_src);
 
     let mut entries: Vec<ChecksumEntry> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
@@ -106,7 +116,8 @@ pub fn compute_checksums_at(install_root: &Path) -> Result<ChecksumResult, Strin
         let hash = if md.is_file() {
             sha256_file(&abs).map_err(|e| format!("sha256 {abs:?}: {e}"))?
         } else if md.is_dir() {
-            sha256_dir(&abs).map_err(|e| format!("sha256 dir {abs:?}: {e}"))?
+            sha256_locked_dir(&abs, &key, resident_skills.as_ref())
+                .map_err(|e| format!("sha256 dir {abs:?}: {e}"))?
         } else {
             // Symlinks / sockets / etc. — bash script's `[ -f ]` / `[ -d ]`
             // probes also wouldn't classify these. Skip, mirror "missing".
@@ -357,13 +368,48 @@ fn sha256_file(p: &Path) -> std::io::Result<String> {
 /// `sort` orders the absolute paths, but because every entry shares the
 /// same prefix (`$dir/`), the resulting order matches a sort of the
 /// relative paths byte-for-byte — so we sort relative paths directly.
+#[cfg(test)]
 fn sha256_dir(dir: &Path) -> std::io::Result<String> {
+    sha256_dir_skipping(dir, |_| false)
+}
+
+/// [`sha256_dir`] for the locked directory `key` (HQ-root-relative, no
+/// trailing slash). With a `coreResidentSkills` list, files at
+/// `.claude/skills/<name>/**` for a non-resident `<name>` are left out.
+fn sha256_locked_dir(
+    dir: &Path,
+    key: &str,
+    resident_skills: Option<&BTreeSet<String>>,
+) -> std::io::Result<String> {
+    let Some(resident) = resident_skills else {
+        return sha256_dir_skipping(dir, |_| false);
+    };
+    sha256_dir_skipping(dir, |rel| {
+        is_non_resident_skill_rel(&format!("{key}/{rel}"), resident)
+    })
+}
+
+/// Directory hash over every regular file under `dir` except those whose
+/// forward-slash path relative to `dir` makes `skip` return true. A skipped
+/// directory is not descended.
+fn sha256_dir_skipping(dir: &Path, skip: impl Fn(&str) -> bool) -> std::io::Result<String> {
     // Collect (relpath_with_forward_slashes, absolute_path) for every
     // regular file. Mirror `find -type f` exactly: include files (not
     // symlinks), exclude dirs/sockets/etc. Following symlinks would change
     // the hash and could double-count template parent-links.
     let mut files: Vec<(String, PathBuf)> = Vec::new();
-    for entry in WalkDir::new(dir).follow_links(false).into_iter() {
+    let walker = WalkDir::new(dir).follow_links(false).into_iter();
+    for entry in walker.filter_entry(|entry| {
+        if entry.depth() == 0 {
+            return true;
+        }
+        let rel = entry
+            .path()
+            .strip_prefix(dir)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        !skip(&rel)
+    }) {
         let entry = match entry {
             Ok(e) => e,
             Err(e) => {
@@ -798,6 +844,108 @@ recommended_packages:
             }
         }
         block
+    }
+
+    /// Tree for the publisher parity digests below (skills-cli-pack US-008).
+    /// `core/scripts/compute-checksums.sh` run over the same files must print
+    /// the same `.claude` checksum.
+    fn write_core_skills_tree(root: &Path, with_list: bool) {
+        let list = if with_list {
+            "coreResidentSkills: [setup, hq-checkup]\n"
+        } else {
+            ""
+        };
+        fs::create_dir_all(root.join("core")).unwrap();
+        fs::write(
+            root.join("core/core.yaml"),
+            format!(
+                "version: 1\nupdatedAt: \"1970-01-01T00:00:00Z\"\nrules:\n  locked:\n    - .claude/\n    - AGENTS.md\n    - core/core.yaml\n{list}checksums: {{}}\n"
+            ),
+        )
+        .unwrap();
+        fs::write(root.join("AGENTS.md"), b"You are HQ.\n").unwrap();
+        for (rel, body) in [
+            (".claude/CLAUDE.md", "charter\n"),
+            (".claude/skills/setup/SKILL.md", "setup\n"),
+            (".claude/skills/hq-checkup/SKILL.md", "checkup\n"),
+            (".claude/skills/prd/SKILL.md", "prd\n"),
+            (".claude/skills/setup-extra/SKILL.md", "extra\n"),
+            (".claude/skills/.hq-company-skill-wrappers", "marker\n"),
+        ] {
+            let path = root.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, body).unwrap();
+        }
+    }
+
+    /// Fixed digests shared with the publisher. With `coreResidentSkills:
+    /// [setup, hq-checkup]` the `.claude` hash covers only `CLAUDE.md` and the
+    /// two resident skills; `prd`, `setup-extra` and the wrapper marker are
+    /// pack or user content. `core/scripts/compute-checksums.sh` with the
+    /// matching filter prints the same `.claude` value for this tree, and the
+    /// unfiltered value without the list.
+    #[test]
+    fn core_resident_skills_fixed_digest() {
+        let with_list = TempDir::new().unwrap();
+        write_core_skills_tree(with_list.path(), true);
+        let result = compute_checksums_at(with_list.path()).unwrap();
+        let yaml = fs::read_to_string(with_list.path().join("core/core.yaml")).unwrap();
+        assert_eq!(
+            checksums_block(&yaml),
+            "checksums:\n  .claude: 760a33ff802ee9142313f666589d2ded26868f44ca81909b7f6810ab7c9dcfdb\n  AGENTS.md: aa5f6c725fc71885509269df579e20f0eb20b640ac4d21bca9926024742fcae5\n"
+        );
+        assert!(result.missing.is_empty());
+
+        let without_list = TempDir::new().unwrap();
+        write_core_skills_tree(without_list.path(), false);
+        compute_checksums_at(without_list.path()).unwrap();
+        let yaml = fs::read_to_string(without_list.path().join("core/core.yaml")).unwrap();
+        assert_eq!(
+            checksums_block(&yaml),
+            "checksums:\n  .claude: 3d4f831249b1e171da2fd2882380e8b35564ffcbe93a77aab3256b2fe39a7c24\n  AGENTS.md: aa5f6c725fc71885509269df579e20f0eb20b640ac4d21bca9926024742fcae5\n"
+        );
+    }
+
+    #[test]
+    fn non_resident_skill_edits_do_not_move_the_claude_digest() {
+        let tmp = TempDir::new().unwrap();
+        write_core_skills_tree(tmp.path(), true);
+        let resident = parse_core_resident_skills("coreResidentSkills: [setup, hq-checkup]\n");
+        let claude = tmp.path().join(".claude");
+        let before = sha256_locked_dir(&claude, ".claude", resident.as_ref()).unwrap();
+
+        fs::write(claude.join("skills/prd/SKILL.md"), b"edited prd\n").unwrap();
+        fs::create_dir_all(claude.join("skills/new-pack-skill")).unwrap();
+        fs::write(claude.join("skills/new-pack-skill/SKILL.md"), b"new\n").unwrap();
+        assert_eq!(
+            sha256_locked_dir(&claude, ".claude", resident.as_ref()).unwrap(),
+            before
+        );
+
+        fs::write(claude.join("skills/setup/SKILL.md"), b"edited setup\n").unwrap();
+        assert_ne!(
+            sha256_locked_dir(&claude, ".claude", resident.as_ref()).unwrap(),
+            before,
+            "a resident skill edit must change the release checksum"
+        );
+    }
+
+    #[test]
+    fn locked_skills_dir_key_applies_the_same_filter() {
+        let tmp = TempDir::new().unwrap();
+        write_core_skills_tree(tmp.path(), true);
+        let resident = parse_core_resident_skills("coreResidentSkills: [setup, hq-checkup]\n");
+        let skills = tmp.path().join(".claude/skills");
+        let only_resident = TempDir::new().unwrap();
+        for name in ["setup", "hq-checkup"] {
+            let dir = only_resident.path().join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::copy(skills.join(name).join("SKILL.md"), dir.join("SKILL.md")).unwrap();
+        }
+        assert_eq!(
+            sha256_locked_dir(&skills, ".claude/skills", resident.as_ref()).unwrap(),
+            sha256_dir(only_resident.path()).unwrap()
+        );
     }
 
     #[test]
