@@ -436,6 +436,119 @@ describe("company sign-in panel: codes and links", () => {
     expect(JSON.stringify(calls)).not.toContain(URL_A);
   });
 
+  // Feedback 34753dc8: the box took the code, Claude refused it, and the box
+  // posted a new link. The card used to clear "Finishing sign-in..." silently.
+  it("says the code was not accepted when the box posts a new link after it, with the new link and an empty field", async () => {
+    const REJECTED_AT = "2026-10-18T20:00:11.000Z";
+    let submitted = false;
+    const { post, calls } = transport((body) => {
+      if (body.action === "code") {
+        submitted = true;
+        return accepted;
+      }
+      return submitted
+        ? status({ signedIn: false, state: "awaiting_sign_in", loginUrl: URL_B, lastCodeRejectedAt: REJECTED_AT })
+        : waitingA();
+    });
+    mountPanel({ role: "admin", companyUid: "cmp_a", post });
+    await settle();
+    typeCode(CODE);
+    button("submit")!.click();
+    await settle();
+    expect(q("error")?.textContent).toBe(SIGNIN_COPY.rejected);
+    expect(phase()).toBe("code_rejected");
+    expect(q("notice")).toBeNull();
+    expect(q("open")?.getAttribute("href")).toBe(URL_B);
+    expect((q("code") as HTMLInputElement).value).toBe("");
+    // The verdict is shown once; later polls with the same value leave it alone.
+    await settle(15_000);
+    expect(q("error")?.textContent).toBe(SIGNIN_COPY.rejected);
+    expect(calls.filter((c) => c.action === "code")).toHaveLength(1);
+  });
+
+  it("shows a rejection the server reports when the card opens", async () => {
+    const { post } = transport(() =>
+      status({ signedIn: false, state: "awaiting_sign_in", loginUrl: URL_A, lastCodeRejectedAt: "2026-10-18T19:58:00.000Z" }));
+    mountPanel({ role: "owner", companyUid: "cmp_a", post });
+    await settle();
+    expect(phase()).toBe("code_rejected");
+    expect(q("error")?.textContent).toBe(SIGNIN_COPY.rejected);
+  });
+
+  it("does not hold an old rejection against a new code, and shows the next one", async () => {
+    const OLD = "2026-10-18T19:58:00.000Z";
+    const NEXT = "2026-10-18T20:00:20.000Z";
+    let reads = 0;
+    let submitted = false;
+    const { post } = transport((body) => {
+      if (body.action === "code") {
+        submitted = true;
+        return accepted;
+      }
+      reads += 1;
+      if (!submitted) return status({ signedIn: false, state: "awaiting_sign_in", loginUrl: URL_A, lastCodeRejectedAt: OLD });
+      // The server clears the verdict on submit; the box is still working on the code.
+      if (reads <= 3) return waitingA();
+      return status({ signedIn: false, state: "awaiting_sign_in", loginUrl: URL_B, lastCodeRejectedAt: NEXT });
+    });
+    mountPanel({ role: "admin", companyUid: "cmp_a", post });
+    await settle();
+    expect(q("error")?.textContent).toBe(SIGNIN_COPY.rejected);
+    typeCode(CODE);
+    button("submit")!.click();
+    await settle();
+    expect(q("error")).toBeNull();
+    expect(q("notice")?.textContent).toBe(SIGNIN_COPY.finishing);
+    await settle(3_000);
+    expect(phase()).toBe("finishing");
+    await settle(3_000);
+    expect(q("error")?.textContent).toBe(SIGNIN_COPY.rejected);
+    expect(q("open")?.getAttribute("href")).toBe(URL_B);
+  });
+
+  it("an older server with no lastCodeRejectedAt keeps the previous quiet behavior", async () => {
+    let submitted = false;
+    const { post } = transport((body) => {
+      if (body.action === "code") {
+        submitted = true;
+        return accepted;
+      }
+      return submitted ? waitingB() : waitingA();
+    });
+    mountPanel({ role: "admin", companyUid: "cmp_a", post });
+    await settle();
+    typeCode(CODE);
+    button("submit")!.click();
+    await settle();
+    expect(phase()).toBe("awaiting_code");
+    expect(q("error")).toBeNull();
+    expect(q("notice")).toBeNull();
+  });
+
+  it("shows a link the server says has expired as expired, with New sign-in link and no dead link", async () => {
+    let regenerated = false;
+    const { post, calls } = transport((body) => {
+      if (body.action === "regenerate") {
+        regenerated = true;
+        return accepted;
+      }
+      return regenerated
+        ? status({ signedIn: false, state: "awaiting_sign_in", loginUrl: URL_B, loginUrlExpiresAt: new Date(NOW + 600_000).toISOString() })
+        : status({ signedIn: false, state: "awaiting_sign_in", loginUrl: URL_A, loginUrlExpiresAt: "2026-10-16T23:46:11.920Z" });
+    });
+    mountPanel({ role: "admin", companyUid: "cmp_a", post });
+    await settle();
+    expect(phase()).toBe("expired");
+    expect(q("open")).toBeNull();
+    expect(q("code")).toBeNull();
+    expect(target.textContent).toContain(SIGNIN_COPY.expired);
+    button("new-link")!.click();
+    await settle();
+    expect(calls.filter((c) => c.action === "regenerate")).toHaveLength(1);
+    expect(phase()).toBe("awaiting_code");
+    expect(q("open")?.getAttribute("href")).toBe(URL_B);
+  });
+
   it("does not call the route for a member", async () => {
     const { post } = transport(() => ({ ok: true, status: 200, body: {} }));
     mountPanel({ role: "member", companyUid: "cmp_a", post });
