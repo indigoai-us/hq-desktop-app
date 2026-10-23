@@ -337,7 +337,9 @@
        options and the usage-data checkbox; 3 lands on ready too); the shortcut
        screen is Next from 2. ?mode=replay previews the menu-bar "Replay
        welcome intro" (the story screens only); ?mode=consent the consent-only
-       run. &notice=pending|required|card|fail answers the free-plan usage-data
+       run. &notice=pending|required|card|fail answers (add &optedout=1 with
+       ?mode=reprompt for the launch card a free-company person who opted out
+       earlier sees) the free-plan usage-data
        notice (default: not-applicable, which keeps today's choice). &company=create answers as a
        brand-new person, so Next, Next from step 2 reaches the company step
        inside the real welcome window (&companyDelay=<ms> slows its card
@@ -347,7 +349,8 @@
   <div class="fake-desktop" aria-hidden="true"></div>
   <OnboardingWizard
     initialStep={onboardingStep}
-    mode={params.get('mode') === 'replay' ? 'replay' : params.get('mode') === 'consent' ? 'consent' : 'onboarding'}
+    mode={params.get('mode') === 'replay' ? 'replay' : params.get('mode') === 'consent' ? 'consent' : params.get('mode') === 'reprompt' ? 'reprompt' : 'onboarding'}
+    freePlanOptedOut={params.get('optedout') === '1'}
     wallpaper={params.get('wallpaper') === 'none' ? null : (params.get('wallpaper') ?? '/wallpaper.jpg')}
     onfinish={() => {}}
   />

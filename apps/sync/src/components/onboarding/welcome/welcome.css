@@ -1741,7 +1741,17 @@
 .hq-welcome .rc-disclosure-done {
   color: var(--w-muted);
 }
+/* The two lists stay side by side down to 340px: stacking them at 390 wide
+   pushed Continue below the fold. */
 @media (max-width: 520px) {
+  .hq-welcome .disclosure-lists {
+    gap: 4px 12px;
+  }
+  .hq-welcome .disclosure-list ul {
+    padding-left: 12px;
+  }
+}
+@media (max-width: 340px) {
   .hq-welcome .disclosure-lists {
     grid-template-columns: minmax(0, 1fr);
   }

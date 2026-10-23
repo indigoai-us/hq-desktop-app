@@ -95,6 +95,7 @@
   } from './lib/stopWatchdog';
   import { TELEMETRY_CONSENT_VERSION } from './lib/consent-version';
   import { markConsentRepromptShown } from './lib/onboarding-telemetry';
+  import { markRequiredCardShown, readFreePlanTelemetry, shouldShowRequiredCard } from './lib/free-plan-telemetry';
   import {
     createPostReadyActionTelemetry,
     postReadyIdentityAdapterValue,
@@ -299,7 +300,7 @@
   // consent step is shown once. `null` means no re-prompt is due; otherwise it
   // carries the `prs_*` the "shown once" guard is keyed to. Server-authoritative
   // and fail-quiet: an unreachable server leaves this null and never blocks.
-  let consentReprompt = $state<{ personUid: string } | null>(null);
+  let consentReprompt = $state<{ personUid: string | null; freePlanOptedOut?: boolean } | null>(null);
   // "Replay welcome intro" from the menu-bar menu. Re-runs the first-run film
   // on the main window without touching the first-run flags; clears when the
   // film ends or is skipped.
@@ -2173,15 +2174,29 @@
         'consent_reprompt_status',
         { consentVersion: TELEMETRY_CONSENT_VERSION },
       );
+      // Free-plan usage data: a person who opted out earlier on a free
+      // company sees the usage-data card once, inside the same consent
+      // screen. It takes the place of the stale-consent re-prompt, so the
+      // person never sees two prompts, and its own guard (written when it is
+      // displayed) keeps it from coming back on later launches.
+      const freePlan = await readFreePlanTelemetry(null);
+      if (shouldShowRequiredCard(freePlan) && freePlan.notice?.disclosure) {
+        if (!markRequiredCardShown(freePlan.notice.disclosure.version)) {
+          console.warn('free-plan usage data card guard did not persist; deferring the card to a later launch');
+          return;
+        }
+        if (status.personUid) {
+          await markConsentRepromptShown(TELEMETRY_CONSENT_VERSION, status.personUid);
+        }
+        consentReprompt = { personUid: status.personUid, freePlanOptedOut: true };
+        return;
+      }
       if (status.shouldReprompt && status.personUid) {
         // Finding #8: write the "shown once" guard the moment the prompt is
         // DISPLAYED, not only after the person answers or dismisses. Otherwise
-        // closing or crashing after it appears re-shows it next launch. The
-        // guard write is awaited BEFORE arming, and a write FAILURE must not
-        // silently cause a repeat: if it did not persist, we do not display the
-        // prompt this launch (we simply try again next launch, where the guard
-        // write can be retried) rather than showing an unguarded prompt that
-        // would nag every launch.
+        // closing or crashing after it appears re-shows it next launch. A
+        // guard write FAILURE defers the prompt to a later launch rather than
+        // showing an unguarded prompt that would nag every launch.
         const persisted = await markConsentRepromptShown(
           TELEMETRY_CONSENT_VERSION,
           status.personUid,
@@ -2275,6 +2290,7 @@
       state="SteadyState"
       mode="reprompt"
       repromptPersonUid={consentReprompt.personUid}
+      freePlanOptedOut={consentReprompt.freePlanOptedOut ?? false}
       onfinish={handleConsentRepromptFinish}
     />
   {:else if authenticated}

@@ -32,6 +32,8 @@
     setupEvidence?: StartupSetupEvidence | null;
     /** The `prs_*` the re-prompt is keyed to (reprompt mode only). */
     repromptPersonUid?: string | null;
+    /** Free company, person opted out earlier: the usage-data card says so (reprompt mode only). */
+    freePlanOptedOut?: boolean;
   }
 
   let {
@@ -40,6 +42,7 @@
     mode = 'onboarding',
     setupEvidence = null,
     repromptPersonUid = null,
+    freePlanOptedOut = false,
   }: Props = $props();
 
   /** Size of the `main` window once the welcome flow hands it back. */
@@ -192,6 +195,7 @@
   recoveringMissingRoot={isMissingRootRecovery(lifecycleStateProp, setupEvidence)}
   {mode}
   {repromptPersonUid}
+  {freePlanOptedOut}
   {wallpaper}
   onfinish={handleFinish}
 />

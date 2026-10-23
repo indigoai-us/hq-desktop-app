@@ -278,6 +278,12 @@
     /** The `prs_*` the re-prompt is keyed to (reprompt mode only). */
     repromptPersonUid?: string | null;
     /**
+     * Free company and the person opted out of usage data earlier. The
+     * disclosure card tells them this account now sends it, and the only way
+     * to turn it off is upgrading (reprompt mode only).
+     */
+    freePlanOptedOut?: boolean;
+    /**
      * The person's desktop wallpaper as an image URL (`Onboarding.svelte`
      * reads it natively). Painted full-bleed behind the flow, where the veil
      * blurs and dims it. `null` means the window is transparent over the
@@ -327,10 +333,14 @@
     onboardingFlow = 'first_install',
     recoveringMissingRoot = false,
     repromptPersonUid = null,
+    freePlanOptedOut = false,
     wallpaper = null,
   }: Props = $props();
 
   const isReprompt = $derived(mode === 'reprompt');
+  /** Shown under the disclosure summary to a free-company person who opted out earlier. */
+  const FREE_PLAN_OPTED_OUT_LINE =
+    'You turned usage data off before. Free companies require usage data, so this account is sending it now. Upgrade to a paid plan to turn it off.';
   /**
    * Only the consent step is shown and the wizard closes on the answer: the
    * re-prompt, and an installed machine that just lacks its consent answer.
@@ -5034,6 +5044,9 @@
         {#if disclosureShown && telemetryNotice?.disclosure}
           <h2 class="h h-lg" id="onboarding-title-consent" tabindex="-1" data-scene-heading data-testid="disclosure-title">{telemetryNotice.disclosure.title}</h2>
           <p class="body" data-testid="disclosure-summary">{telemetryNotice.disclosure.summary}</p>
+          {#if freePlanOptedOut}
+            <p class="body disclosure-opted-out" data-testid="disclosure-opted-out">{FREE_PLAN_OPTED_OUT_LINE}</p>
+          {/if}
         {:else}
           <h2 class="h h-lg" id="onboarding-title-consent" tabindex="-1" data-scene-heading>Help make HQ better?</h2>
           <p class="body">
@@ -5176,7 +5189,7 @@
             disabled={cardOpening || disclosureAcking || consentSubmitting || finishing}
             aria-busy={cardOpening}
             onclick={() => void addCardInstead()}
-          >{cardOpening ? 'Opening…' : 'Add a card instead'}</button>
+          >{cardOpening ? 'Opening…' : freePlanOptedOut ? 'Upgrade to turn it off' : 'Add a card instead'}</button>
         {:else}
           <button
             class="btn btn-primary"
