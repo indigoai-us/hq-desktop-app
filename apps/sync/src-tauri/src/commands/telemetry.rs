@@ -6971,6 +6971,7 @@ mod codex_telemetry_tests {
             source: None,
             answered_by: None,
             stale,
+            consent_source: None,
         }
     }
 
