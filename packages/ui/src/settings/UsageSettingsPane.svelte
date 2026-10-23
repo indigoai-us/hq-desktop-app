@@ -469,7 +469,7 @@
 
                 {#if switchInfos[key]}
                   {@const info = switchInfos[key]!}
-                  {@const lines = usageSwitchLines(info, view.usage ? previewBillCents(view.usage.usageCents, view.usage.allowanceCents) : null)}
+                  {@const lines = usageSwitchLines(info, view.usage ? previewBillCents(view.usage.usageCents, view.usage.allowanceCents) : null, view.usage ? usageIsPartial(view.usage) : false)}
                   <div class="switch" data-testid="usage-pricing-switch" data-phase={info.phase}>
                     <p class="note" data-testid="usage-pricing-switch-headline">{lines.headline}</p>
                     {#if lines.compare}<p class="note" data-testid="usage-pricing-switch-compare">{lines.compare}</p>{/if}

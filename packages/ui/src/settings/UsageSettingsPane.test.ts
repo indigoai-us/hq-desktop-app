@@ -293,6 +293,18 @@ describe("UsageSettingsPane: one line per account", () => {
     expect(clean(q("usage-pricing-switch-compare", detail()!))).toMatch(/^Your bill so far would be \$\d+\.\d\d$/);
   });
 
+  it("a switched company with an incomplete statement sees the preview bill as a floor (US-026)", async () => {
+    const src = source({
+      getUsageStatement: vi.fn(async (uid: string) => ok({ ...statement(USAGE[uid] ?? 0), complete: false })),
+      getUsageSwitch: vi.fn(async () =>
+        ok({ enabled: true, phase: "preview", switchDate: "2026-12-19T00:00:00.000Z", previewDays: 30, previewEndsAt: "2027-01-18T00:00:00.000Z", todayMonthlyCents: null, estimateCents: null, estimateComplete: false }),
+      ),
+    });
+    await render(src);
+    await open("cmp_northwind");
+    expect(clean(q("usage-pricing-switch-compare", detail()!))).toMatch(/^Your bill so far would be at least \$\d+\.\d\d$/);
+  });
+
   it("Turn off sync opens Settings > Sync", async () => {
     const onopensync = vi.fn();
     await render(source(), { onopensync });

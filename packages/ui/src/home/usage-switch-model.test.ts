@@ -33,6 +33,13 @@ describe("usage switch", () => {
     expect(previewBillCents(500, 1000)).toBe(0);
   });
 
+  it("a preview bill read from an incomplete statement is a floor, never an exact amount", () => {
+    const info = usageSwitchFromBody({ ...scheduled, phase: "preview", estimateCents: null })!;
+    expect(usageSwitchLines(info, previewBillCents(1800, 1000), true).compare).toBe("Your bill so far would be at least $8.00");
+    expect(usageSwitchLines(info, previewBillCents(400, 1000), true).compare).toBe("Your bill so far would be at least $0.00");
+    expect(usageSwitchLines(info, previewBillCents(1800, 1000), false).compare).toBe("Your bill so far would be $8.00");
+  });
+
   it("no switch, kill switch, usage phase or bad body is null", async () => {
     expect(usageSwitchFromBody({ ...scheduled, enabled: false })).toBeNull();
     expect(usageSwitchFromBody({ ...scheduled, phase: "usage" })).toBeNull();

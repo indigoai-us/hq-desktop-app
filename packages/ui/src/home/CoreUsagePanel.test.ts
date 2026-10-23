@@ -848,6 +848,16 @@ describe("CoreUsagePanel: usage pricing switch (US-026)", () => {
     expect(q("core-usage-switch-compare")?.textContent?.trim()).toBe("Your bill so far would be $0.00");
   });
 
+  it("a preview read from an incomplete statement says the bill so far is a floor", async () => {
+    await render(
+      source({
+        getUsageStatement: vi.fn(async () => ok({ ...STATEMENT, complete: false })),
+        getUsageSwitch: vi.fn(async () => ok({ ...SWITCH, phase: "preview", estimateCents: null })),
+      }),
+    );
+    expect(q("core-usage-switch-compare")?.textContent?.trim()).toBe("Your bill so far would be at least $0.00");
+  });
+
   it("no switch shows nothing", async () => {
     await render(source({ getUsageSwitch: vi.fn(async () => ok({ ...SWITCH, phase: "usage" })) }));
     expect(q("core-usage-switch")).toBeNull();

@@ -106,9 +106,15 @@ export interface UsageSwitchLines {
  * The switch copy. Before the switch: the date, today's price and the
  * would-be usage bill. During the preview: what this month's usage would be
  * billed so far (`previewBillCents`, from {@link previewBillCents}) and that
- * nothing is charged until the preview ends.
+ * nothing is charged until the preview ends. `previewPartial` is true when
+ * some days or meters aren't measured yet: the bill so far is then a floor and
+ * says "at least", never an exact amount.
  */
-export function usageSwitchLines(info: UsageSwitchInfo, previewBillCents: number | null = null): UsageSwitchLines {
+export function usageSwitchLines(
+  info: UsageSwitchInfo,
+  previewBillCents: number | null = null,
+  previewPartial = false,
+): UsageSwitchLines {
   if (info.phase === "scheduled") {
     const parts: string[] = [];
     if (info.todayMonthlyCents !== null) parts.push(`Today ${formatUsd(info.todayMonthlyCents)} a month`);
@@ -127,7 +133,7 @@ export function usageSwitchLines(info: UsageSwitchInfo, previewBillCents: number
   const ends = info.previewEndsAt ? switchDateLabel(info.previewEndsAt) : null;
   return {
     headline: ends ? `Usage pricing preview until ${ends}` : `Usage pricing preview (${info.previewDays} days)`,
-    compare: previewBillCents === null ? "" : `Your bill so far would be ${formatUsd(previewBillCents)}`,
+    compare: previewBillCents === null ? "" : `Your bill so far would be ${previewPartial ? "at least " : ""}${formatUsd(previewBillCents)}`,
     note: `Nothing is charged for usage during the ${info.previewDays}-day preview.${ends ? ` Billing on usage starts ${ends}.` : ""}`,
   };
 }

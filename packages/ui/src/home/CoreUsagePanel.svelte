@@ -232,6 +232,7 @@
       ? usageSwitchLines(
           view.switchInfo,
           view.usage?.mode === "allowance" ? previewBillCents(view.usage.totalCents, view.usage.includedCents) : null,
+          view.usage?.partial ?? false,
         )
       : null,
   );
