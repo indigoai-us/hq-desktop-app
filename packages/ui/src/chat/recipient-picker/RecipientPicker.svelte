@@ -3,6 +3,7 @@
 </script>
 
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * Shared recipient picker for New message, Forward, and Share.
    *
@@ -243,7 +244,7 @@
   {#if item.kind === "channel" || item.kind === "group"}
     <span class="rp-tile" class:group={item.kind === "group"} style={`--rp-face:${size}px`} aria-hidden="true">
       {#if item.kind === "channel"}#{:else}
-        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="6" cy="6" r="2.2" /><circle cx="11" cy="7" r="1.8" /><path d="M2.5 13c.5-2 2-3 3.5-3s3 1 3.5 3M9.5 12.5c.4-1.4 1.3-2.2 2.5-2.2s2 .8 2.4 2.2" /></svg>
+        <RailIcon name="users" size={16} />
       {/if}
     </span>
   {:else}
@@ -289,9 +290,7 @@
     <span class="rp-option-kind">{item.hint ?? RECIPIENT_KIND_LABEL[item.kind]}</span>
     <span class="rp-option-check" aria-hidden="true">
       {#if picked}
-        <svg viewBox="0 0 16 16" width="14" height="14" fill="none">
-          <path d="M3.5 8.5l3 3 6-6.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
+        <RailIcon name="check" size={14} />
       {/if}
     </span>
   </button>
@@ -345,9 +344,7 @@
             }}
           >
             <span class="rp-chip-name">{scopeLabel}</span>
-            <svg viewBox="0 0 10 10" width="9" height="9" fill="none" aria-hidden="true">
-              <path d="M2 3.5l3 3 3-3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-            </svg>
+            <RailIcon name="chevron-down" size={10} />
           </button>
           {#if scopeOpen}
             <div class="rp-scope-menu" role="listbox" aria-label="Scope" data-testid="recipient-scope-menu">
@@ -371,7 +368,7 @@
         <span class="rp-chip" data-testid="recipient-chip" data-id={item.id}>
           {@render face(item, 16, false)}
           <span class="rp-chip-name">{recipientDisplayName(item)}</span>
-          <button
+          <button data-icon-only
             type="button"
             class="rp-chip-x"
             aria-label={`Remove ${item.name}`}
@@ -381,9 +378,7 @@
               remove(item.id);
             }}
           >
-            <svg viewBox="0 0 10 10" width="9" height="9" fill="none" aria-hidden="true">
-              <path d="M3 3l4 4M7 3L3 7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
-            </svg>
+            <RailIcon name="x" size={10} />
           </button>
         </span>
       {/each}

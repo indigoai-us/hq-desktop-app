@@ -509,7 +509,7 @@ describe("ChatSidebar unread badge on off-screen channel wake (US-019)", () => {
     });
     await tick();
     const row = host.querySelector('[data-conversation-id="dm:agt_deacon"]');
-    const badge = row?.querySelector('[data-testid="chat-unread-badge"]');
+    const badge = row?.closest(".chat-li")?.querySelector('[data-testid="chat-unread-badge"]');
     expect(badge?.textContent?.trim()).toBe("1");
   });
 
@@ -551,12 +551,12 @@ describe("ChatSidebar unread badge on off-screen channel wake (US-019)", () => {
     await tick();
 
     const row = host.querySelector('[data-conversation-id="dm:agt_deacon"]');
-    expect(row?.querySelector('[data-testid="chat-unread-badge"]')?.textContent?.trim()).toBe("1");
+    expect(row?.closest(".chat-li")?.querySelector('[data-testid="chat-unread-badge"]')?.textContent?.trim()).toBe("1");
     // The focused conversation reports a successful read without another rail click.
     wakes.emit("conversation:read", { id: "dm:agt_deacon" });
     await tick();
-    expect(row?.querySelector('[data-testid="chat-unread-badge"]')).toBeNull();
-    expect(row?.querySelector('[data-testid="chat-unread-dot"]')).toBeNull();
+    expect(row?.closest(".chat-li")?.querySelector('[data-testid="chat-unread-badge"]')).toBeNull();
+    expect(row?.closest(".chat-li")?.querySelector('[data-testid="chat-unread-dot"]')).toBeNull();
   });
 });
 
@@ -672,8 +672,8 @@ describe("ChatSidebar stamps DM activity even when the thread is open", () => {
     const heading = list?.previousElementSibling;
     expect(heading?.classList.contains("chat-day-head")).toBe(true);
     expect(heading?.textContent ?? "").toMatch(/TODAY/);
-    expect(row.querySelector('[data-testid="chat-unread-badge"]')).toBeNull();
-    expect(row.querySelector('[data-testid="chat-unread-dot"]')).toBeNull();
+    expect(row.closest(".chat-li")?.querySelector('[data-testid="chat-unread-badge"]')).toBeNull();
+    expect(row.closest(".chat-li")?.querySelector('[data-testid="chat-unread-dot"]')).toBeNull();
   });
 
   it("creates a rail row for a peer who is not in the cached roster", async () => {

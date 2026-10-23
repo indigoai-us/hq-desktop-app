@@ -187,14 +187,16 @@ describe("DesktopApp agent detail pane", () => {
     });
   });
 
-  it("does not open the agent pane from a human DM header", async () => {
+  // A person's DM header opens THEIR profile (iOS #44: the identity in the
+  // bar opens the profile), never the bot pane.
+  it("opens the person's profile, not the agent pane, from a human DM header", async () => {
     await mountOpen(HUMAN_UID, HUMAN_NAME);
     expect(host.querySelector('[data-testid="channel-header-agent"]')).toBeNull();
     (
-      host.querySelector('[data-testid="channel-name"]') as HTMLElement
+      host.querySelector('[data-testid="channel-header-person"]') as HTMLElement
     ).click();
     await tick();
     expect(host.querySelector('[data-testid="agent-detail-panel"]')).toBeNull();
-    expect(host.querySelector('[data-testid="member-profile-panel"]')).toBeNull();
+    expect(host.querySelector('[data-testid="member-profile-panel"]')).not.toBeNull();
   });
 });

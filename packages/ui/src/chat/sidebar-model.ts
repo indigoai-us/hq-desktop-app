@@ -2680,13 +2680,19 @@ export function historyDayGroups(
 
 /** Initials for avatar monograms (max 2). */
 export function initialsFor(title: string): string {
-  const parts = title.trim().split(/\s+/).filter(Boolean);
+  // Letters and digits only, and no parenthetical: "Corey (you)" drew "C("
+  // (owner, 2026-10-22).
+  const parts = title
+    .replace(/\([^)]*\)/g, " ")
+    .split(/\s+/)
+    .map((part) => part.replace(/[^\p{L}\p{N}]/gu, ""))
+    .filter(Boolean);
   if (parts.length >= 2) {
     return (
       `${parts[0]?.[0] ?? ""}${parts.at(-1)?.[0] ?? ""}`.toUpperCase() || "?"
     );
   }
-  return title.trim().slice(0, 2).toUpperCase() || "?";
+  return (parts[0] ?? "").slice(0, 2).toUpperCase() || "?";
 }
 
 export type RowAvatarKind = "photo" | "generated" | "initials";
@@ -3000,4 +3006,41 @@ export function formatSearchHitTime(
   if (day === todayStart) return time;
   if (day === yesterdayStart) return `Yesterday ${time}`;
   return `${MONTHS[d.getMonth()]} ${d.getDate()} ${time}`;
+}
+
+/** One run of a snippet, flagged when it is part of the search match. */
+export interface HighlightPart {
+  text: string;
+  match: boolean;
+}
+
+/**
+ * Split `text` on every case-insensitive occurrence of `query`, so a caller
+ * can mark the matching runs.
+ *
+ * Returns parts rather than markup on purpose: a search result is arbitrary
+ * message text, and building an HTML string here would put user content on a
+ * path that has to be escaped by hand. The caller renders `match` parts in a
+ * `<mark>` and Svelte escapes both.
+ */
+export function highlightMatches(
+  text: string,
+  query: string,
+): HighlightPart[] {
+  const needle = query.trim().toLowerCase();
+  if (!text) return [];
+  if (!needle) return [{ text, match: false }];
+
+  const parts: HighlightPart[] = [];
+  const haystack = text.toLowerCase();
+  let from = 0;
+  for (;;) {
+    const at = haystack.indexOf(needle, from);
+    if (at === -1) break;
+    if (at > from) parts.push({ text: text.slice(from, at), match: false });
+    parts.push({ text: text.slice(at, at + needle.length), match: true });
+    from = at + needle.length;
+  }
+  if (from < text.length) parts.push({ text: text.slice(from), match: false });
+  return parts;
 }

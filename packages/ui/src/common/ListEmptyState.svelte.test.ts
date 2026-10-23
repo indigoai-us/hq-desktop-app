@@ -98,3 +98,17 @@ describe("ListEmptyState", () => {
     expect(el.querySelector('[data-testid="list-empty-state"]')).toBeNull();
   });
 });
+
+// iOS #44's shared empty state leads with a symbol disc. A list filtered to
+// nothing shows search; a genuinely empty list shows the icon it is given.
+describe("ListEmptyState disc", () => {
+  it("shows a search disc when a query hides every row", () => {
+    const el = render({ total: 4, shown: 0, query: "zz", noun: ["file", "files"] });
+    expect(el.querySelector('[data-testid="list-empty-state-icon"] [data-rail-icon="search"]')).not.toBeNull();
+  });
+
+  it("shows the given icon for an empty list, and none when not given", () => {
+    const el = render({ total: 0, shown: 0, noun: ["file", "files"], icon: "folder" });
+    expect(el.querySelector('[data-testid="list-empty-state-icon"] [data-rail-icon="folder"]')).not.toBeNull();
+  });
+});

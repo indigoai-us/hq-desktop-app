@@ -1,0 +1,58 @@
+/* The app's one tag.
+ *
+ * A tag is a short state or kind label that sits beside a name or a title:
+ * BOT next to a bot's name, a card's board status, a rich card's badge. The
+ * iOS app moved every one of these to a single style (hq-native-mobile #44,
+ * `HQPill(.status)`: "make sure all of the tags have the same style"). This
+ * is the desktop's copy of it, in the desktop's own register: mono, so
+ * uppercase (mono in this app is never mixed case).
+ *
+ * Shape: 4px corners, 2px by 6px padding, no border. Colour: the tag's ink
+ * on a light tint of itself, never a solid fill; dark mode takes a stronger
+ * tint (`--kind-tag-tint`) or it reads as grey. Neutral by default.
+ *
+ * Global (not Svelte-scoped) so every surface draws the same tag. Add a tone
+ * class; do not restyle `.hq-tag` locally.
+ */
+
+.hq-tag {
+  --tag-ink: var(--t2, var(--v4-text-2));
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  box-sizing: border-box;
+  height: 16px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--tag-ink) var(--kind-tag-tint, 12%), transparent);
+  color: var(--tag-ink);
+  font: 500 9.5px/1 var(--font-mono, ui-monospace, Menlo, monospace);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+/* A bot: indigo, apart from the file kinds' blue, teal and pink. */
+.hq-tag.is-bot {
+  --tag-ink: var(--kind-bot);
+}
+
+.hq-tag.is-ok {
+  --tag-ink: var(--v4-ok, var(--ok));
+}
+
+.hq-tag.is-warn {
+  --tag-ink: var(--v4-warn, var(--warn));
+}
+
+.hq-tag.is-danger {
+  --tag-ink: var(--v4-error, var(--red));
+}
+
+/* The accent the rest of the app uses for "yours / in progress". */
+.hq-tag.is-accent {
+  --tag-ink: var(--ice-ink, var(--v4-text-1));
+}

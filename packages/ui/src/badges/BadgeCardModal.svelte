@@ -178,7 +178,7 @@
       tabindex="-1"
       onclick={onBackdrop}
     >
-      <button type="button" class="bc-close" data-testid="badge-card-close" aria-label="Close" onclick={requestClose}>
+      <button data-icon-only type="button" class="bc-close" data-testid="badge-card-close" aria-label="Close" onclick={requestClose}>
         <RailIcon name="x" size={14} />
       </button>
       {#if reveal}<span class="bc-glow" aria-hidden="true"></span>{/if}

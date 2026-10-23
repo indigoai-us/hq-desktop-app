@@ -127,14 +127,6 @@ describe("ChannelMuteControl", () => {
   // Owner decision 2026-09-25: the control draws a bell, and a slash across
   // it only while the channel is muted. The current level is a background
   // highlight, never a left accent.
-  const BELL_BODY = "M8 2.5";
-  const BELL_CLAPPER = "M6.6 12.5";
-  const BELL_SLASH = "M2.5 2.5l11 11";
-
-  function glyphPaths(id: string): string[] {
-    return [...q(id).querySelectorAll("path")].map((path) => path.getAttribute("d") ?? "");
-  }
-
   function muteStyles(): string {
     return [...document.querySelectorAll("style")]
       .map((node) => node.textContent ?? "")
@@ -142,19 +134,19 @@ describe("ChannelMuteControl", () => {
       .join("\n");
   }
 
+  // Phosphor Bell / BellSlash (owner, 2026-10-22: one icon family).
+  function glyph(id: string): string | null {
+    return q(id).querySelector("svg[data-rail-icon]")?.getAttribute("data-rail-icon") ?? null;
+  }
+
   it("draws a bell without a slash while the channel is unmuted", () => {
     render({ level: "all" });
-    const open = glyphPaths("channel-mute-toggle");
-    expect(open.some((d) => d.includes(BELL_BODY))).toBe(true);
-    expect(open.some((d) => d.includes(BELL_CLAPPER))).toBe(true);
-    expect(open.some((d) => d.includes(BELL_SLASH))).toBe(false);
+    expect(glyph("channel-mute-toggle")).toBe("bell");
   });
 
   it("adds the slash across the bell while the channel is muted", () => {
     render({ level: "muted" });
-    const muted = glyphPaths("channel-mute-toggle");
-    expect(muted.some((d) => d.includes(BELL_BODY))).toBe(true);
-    expect(muted.some((d) => d.includes(BELL_SLASH))).toBe(true);
+    expect(glyph("channel-mute-toggle")).toBe("bell-slash");
   });
 
   it("highlights the current level with a background and no left accent", async () => {

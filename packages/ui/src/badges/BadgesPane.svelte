@@ -35,10 +35,10 @@
 
 <aside class="pane" style:width="{PROFILE_PANE_WIDTH}px" aria-label={owner ? `${owner}'s badges` : "Badges"} data-testid="badges-pane">
   <header class="head">
-    <button type="button" class="icon" data-testid="badges-pane-back" aria-label="Back to profile" onclick={() => onback?.()}><RailIcon name="caret-left" size={14} /></button>
+    <button data-icon-only type="button" class="icon" data-testid="badges-pane-back" aria-label="Back to profile" onclick={() => onback?.()}><RailIcon name="caret-left" size={14} /></button>
     <span>Badges</span>
     <span class="grow"></span>
-    <button type="button" class="icon" data-testid="badges-pane-close" aria-label="Close" onclick={() => onclose?.()}><RailIcon name="x" size={14} /></button>
+    <button data-icon-only type="button" class="icon" data-testid="badges-pane-close" aria-label="Close" onclick={() => onclose?.()}><RailIcon name="x" size={14} /></button>
   </header>
   <div class="body">
     <p class="sum" data-testid="badges-pane-summary">{earned.length} of {total} earned</p>

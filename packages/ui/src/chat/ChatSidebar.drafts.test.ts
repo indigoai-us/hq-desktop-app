@@ -140,7 +140,7 @@ describe("ChatSidebar draft markers", () => {
     const row = host.querySelector('[data-conversation-id="ch:chn_b"]')!;
     expect(row.querySelector('[data-testid="chat-row-draft"]')).toBeTruthy();
     expect(
-      row.querySelector('[data-testid="chat-unread-badge"]')?.textContent?.trim(),
+      row.closest(".chat-li")?.querySelector('[data-testid="chat-unread-badge"]')?.textContent?.trim(),
     ).toBe("3");
   });
 });

@@ -683,6 +683,8 @@
   }
 
   .lc-seg-btn {
+    appearance: none;
+    -webkit-appearance: none;
     height: var(--hq-btn-h);
     padding: 0 var(--hq-btn-pad-inline);
     border: 0;
@@ -718,6 +720,8 @@
   }
 
   .lc-radio {
+    appearance: none;
+    -webkit-appearance: none;
     display: grid;
     grid-template-columns: 16px 1fr auto;
     align-items: center;
@@ -816,7 +820,13 @@
     align-items: center;
   }
 
+  /* `appearance: none` is load-bearing, not tidiness. WebKit keeps a native
+     look on a <button> that has not opted out, and a natively-drawn control
+     IGNORES the author's border and background — so these controls lost
+     their box in the shipped app while looking right in Chromium. */
   .lc-btn {
+    appearance: none;
+    -webkit-appearance: none;
     display: inline-flex;
     align-items: center;
     justify-content: center;

@@ -79,7 +79,7 @@
 
 {#if current || draft}
   <div class="overlay" use:portal><div class="dialog" role="dialog" aria-modal="true" tabindex="-1" aria-label={draft ? (editId ? 'Edit routine' : 'New routine') : 'Routine details'} use:focusOnMount use:dismissable={{ onclose: close }}>
-    <header><div><span class="kind">{draft ? 'Make time for what matters' : current ? ROUTINE_CADENCE_LABEL[current.cadence] : ''}</span><h3>{draft ? (editId ? 'Edit routine' : 'New routine') : current?.name}</h3></div><button aria-label="Close routine" disabled={busy} onclick={close}><RailIcon name="x" /></button></header>
+    <header><div><span class="kind">{draft ? 'Make time for what matters' : current ? ROUTINE_CADENCE_LABEL[current.cadence] : ''}</span><h3>{draft ? (editId ? 'Edit routine' : 'New routine') : current?.name}</h3></div><button data-icon-only aria-label="Close routine" disabled={busy} onclick={close}><RailIcon name="x" /></button></header>
     {#if draft}
       <form onsubmit={event => { event.preventDefault(); if (valid) void act(editId ? 'cron.update' : 'cron.create', editId, valid); }}>
       <fieldset disabled={busy}>

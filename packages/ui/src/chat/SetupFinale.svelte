@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * SetupFinale — the end of setup under the Setup Agent's last message:
    * a wallpaper banner (the same art and scrim as the #welcome hero) that
@@ -11,7 +12,7 @@
   import SetupButton from "./SetupButton.svelte";
   import { SETUP_RESOURCES } from "./setup-channel";
   import { SETUP_HERO_ART } from "./setup-welcome-art";
-  import { SETUP_RESOURCE_GLYPHS } from "./setup-resource-glyphs";
+  import { SETUP_RESOURCE_ICONS } from "./setup-resource-glyphs";
 
   const SETUP_FINALE_EYEBROW = "Setup complete";
   const SETUP_FINALE_TITLE = "You're set up.";
@@ -99,20 +100,9 @@
                 data-testid={`setup-finale-resource-${resource.id}`}
                 onclick={(event) => openResourceLink(event, resource.href)}
               >
-                <svg
-                  class="resource-glyph"
-                  viewBox="0 0 16 16"
-                  width="16"
-                  height="16"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.25"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
+                <span class="resource-glyph" aria-hidden="true"
+                  ><RailIcon name={SETUP_RESOURCE_ICONS[resource.kind]} size={16} /></span
                 >
-                  {@html SETUP_RESOURCE_GLYPHS[resource.kind]}
-                </svg>
                 <span>{resource.title}</span>
               </a>
             </li>
@@ -295,6 +285,8 @@
     outline-offset: 2px;
   }
   .resource-glyph {
+    display: inline-grid;
+    place-items: center;
     flex: 0 0 auto;
     opacity: 0.85;
   }

@@ -14838,26 +14838,42 @@
                       />
                     </button>
                   {:else}
-                    <span
-                      class="channel-header-avatar"
-                      data-testid="channel-header-avatar"
+                    <!-- The person's avatar and name open their profile, the
+                         same one unit a bot's header already is (iOS #44: the
+                         identity in the bar opens the profile). -->
+                    <button
+                      type="button"
+                      class="channel-header-agent channel-header-person"
+                      data-testid="channel-header-person"
+                      aria-label={`View ${headerTitle}'s profile`}
+                      disabled={!(selectedRow.personUid ?? "").trim()}
+                      onclick={() =>
+                        openProfileForAuthor({
+                          personUid: selectedRow?.personUid ?? "",
+                          displayName: headerTitle,
+                        })}
                     >
-                      <IdentityMark
-                        kind="person"
-                        label={headerTitle}
-                        agentUid={selectedRow.personUid}
-                        avatarUrl={authorAvatarUrl(
-                          selectedRow.personUid,
-                          avatarByUid,
-                        )}
-                        size="small"
-                        online={presenceStatus(
-                          selectedRow.companyUid ?? "",
-                          selectedRow.personUid ?? "",
-                        ) === "online"}
-                      />
-                    </span>
-                    <h2 data-testid="channel-name">{headerTitle}</h2>
+                      <span
+                        class="channel-header-avatar"
+                        data-testid="channel-header-avatar"
+                      >
+                        <IdentityMark
+                          kind="person"
+                          label={headerTitle}
+                          agentUid={selectedRow.personUid}
+                          avatarUrl={authorAvatarUrl(
+                            selectedRow.personUid,
+                            avatarByUid,
+                          )}
+                          size="small"
+                          online={presenceStatus(
+                            selectedRow.companyUid ?? "",
+                            selectedRow.personUid ?? "",
+                          ) === "online"}
+                        />
+                      </span>
+                      <h2 data-testid="channel-name">{headerTitle}</h2>
+                    </button>
                   {/if}
                 {:else}
                   <h2 data-testid="channel-name">{headerTitle}</h2>
@@ -16641,6 +16657,13 @@
     min-width: 0;
   }
 
+  /* The title row aligns text on its baseline, and a baseline-aligned icon
+     box sits its bottom edge on that baseline, so the company mark rode
+     about 5px above the title's middle (owner, 2026-10-22). Centre it. */
+  .channel-title > :global(.company-icon) {
+    align-self: center;
+  }
+
   .channel-header-avatar {
     display: inline-flex;
     flex: 0 0 auto;
@@ -16659,6 +16682,10 @@
     color: inherit;
     font: inherit;
     cursor: pointer;
+  }
+
+  .channel-header-person:disabled {
+    cursor: default;
   }
 
   .channel-header-agent h2 {
