@@ -370,6 +370,19 @@ jobs:
             sudo pkill -KILL -x dpkg || true
             # A kill mid-unpack can leave dpkg half-configured; repair before retrying.
             sudo dpkg --configure -a || true
+            # apt only moves to the next mirror in apt-mirrors.txt when one
+            # errors, not when it is slow. On run 39877207461 the Azure mirror
+            # served package files at ~50 KB/s while its index files came at
+            # 11 MB/s, so every retry hit the same slow pool. Drop the Azure
+            # entry so retries use archive.ubuntu.com, the file's next entry.
+            # Only when another entry is left, so the list never ends up empty.
+            if [ -f /etc/apt/apt-mirrors.txt ] \
+              && grep -q azure.archive.ubuntu.com /etc/apt/apt-mirrors.txt \
+              && grep -v azure.archive.ubuntu.com /etc/apt/apt-mirrors.txt | grep -q '^http'; then
+              sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
+              echo "Retrying without the Azure Ubuntu mirror:"
+              cat /etc/apt/apt-mirrors.txt
+            fi
             [ "$attempt" -lt 3 ] && sleep 10
           done
           echo "::error::playwright install-deps failed after 3 attempts (slow or unreachable Ubuntu mirror?)"
