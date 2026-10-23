@@ -119,7 +119,7 @@ describe("the player", () => {
 
   it("schedules each take on the audio clock and decodes a file once", async () => {
     const ctx = fakeContext();
-    const load = vi.fn(async () => new ArrayBuffer(8));
+    const load = vi.fn(async (_url: string) => new ArrayBuffer(8));
     // A fixed wall clock: decoding time must not count against the deadline here.
     const sounds = realCardSounds.createCardSounds({ enabled: () => true, createContext: () => ctx, load, random: () => 0, now: () => 0 });
     sounds.play("deal", 500);
@@ -127,8 +127,10 @@ describe("the player", () => {
     sounds.play("deal", 0);
     await vi.waitFor(() => expect(ctx.started).toHaveLength(3));
     expect(ctx.started[0]!.when).toBeCloseTo(10.5);
-    // deal-a, deal-b, deal-a: two files, each fetched and decoded once.
-    expect(load).toHaveBeenCalledTimes(2);
+    // deal-a, deal-b, deal-a: two files, each fetched and decoded once. (The
+    // closing takes are also decoded up front; see the dismiss test below.)
+    const dealLoads = load.mock.calls.filter(([url]) => String(url).includes("/deal-"));
+    expect(dealLoads).toHaveLength(2);
   });
 
   it("drops sounds it cannot start on time instead of firing them in a burst later", async () => {
@@ -157,13 +159,74 @@ describe("the player", () => {
     expect(createContext).not.toHaveBeenCalled();
   });
 
-  it("is allowed by default, and not when turned off in Settings or under reduced motion", () => {
+  // Issue #1784: the owner asked for quiet by default.
+  it("is off by default, on once turned on in Settings, and never under reduced motion", () => {
+    expect(soundEffectsAllowed()).toBe(false);
+    writeSoundEffectsEnabled(true);
     expect(soundEffectsAllowed()).toBe(true);
     writeSoundEffectsEnabled(false);
     expect(soundEffectsAllowed()).toBe(false);
     writeSoundEffectsEnabled(true);
     setReducedMotion(true);
     expect(soundEffectsAllowed()).toBe(false);
+  });
+
+  it("reads a stored value it does not recognise, or an unreadable store, as off", () => {
+    storage.setItem(SOUND_EFFECTS_STORAGE_KEY, "yes");
+    expect(readSoundEffectsEnabled(storage)).toBe(false);
+    const broken = { getItem: () => { throw new Error("private mode"); } };
+    expect(readSoundEffectsEnabled(broken)).toBe(false);
+  });
+
+  // Issue #1784: a sweep across the hand fired a tick per card with no limit.
+  it("throttles the pointer tick but not the other sounds", async () => {
+    const ctx = fakeContext();
+    let wall = 0;
+    const sounds = realCardSounds.createCardSounds({ enabled: () => true, createContext: () => ctx, load: async () => new ArrayBuffer(8), now: () => wall });
+    sounds.play("hover");
+    wall = 40;
+    sounds.play("hover");
+    wall = 100;
+    sounds.play("hover");
+    wall = 160;
+    sounds.play("hover");
+    sounds.play("deal");
+    sounds.play("deal");
+    // hover at 0 and 160 play; 40 and 100 fall inside the 150 ms window.
+    await vi.waitFor(() => expect(ctx.started).toHaveLength(4));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(ctx.started).toHaveLength(4);
+    expect(realCardSounds.MIN_INTERVAL_MS.hover).toBe(150);
+  });
+
+  // Issue #1784: the close sound loaded on first play, and dispose() 220 ms
+  // later made the in-flight load skip, so it rarely played.
+  it("decodes the closing takes when it opens the device, and still plays the close after dispose", async () => {
+    const ctx = fakeContext();
+    const loaded: string[] = [];
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((r) => (release = r));
+    const load = vi.fn(async (url: string) => {
+      loaded.push(url);
+      // Hold the closing takes until after dispose() to model a slow first load.
+      if (url.includes("dismiss")) await gate;
+      return new ArrayBuffer(8);
+    });
+    const sounds = realCardSounds.createCardSounds({ enabled: () => true, createContext: () => ctx, load, random: () => 0, now: () => 0 });
+    sounds.play("intro");
+    // Every closing take is requested as soon as the device opens.
+    for (const take of CARD_SOUNDS.dismiss) expect(loaded).toContain(take);
+    await vi.waitFor(() => expect(ctx.started).toHaveLength(1));
+    sounds.play("dismiss");
+    sounds.dispose();
+    release!();
+    await vi.waitFor(() => expect(ctx.started).toHaveLength(2));
+    // Each closing take is fetched once, not again for the close itself.
+    expect(load.mock.calls.filter(([url]) => String(url).includes("dismiss"))).toHaveLength(CARD_SOUNDS.dismiss.length);
+    // Nothing asked for after dispose() plays.
+    sounds.play("hover");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(ctx.started).toHaveLength(2);
   });
 });
 
@@ -236,15 +299,20 @@ describe("the announcement", () => {
 });
 
 describe("the Settings switch", () => {
-  it("is on by default and turns sound effects off for this device", async () => {
+  it("is off by default and turns sound effects on, then off, for this device", async () => {
     const host = document.createElement("div");
     document.body.appendChild(host);
     const panes = mount(PrototypeSettingsPanes, { target: host, props: { section: "appearance", storage, deviceStorage: storage } });
     await tick();
     const toggle = host.querySelector<HTMLButtonElement>('[data-testid="settings-sound-effects"]')!;
     expect(toggle.getAttribute("aria-label")).toBe("Sound effects");
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(readSoundEffectsEnabled(storage)).toBe(false);
+    toggle.click();
+    await tick();
     expect(toggle.getAttribute("aria-checked")).toBe("true");
-    expect(readSoundEffectsEnabled(storage)).toBe(true);
+    expect(storage.getItem(SOUND_EFFECTS_STORAGE_KEY)).toBe("on");
+    expect(soundEffectsAllowed()).toBe(true);
     toggle.click();
     await tick();
     expect(toggle.getAttribute("aria-checked")).toBe("false");
