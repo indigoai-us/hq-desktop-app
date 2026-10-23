@@ -40,6 +40,12 @@ pub const ACTIVITY: &str = "GET /companies/{companyUid}/activity";
 /// `GET /secrets/{companyUid}`
 pub const SECRETS: &str = "GET /secrets/{companyUid}";
 
+/// `GET /v1/usage/telemetry-notice` (free-plan usage data disclosure state)
+pub const TELEMETRY_NOTICE_GET: &str = "GET /v1/usage/telemetry-notice";
+
+/// `POST /v1/usage/telemetry-disclosure/ack`
+pub const TELEMETRY_DISCLOSURE_ACK: &str = "POST /v1/usage/telemetry-disclosure/ack";
+
 /// Splits a `"METHOD /path/{companyUid}"` constant and substitutes
 /// `{companyUid}` with the caller's id, returning the request path (with
 /// leading `/`, no method, no base).
@@ -63,5 +69,13 @@ mod tests {
         assert_eq!(path_for(PERSON_SETTING_PUT, ""), "/v1/bot/auto-schedule");
         assert_eq!(path_for(BOARD, "cmp_01ABC"), "/companies/cmp_01ABC/board");
         assert_eq!(path_for(SECRETS, "cmp_01ABC"), "/secrets/cmp_01ABC");
+        assert_eq!(
+            path_for(TELEMETRY_NOTICE_GET, ""),
+            "/v1/usage/telemetry-notice"
+        );
+        assert_eq!(
+            path_for(TELEMETRY_DISCLOSURE_ACK, ""),
+            "/v1/usage/telemetry-disclosure/ack"
+        );
     }
 }

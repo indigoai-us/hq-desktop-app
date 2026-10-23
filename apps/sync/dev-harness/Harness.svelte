@@ -336,7 +336,9 @@
        2 cloud with the install running, 5 ready with the Claude Code / Codex
        options and the usage-data checkbox; 3 lands on ready too); the shortcut
        screen is Next from 2. ?mode=replay previews the menu-bar "Replay
-       welcome intro" (the story screens only). &company=create answers as a
+       welcome intro" (the story screens only); ?mode=consent the consent-only
+       run. &notice=pending|required|card|fail answers the free-plan usage-data
+       notice (default: not-applicable, which keeps today's choice). &company=create answers as a
        brand-new person, so Next, Next from step 2 reaches the company step
        inside the real welcome window (&companyDelay=<ms> slows its card
        fetch like a real network). In the app the window is
@@ -345,7 +347,7 @@
   <div class="fake-desktop" aria-hidden="true"></div>
   <OnboardingWizard
     initialStep={onboardingStep}
-    mode={params.get('mode') === 'replay' ? 'replay' : 'onboarding'}
+    mode={params.get('mode') === 'replay' ? 'replay' : params.get('mode') === 'consent' ? 'consent' : 'onboarding'}
     wallpaper={params.get('wallpaper') === 'none' ? null : (params.get('wallpaper') ?? '/wallpaper.jpg')}
     onfinish={() => {}}
   />

@@ -847,6 +847,8 @@ fn main() {
             commands::cloud_switch::get_vault_sync_switches,
             commands::cloud_switch::set_vault_sync_enabled,
             commands::telemetry::post_telemetry_opt_in,
+            commands::telemetry::get_telemetry_notice,
+            commands::telemetry::post_telemetry_disclosure_ack,
             commands::telemetry::get_telemetry_consent_status,
             commands::telemetry::consent_reprompt_status,
             commands::telemetry::mark_consent_reprompt_shown,

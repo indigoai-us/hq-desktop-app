@@ -547,6 +547,37 @@ pub async fn post_telemetry_opt_in(
     .await
 }
 
+/// Read the free-plan usage data disclosure state for onboarding.
+///
+/// `company_uid` scopes the answer to the company being set up. The wizard
+/// treats any error as "no disclosure" and keeps today's choice, so a failed
+/// read never blocks setup.
+#[tauri::command]
+pub async fn get_telemetry_notice(
+    company_uid: Option<String>,
+) -> Result<crate::commands::vault_client::TelemetryNoticeResponse, String> {
+    let access_token = crate::commands::cognito::get_valid_access_token().await?;
+    let api_url = resolve_vault_api_url()?;
+    VaultClient::new(&api_url, &access_token)
+        .get_telemetry_notice(company_uid.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Record that the person read the disclosure and chose Continue. Returns an
+/// error on any non-2xx so onboarding only moves on once the server confirms.
+#[tauri::command]
+pub async fn post_telemetry_disclosure_ack(
+    company_uid: Option<String>,
+) -> Result<crate::commands::vault_client::TelemetryDisclosureAck, String> {
+    let access_token = crate::commands::cognito::get_valid_access_token().await?;
+    let api_url = resolve_vault_api_url()?;
+    VaultClient::new(&api_url, &access_token)
+        .post_telemetry_disclosure_ack(company_uid.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
 async fn resolve_telemetry_enabled(vault: &VaultClient) -> bool {
     match vault.get_telemetry_opt_in().await {
         Ok(resp) => resp.enabled,

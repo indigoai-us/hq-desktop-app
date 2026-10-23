@@ -3,7 +3,10 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::util::client_info::build_client;
 use hq_desktop_core::request_policy::RequestBuilderExt;
-use hq_desktop_core::routes::{path_for, PERSON_SETTING_GET, PERSON_SETTING_PUT};
+use hq_desktop_core::routes::{
+    path_for, PERSON_SETTING_GET, PERSON_SETTING_PUT, TELEMETRY_DISCLOSURE_ACK,
+    TELEMETRY_NOTICE_GET,
+};
 
 // ── Error ─────────────────────────────────────────────────────────────────────
 
@@ -372,6 +375,57 @@ pub struct TelemetryOptInResponse {
     /// wording). `None` on servers that predate the field.
     #[serde(default)]
     pub stale: Option<bool>,
+    /// Where the effective consent comes from (for example `plan-required`
+    /// on a free company once the disclosure window has passed). `None` on
+    /// servers that predate the field.
+    #[serde(default)]
+    pub consent_source: Option<String>,
+}
+
+/// The free-plan usage data disclosure text. The desktop renders these fields
+/// verbatim; it never writes its own copy of them.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryDisclosure {
+    pub version: String,
+    pub title: String,
+    pub summary: String,
+    #[serde(default)]
+    pub collected: Vec<String>,
+    #[serde(default)]
+    pub never_collected: Vec<String>,
+    pub off_switch: String,
+    pub upgrade_path: String,
+}
+
+/// `GET /v1/usage/telemetry-notice`. `status` is one of `not-applicable`,
+/// `notice-pending`, `required` or `opt-out-available`; it is kept as a string
+/// so a newer server status degrades to "not shown" instead of failing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryNoticeResponse {
+    pub status: String,
+    #[serde(default)]
+    pub seen_at: Option<String>,
+    #[serde(default)]
+    pub required_from: Option<String>,
+    #[serde(default)]
+    pub ack_at: Option<String>,
+    #[serde(default)]
+    pub has_card: bool,
+    #[serde(default)]
+    pub disclosure: Option<TelemetryDisclosure>,
+}
+
+/// `POST /v1/usage/telemetry-disclosure/ack`. The first ack wins server-side,
+/// so a repeat returns the original time and version.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryDisclosureAck {
+    #[serde(default)]
+    pub ack_at: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -891,6 +945,48 @@ impl VaultClient {
             .client
             .get(format!("{}{}", self.base_url, "/v1/usage/opt-in"))
             .bearer_auth(&self.auth_token)
+            .send_retrying()
+            .await?;
+        self.handle_response(resp).await
+    }
+
+    /// `GET /v1/usage/telemetry-notice` — the free-plan usage data disclosure
+    /// state for the caller, scoped to `company_uid` when one is known.
+    pub async fn get_telemetry_notice(
+        &self,
+        company_uid: Option<&str>,
+    ) -> Result<TelemetryNoticeResponse, VaultClientError> {
+        let mut req = self
+            .client
+            .get(format!("{}{}", self.base_url, path_for(TELEMETRY_NOTICE_GET, "")))
+            .bearer_auth(&self.auth_token);
+        if let Some(uid) = company_uid.filter(|uid| !uid.is_empty()) {
+            req = req.query(&[("companyUid", uid)]);
+        }
+        let resp = req.send_retrying().await?;
+        self.handle_response(resp).await
+    }
+
+    /// `POST /v1/usage/telemetry-disclosure/ack` — record that the caller saw
+    /// the disclosure and chose Continue. Any non-2xx is an error, so the
+    /// caller only moves on once the server has confirmed.
+    pub async fn post_telemetry_disclosure_ack(
+        &self,
+        company_uid: Option<&str>,
+    ) -> Result<TelemetryDisclosureAck, VaultClientError> {
+        let mut payload = serde_json::Map::new();
+        if let Some(uid) = company_uid.filter(|uid| !uid.is_empty()) {
+            payload.insert("companyUid".into(), serde_json::json!(uid));
+        }
+        let resp = self
+            .client
+            .post(format!(
+                "{}{}",
+                self.base_url,
+                path_for(TELEMETRY_DISCLOSURE_ACK, "")
+            ))
+            .bearer_auth(&self.auth_token)
+            .json(&serde_json::Value::Object(payload))
             .send_retrying()
             .await?;
         self.handle_response(resp).await
@@ -1887,5 +1983,141 @@ mod tests {
         assert_eq!(resp.source, None);
         assert_eq!(resp.answered_by, None);
         assert_eq!(resp.stale, None);
+    }
+
+    #[tokio::test]
+    async fn get_telemetry_opt_in_parses_consent_source() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "enabled": true,
+                "consentSource": "plan-required",
+            })))
+            .mount(&server)
+            .await;
+
+        let resp = client(&server.uri()).get_telemetry_opt_in().await.unwrap();
+        assert_eq!(resp.consent_source.as_deref(), Some("plan-required"));
+    }
+
+    fn notice_body(status: &str, has_card: bool) -> serde_json::Value {
+        json!({
+            "status": status,
+            "enabled": true,
+            "seenAt": "2026-10-22T10:00:00Z",
+            "requiredFrom": "2026-11-05T10:00:00Z",
+            "requiredSince": null,
+            "ackAt": null,
+            "hasCard": has_card,
+            "disclosure": {
+                "version": "2026-10-22",
+                "title": "Usage data on the free plan",
+                "summary": "Using HQ for free includes sharing usage data with us.",
+                "collected": ["usage counts", "timings"],
+                "neverCollected": ["file contents", "secrets"],
+                "offSwitch": "Add a card to your company and collection becomes a setting you can turn off.",
+                "upgradePath": "Add a card or upgrade your company in HQ at https://hq.computer under your company's Billing page.",
+                "selfHosted": "ignored by the desktop"
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn get_telemetry_notice_passes_every_field_the_screen_renders() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/telemetry-notice"))
+            .and(query_param("companyUid", "cmp_01ABC"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(notice_body("notice-pending", false)),
+            )
+            .mount(&server)
+            .await;
+
+        let resp = client(&server.uri())
+            .get_telemetry_notice(Some("cmp_01ABC"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status, "notice-pending");
+        assert!(!resp.has_card);
+        assert_eq!(resp.seen_at.as_deref(), Some("2026-10-22T10:00:00Z"));
+        assert_eq!(resp.required_from.as_deref(), Some("2026-11-05T10:00:00Z"));
+        assert_eq!(resp.ack_at, None);
+        let d = resp.disclosure.clone().unwrap();
+        assert_eq!(d.version, "2026-10-22");
+        assert_eq!(d.title, "Usage data on the free plan");
+        assert_eq!(d.collected, vec!["usage counts", "timings"]);
+        assert_eq!(d.never_collected, vec!["file contents", "secrets"]);
+        assert!(d.off_switch.starts_with("Add a card"));
+        assert!(d.upgrade_path.contains("https://hq.computer"));
+
+        // What the webview receives: camelCase, every rendered field present.
+        let wire = serde_json::to_value(&resp).unwrap();
+        assert_eq!(wire["hasCard"], json!(false));
+        assert_eq!(wire["disclosure"]["neverCollected"], json!(["file contents", "secrets"]));
+        assert!(wire["disclosure"]["offSwitch"].is_string());
+        assert!(wire["disclosure"]["upgradePath"].is_string());
+    }
+
+    #[tokio::test]
+    async fn get_telemetry_notice_without_company_sends_no_query() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/telemetry-notice"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "status": "not-applicable",
+                "hasCard": false,
+            })))
+            .mount(&server)
+            .await;
+
+        let resp = client(&server.uri()).get_telemetry_notice(None).await.unwrap();
+        assert_eq!(resp.status, "not-applicable");
+        assert!(resp.disclosure.is_none());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests[0].url.query(), None);
+    }
+
+    #[tokio::test]
+    async fn post_telemetry_disclosure_ack_sends_company_and_parses_reply() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage/telemetry-disclosure/ack"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "ackAt": "2026-10-22T10:05:00Z",
+                "version": "2026-10-22",
+            })))
+            .mount(&server)
+            .await;
+
+        let ack = client(&server.uri())
+            .post_telemetry_disclosure_ack(Some("cmp_01ABC"))
+            .await
+            .unwrap();
+        assert_eq!(ack.ack_at.as_deref(), Some("2026-10-22T10:05:00Z"));
+        assert_eq!(ack.version.as_deref(), Some("2026-10-22"));
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body, json!({ "companyUid": "cmp_01ABC" }));
+    }
+
+    #[tokio::test]
+    async fn post_telemetry_disclosure_ack_non_2xx_is_an_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage/telemetry-disclosure/ack"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(&json!({
+                "error": "Not a member of this company",
+                "code": "FORBIDDEN",
+            })))
+            .mount(&server)
+            .await;
+
+        let err = client(&server.uri())
+            .post_telemetry_disclosure_ack(Some("cmp_other"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, VaultClientError::Http { status: 403, .. }));
     }
 }
