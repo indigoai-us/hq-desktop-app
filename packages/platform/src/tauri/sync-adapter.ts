@@ -92,6 +92,7 @@ import {
 import { hqProFailure, parseHqProErrorBody } from '../plan-limit.js';
 import { scrubTransportFailure } from '../api-error.js';
 import { dispatchPostReadyAction } from '../post-ready-actions.js';
+import { SYNC_HQ_PRO_ROUTES, splitRoute } from './hq-pro-routes.js';
 
 export type SyncInvokeFn = (
   cmd: string,
@@ -1450,6 +1451,16 @@ export function createSyncPlatformAdapter(
         hqProJson('POST', '/membership/role', { companyUid, membershipKey, newRole }),
       revokeMembership: (companyUid, membershipKey) =>
         hqProJson('POST', '/membership/revoke', { companyUid, membershipKey }),
+      inviteMember: ({ companyUid, inviteeEmail, role, allowedPrefixes, groupIds }) =>
+        hqProJson(...splitRoute(SYNC_HQ_PRO_ROUTES.membershipInvite), {
+          companyUid,
+          inviteeEmail,
+          role,
+          sendEmail: true,
+          inviteSurface: 'desktop',
+          ...(allowedPrefixes && allowedPrefixes.length > 0 ? { allowedPrefixes } : {}),
+          ...(groupIds && groupIds.length > 0 ? { groupIds } : {}),
+        }),
       getTeamTelemetry: (slug, range) => {
         // hq-pro cuts days in `tz` when it can; this Mac's zone is the default.
         const tz = range?.tz ?? localIanaZone();

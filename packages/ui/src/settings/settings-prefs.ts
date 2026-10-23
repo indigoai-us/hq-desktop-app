@@ -171,6 +171,35 @@ export function readStoredUiSize(
   return legacy ? readSettingsPrefs(legacy).uiSize : DEFAULT_SETTINGS_PREFS.uiSize;
 }
 
+/**
+ * Sound effects (the accomplishments announcement's card sounds) are a
+ * device-wide preference like Interface size, so they read the same in every
+ * company. On unless the person turned them off.
+ */
+export const SOUND_EFFECTS_STORAGE_KEY = "hq-work-sound-effects";
+
+export function readSoundEffectsEnabled(
+  storage: Pick<Storage, "getItem"> | null | undefined = defaultStorage(),
+): boolean {
+  try {
+    return storage?.getItem(SOUND_EFFECTS_STORAGE_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+export function writeSoundEffectsEnabled(
+  enabled: boolean,
+  storage: Pick<Storage, "setItem"> | null | undefined = defaultStorage(),
+): boolean {
+  try {
+    storage?.setItem(SOUND_EFFECTS_STORAGE_KEY, enabled ? "on" : "off");
+  } catch {
+    /* private mode */
+  }
+  return enabled;
+}
+
 export function writeStoredUiSize(
   size: SettingsUiSize,
   storage: Pick<Storage, "setItem"> | null | undefined = defaultStorage(),

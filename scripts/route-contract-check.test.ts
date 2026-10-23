@@ -6,6 +6,7 @@ import {
   collectAppRoutes,
   extractRegistryRoutes,
   extractRustRegistryRoutes,
+  extractSyncHqProRoutes,
   extractWebPathsCompanyRoutes,
   loadRegistry,
   normalizeRoute,
@@ -201,6 +202,27 @@ describe("extractWebPathsCompanyRoutes", () => {
   });
 });
 
+describe("extractSyncHqProRoutes", () => {
+  it("extracts name: \"METHOD /path\" entries from the sync adapter's route table (DEV-5255)", () => {
+    const src = `
+      export const SYNC_HQ_PRO_ROUTES = {
+        membershipInvite: "POST /membership/invite",
+        companyPending: "GET /membership/company/{companyUid}/pending",
+      } as const;
+    `;
+    expect(extractSyncHqProRoutes(src)).toEqual([
+      { name: "SYNC_HQ_PRO_ROUTES.membershipInvite", route: "POST /membership/invite" },
+      { name: "SYNC_HQ_PRO_ROUTES.companyPending", route: "GET /membership/company/{param}/pending" },
+    ]);
+  });
+
+  it("fails the check when a sync adapter route has no hq-pro registration", () => {
+    const appRoutes = extractSyncHqProRoutes(`membershipInvite: "POST /membership/invites",`);
+    const result = checkRoutes(appRoutes, new Set(["POST /membership/invite"]));
+    expect(result.ok).toBe(false);
+  });
+});
+
 describe("loadRegistry", () => {
   it("throws when a registry source file is missing", () => {
     expect(() => loadRegistry(["/nonexistent/infra/vault-service.ts"])).toThrow(
@@ -214,6 +236,11 @@ describe("collectAppRoutes against a fixture repo layout", () => {
     const root = mkdtempSync(join(tmpdir(), "route-contract-fixture-"));
     mkdirSync(join(root, "crates/hq-desktop-core/src"), { recursive: true });
     mkdirSync(join(root, "packages/platform/src/web"), { recursive: true });
+    mkdirSync(join(root, "packages/platform/src/tauri"), { recursive: true });
+    writeFileSync(
+      join(root, "packages/platform/src/tauri/hq-pro-routes.ts"),
+      'export const SYNC_HQ_PRO_ROUTES = {\n  membershipInvite: "POST /membership/invite",\n} as const;',
+    );
     writeFileSync(
       join(root, "crates/hq-desktop-core/src/routes.rs"),
       'pub const HOME_CHANNEL: &str = "POST /v1/companies/{companyUid}/home-channel";',
@@ -233,6 +260,7 @@ describe("collectAppRoutes against a fixture repo layout", () => {
     expect(routes).toEqual([
       { name: "routes::HOME_CHANNEL", route: "POST /v1/companies/{param}/home-channel" },
       { name: "WEB_PATHS.companyBoard", route: "GET /companies/{param}/board" },
+      { name: "SYNC_HQ_PRO_ROUTES.membershipInvite", route: "POST /membership/invite" },
     ]);
   });
 });

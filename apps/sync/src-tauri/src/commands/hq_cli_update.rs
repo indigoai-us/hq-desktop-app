@@ -1242,6 +1242,17 @@ fn path_entry_exists(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
 }
 
+/// True when `saved` is the backup of npm's hq-cli PowerShell launcher for
+/// `target` (feedback_29d91817). A custom script at the same path is not matched.
+fn is_removed_npm_hq_cli_ps1_launcher(target: &Path, saved: &Path) -> bool {
+    target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            hq_desktop_core::hq_cli_staged_swap::is_npm_hq_cli_ps1_launcher_file(name, saved)
+        })
+}
+
 fn remove_install_path(path: &Path) -> Result<(), String> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -1353,7 +1364,17 @@ impl HqCliInstallBackup {
         }
 
         for (target, saved) in &self.moved {
-            if !path_entry_exists(target) {
+            if !path_entry_exists(target) && is_removed_npm_hq_cli_ps1_launcher(target, saved) {
+                // The swap or the hq-cli postinstall removed npm's .ps1 launcher on
+                // purpose: PowerShell would run it before hq.cmd and the default
+                // execution policy blocks it. Drop the backup instead of restoring it.
+                if let Err(error) = remove_install_path(saved) {
+                    log(
+                        "hq-cli-update",
+                        &format!("could not remove install backup: {error}"),
+                    );
+                }
+            } else if !path_entry_exists(target) {
                 // npm can exit 0 without recreating a shim/package in a reachable target.
                 // Keep the old artifact so the caller's convergence check can still use it.
                 if let Err(error) = std::fs::rename(saved, target) {
@@ -5417,6 +5438,82 @@ mod tests {
         let mut permissions = std::fs::metadata(path).unwrap().permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(path, permissions).unwrap();
+    }
+
+    fn npm_hq_cli_ps1_launcher(entry: &str) -> String {
+        let target = format!("\"$basedir/node_modules/@indigoai-us/hq-cli/{entry}\"");
+        [
+            "#!/usr/bin/env pwsh".to_string(),
+            "$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent".to_string(),
+            "$ret=0".to_string(),
+            format!("  & \"node$exe\"  {target} $args"),
+            "  $ret=$LASTEXITCODE".to_string(),
+            "exit $ret".to_string(),
+            String::new(),
+        ]
+        .join("\r\n")
+    }
+
+    fn install_bin_dir(prefix: &std::path::Path) -> PathBuf {
+        if cfg!(target_os = "windows") {
+            prefix.to_path_buf()
+        } else {
+            prefix.join("bin")
+        }
+    }
+
+    // PowerShell runs hq.ps1 before hq.cmd, and the default execution policy
+    // blocks it (feedback_29d91817). The swap and the hq-cli postinstall both
+    // remove npm's launcher, so a successful install must not put it back.
+    #[test]
+    fn successful_install_does_not_restore_npm_hq_cli_ps1_launchers() {
+        let temp = tempfile::tempdir().unwrap();
+        let bin = install_bin_dir(temp.path());
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("hq.cmd"), "@ECHO off\r\n").unwrap();
+        std::fs::write(bin.join("hq.ps1"), npm_hq_cli_ps1_launcher("dist/index.js")).unwrap();
+        std::fs::write(
+            bin.join("hq-auth-refresh.ps1"),
+            npm_hq_cli_ps1_launcher("dist/bin/hq-auth-refresh.js"),
+        )
+        .unwrap();
+
+        let mut backup = preserve_hq_cli_install(temp.path().to_str().unwrap()).unwrap();
+        std::fs::remove_file(bin.join("hq.ps1")).unwrap();
+        std::fs::remove_file(bin.join("hq-auth-refresh.ps1")).unwrap();
+        backup.finish(true).unwrap();
+
+        assert!(!bin.join("hq.ps1").exists());
+        assert!(!bin.join("hq-auth-refresh.ps1").exists());
+        assert!(bin.join("hq.cmd").exists());
+        let leftovers: Vec<_> = std::fs::read_dir(&bin)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("hq-cli-install-backup-")
+            })
+            .collect();
+        assert!(leftovers.is_empty(), "backup files left behind");
+    }
+
+    #[test]
+    fn successful_install_still_restores_a_ps1_that_is_not_npms_launcher() {
+        let temp = tempfile::tempdir().unwrap();
+        let bin = install_bin_dir(temp.path());
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("hq.ps1"), "Write-Host 'my own hq wrapper'\r\n").unwrap();
+
+        let mut backup = preserve_hq_cli_install(temp.path().to_str().unwrap()).unwrap();
+        std::fs::remove_file(bin.join("hq.ps1")).unwrap();
+        backup.finish(true).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(bin.join("hq.ps1")).unwrap(),
+            "Write-Host 'my own hq wrapper'\r\n"
+        );
     }
 
     /// Regression: under a Corepack pnpm 12, `pnpm bin -g` re-invoked itself as
