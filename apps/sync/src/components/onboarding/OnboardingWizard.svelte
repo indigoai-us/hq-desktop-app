@@ -982,7 +982,9 @@
       finishing,
       launching: launching !== null,
     });
-    return disclosurePending ? { ...gate, enabled: false } : gate;
+    // Held only by the disclosure: the button waits for the person, so it
+    // shows no spinner.
+    return disclosurePending && gate.enabled ? { ...gate, enabled: false, held: true } : { ...gate, held: false };
   });
   const storyOrder = $derived(storyScenes(replay));
   /** Run 007 note-0018: why the Claude Code and Codex buttons wait. */
@@ -5435,7 +5437,7 @@
         >
           <span class="tc-icon" aria-hidden="true"><img src={hqAppIcon} alt="" width="32" height="32" /></span>
           <span class="tc-name">{openDesktop.label}</span>
-          {#if !openDesktop.enabled}<span class="tc-spin" aria-hidden="true"></span>{/if}
+          {#if !openDesktop.enabled && !openDesktop.held}<span class="tc-spin" aria-hidden="true"></span>{/if}
         </button>
         {#if probeInFlight && !probeTimedOut && !detectionFailed && installedToolSlots.length === 0}
           <div

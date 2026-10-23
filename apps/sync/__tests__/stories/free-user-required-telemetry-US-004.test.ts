@@ -354,6 +354,8 @@ describe('US-004 ready screen (first run)', () => {
     expectDisclosureCopy(byId<HTMLElement>('ready-disclosure')!);
     expect(byId('ready-consent-share')).toBeNull();
     expect(byId('onboarding-open-desktop')!.disabled).toBe(true);
+    // Held for the person's answer, not loading: no spinner on the button.
+    expect(byId('onboarding-open-desktop')!.querySelector('.tc-spin')).toBeNull();
 
     byId('disclosure-continue')!.click();
     await flushUntil(() => Boolean(byId('disclosure-confirmed')), 'the confirmation');
