@@ -21,6 +21,11 @@ export interface CompanySignInView {
   loginUrl?: string;
   /** When the server says the current link stops working (ISO). */
   loginUrlExpiresAt?: string;
+  /**
+   * When the box took the last submitted code and then posted a new link
+   * without signing in (ISO). The server clears it when a new code is sent.
+   */
+  lastCodeRejectedAt?: string;
   signedInAt?: string;
 }
 
@@ -106,14 +111,26 @@ export function parseCompanySignInBody(body: unknown): CompanySignInView {
     : "unknown";
   const loginUrl = safeCompanyLoginUrl(row.loginUrl);
   const loginUrlExpiresAt = instant(row.loginUrlExpiresAt);
+  const lastCodeRejectedAt = state === "awaiting_sign_in" ? instant(row.lastCodeRejectedAt) : undefined;
   const signedInAt = instant(row.signedInAt);
   return {
     signedIn: row.signedIn === true && state === "signed_in",
     state,
     ...(loginUrl ? { loginUrl } : {}),
     ...(loginUrlExpiresAt ? { loginUrlExpiresAt } : {}),
+    ...(lastCodeRejectedAt ? { lastCodeRejectedAt } : {}),
     ...(signedInAt ? { signedInAt } : {}),
   };
+}
+
+/**
+ * True when the server reports a rejected code the card has not shown yet.
+ * `seen` is the value at the last submit (or the last one already shown), so
+ * the comparison never mixes the desktop clock with the server's.
+ */
+export function newCodeRejection(view: CompanySignInView | null, seen: string | null): boolean {
+  const at = view?.lastCodeRejectedAt;
+  return Boolean(at) && at !== seen && !view?.signedIn;
 }
 
 export function linkExpiryLine(expiresAt: string | undefined, now: number): { expired: boolean; text: string } {
@@ -300,7 +317,12 @@ export function deriveSignInPresentation(input: {
  */
 export function suppressUnchangedLink(previousUrl: string | null, next: CompanySignInView): CompanySignInView {
   if (!previousUrl || next.signedIn || next.loginUrl !== previousUrl) return next;
-  return { signedIn: next.signedIn, state: next.state, signedInAt: next.signedInAt };
+  return {
+    signedIn: next.signedIn,
+    state: next.state,
+    signedInAt: next.signedInAt,
+    ...(next.lastCodeRejectedAt ? { lastCodeRejectedAt: next.lastCodeRejectedAt } : {}),
+  };
 }
 
 /** Slow re-check while the company cannot have an Outpost yet. */

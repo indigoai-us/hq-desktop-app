@@ -3,6 +3,7 @@ import {
   SIGNIN_COPY,
   deriveSignInPresentation,
   linkExpiryLine,
+  newCodeRejection,
   parseCompanySignInBody,
   safeCompanyLoginUrl,
   signInPollDelayMs,
@@ -44,6 +45,25 @@ describe("company sign-in view", () => {
     expect(parseCompanySignInBody({
       signIn: { signedIn: false, state: "awaiting_sign_in", loginUrl: "https://evil.example/oauth/authorize" },
     }).loginUrl).toBeUndefined();
+  });
+
+  it("keeps lastCodeRejectedAt only while awaiting sign-in, and only as an ISO instant", () => {
+    expect(parseCompanySignInBody({
+      signIn: { signedIn: false, state: "awaiting_sign_in", loginUrl: URL, loginUrlExpiresAt: LATER, lastCodeRejectedAt: EARLIER },
+    })).toEqual({ signedIn: false, state: "awaiting_sign_in", loginUrl: URL, loginUrlExpiresAt: LATER, lastCodeRejectedAt: EARLIER });
+    expect(parseCompanySignInBody({ signIn: { signedIn: true, state: "signed_in", lastCodeRejectedAt: EARLIER } }).lastCodeRejectedAt).toBeUndefined();
+    expect(parseCompanySignInBody({ signIn: { signedIn: false, state: "awaiting_sign_in", lastCodeRejectedAt: "yesterday" } }).lastCodeRejectedAt).toBeUndefined();
+  });
+
+  it("a rejection counts once, and never one that was current at the last submit", () => {
+    const view = parseCompanySignInBody({ signIn: { signedIn: false, state: "awaiting_sign_in", loginUrl: URL, lastCodeRejectedAt: EARLIER } });
+    expect(newCodeRejection(view, null)).toBe(true);
+    expect(newCodeRejection(view, EARLIER)).toBe(false);
+    expect(newCodeRejection({ ...view, lastCodeRejectedAt: LATER }, EARLIER)).toBe(true);
+    expect(newCodeRejection({ signedIn: false, state: "awaiting_sign_in", loginUrl: URL }, null)).toBe(false);
+    expect(newCodeRejection(null, null)).toBe(false);
+    // A link hidden after New sign-in link keeps the verdict for the same box.
+    expect(suppressUnchangedLink(URL, view).lastCodeRejectedAt).toBe(EARLIER);
   });
 
   it("treats a missing or unfamiliar payload as unknown", () => {
