@@ -13,6 +13,7 @@
   import {
     DOMAIN_PRICE_FALLBACK,
     appHostFrom,
+    awaitOwnershipRecord,
     deployDomainClient,
     dnsRecordsFor,
     domainErrorCopy,
@@ -20,15 +21,16 @@
     domainStatusCopy,
     formatUsd,
     inputProblemCopy,
-    isApexDomain,
     listWithRetry,
     LIST_RETRY_DELAYS_MS,
     normalizeDomainInput,
+    RECORD_RETRY_DELAYS_MS,
     type DeployDomainRequest,
     type DnsRecord,
     type DomainError,
     type DomainPrices,
     type DomainRecord,
+    type RefreshResult,
   } from "./custom-domain.js";
 
   interface Props {
@@ -48,10 +50,14 @@
     onclose: () => void;
     /** Waits before each automatic retry of the domain list; tests pass zeros. */
     retryDelays?: readonly number[];
+    /** Waits between the reads that fetch a certificate record ACM has not made yet; tests pass zeros. */
+    recordDelays?: readonly number[];
     ondone?: (message: string) => void;
+    /** A domain went live or was removed, so the deployment's address changed. */
+    onchange?: () => void;
   }
 
-  let { appId, appName, appUrl, scope, request, canManage, loadPrices = null, cardEntryUrl = null, openExternal, onclose, ondone, retryDelays = LIST_RETRY_DELAYS_MS }: Props = $props();
+  let { appId, appName, appUrl, scope, request, canManage, loadPrices = null, cardEntryUrl = null, openExternal, onclose, ondone, onchange, retryDelays = LIST_RETRY_DELAYS_MS, recordDelays = RECORD_RETRY_DELAYS_MS }: Props = $props();
 
   const client = $derived(request ? deployDomainClient(request, scope) : null);
   const appHost = $derived(appHostFrom(appUrl));
@@ -69,6 +75,10 @@
   let notice = $state<string | null>(null);
   let copied = $state<string | null>(null);
   let attempt = $state(0);
+  /** Domains whose certificate record is still being fetched; their DNS records show together once it arrives. */
+  let preparing = $state<Record<string, boolean>>({});
+  /** Bumped on every load and on close, so a fetch for an earlier load stops writing. */
+  let loadToken = 0;
 
   const price = $derived(`${formatUsd(prices.standardUsd)}/month`);
   const typed = $derived(normalizeDomainInput(entry));
@@ -86,22 +96,48 @@
       loadError = "Custom domains need the desktop app.";
       return;
     }
-    let live = true;
-    void listWithRetry(c, id, retryDelays, () => live)
+    const token = ++loadToken;
+    const live = () => token === loadToken;
+    void listWithRetry(c, id, retryDelays, live)
       .then((list) => {
-        if (!live) return;
+        if (!live()) return;
         domains = list;
         const next: Record<string, DnsRecord[]> = {};
         for (const d of list) next[d.domain] = dnsRecordsFor(d.domain, appHost, records[d.domain] ?? []);
         records = next;
+        // The list carries no DNS records, so fetch both before showing them.
+        if (canManage) for (const d of list) if (d.state !== "validated") void prepareRecords(d.domain, [], live);
       })
       .catch((err: unknown) => {
-        if (live) loadError = domainErrorCopy(err, prices).message;
+        if (live()) loadError = domainErrorCopy(err, prices).message;
       });
     return () => {
-      live = false;
+      loadToken += 1;
     };
   });
+
+  function applyRefresh(domain: string, result: RefreshResult): void {
+    serving = { ...serving, [domain]: result.serving };
+    certStatus = { ...certStatus, [domain]: result.certStatus };
+    domains = (domains ?? []).map((d) => (d.domain === domain ? { ...d, state: result.serving ? "validated" : result.state } : d));
+    if (result.serving) onchange?.();
+  }
+
+  /** Show a pending domain's DNS records only once the certificate record is among them. */
+  async function prepareRecords(domain: string, known: unknown, stillWanted: () => boolean): Promise<void> {
+    const c = client;
+    if (!c) return;
+    preparing = { ...preparing, [domain]: true };
+    try {
+      const { instructions, last } = await awaitOwnershipRecord(c, appId, domain, known, recordDelays, stillWanted);
+      if (!stillWanted()) return;
+      records = { ...records, [domain]: dnsRecordsFor(domain, appHost, instructions) };
+      if (last) applyRefresh(domain, last);
+    } finally {
+      const { [domain]: _done, ...rest } = preparing;
+      preparing = rest;
+    }
+  }
 
   $effect(() => {
     const load = loadPrices;
@@ -129,6 +165,8 @@
       domains = [...(domains ?? []).filter((x) => x.domain !== d.domain), d];
       entry = "";
       ondone?.(`${d.domain} added to ${appName}. Publish the DNS records to finish.`);
+      const token = loadToken;
+      if (d.state !== "validated") void prepareRecords(d.domain, result.instructions, () => token === loadToken);
     } catch (err) {
       actionError = domainErrorCopy(err, prices);
     } finally {
@@ -143,9 +181,7 @@
     notice = null;
     try {
       const result = await client.refresh(appId, domain);
-      serving = { ...serving, [domain]: result.serving };
-      certStatus = { ...certStatus, [domain]: result.certStatus };
-      domains = (domains ?? []).map((d) => (d.domain === domain ? { ...d, state: result.serving ? "validated" : result.state } : d));
+      applyRefresh(domain, result);
       const known = records[domain] ?? [];
       records = { ...records, [domain]: dnsRecordsFor(domain, appHost, [...known, ...(Array.isArray(result.instructions) ? result.instructions : [])]) };
       notice = result.serving
@@ -169,6 +205,7 @@
       const { [domain]: _gone, ...rest } = records;
       records = rest;
       confirmRemove = null;
+      onchange?.();
       ondone?.(result.warning ? `${domain} removed. Billing cleanup needs a follow-up from HQ support.` : `${domain} removed from ${appName}.`);
     } catch (err) {
       actionError = domainErrorCopy(err, prices);
@@ -246,28 +283,30 @@
         {:else if canManage}
           {#if !isLive(d)}
             <div class="dns" data-testid="custom-domain-dns">
-              <p class="hint flat">Add {(records[d.domain] ?? []).length === 1 ? "this record" : "these records"} at the company that hosts DNS for {d.domain}:</p>
-              <div class="grid" role="table" aria-label={`DNS records for ${d.domain}`}>
-                <div class="gh" role="row"><span role="columnheader">Type</span><span role="columnheader">Name</span><span role="columnheader">Value</span><span></span></div>
-                {#each records[d.domain] ?? [] as r (r.name)}
-                  <div class="gr" role="row" data-testid={`custom-domain-record-${r.purpose}`}>
-                    <span role="cell">{r.type}</span>
-                    <span role="cell" class="mono">{r.name}</span>
-                    <span role="cell" class="mono">{r.value}</span>
-                    <button data-icon-only class="copy" type="button" data-testid="custom-domain-copy" aria-label={copied === r.value ? "Copied" : `Copy ${r.purpose === "routing" ? "target" : "value"}`} title={copied === r.value ? "Copied" : "Copy"} onclick={() => void copy(r.value)}><RailIcon name={copied === r.value ? "check" : "copy"} /></button>
-                  </div>
-                  <p class="why">{r.purpose === "ownership" ? "Proves you own the domain so HQ can issue its certificate." : "Sends visitors to this deployment."}</p>
-                {/each}
-              </div>
-              {#if isApexDomain(d.domain)}
-                <p class="hint flat apex" data-testid="custom-domain-apex">
-                  {d.domain} is a root domain. Most DNS hosts don't allow a CNAME there. If yours offers an ALIAS, ANAME or CNAME-flattening record (Cloudflare, Route 53, DNSimple and others do), use it to point {d.domain} at {appHost}. Otherwise use a subdomain such as www.{d.domain}.
-                </p>
+              {#if preparing[d.domain]}
+                <p class="hint flat" role="status" data-testid="custom-domain-records-loading">Getting the DNS records for {d.domain}…</p>
+              {:else}
+                <p class="hint flat">Add {(records[d.domain] ?? []).length === 1 ? "this record" : "these records"} at the company that hosts DNS for {d.domain}:</p>
+                <div class="grid" role="table" aria-label={`DNS records for ${d.domain}`}>
+                  <div class="gh" role="row"><span role="columnheader">Type</span><span role="columnheader">Name</span><span role="columnheader">Value</span><span></span></div>
+                  {#each records[d.domain] ?? [] as r (r.name)}
+                    <div class="gr" role="row" data-testid={`custom-domain-record-${r.purpose}`}>
+                      <span role="cell">{r.type}</span>
+                      <span role="cell" class="mono">{r.name}</span>
+                      <span role="cell" class="mono">{r.value}</span>
+                      <button data-icon-only class="copy" type="button" data-testid="custom-domain-copy" aria-label={copied === r.value ? "Copied" : `Copy ${r.purpose === "routing" ? "target" : "value"}`} title={copied === r.value ? "Copied" : "Copy"} onclick={() => void copy(r.value)}><RailIcon name={copied === r.value ? "check" : "copy"} /></button>
+                    </div>
+                    <p class="why">{r.purpose === "ownership" ? "Proves you own the domain so HQ can issue its certificate." : "Sends visitors to this deployment."}</p>
+                  {/each}
+                </div>
+                {#if !(records[d.domain] ?? []).some((r) => r.purpose === "ownership")}
+                  <p class="hint flat" data-testid="custom-domain-records-partial">The certificate record isn't ready yet. Check again in a minute to see it.</p>
+                {/if}
               {/if}
             </div>
           {/if}
           <div class="row-actions">
-            {#if !isLive(d)}<RailButton icon="refresh" data-testid="custom-domain-refresh" disabled={busy !== null} aria-busy={busy === "refresh"} onclick={() => void refresh(d.domain)}>{busy === "refresh" ? "Checking…" : "Check again"}</RailButton>{/if}
+            {#if !isLive(d)}<RailButton icon="refresh" data-testid="custom-domain-refresh" disabled={busy !== null || preparing[d.domain] === true} aria-busy={busy === "refresh"} onclick={() => void refresh(d.domain)}>{busy === "refresh" ? "Checking…" : "Check again"}</RailButton>{/if}
             {#if isLive(d)}<RailButton icon="external" onclick={() => openExternal?.(`https://${d.domain}`)}>Open</RailButton>{/if}
             <RailButton icon="trash" data-testid="custom-domain-remove" disabled={busy !== null} onclick={() => { confirmRemove = d.domain; actionError = null; notice = null; }}>Remove</RailButton>
           </div>
@@ -284,14 +323,14 @@
           inputmode="url"
           autocomplete="off"
           spellcheck="false"
-          placeholder="app.example.com"
+          placeholder="mysite.com"
           data-testid="custom-domain-input"
           bind:value={entry}
           onkeydown={(e) => e.key === "Enter" && void add()}
         />
       </label>
       {#if problem && problem !== "empty"}<p class="hint" data-testid="custom-domain-input-problem">{inputProblemCopy(problem)}</p>{/if}
-      <p class="hint" data-testid="custom-domain-price">{price} for this deployment, billed to the company. Remove it any time to stop the charge. A subdomain such as app.example.com is easiest to set up.</p>
+      <p class="hint" data-testid="custom-domain-price">{price} for this deployment, billed to the company. Remove it any time to stop the charge.</p>
     {:else if !canManage && domains.length === 0}
       <p class="hint" data-testid="custom-domain-member-empty">No custom domain yet. A company owner or admin can add one for {price}.</p>
     {:else if !canManage}
@@ -346,7 +385,6 @@
   .copy { display: inline-grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: 6px; padding: 0; background: transparent; color: var(--t2, var(--v4-text-2)); cursor: pointer; }
   .copy:hover { background: var(--hover, var(--v4-hover)); color: var(--t1, var(--v4-text-1)); }
   .copy:focus-visible { outline: 2px solid var(--v4-focus, currentColor); outline-offset: 2px; border-radius: 3px; }
-  .apex { color: var(--t2, var(--v4-text-2)); }
   .row-actions { display: flex; gap: 8px; padding: 0 20px 10px; }
   .hint.note .row-actions, .confirm .row-actions { padding: 0; }
   .confirm { display: flex; flex-direction: column; gap: 8px; padding: 0 20px 10px; }

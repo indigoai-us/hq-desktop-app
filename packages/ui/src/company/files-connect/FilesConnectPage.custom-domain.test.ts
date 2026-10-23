@@ -113,6 +113,26 @@ describe("US-007 FilesConnectPage custom domains", () => {
     expect(target.querySelector("[data-testid='custom-domain-input']")).toBeNull();
   });
 
+  it("shows and opens the live custom domain instead of the default address", async () => {
+    const openExternal = vi.fn();
+    const deployDomainRequest = vi.fn(async () =>
+      ok({ status: 200, body: { appId: "app_1", domains: [{ domain: "yousufkalim.com", environment: "production", validationState: "validated" }] } }),
+    );
+    const target = mountPage("deployments", null, { listDeployApps: apps(), deployDomainRequest, companyRole: "Owner", openExternal });
+    await vi.waitFor(() => expect(target.querySelector("[data-testid='deploy-url']")?.textContent).toBe("https://yousufkalim.com"));
+    (target.querySelector("[data-testid='deploy-open']") as HTMLButtonElement).click();
+    expect(openExternal).toHaveBeenCalledWith("https://yousufkalim.com");
+  });
+
+  it("keeps the default address while the custom domain is still pending", async () => {
+    const deployDomainRequest = vi.fn(async () =>
+      ok({ status: 200, body: { appId: "app_1", domains: [{ domain: "yousufkalim.com", environment: "production", validationState: "pending" }] } }),
+    );
+    const target = mountPage("deployments", null, { listDeployApps: apps(), deployDomainRequest, companyRole: "Owner" });
+    await vi.waitFor(() => expect(deployDomainRequest).toHaveBeenCalledWith("indigo", "GET", "/api/apps/app_1/domains", undefined));
+    await vi.waitFor(() => expect(target.querySelector("[data-testid='deploy-url']")?.textContent).toBe("https://launch-notes.indigo-hq.com"));
+  });
+
   it("hides Custom domain on a host without the domain routes", async () => {
     const target = mountPage("deployments", null, { listDeployApps: apps(), companyRole: "Owner" });
     await vi.waitFor(() => expect(target.querySelector("[data-testid='deploy-access']")).not.toBeNull());

@@ -29,7 +29,7 @@
   import DeployAccessForm from "./DeployAccessForm.svelte";
   import CustomDomainForm from "./CustomDomainForm.svelte";
   import CustomDomainOptions from "./CustomDomainOptions.svelte";
-  import { canManageDomains, domainPricesFromFeed, type DeployDomainRequest } from "./custom-domain.js";
+  import { canManageDomains, domainPricesFromFeed, readLiveCustomDomainUrl, type DeployDomainRequest } from "./custom-domain.js";
   import HiddenFromAiRow from "./HiddenFromAiRow.svelte";
   import { createRedactionPresetsApi, viewerCanEditRedaction, type RedactionPresetsApi } from "./redaction-presets.js";
   import ConnectionCardLogo from "../../chat/messaging/ConnectionCardLogo.svelte";
@@ -552,6 +552,27 @@
     if (id) selectedDeploy = id;
     sheet = "deploy-domain";
   }
+
+  /** Live custom domain per app id: the detail shows and opens it instead of the hq.work address. */
+  let liveDomainUrls = $state<Record<string, string | null>>({});
+  /** Bumped when the Custom domain sheet adds, finishes or removes a domain. */
+  let liveDomainReads = $state(0);
+  $effect(() => {
+    void liveDomainReads;
+    const id = deployCurrent?.appId;
+    const req = domainRequest;
+    if (!id || !req || !slug) return;
+    let live = true;
+    void readLiveCustomDomainUrl(req, slug, id)
+      .then((url) => {
+        if (live) liveDomainUrls = { ...liveDomainUrls, [id]: url };
+      })
+      .catch((err: unknown) => console.warn("[custom-domain] live domain read failed", err));
+    return () => {
+      live = false;
+    };
+  });
+  const deployUrl = $derived(deployCurrent ? (deployCurrent.appId ? liveDomainUrls[deployCurrent.appId] : null) ?? deployCurrent.url : "");
 
   async function loadDomainPrices() {
     const read = adapter?.company?.getPricing;
@@ -1140,9 +1161,9 @@
             <div class="pane-b">
               <h2>{deployCurrent.name}</h2>
               {@render statusDot(deployCurrent.status)}
-              {#if deployCurrent.url}<p class="mono meta url">{deployCurrent.url}</p>{/if}
+              {#if deployUrl}<p class="mono meta url" data-testid="deploy-url">{deployUrl}</p>{/if}
               <div class="actions">
-                <RailButton icon="external" disabled={!deployCurrent.url} onclick={() => openExternal?.(deployCurrent.url)}>Open</RailButton>
+                <RailButton icon="external" data-testid="deploy-open" disabled={!deployUrl} onclick={() => openExternal?.(deployUrl)}>Open</RailButton>
                 {#if deployActions}<RailButton icon="refresh" data-testid="redeploy" onclick={() => askRedeploy(deployCurrent)}>Redeploy</RailButton>{/if}
                 {#if deployCurrent.appId}<RailButton icon="key" data-testid="deploy-access" onclick={openDeployAccess}>Access</RailButton>{/if}
                 {#if deployCurrent.appId && domainRequest}<RailButton icon="link" data-testid="deploy-domain" onclick={() => openDomain()}>Custom domain</RailButton>{/if}
@@ -1181,6 +1202,7 @@
         openExternal={(url) => openExternal?.(url)}
         onclose={closeSheet}
         ondone={(message) => (status = message)}
+        onchange={() => (liveDomainReads += 1)}
       />
     {:else if sheet === "domain-options"}
       <CustomDomainOptions
