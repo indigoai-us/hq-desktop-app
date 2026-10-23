@@ -47,6 +47,48 @@
   let open = $state(false);
   let timer: ReturnType<typeof setTimeout> | null = null;
   let wrap: HTMLSpanElement | null = $state(null);
+  let bubbleEl = $state<HTMLElement | null>(null);
+  /** px to move a centred bubble so it stays inside the window. */
+  let edgeShift = $state(0);
+
+  /**
+   * A centred bubble that would run off a window edge does NOT just slide as
+   * far as it has to: it aligns with the TRIGGER's edge (right to right near
+   * the right of the window, left to left near the left). A bubble nudged
+   * just enough to fit reads as accidentally off-centre; one flush with its
+   * button reads as deliberate. The 8px window margin is a backstop for a
+   * bubble wider than the room beside its trigger. Only the default centred,
+   * below-the-trigger bubble moves; `align` and `side` are explicit choices.
+   */
+  function keepInsideWindow(): void {
+    const el = bubbleEl;
+    edgeShift = 0;
+    if (!el || !wrap || typeof window === "undefined") return;
+    if (align !== "center" || side !== "bottom") return;
+    const margin = 8;
+    const width = el.getBoundingClientRect().width;
+    const trigger = wrap.getBoundingClientRect();
+    const viewport = window.innerWidth;
+    const centredLeft = trigger.left + trigger.width / 2 - width / 2;
+
+    let left = centredLeft;
+    if (centredLeft + width > viewport - margin) left = trigger.right - width;
+    else if (centredLeft < margin) left = trigger.left;
+
+    const maxLeft = viewport - margin - width;
+    if (left > maxLeft) left = maxLeft;
+    if (left < margin) left = margin;
+    edgeShift = left - centredLeft;
+  }
+
+  $effect(() => {
+    if (!open) {
+      edgeShift = 0;
+      return;
+    }
+    void bubbleEl;
+    keepInsideWindow();
+  });
 
   /** A control whose menu or popover is open must not keep its tooltip on
    *  top of that menu (the Launch tooltip sat over the open Launch menu). */
@@ -103,10 +145,12 @@
   {@render trigger(label ? id : "")}
   {#if open && label}
     <span
+      bind:this={bubbleEl}
       class="tooltip-bubble"
       class:align-start={align === "start"}
       class:align-end={align === "end"}
       class:side-right={side === "right"}
+      style={edgeShift === 0 ? undefined : `--tooltip-x: ${edgeShift}px`}
       role="tooltip"
       {id}
       data-testid="tooltip-bubble"
@@ -132,7 +176,8 @@
     position: absolute;
     top: calc(100% + 6px);
     left: 50%;
-    transform: translateX(-50%);
+    /* `--tooltip-x` is set only when a window edge would clip the bubble. */
+    transform: translateX(calc(-50% + var(--tooltip-x, 0px)));
     z-index: 10001;
     /* Short labels stay on one line; a long one wraps inside the bubble instead of running past it. */
     width: max-content;
@@ -182,7 +227,8 @@
   @keyframes tooltip-in {
     from {
       opacity: 0;
-      transform: translateX(var(--tooltip-shift, -50%)) translateY(-2px);
+      transform: translateX(calc(var(--tooltip-shift, -50%) + var(--tooltip-x, 0px)))
+        translateY(-2px);
     }
   }
 

@@ -82,8 +82,15 @@ export function menuPortal(node: HTMLElement, params: MenuPortalParams) {
       node.style.maxWidth = "";
       return;
     }
+    // Measure at the panel's own width. Pinned only on the left: a panel
+    // whose stylesheet also sets `right` (`.chat-popover { right: 0 }` beats
+    // `.chat-scope-menu { right: auto }` on equal specificity) otherwise
+    // stretched edge to edge, and measuring that made the company menu as
+    // wide as the window.
     node.style.width = "auto";
     node.style.maxWidth = "none";
+    node.style.left = "0px";
+    node.style.right = "auto";
     const rail =
       current.railOverhang != null
         ? anchor.closest(current.railSelector ?? ".chat-sidebar")
@@ -112,8 +119,20 @@ export function menuPortal(node: HTMLElement, params: MenuPortalParams) {
 
   place();
   const reposition = () => place();
+  /**
+   * Capture-phase, so a scroll anywhere behind the menu re-anchors it — but
+   * NOT a scroll inside the menu itself. Re-placing rewrites the panel's own
+   * width and offsets, so doing it on every frame of the panel's inner
+   * scroller fights the gesture (an earlier `place()` that blanked the
+   * panel's max-height to measure it jammed the filter list partway down).
+   */
+  const onScroll = (event: Event) => {
+    const target = event.target;
+    if (target instanceof Node && node.contains(target)) return;
+    reposition();
+  };
   window.addEventListener("resize", reposition);
-  window.addEventListener("scroll", reposition, true);
+  window.addEventListener("scroll", onScroll, true);
   return {
     update(next: MenuPortalParams) {
       current = next;
@@ -121,7 +140,7 @@ export function menuPortal(node: HTMLElement, params: MenuPortalParams) {
     },
     destroy() {
       window.removeEventListener("resize", reposition);
-      window.removeEventListener("scroll", reposition, true);
+      window.removeEventListener("scroll", onScroll, true);
       node.remove();
     },
   };

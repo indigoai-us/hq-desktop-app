@@ -1,4 +1,5 @@
 <script lang="ts">
+  import "../../common/tag.css";
   import RailIcon from "../../common/button/RailIcon.svelte";
   import Dropdown from "../../common/LazyDropdown.svelte";
   /**
@@ -303,11 +304,11 @@
                     >
                       <span class="card-label">{card.label}</span>
                       <span
-                        class="card-status"
-                        class:ok={/DONE|AGENT RUNNING|CI GREEN|GREEN/.test(
+                        class="hq-tag card-status"
+                        class:is-ok={/DONE|AGENT RUNNING|CI GREEN|GREEN/.test(
                           card.statusLine,
                         )}
-                        class:warn={/WAITING|BLOCKED|WARN/.test(
+                        class:is-warn={/WAITING|BLOCKED|WARN/.test(
                           card.statusLine,
                         )}>{card.statusLine}</span
                       >
@@ -333,7 +334,7 @@
           <header class="panel-header">
             <div class="panel-header-text">
               <h2 class="panel-title">{panelModel.title}</h2>
-              <span class="panel-status-badge">{panelModel.statusBadge}</span>
+              <span class="hq-tag panel-status-badge">{panelModel.statusBadge}</span>
             </div>
             <button
               type="button"
@@ -658,19 +659,9 @@
     line-height: 1.35;
   }
 
+  /* The app's one tag (common/tag.css); only its place in the card is local. */
   .card-status {
-    color: var(--t2);
-    font-size: 10px;
-    font-weight: 400;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    line-height: 1.3;
-  }
-  .card-status.ok {
-    color: var(--ok-ink, #4ade80);
-  }
-  .card-status.warn {
-    color: var(--warn-ink, #fbbf24);
+    align-self: flex-start;
   }
 
   /* Story detail side panel */
@@ -711,15 +702,6 @@
   .panel-status-badge {
     align-self: flex-start;
     margin-top: 2px;
-    padding: 2px 8px;
-    border: 1px solid color-mix(in srgb, var(--t1) 12%, transparent);
-    border-radius: 6px;
-    background: var(--btn-bg);
-    color: var(--t2);
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
   }
 
   .panel-close {

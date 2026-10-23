@@ -60,15 +60,21 @@
 </article>
 
 <style>
+  /* Hugs its content like the document cards, never narrower than an
+     artifact card so a run of cards keeps one left edge and a common
+     minimum (owner, #772). No resting outline: the fill separates it, as
+     for every card in the chat column. */
   .run-card {
     display: flex;
     flex-direction: column;
     gap: 6px;
-    width: 100%;
-    max-width: none;
+    box-sizing: border-box;
+    width: fit-content;
+    min-width: min(440px, 100%);
+    max-width: 100%;
     margin: 6px 0 0;
     padding: 12px 14px;
-    border: 1px solid var(--line, var(--pop-border));
+    border: 1px solid transparent;
     border-radius: 10px;
     background: var(--raised, var(--pop-hover));
     color: var(--t1, var(--pop-text));

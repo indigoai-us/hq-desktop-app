@@ -1377,6 +1377,22 @@ export function createSyncPlatformAdapter(
           : hqProRequestWithStatus<Json>('POST', OUTPOST_PATHS.companySignIn, body);
         return sent ? request.then((result) => withoutSecret(result, sent)) : request;
       },
+      postCompanyJobs: (body) => hqProRequestWithStatus('POST', OUTPOST_PATHS.companyJobs, body),
+      getCompanyJobsStatus: (companyUid, outpostId) =>
+        hqProRequestWithStatus('GET', OUTPOST_PATHS.companyJobsStatus(companyUid, outpostId)),
+      listCompanyOutposts: async (companyUid) => {
+        const listed = await hqProRequestWithStatus<Json>(
+          'GET',
+          OUTPOST_PATHS.companyOutpostList(companyUid),
+        );
+        if (listed.ok) return listed;
+        const status = listed.status ?? 0;
+        if (status !== 400 && status !== 404) return listed;
+        return hqProRequestWithStatus<Json>(
+          'GET',
+          OUTPOST_PATHS.companyOutpostLegacy(companyUid),
+        );
+      },
       listMyGoogleAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.googleAccounts),
       listMySlackAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.slackAccounts),
     },

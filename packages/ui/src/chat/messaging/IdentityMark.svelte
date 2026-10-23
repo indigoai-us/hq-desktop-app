@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   import { agentAvatarFor } from "./agent-avatars";
   import { paintableAvatarSrc } from "../../avatars/csp-image-src.js";
   import TierMark from "../../badges/TierMark.svelte";
@@ -86,6 +87,7 @@
   class="identity"
   class:small={size === "small"}
   class:large={size === "large"}
+  class:has-presence={online}
   data-kind={kind}
   aria-hidden="true"
 >
@@ -106,23 +108,7 @@
     </span>
   {:else if kind === "channel"}
     {#if privateChannel}
-      <svg class="channel-lock" viewBox="0 0 16 16" fill="none">
-        <rect
-          x="3.5"
-          y="7"
-          width="9"
-          height="6.5"
-          rx="1.5"
-          stroke="currentColor"
-          stroke-width="1.4"
-        />
-        <path
-          d="M5.5 7V5.25a2.5 2.5 0 0 1 5 0V7"
-          stroke="currentColor"
-          stroke-width="1.4"
-          stroke-linecap="round"
-        />
-      </svg>
+      <span class="channel-lock" aria-hidden="true"><RailIcon name="lock-simple" size={size === "small" ? 13 : 14} /></span>
     {:else}
       <span class="channel-glyph">#</span>
     {/if}
@@ -160,8 +146,14 @@
     color: var(--t2, var(--muted-2, var(--pop-muted)));
     font-family: var(--font-ui, var(--font-sans));
     font-size: 12px;
-    font-weight: 600;
+    /* 500: the app's weight cap, shared with the iOS app. */
+    font-weight: 500;
     line-height: 1;
+    /* Where the online dot sits; the cut-out below is drawn around it. */
+    --dot-r: 3px;
+    --dot-gap: 1.5px;
+    --dot-x: calc(100% - 3.5px);
+    --dot-y: 4.5px;
   }
   .identity[data-kind="agent"] {
     background: var(--ice-tile, #2c3d52);
@@ -188,8 +180,8 @@
     width: 100%;
     height: 100%;
     border-radius: 50%;
+    /* A translucent ink disc with no ring, as on iOS. */
     background: color-mix(in srgb, currentColor 14%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 8%, transparent);
     letter-spacing: 0.015em;
   }
   .avatar-img {
@@ -252,6 +244,8 @@
     height: 15px;
   }
   .channel-lock {
+    display: grid;
+    place-items: center;
     width: 14px;
     height: 14px;
   }
@@ -260,20 +254,40 @@
     height: 13px;
   }
   /* Top right: the bottom right holds the tier mark (badges/TierMark).
-     Small pictures carry no mark, so theirs stays at the bottom right. */
+     Small pictures carry no mark, so theirs stays at the bottom right.
+
+     The dot sits in a gap CUT OUT of the avatar, as on iOS, so it reads on
+     any background: a hovered row, a wallpaper, a selected row. It used to
+     carry a 1.5px border painted in the window's ground colour, which only
+     matched one surface and showed as a grey ring on every other. The mask
+     keeps everything outside the ring plus the dot itself. */
+  .identity.has-presence {
+    -webkit-mask:
+      radial-gradient(circle var(--dot-r) at var(--dot-x) var(--dot-y), #000 98%, transparent 100%),
+      radial-gradient(
+        circle calc(var(--dot-r) + var(--dot-gap)) at var(--dot-x) var(--dot-y),
+        transparent 98%,
+        #000 100%
+      );
+    mask:
+      radial-gradient(circle var(--dot-r) at var(--dot-x) var(--dot-y), #000 98%, transparent 100%),
+      radial-gradient(
+        circle calc(var(--dot-r) + var(--dot-gap)) at var(--dot-x) var(--dot-y),
+        transparent 98%,
+        #000 100%
+      );
+  }
   .presence {
     position: absolute;
-    right: -1px;
-    top: 0;
-    width: 6px;
-    height: 6px;
-    border: 1.5px solid var(--v4-ground, var(--pop-bg));
+    left: calc(var(--dot-x) - var(--dot-r));
+    top: calc(var(--dot-y) - var(--dot-r));
+    width: calc(var(--dot-r) * 2);
+    height: calc(var(--dot-r) * 2);
     border-radius: 50%;
     background: var(--v4-ok, #42d77d);
   }
 
-  .small .presence {
-    top: auto;
-    bottom: 0;
+  .small {
+    --dot-y: calc(100% - 4.5px);
   }
 </style>

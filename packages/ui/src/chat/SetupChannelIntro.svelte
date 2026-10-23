@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * SetupChannelIntro — the welcome experience at the top of the synthetic
    * #setup support channel in the live desktop shell: a window-ground introduction with
@@ -55,7 +56,7 @@
     setupRosterLoading,
     type SetupRosterStatus,
   } from "./setup-channel";
-  import { SETUP_RESOURCE_GLYPHS } from "./setup-resource-glyphs";
+  import { SETUP_RESOURCE_ICONS } from "./setup-resource-glyphs";
   import SetupRunCard from "./SetupRunCard.svelte";
   import SetupConnectStep from "./SetupConnectStep.svelte";
   import SetupButton from "./SetupButton.svelte";
@@ -723,20 +724,9 @@
           data-testid={`setup-resource-${resource.id}`}
           onclick={(event) => openResourceLink(event, resource.href)}
         >
-          <svg
-            class="resource-glyph"
-            viewBox="0 0 16 16"
-            width="16"
-            height="16"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.25"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
+          <span class="resource-glyph" aria-hidden="true"
+            ><RailIcon name={SETUP_RESOURCE_ICONS[resource.kind]} size={16} /></span
           >
-            {@html SETUP_RESOURCE_GLYPHS[resource.kind]}
-          </svg>
           <span class="resource-text">
             <span class="eyebrow eyebrow--muted">{resource.eyebrow}</span>
             <span class="resource-title">{resource.title}</span>
@@ -827,9 +817,11 @@
   .hero {
     position: relative;
     color: var(--t1);
-    /* Stay visually on the window ground, but keep a 1% fill so a transparent
-       WKWebView on macOS 26 still hit-tests the Run Setup control. */
-    background: color-mix(in srgb, var(--t1, #111) 1%, transparent);
+    /* No fill of its own (owner, 2026-10-22: no box behind the first
+       section). The conversation layer under it already carries the 1% fill
+       a transparent WKWebView on macOS 26 needs to hit-test, so a second 1%
+       here only stacked into a visible box. */
+    background: transparent;
     pointer-events: auto;
     --setup-btn-fg: var(--t1);
     --setup-btn-line: var(--line2);
@@ -866,7 +858,9 @@
     flex-direction: column;
     gap: var(--space-2, 8px);
     padding: 20px 0 24px 56px;
-    border-bottom: 1px solid var(--line);
+    /* No divider under the welcome copy (owner, 2026-10-22); the cards'
+       own fills separate the two sections. */
+    border-bottom: 0;
     justify-content: flex-start;
   }
 
@@ -901,9 +895,11 @@
     color: var(--t1);
   }
 
+  /* Fills the column (owner, 2026-10-22): at 64ch it broke mid-row with half
+     the section empty beside it. */
   .hero-body {
     margin: 0;
-    max-width: 64ch;
+    max-width: none;
     font-size: var(--text-base, 13px);
     line-height: 1.5;
     color: var(--t2);
@@ -986,7 +982,7 @@
 
   .launch-error {
     margin: 0;
-    max-width: 22rem;
+    max-width: none;
     font-size: var(--text-base, 13px);
     line-height: 1.4;
     color: var(--t2);
@@ -1035,9 +1031,18 @@
     background: var(--raised);
   }
 
+  /* A 32px tile with the 16px icon centred. Sized outright, not as 16px plus
+     8px padding: the window's border-box reset beats `content-box`, which
+     shrank the tile to 16px and pushed the icon off its bottom-right corner
+     (owner, 2026-10-22). */
   .resource-glyph {
-    padding: 8px;
-    box-sizing: content-box;
+    display: grid;
+    place-items: center;
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    box-sizing: border-box;
     border-radius: 8px;
     background: var(--btn-bg);
     margin-top: 0;

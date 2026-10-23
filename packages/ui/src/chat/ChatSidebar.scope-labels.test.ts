@@ -161,11 +161,6 @@ function scopeOf(id: string): HTMLElement | null {
   );
 }
 
-function revealOf(id: string): HTMLElement | null {
-  return host.querySelector(
-    `[data-conversation-id="${id}"] [data-testid="chat-row-reveal"]`,
-  );
-}
 
 beforeEach(() => {
   memoryStorage.clear();
@@ -233,6 +228,23 @@ describe("ChatSidebar company / email labels", () => {
     expect(option?.textContent).not.toContain("XY");
   });
 
+  it("marks All companies in the menu with the scope button's icon, not initials", async () => {
+    // Owner, 2026-10-22: the button showed a squares mark for All while its
+    // menu row showed "AL".
+    component = mountSidebar();
+    const pill = host.querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]');
+    const buttonIcon = pill?.querySelector("svg[data-rail-icon]")?.getAttribute("data-rail-icon");
+    expect(buttonIcon).toBe("squares-four");
+    pill?.click();
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="chat-scope-menu"]')).toBeTruthy();
+    });
+    const all = host.querySelector<HTMLElement>('[data-testid="chat-scope-option"][data-scope="all"]');
+    const avatar = all?.querySelector(".chat-scope-avatar");
+    expect(avatar?.textContent?.trim()).toBe("");
+    expect(avatar?.querySelector("svg")?.getAttribute("data-rail-icon")).toBe(buttonIcon);
+  });
+
   it("agent DMs in All scope show the company name", async () => {
     component = mountSidebar();
     await vi.waitFor(() => {
@@ -268,7 +280,7 @@ describe("ChatSidebar company / email labels", () => {
     expect(scopeOf("dm:prs_ada")).toBeNull();
   });
 
-  it("long names truncate with ellipsis styles and hover reveal keeps the full text", async () => {
+  it("long names truncate with ellipsis styles; hover lays no second copy of the label over the row", async () => {
     component = mountSidebar();
     await vi.waitFor(() => {
       expect(row("ch:long-name")).toBeTruthy();
@@ -283,7 +295,6 @@ describe("ChatSidebar company / email labels", () => {
       "a-very-long-channel-name-that-should-truncate-in-the-narrow-rail",
     );
     expect(scope?.className).toMatch(/chat-row-scope/);
-    expect(revealOf("ch:long-name")?.textContent).toBe("Liverecover");
 
     expect(src).toMatch(
       /\.chat-row-copy\s*\{[\s\S]*?overflow:\s*hidden;[\s\S]*?\}/,
@@ -294,26 +305,21 @@ describe("ChatSidebar company / email labels", () => {
     expect(src).toMatch(
       /\.chat-row-scope\s*\{[\s\S]*?text-overflow:\s*ellipsis;[\s\S]*?white-space:\s*nowrap;[\s\S]*?font-size:\s*12px;[\s\S]*?font-weight:\s*400;/,
     );
-    expect(src).toMatch(
-      /\.chat-li:hover \.chat-row:not\(\.has-badge\) \.chat-row-reveal/,
-    );
-    expect(src).toMatch(
-      /\.chat-li:focus-within \.chat-row:not\(\.has-badge\) \.chat-row-reveal/,
-    );
-    expect(src).toMatch(
-      /\.chat-li:hover \.chat-row:not\(\.has-badge\) \.chat-row-scope/,
-    );
-    expect(src).toMatch(
-      /\.chat-row-reveal\s*\{[\s\S]*?display:\s*none;[\s\S]*?right:\s*8px;/,
-    );
+    // Owner, #772 (restored 2026-10-22): the boxed overlay copy of the label
+    // laid over the title on hover is gone. The label stays where it is and
+    // is never hidden on hover; a truncated one carries a tooltip instead.
+    expect(src).not.toMatch(/chat-row-reveal\s*\{/);
+    expect(src).not.toMatch(/\.chat-li:hover[^{]*\.chat-row-scope\s*\{[^}]*visibility:\s*hidden/);
+    expect(src).toMatch(/use:titleWhenTruncated=\{scopeLabel\.text\}/);
 
     const li = row("ch:long-name").closest(".chat-li");
     expect(li).toBeTruthy();
     li?.dispatchEvent(new Event("mouseenter", { bubbles: true }));
-    expect(revealOf("ch:long-name")?.textContent).toBe("Liverecover");
+    expect(li?.querySelector('[data-testid="chat-row-reveal"]')).toBeNull();
+    expect(scopeOf("ch:long-name")?.textContent).toBe("Liverecover");
   });
 
-  it("keeps unread badges and pin controls; hides the hover reveal when a badge is present", async () => {
+  it("keeps unread badges, and the pin sits inside the row's highlight", async () => {
     component = mountSidebar();
     await vi.waitFor(() => {
       expect(row("ch:unread-desk")).toBeTruthy();
@@ -321,14 +327,21 @@ describe("ChatSidebar company / email labels", () => {
     const unread = row("ch:unread-desk");
     expect(unread.classList.contains("has-badge")).toBe(true);
     expect(
-      unread.querySelector('[data-testid="chat-unread-badge"]')?.textContent,
+      unread.closest(".chat-li")?.querySelector('[data-testid="chat-unread-badge"]')?.textContent,
     ).toBe("3");
-    expect(
-      unread.parentElement?.querySelector('[data-testid="chat-pin"]'),
-    ).toBeTruthy();
-    expect(src).toMatch(
-      /\.chat-li:hover \.chat-row:not\(\.has-badge\) \.chat-row-reveal/,
-    );
+    const li = unread.closest(".chat-li");
+    const pin = li?.querySelector('[data-testid="chat-pin"]');
+    expect(pin).toBeTruthy();
+    // Owner, 2026-10-22: the count sits at the right edge, the pin to its left.
+    const badge = li?.querySelector('[data-testid="chat-unread-badge"]');
+    expect(badge?.parentElement).toBe(li);
+    expect(pin!.compareDocumentPosition(badge!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // And the row button still announces it.
+    expect(unread.querySelector(".chat-row-sr")?.textContent).toBe("3 unread");
+    // The fill is on the row's container, which holds the pin too.
+    expect(src).toMatch(/\n  \.chat-li:hover \{[^}]*background: var\(--hover\)/);
+    expect(src).toMatch(/\n  \.chat-li\.active \{[^}]*background: var\(--sel\)/);
+    expect(src).toMatch(/\n  \.chat-li > \.chat-row:hover \{[^}]*background: transparent/);
   });
 
   it("toggle off hides all company and email labels", async () => {
@@ -340,9 +353,6 @@ describe("ChatSidebar company / email labels", () => {
       expect(row("dm:prs_ada")).toBeTruthy();
     });
     expect(host.querySelectorAll('[data-testid="chat-row-scope"]').length).toBe(
-      0,
-    );
-    expect(host.querySelectorAll('[data-testid="chat-row-reveal"]').length).toBe(
       0,
     );
   });

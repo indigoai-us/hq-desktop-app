@@ -96,10 +96,17 @@ describe("ArtifactCard collapsed summary", () => {
     ).toBe("Just a heading");
   });
 
-  it("renders a kind-tinted mesh tile with an icon", () => {
+  // Owner, #772: one card language for artifacts and files. The animated
+  // mesh tile is gone; the artifact uses the file card's neutral icon tile
+  // (only real files carry a kind hue).
+  it("renders the shared document card with a neutral icon tile", () => {
     mountCard({ text: LONG, kind: "prompt" });
-    expect(host.querySelector(".artifact-tile .artifact-tile-mesh")).not.toBeNull();
-    expect(host.querySelector(".artifact-tile svg")).not.toBeNull();
+    const card = host.querySelector("[data-artifact-card='true']");
+    expect(card?.classList.contains("doc-card")).toBe(true);
+    const tile = host.querySelector(".doc-card-icon");
+    expect(tile?.querySelector("[data-rail-icon='terminal']")).not.toBeNull();
+    expect(tile?.className).not.toMatch(/is-(folder|document|image)/);
+    expect(host.querySelector(".artifact-tile-mesh")).toBeNull();
     expect(
       host.querySelector("[data-artifact-card='true']")?.getAttribute("data-kind"),
     ).toBe("prompt");

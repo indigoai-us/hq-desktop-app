@@ -165,3 +165,22 @@ describe("cached inline image rendering", () => {
     expect(load).toHaveBeenCalledTimes(2);
   });
 });
+
+// Owner, 2026-10-21 (iOS #44, carried to desktop): file tiles are tinted by
+// kind and the second line reads "PDF · 12 KB", never a bare size.
+describe("MessageAttachments file cards", () => {
+  it("tints the icon tile by the file's kind and leads the meta line with it", () => {
+    mountStrip({
+      attachments: [
+        item({ id: "pdf", name: "spec.pdf", contentType: "application/pdf", kind: "file", sizeLabel: "12 KB" }),
+        item({ id: "dir", name: "Q3 close", contentType: "", kind: "folder", sizeLabel: "4 items" }),
+      ],
+    });
+    const cards = [...host.querySelectorAll<HTMLElement>('[data-testid="attachment-card"]')];
+    expect(cards.map((card) => card.dataset.kind)).toEqual(["document", "folder"]);
+    expect(cards[0]!.querySelector(".doc-card-icon")?.classList.contains("is-document")).toBe(true);
+    expect(cards[1]!.querySelector(".doc-card-icon")?.classList.contains("is-folder")).toBe(true);
+    expect(cards[0]!.querySelector(".doc-card-meta")?.textContent).toBe("PDF · 12 KB");
+    expect(cards[1]!.querySelector(".doc-card-meta")?.textContent).toBe("Folder");
+  });
+});
