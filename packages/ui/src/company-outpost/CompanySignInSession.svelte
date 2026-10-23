@@ -3,6 +3,7 @@
   import CompanySignInCard from "./CompanySignInCard.svelte";
   import {
     SIGNIN_COPY,
+    newCodeRejection,
     signInPollDelayMs,
     suppressUnchangedLink,
     type CompanySignInRole,
@@ -47,6 +48,8 @@
   let suppressedUrl: string | null = null;
   /** The link the accepted code belonged to. */
   let codeUrl: string | null = null;
+  /** The server's lastCodeRejectedAt already shown, or current at the last submit. */
+  let rejectedSeen: string | null = null;
   let finishingUntil: number | null = null;
   /** One call at a time: every action and every poll tick go through this. */
   let inFlight = false;
@@ -149,6 +152,17 @@
       return;
     }
     if (shown.loginUrl && shown.loginUrl !== suppressedUrl) suppressedUrl = null;
+    if (newCodeRejection(shown, rejectedSeen)) {
+      // The box took the code and Claude did not accept it: say so, with the
+      // new link and an empty code field, instead of clearing the notice.
+      rejectedSeen = shown.lastCodeRejectedAt ?? null;
+      finishing = null;
+      finishingUntil = null;
+      codeUrl = null;
+      notice = null;
+      codeError = SIGNIN_COPY.rejected;
+      return;
+    }
     if (finishing !== null && shown.loginUrl && shown.loginUrl !== codeUrl) {
       // The box posted a different link, so the accepted code is no longer in play.
       finishing = null;
@@ -223,9 +237,12 @@
     if (!canManage) return false;
     return run("submit", async () => {
       const sentFor = view?.loginUrl ?? null;
+      const rejectedBefore = view?.lastCodeRejectedAt ?? null;
       const result = await client.submitCode(code);
       if (destroyed) return;
       if (result.ok) {
+        // Only a rejection newer than this submit counts against this code.
+        if (rejectedBefore) rejectedSeen = rejectedBefore;
         codeError = null;
         notice = SIGNIN_COPY.finishing;
         finishing = "active";
