@@ -12,7 +12,7 @@
   const params = new URLSearchParams(window.location.search);
   const state = params.get('state') ?? 'empty';
   const ok = <T,>(value: T) => ({ ok: true as const, value });
-  const domain = state === 'apex' ? 'example.com' : 'app.example.com';
+  const domain = state === 'apex' ? 'mysite.com' : 'app.mysite.com';
   const listed = state === 'pending' || state === 'apex' || state === 'live' || state === 'member';
   const validationState = state === 'live' ? 'validated' : 'pending';
 

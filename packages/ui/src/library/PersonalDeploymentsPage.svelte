@@ -39,7 +39,7 @@
   import type { Workspace } from "../chat/workspaces.js";
   import { DEPLOY_STEP_LABELS } from "../company/deploy-progress.js";
   import CustomDomainForm from "../company/files-connect/CustomDomainForm.svelte";
-  import { canManageDomains, type DeployDomainRequest, type DomainPrices } from "../company/files-connect/custom-domain.js";
+  import { canManageDomains, readLiveCustomDomainUrl, type DeployDomainRequest, type DomainPrices } from "../company/files-connect/custom-domain.js";
   import { callerRole } from "../company/company-roles.svelte.js";
   import { dismissable } from "../common/dismissable.js";
   import {
@@ -338,6 +338,28 @@
     const company = companyFor(row);
     return canManageDomains(callerRole(company?.cloudUid ?? null) ?? company?.role ?? null);
   }
+  /** Live custom domain per row id: the inspector shows and visits it instead of the hq.work address. */
+  let liveDomainUrls = $state<Record<string, string | null>>({});
+  /** Bumped when the Custom domain sheet adds, finishes or removes a domain. */
+  let liveDomainReads = $state(0);
+  $effect(() => {
+    void liveDomainReads;
+    const row = selected;
+    const req = deployDomainRequest;
+    if (!req || !offersDomain(row)) return;
+    const id = row.id;
+    let live = true;
+    void readLiveCustomDomainUrl(req, row.scopeId!, row.appId!)
+      .then((url) => {
+        if (live) liveDomainUrls = { ...liveDomainUrls, [id]: url };
+      })
+      .catch((err: unknown) => console.warn("[custom-domain] live domain read failed", err));
+    return () => {
+      live = false;
+    };
+  });
+  const selectedUrl = $derived(selected ? liveDomainUrls[selected.id] ?? selected.url : "");
+
   async function domainCardUrl(row: PersonalDeployment): Promise<string | null> {
     const uid = companyFor(row)?.cloudUid;
     return uid && domainCardEntryUrl ? domainCardEntryUrl(uid) : null;
@@ -502,7 +524,7 @@
                 bind:clientWidth={previewCardWidth}
                 aria-label={`Open ${selected.name}`}
                 data-testid="deploy-preview"
-                onclick={() => previewUrl && openExternal?.(previewUrl)}
+                onclick={() => previewUrl && openExternal?.(selectedUrl || previewUrl)}
               >
                 {#if !previewLoaded}<span class="preview-wait" aria-hidden="true">Loading preview</span>{/if}
                 <iframe
@@ -535,12 +557,12 @@
               class:snap={ogPreview.data.kind === "snapshot"}
               aria-label={`Open ${selected.name}`}
               data-testid={ogPreview.data.kind === "snapshot" ? "deploy-snapshot" : "deploy-og"}
-              onclick={() => selected?.url && openExternal?.(selected.url)}
+              onclick={() => selectedUrl && openExternal?.(selectedUrl)}
             ><img src={ogPreview.data.src} alt="" /></button>
             <button type="button" class="link refresh-preview" data-testid="deploy-preview-refresh" onclick={retryPreview}>Refresh preview</button>
           {/if}
           <div class="title">{selected.name}</div>
-          {#if selected.url}<div class="url">{selected.url}</div>{/if}
+          {#if selectedUrl}<div class="url" data-testid="deploy-url">{selectedUrl}</div>{/if}
           {#if progress}
             <div class="prog" role="status" data-testid="deploy-progress">
               <div class="phd">{statusLabel(selected)} <span>{progress.percent}%</span></div>
@@ -554,7 +576,7 @@
             </div>
           {/if}
           <div class="act">
-            <RailButton icon="external" disabled={!selected.url} onclick={() => selected?.url && openExternal?.(selected.url)}>Visit</RailButton>
+            <RailButton icon="external" data-testid="deploy-visit" disabled={!selectedUrl} onclick={() => selectedUrl && openExternal?.(selectedUrl)}>Visit</RailButton>
             {#if actions}<RailButton icon="upload" onclick={redeploy} data-testid="deploy-redeploy">Redeploy</RailButton>{/if}
             {#if offersDomain(selected)}<RailButton icon="link" data-testid="deploy-custom-domain" onclick={() => (domainRow = selected)}>Custom domain</RailButton>{/if}
           </div>
@@ -594,6 +616,7 @@
       openExternal={(url) => openExternal?.(url)}
       onclose={() => (domainRow = null)}
       ondone={(message) => (notice = message)}
+      onchange={() => (liveDomainReads += 1)}
     />
   </div>
 {/if}
