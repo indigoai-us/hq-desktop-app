@@ -276,6 +276,55 @@ describe('createReadyEngine layout', () => {
     const altBottom = parseFloat(refs.alt.style.top) + 240;
     expect(altBottom).toBeLessThanOrEqual(900);
   });
+
+  // Under Reduce Motion the controller draws one settled frame and runs no
+  // loop, so a skyline rebuilt after the alt block grows must be drawn at once.
+  it('draws the skyline again when the alt block grows, with no frame loop running', () => {
+    vi.stubGlobal('innerWidth', 390);
+    vi.stubGlobal('innerHeight', 844);
+    const observers: Array<() => void> = [];
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(callback: () => void) {
+          observers.push(callback);
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    let clears = 0;
+    const ctx = new Proxy(
+      {},
+      {
+        get: (_target, key) =>
+          key === 'clearRect'
+            ? () => {
+                clears += 1;
+              }
+            : () => {},
+        set: () => true,
+      },
+    );
+    const canvas = document.createElement('canvas');
+    canvas.getContext = (() => ctx) as never;
+    const refs = {
+      canvas,
+      copy: sized(document.createElement('div'), 358, 160),
+      prog: sized(document.createElement('div'), 300, 34),
+      nav: sized(document.createElement('div'), 358, 120),
+      alt: sized(document.createElement('div'), 358, 18),
+    };
+    const engine = createReadyEngine(refs, { reveal: () => {} });
+    engine.size();
+    engine.enter(0);
+    engine.frame(30000);
+    const before = clears;
+
+    sized(refs.alt, 358, 320);
+    for (const callback of observers) callback();
+    expect(clears).toBeGreaterThan(before);
+  });
 });
 
 describe('createPanelEngine', () => {

@@ -1066,15 +1066,18 @@ export function createReadyEngine(refs: ReadyRefs, options: { reveal: () => void
   // The nav grows after the screen is shown (the "Checking for AI tools" row
   // comes and goes with each probe), so its height is watched, not read once.
   // The alt line grows too (the free-plan usage-data notice arrives after the
-  // notice read), so the skyline is rebuilt under its new bottom.
+  // notice read), so the skyline is rebuilt under its new bottom. It is drawn
+  // again at once: under Reduce Motion no loop runs to draw the new city.
   let observer: ResizeObserver | null = null;
   let active = false;
+  let lastT = 0;
   function watch() {
     if (observer || typeof ResizeObserver === 'undefined') return;
     observer = new ResizeObserver(() => {
       if (!active) return;
       layout();
       sky.build();
+      sky.draw(lastT);
     });
     if (refs.nav) observer.observe(refs.nav);
     observer.observe(refs.alt);
@@ -1124,6 +1127,7 @@ export function createReadyEngine(refs: ReadyRefs, options: { reveal: () => void
     },
     frame(now) {
       const t = (now - t0) / 1000;
+      lastT = t;
       runBeats(beats, t);
       sky.draw(t);
     },
