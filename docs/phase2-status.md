@@ -1,6 +1,6 @@
 # Phase 2 status — install-then-sync onboarding
 
-_Last updated: 2026-07-21._
+_Last updated: 2026-10-23._
 
 This document records the state of the unified app's Phase 2 work (the
 install-then-sync lifecycle and onboarding wizard), what has shipped, what
@@ -42,7 +42,8 @@ now a thin command-and-orchestration layer over that crate.
 All four active steps are built in Svelte 5 + vanilla CSS, ported from the React
 installer:
 
-1. **Welcome** — product identity, sign-in, and telemetry opt-in.
+1. **Welcome** — product identity, sign-in, and the usage data question
+   (see "Usage data in the wizard (2026-10-23)" below).
 2. **Location** — resolve/confirm the HQ install location (`resolve_hq_path`,
    `detect_hq`, `check_writable`, with a folder picker).
 3. **Setup** — the orchestrator framework: an eight-stage progress screen that
@@ -110,7 +111,29 @@ until it runs on a real machine.
    before implementation.
 4. **Telemetry + identity plumbing** the wizard currently collects (telemetry
    opt-in, git identity for `git-init`) but does not yet thread through to every
-   consumer.
+   consumer. (Historical as of 2026-10-23: the telemetry opt-in wording here
+   describes the old model. See "Usage data in the wizard (2026-10-23)" below.)
+
+## Usage data in the wizard (2026-10-23)
+
+The wizard no longer asks every person to opt in to usage data. What it shows
+depends on whether the company has a card on file.
+
+- **No card on file (free plan).** The usage data question is replaced by the
+  free-plan notice, titled "Usage data on the free plan". It has two ways
+  forward: Continue, which the server acknowledges before the wizard moves on,
+  and "Add a card instead". The notice lists what is collected and what is
+  never collected, in the server's exact words:
+  - Collected: "usage counts", "skill and command names", "timings",
+    "model names", "company and person ids", "app version and operating system".
+  - Never collected: "file contents", "secrets", "prompts and outputs",
+    "vault data".
+  - Off switch: "Add a card to your company and collection becomes a setting
+    you can turn off."
+- **Card on file.** The person keeps the share or decline choice in the wizard,
+  and the usage data toggle in Settings stays a setting they can switch off.
+- If the notice cannot be read, or the session is an outpost, the wizard keeps
+  the card-holder behaviour.
 
 ## Merged PRs (this phase)
 

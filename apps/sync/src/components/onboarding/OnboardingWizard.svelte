@@ -5522,7 +5522,19 @@
         {/if}
         {#if deferredConsent?.phase === 'failed'}
           <div class="note consent-error" role="alert" data-testid="consent-deferred-error">
-            {#if deferredConsent.kind === 'offline'}
+            {#if disclosureShown}
+              {#if deferredConsent.kind === 'offline'}
+                <p>
+                  You appear to be offline, so HQ couldn't finish saving this yet. It's held
+                  on this machine and HQ sends it automatically the next time you're connected.
+                </p>
+              {:else}
+                <p>
+                  HQ couldn't finish saving this with the server just now. Nothing was lost.
+                  Try again in a moment.
+                </p>
+              {/if}
+            {:else if deferredConsent.kind === 'offline'}
               <p>
                 You appear to be offline, so your usage data choice couldn't be sent yet.
                 It's saved on this machine and HQ will send it automatically the next

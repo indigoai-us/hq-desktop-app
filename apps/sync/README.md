@@ -37,7 +37,7 @@ Manual testing is done via a structured checklist covering the 7 user journeys d
 | UJ-004  | Retether — user changes HQ path via Settings |
 | UJ-005  | Auto-update — new version installed silently |
 | UJ-006  | Auto-provisioning + Personal HQ — first sync auto-creates `person` entity in HQ-Cloud and provisions the `personal` company bucket |
-| UJ-007  | Telemetry opt-in round-trip — toggle in Settings persists to `~/.hq/menubar.json`, vault `/v1/usage/opt-in` reflects the change, next sync respects new state |
+| UJ-007  | Usage data, two cases. No card on file: the wizard shows the free-plan usage data notice in place of the share choice, with Continue and "Add a card instead", and Continue records the acknowledgement before moving on. Card on file: the usage data toggle in Settings persists to `~/.hq/menubar.json`, vault `/v1/usage/opt-in` reflects the change, and the next sync respects the new state |
 
 Full checklist with step-by-step instructions, expected outcomes, and pass/fail checkboxes: **[`tests/MANUAL_TESTING.md`](tests/MANUAL_TESTING.md)**
 
