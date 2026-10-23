@@ -1031,13 +1031,18 @@
     background: var(--raised);
   }
 
+  /* A 32px tile with the 16px icon centred. Sized outright, not as 16px plus
+     8px padding: the window's border-box reset beats `content-box`, which
+     shrank the tile to 16px and pushed the icon off its bottom-right corner
+     (owner, 2026-10-22). */
   .resource-glyph {
     display: grid;
     place-items: center;
-    width: 16px;
-    height: 16px;
-    padding: 8px;
-    box-sizing: content-box;
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    box-sizing: border-box;
     border-radius: 8px;
     background: var(--btn-bg);
     margin-top: 0;

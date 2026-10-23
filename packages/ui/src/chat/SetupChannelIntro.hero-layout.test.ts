@@ -20,6 +20,14 @@ describe("welcome hero layout", () => {
     expect(rule(".hero-copy")).not.toMatch(/border-bottom: 1px/);
   });
 
+  it("sizes the card icon tile outright so the icon sits in its middle", () => {
+    const tile = rule(".resource-glyph");
+    expect(tile).toMatch(/width: 32px/);
+    expect(tile).toMatch(/height: 32px/);
+    expect(tile).toMatch(/padding: 0/);
+    expect(tile).toMatch(/place-items: center/);
+  });
+
   it("lets the hero copy fill the column", () => {
     expect(rule(".hero-body")).toMatch(/max-width: none/);
     expect(rule(".launch-error")).toMatch(/max-width: none/);
