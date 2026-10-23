@@ -9,6 +9,9 @@ import {
   domainInputProblem,
   domainPricesFromFeed,
   awaitOwnershipRecord,
+  companyDomainPriceFrom,
+  domainMonthlyUsd,
+  domainPriceLine,
   domainStatus,
   hasOwnershipRecord,
   hostSegments,
@@ -80,6 +83,40 @@ describe("US-007 custom-domain model", () => {
     expect(hostSegments("_3f1c9a.mysite.com")).toEqual(["_3f1c9a.", "mysite.com"]);
     expect(hostSegments("localhost")).toEqual(["localhost"]);
     expect(hostSegments("launch-notes.indigo-hq.com").join("")).toBe("launch-notes.indigo-hq.com");
+  });
+
+  it("reads the company's own price and never turns a bad read into included", () => {
+    expect(companyDomainPriceFrom({ basis: "paid", monthlyPriceUsd: 20, cardOnFile: true })).toEqual({ basis: "paid", monthlyPriceUsd: 20, cardOnFile: true });
+    expect(companyDomainPriceFrom({ basis: "paid", monthlyPriceUsd: 0 })).toEqual({ basis: "paid", monthlyPriceUsd: 0 });
+    expect(companyDomainPriceFrom({ basis: "enterprise", monthlyPriceUsd: 0 })).toEqual({ basis: "enterprise", monthlyPriceUsd: 0 });
+    expect(companyDomainPriceFrom({ basis: "comped", monthlyPriceUsd: 0 })).toEqual({ basis: "comped", monthlyPriceUsd: 0 });
+    expect(companyDomainPriceFrom({ basis: "not_enabled", monthlyPriceUsd: null })).toEqual({ basis: "not_enabled", monthlyPriceUsd: null });
+    // Malformed or unknown: no company price, so the catalog price shows.
+    expect(companyDomainPriceFrom({ basis: "paid" })).toBeNull();
+    expect(companyDomainPriceFrom({ basis: "paid", monthlyPriceUsd: -1 })).toBeNull();
+    expect(companyDomainPriceFrom({ basis: "free", monthlyPriceUsd: 0 })).toBeNull();
+    expect(companyDomainPriceFrom({ error: { code: "NOT_FOUND" } })).toBeNull();
+    expect(companyDomainPriceFrom(null)).toBeNull();
+  });
+
+  it("words the price line for each basis, and the catalog price when the company price is unknown", () => {
+    const catalog = { standardUsd: 20, premiumUsd: 500 };
+    expect(domainPriceLine(null, catalog, "Acme")).toBe("$20/month for this deployment, billed to the company. Remove it any time to stop the charge.");
+    expect(domainPriceLine({ basis: "enterprise", monthlyPriceUsd: 0 }, catalog, "Acme")).toBe("Custom domains are included in Acme's enterprise plan. Nothing is charged.");
+    expect(domainPriceLine({ basis: "comped", monthlyPriceUsd: 0 }, catalog, "Acme")).toBe("Acme is not charged for custom domains.");
+    // A billing override of 0 on the paid path (domain-demo-test) is not charged either.
+    expect(domainPriceLine({ basis: "paid", monthlyPriceUsd: 0 }, catalog, "Domain Demo")).toBe("Domain Demo is not charged for custom domains.");
+    expect(domainPriceLine({ basis: "paid", monthlyPriceUsd: 12.5, cardOnFile: true }, catalog, "Acme")).toBe(
+      "It adds $12.50/month to Acme's bill. The card on file is charged; no card form is needed.",
+    );
+    expect(domainPriceLine({ basis: "paid", monthlyPriceUsd: 20, cardOnFile: false }, catalog, "Acme")).toBe(
+      "It adds $20/month to Acme's bill. Acme has no card on file, so adding stops at a page to add one.",
+    );
+    expect(domainPriceLine({ basis: "paid", monthlyPriceUsd: 20 }, catalog, "")).toBe("It adds $20/month to the company's bill. Remove it any time to stop the charge.");
+    expect(domainPriceLine({ basis: "not_enabled", monthlyPriceUsd: null }, catalog, "Acme")).toContain("not available for Acme");
+    expect(domainMonthlyUsd(null, catalog)).toBe(20);
+    expect(domainMonthlyUsd({ basis: "not_enabled", monthlyPriceUsd: null }, catalog)).toBe(20);
+    expect(domainMonthlyUsd({ basis: "paid", monthlyPriceUsd: 7 }, catalog)).toBe(7);
   });
 
   it("names the first live custom domain as the deployment's address", () => {

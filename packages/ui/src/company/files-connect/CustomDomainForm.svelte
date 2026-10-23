@@ -6,7 +6,7 @@
    * Custom domain for one deployment (hq-deploy-custom-domain-tiers US-007).
    * Owners and admins add a domain, see the DNS records to publish, check
    * status and remove it after a confirmation. Everyone else sees status only.
-   * The price comes from `GET /v1/pricing`. A card-required refusal opens the
+   * The price is the company's own (hq-pro #5202), else `GET /v1/pricing`. A card-required refusal opens the
    * Stripe page the server offers (or a fresh card-entry Checkout).
    * Styling follows the Deploy access sheet (DeployAccessForm.svelte).
    */
@@ -14,9 +14,12 @@
     DOMAIN_PRICE_FALLBACK,
     appHostFrom,
     awaitOwnershipRecord,
+    companyDomainPriceFrom,
     deployDomainClient,
     dnsRecordsFor,
     domainErrorCopy,
+    domainMonthlyUsd,
+    domainPriceLine,
     domainInputProblem,
     domainStatus,
     formatUsd,
@@ -27,6 +30,7 @@
     normalizeDomainInput,
     RECORD_RETRY_DELAYS_MS,
     type DeployDomainRequest,
+    type CompanyDomainPrice,
     type DnsRecord,
     type DomainError,
     type DomainPrices,
@@ -45,6 +49,13 @@
     canManage: boolean;
     /** `usage.domains` from the pricing feed; null falls back to the contract copy. */
     loadPrices?: (() => Promise<DomainPrices | null>) | null;
+    /**
+     * This company's own price (hq-pro #5202's body). Null, a missing route or a
+     * failed read falls back to the catalog price; it never reads as "included".
+     */
+    loadCompanyPrice?: (() => Promise<unknown>) | null;
+    /** The company's name for the price line; empty reads "the company". */
+    companyName?: string;
     /** Mints a Stripe card-entry page for the company; null when it can't. */
     cardEntryUrl?: (() => Promise<string | null>) | null;
     openExternal?: (url: string) => void;
@@ -58,7 +69,7 @@
     onchange?: () => void;
   }
 
-  let { appId, appName, appUrl, scope, request, canManage, loadPrices = null, cardEntryUrl = null, openExternal, onclose, ondone, onchange, retryDelays = LIST_RETRY_DELAYS_MS, recordDelays = RECORD_RETRY_DELAYS_MS }: Props = $props();
+  let { appId, appName, appUrl, scope, request, canManage, loadPrices = null, loadCompanyPrice = null, companyName = "", cardEntryUrl = null, openExternal, onclose, ondone, onchange, retryDelays = LIST_RETRY_DELAYS_MS, recordDelays = RECORD_RETRY_DELAYS_MS }: Props = $props();
 
   const client = $derived(request ? deployDomainClient(request, scope) : null);
   const appHost = $derived(appHostFrom(appUrl));
@@ -70,6 +81,9 @@
   let loadError = $state<string | null>(null);
   let actionError = $state<DomainError | null>(null);
   let prices = $state<DomainPrices>(DOMAIN_PRICE_FALLBACK);
+  let companyPrice = $state<CompanyDomainPrice | null>(null);
+  /** The price an add reply reported for this company (hq-deploy #260); it wins over the reads. */
+  let addedPriceUsd = $state<number | null>(null);
   let entry = $state("");
   let busy = $state<"add" | "refresh" | "remove" | "card" | null>(null);
   let confirmRemove = $state<string | null>(null);
@@ -81,7 +95,12 @@
   /** Bumped on every load and on close, so a fetch for an earlier load stops writing. */
   let loadToken = 0;
 
-  const price = $derived(`${formatUsd(prices.standardUsd)}/month`);
+  const monthlyUsd = $derived(addedPriceUsd ?? domainMonthlyUsd(companyPrice, prices));
+  const price = $derived(`${formatUsd(monthlyUsd)}/month`);
+  /** Prices for refusal copy: the catalog's, with this company's own monthly amount. */
+  const effectivePrices = $derived<DomainPrices>({ ...prices, standardUsd: monthlyUsd });
+  const priceLine = $derived(domainPriceLine(companyPrice, prices, companyName));
+  const addDisabledByPlan = $derived(companyPrice?.basis === "not_enabled");
   const typed = $derived(normalizeDomainInput(entry));
   const problem = $derived(entry.trim() ? domainInputProblem(typed) : null);
 
@@ -110,7 +129,7 @@
         if (canManage) for (const d of list) if (d.state !== "validated") void prepareRecords(d.domain, [], live);
       })
       .catch((err: unknown) => {
-        if (live()) loadError = domainErrorCopy(err, prices).message;
+        if (live()) loadError = domainErrorCopy(err, effectivePrices).message;
       });
     return () => {
       loadToken += 1;
@@ -154,14 +173,29 @@
     };
   });
 
+  $effect(() => {
+    const load = loadCompanyPrice;
+    if (!load) return;
+    let live = true;
+    void load()
+      .then((body) => {
+        if (live) companyPrice = companyDomainPriceFrom(body);
+      })
+      .catch((err: unknown) => console.warn("[custom-domain] company price read failed", err));
+    return () => {
+      live = false;
+    };
+  });
+
   async function add(): Promise<void> {
-    if (!client || busy || !typed || problem) return;
+    if (!client || busy || !typed || problem || addDisabledByPlan) return;
     busy = "add";
     actionError = null;
     notice = null;
     try {
       const result = await client.add(appId, typed);
       const d = result.domain;
+      if (result.monthlyPriceUsd !== undefined) addedPriceUsd = result.monthlyPriceUsd;
       records = { ...records, [d.domain]: dnsRecordsFor(d.domain, appHost, result.instructions) };
       domains = [...(domains ?? []).filter((x) => x.domain !== d.domain), d];
       entry = "";
@@ -169,7 +203,7 @@
       const token = loadToken;
       if (d.state !== "validated") void prepareRecords(d.domain, result.instructions, () => token === loadToken);
     } catch (err) {
-      actionError = domainErrorCopy(err, prices);
+      actionError = domainErrorCopy(err, effectivePrices);
     } finally {
       busy = null;
     }
@@ -189,7 +223,7 @@
         ? `${domain} is live.`
         : "Not live yet. DNS changes can take a few minutes to an hour. Check again later.";
     } catch (err) {
-      actionError = domainErrorCopy(err, prices);
+      actionError = domainErrorCopy(err, effectivePrices);
     } finally {
       busy = null;
     }
@@ -209,7 +243,7 @@
       onchange?.();
       ondone?.(result.warning ? `${domain} removed. Billing cleanup needs a follow-up from HQ support.` : `${domain} removed from ${appName}.`);
     } catch (err) {
-      actionError = domainErrorCopy(err, prices);
+      actionError = domainErrorCopy(err, effectivePrices);
     } finally {
       busy = null;
     }
@@ -277,7 +311,7 @@
         {#if canManage && confirmRemove === d.domain}
           <div class="confirm" data-testid="custom-domain-confirm">
             <p class="sec">Remove {d.domain}?</p>
-            <p class="flat body">Visitors to {d.domain} will stop reaching {appName}, and the {price} charge stops. {appHost ? `${appHost} keeps working.` : ""}</p>
+            <p class="flat body">Visitors to {d.domain} will stop reaching {appName}, {monthlyUsd > 0 ? `and the ${price} charge stops.` : "and nothing is charged for it now."} {appHost ? `${appHost} keeps working.` : ""}</p>
             <div class="row-actions">
               <RailButton icon="arrow-left" disabled={busy === "remove"} onclick={() => (confirmRemove = null)}>Back</RailButton>
               <RailButton icon="trash" variant="danger" data-testid="custom-domain-remove-confirm" disabled={busy === "remove"} aria-busy={busy === "remove"} onclick={() => void remove(d.domain)}>{busy === "remove" ? "Removing…" : "Remove domain"}</RailButton>
@@ -352,9 +386,9 @@
         />
       </label>
       {#if problem && problem !== "empty"}<p class="hint" data-testid="custom-domain-input-problem">{inputProblemCopy(problem)}</p>{/if}
-      <p class="hint" data-testid="custom-domain-price">{price} for this deployment, billed to the company. Remove it any time to stop the charge.</p>
+      <p class="hint" data-testid="custom-domain-price" data-basis={companyPrice?.basis ?? "catalog"}>{priceLine}</p>
     {:else if !canManage && domains.length === 0}
-      <p class="hint" data-testid="custom-domain-member-empty">No custom domain yet. A company owner or admin can add one for {price}.</p>
+      <p class="hint" data-testid="custom-domain-member-empty">No custom domain yet. {addDisabledByPlan ? priceLine : monthlyUsd > 0 ? `A company owner or admin can add one for ${price}.` : "A company owner or admin can add one."}</p>
     {:else if !canManage}
       <p class="hint" data-testid="custom-domain-member-note">Only a company owner or admin can change custom domains.</p>
     {/if}
@@ -374,7 +408,7 @@
   <span class="hint grow"></span>
   <RailButton icon="x" onclick={onclose}>Close</RailButton>
   {#if canManage && domains !== null && domains.length === 0}
-    <RailButton icon="plus" variant="primary" data-testid="custom-domain-add" disabled={!typed || problem !== null || busy !== null} aria-busy={busy === "add"} onclick={() => void add()}>{busy === "add" ? "Adding…" : "Add domain"}</RailButton>
+    <RailButton icon="plus" variant="primary" data-testid="custom-domain-add" disabled={!typed || problem !== null || busy !== null || addDisabledByPlan} aria-busy={busy === "add"} onclick={() => void add()}>{busy === "add" ? "Adding…" : "Add domain"}</RailButton>
   {/if}
 </footer>
 

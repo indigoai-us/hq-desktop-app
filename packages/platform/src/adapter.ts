@@ -1356,6 +1356,14 @@ export interface CompanyApi {
   /** Public price list (`GET /v1/pricing`), including the `usage` block. */
   getPricing?(): AdapterPromise<Json>;
   /**
+   * What this company pays per custom domain (hq-pro #5202, any active
+   * member): `{ basis: "enterprise" | "comped" | "paid" | "not_enabled",
+   * monthlyPriceUsd: number | null, cardOnFile? }`. `cardOnFile` comes back
+   * for owners and admins on `paid` only. Older servers answer 404; callers
+   * fall back to `getPricing`.
+   */
+  getCustomDomainPrice?(companyUid: string): AdapterPromise<Json>;
+  /**
    * Owner-gated monthly spend limit (`GET /v1/billing/spend-limit?companyUid=`,
    * usage-only-pricing US-009): the limit in force, whether it is the default,
    * this month's measured spend and whether metered work is paused.

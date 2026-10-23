@@ -69,6 +69,70 @@ export function domainPricesFromFeed(body: unknown): DomainPrices | null {
   return ok(standardUsd) && ok(premiumUsd) ? { standardUsd, premiumUsd } : null;
 }
 
+export type CompanyDomainPriceBasis = "enterprise" | "comped" | "paid" | "not_enabled";
+
+/**
+ * What one company pays per custom domain (hq-pro #5202). `paid` with 0 is a
+ * billing override (for example a comped test company on the paid path).
+ * `cardOnFile` is set for owners and admins on `paid` only.
+ */
+export interface CompanyDomainPrice {
+  basis: CompanyDomainPriceBasis;
+  monthlyPriceUsd: number | null;
+  cardOnFile?: boolean;
+}
+
+const PRICE_BASES: ReadonlySet<string> = new Set(["enterprise", "comped", "paid", "not_enabled"]);
+
+function usableUsd(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+/**
+ * The company price route's body, or null when it is missing or malformed. A
+ * `paid` answer without a usable amount is null, so the caller shows the
+ * catalog price; nothing here turns a bad read into "included".
+ */
+export function companyDomainPriceFrom(body: unknown): CompanyDomainPrice | null {
+  if (!isRecord(body) || typeof body.basis !== "string" || !PRICE_BASES.has(body.basis)) return null;
+  const basis = body.basis as CompanyDomainPriceBasis;
+  const amount = usableUsd(body.monthlyPriceUsd);
+  if (basis === "paid" && amount === undefined) return null;
+  return {
+    basis,
+    monthlyPriceUsd: basis === "not_enabled" ? null : basis === "paid" ? (amount as number) : 0,
+    ...(typeof body.cardOnFile === "boolean" ? { cardOnFile: body.cardOnFile } : {}),
+  };
+}
+
+/** The monthly amount one domain costs this company: its own price when known, else the catalog's. */
+export function domainMonthlyUsd(company: CompanyDomainPrice | null, catalog: DomainPrices): number {
+  if (company && company.basis !== "not_enabled" && company.monthlyPriceUsd !== null) return company.monthlyPriceUsd;
+  return catalog.standardUsd;
+}
+
+/** The price line under the domain box, in the company's own terms. */
+export function domainPriceLine(company: CompanyDomainPrice | null, catalog: DomainPrices, companyName = ""): string {
+  const name = companyName.trim();
+  if (!company) {
+    return `${formatUsd(catalog.standardUsd)}/month for this deployment, billed to the company. Remove it any time to stop the charge.`;
+  }
+  if (company.basis === "not_enabled") {
+    return `Custom domains are not available for ${name || "this company"} yet. Contact HQ support to turn them on.`;
+  }
+  if (company.basis === "enterprise") {
+    return `Custom domains are included in ${name ? `${name}'s` : "the company's"} enterprise plan. Nothing is charged.`;
+  }
+  const amount = domainMonthlyUsd(company, catalog);
+  if (amount === 0) return `${name || "This company"} is not charged for custom domains.`;
+  const charge = `It adds ${formatUsd(amount)}/month to ${name ? `${name}'s` : "the company's"} bill.`;
+  if (company.cardOnFile === true) return `${charge} The card on file is charged; no card form is needed.`;
+  if (company.cardOnFile === false) {
+    return `${charge} ${name || "The company"} has no card on file, so adding stops at a page to add one.`;
+  }
+  return `${charge} Remove it any time to stop the charge.`;
+}
+
 export function formatUsd(amount: number): string {
   return Number.isInteger(amount) ? `$${amount}` : `$${amount.toFixed(2)}`;
 }
@@ -261,6 +325,8 @@ const base = (appId: string) => `/api/apps/${encodeURIComponent(appId)}/domains`
 export interface AddResult {
   domain: DomainRecord;
   instructions: unknown;
+  /** What this domain costs the company each month (hq-deploy #260); absent on older servers. */
+  monthlyPriceUsd?: number;
 }
 
 export interface RefreshResult {
@@ -289,9 +355,11 @@ export function deployDomainClient(request: DeployDomainRequest, scope: string) 
     add: async (appId: string, domain: string): Promise<AddResult> => {
       const body = await run("POST", base(appId), { domain });
       const record = isRecord(body.domain) ? body.domain : {};
+      const monthlyPriceUsd = usableUsd(body.monthlyPriceUsd);
       return {
         domain: { domain: text(record.domain).toLowerCase() || domain, state: state(record.validationState) },
         instructions: body.dnsInstructions,
+        ...(monthlyPriceUsd === undefined ? {} : { monthlyPriceUsd }),
       };
     },
     refresh: async (appId: string, domain: string): Promise<RefreshResult> => {

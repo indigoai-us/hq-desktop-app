@@ -25,12 +25,13 @@
     deployDomainRequest?: DeployDomainRequest | null;
     loadDomainPrices?: (() => Promise<DomainPrices | null>) | null;
     domainCardEntryUrl?: ((companyUid: string) => Promise<string | null>) | null;
+    loadCompanyDomainPrice?: ((companyUid: string) => Promise<unknown>) | null;
     openExternal?: (url: string) => void;
     /** RELEASE-001 gate for Redeploy and the "Your bots" filter. */
     actions?: boolean;
   }
 
-  let { accountId = "local", listDeployApps, deployAppPreview, deployAppSnapshot, companies = [], deployDomainRequest = null, loadDomainPrices = null, domainCardEntryUrl = null, openExternal, actions = true }: Props = $props();
+  let { accountId = "local", listDeployApps, deployAppPreview, deployAppSnapshot, companies = [], deployDomainRequest = null, loadDomainPrices = null, domainCardEntryUrl = null, loadCompanyDomainPrice = null, openExternal, actions = true }: Props = $props();
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let Page = $state<Component<any> | null>(null);
@@ -51,7 +52,7 @@
 
 <div class="host" data-testid="personal-deployments-host">
   {#if Page}
-    <Page {accountId} {listDeployApps} {deployAppPreview} {deployAppSnapshot} {companies} {deployDomainRequest} {loadDomainPrices} {domainCardEntryUrl} {openExternal} {actions} />
+    <Page {accountId} {listDeployApps} {deployAppPreview} {deployAppSnapshot} {companies} {deployDomainRequest} {loadDomainPrices} {domainCardEntryUrl} {loadCompanyDomainPrice} {openExternal} {actions} />
   {:else}
     <div class="loading" aria-busy="true">
       <ReadLoader testid="personal-deployments-loading" />

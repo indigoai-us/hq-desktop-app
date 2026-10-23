@@ -80,6 +80,8 @@
     loadDomainPrices?: (() => Promise<DomainPrices | null>) | null;
     /** Mints a Stripe card-entry page for a company (cloud uid); null when it can't. */
     domainCardEntryUrl?: ((companyUid: string) => Promise<string | null>) | null;
+    /** A company's own custom-domain price body (hq-pro #5202); throws or null keeps the catalog price. */
+    loadCompanyDomainPrice?: ((companyUid: string) => Promise<unknown>) | null;
     openExternal?: (url: string) => void;    /** RELEASE-001 gate: false hides Redeploy and the "Your bots" filter. */
     actions?: boolean;
     /**
@@ -91,7 +93,7 @@
     livePreview?: boolean;
   }
 
-  let { accountId = "local", listDeployApps, deployAppPreview, deployAppSnapshot, companies = [], deployDomainRequest = null, loadDomainPrices = null, domainCardEntryUrl = null, openExternal, actions = true, livePreview = false }: Props = $props();
+  let { accountId = "local", listDeployApps, deployAppPreview, deployAppSnapshot, companies = [], deployDomainRequest = null, loadDomainPrices = null, domainCardEntryUrl = null, loadCompanyDomainPrice = null, openExternal, actions = true, livePreview = false }: Props = $props();
 
   /** Rows painted per step; the rest arrive on "Show more". */
   const PAGE = 200;
@@ -613,6 +615,8 @@
       canManage={domainManager(row)}
       loadPrices={loadDomainPrices}
       cardEntryUrl={() => domainCardUrl(row)}
+      loadCompanyPrice={loadCompanyDomainPrice && companyFor(row)?.cloudUid ? () => loadCompanyDomainPrice!(companyFor(row)!.cloudUid!) : null}
+      companyName={companyFor(row)?.displayName ?? row.scopeLabel ?? ""}
       openExternal={(url) => openExternal?.(url)}
       onclose={() => (domainRow = null)}
       ondone={(message) => (notice = message)}

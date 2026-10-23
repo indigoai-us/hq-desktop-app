@@ -221,6 +221,102 @@ describe("US-007 CustomDomainForm", () => {
     expect(q(target, "custom-domain-verifying")?.textContent).toContain("HQ found your records");
   });
 
+  describe("company price", () => {
+    const priceOf = async (loadCompanyPrice: () => Promise<unknown>, props: Record<string, unknown> = {}) => {
+      const rendered = render(() => none(), { loadCompanyPrice, companyName: "Acme", ...props });
+      await settle();
+      return rendered;
+    };
+
+    it("says enterprise companies are included", async () => {
+      const { target } = await priceOf(async () => ({ basis: "enterprise", monthlyPriceUsd: 0 }));
+      expect(q(target, "custom-domain-price")?.textContent).toBe("Custom domains are included in Acme's enterprise plan. Nothing is charged.");
+    });
+
+    it("says comped companies and a 0 override are not charged", async () => {
+      const comped = await priceOf(async () => ({ basis: "comped", monthlyPriceUsd: 0 }));
+      expect(q(comped.target, "custom-domain-price")?.textContent).toBe("Acme is not charged for custom domains.");
+      await unmount(component as Record<string, unknown>);
+      component = null;
+      document.body.innerHTML = "";
+      const override = await priceOf(async () => ({ basis: "paid", monthlyPriceUsd: 0 }), { companyName: "Domain Demo (test)" });
+      expect(q(override.target, "custom-domain-price")?.textContent).toBe("Domain Demo (test) is not charged for custom domains.");
+    });
+
+    it("shows a paid company its own price and the card state", async () => {
+      const withCard = await priceOf(async () => ({ basis: "paid", monthlyPriceUsd: 12.5, cardOnFile: true }));
+      expect(q(withCard.target, "custom-domain-price")?.textContent).toBe("It adds $12.50/month to Acme's bill. The card on file is charged; no card form is needed.");
+      await unmount(component as Record<string, unknown>);
+      component = null;
+      document.body.innerHTML = "";
+      const noCard = await priceOf(async () => ({ basis: "paid", monthlyPriceUsd: 20, cardOnFile: false }));
+      expect(q(noCard.target, "custom-domain-price")?.textContent).toContain("Acme has no card on file");
+    });
+
+    it("turns add off when custom domains are not enabled", async () => {
+      const { target, request } = await priceOf(async () => ({ basis: "not_enabled", monthlyPriceUsd: null }));
+      expect(q(target, "custom-domain-price")?.textContent).toContain("not available for Acme");
+      type(q(target, "custom-domain-input") as HTMLInputElement, "mysite.com");
+      expect((q(target, "custom-domain-add") as HTMLButtonElement).disabled).toBe(true);
+      expect(request).not.toHaveBeenCalledWith("indigo", "POST", "/api/apps/app_1/domains", expect.anything());
+    });
+
+    it("keeps the catalog price when the company price route is missing or fails, never included", async () => {
+      const missing = await priceOf(async () => {
+        throw new Error("HTTP 404");
+      });
+      expect(q(missing.target, "custom-domain-price")?.textContent).toBe("$20/month for this deployment, billed to the company. Remove it any time to stop the charge.");
+      expect(q(missing.target, "custom-domain-price")?.textContent).not.toMatch(/included|not charged/);
+      await unmount(component as Record<string, unknown>);
+      component = null;
+      document.body.innerHTML = "";
+      const garbled = await priceOf(async () => ({ basis: "paid" }));
+      expect(q(garbled.target, "custom-domain-price")?.dataset.basis).toBe("catalog");
+    });
+
+    it("uses the company's price in the card refusal and the add reply's price on remove", async () => {
+      const { target } = render(
+        (method) => {
+          if (method === "GET") return none();
+          if (method === "POST") {
+            return {
+              status: 201,
+              body: {
+                ok: true,
+                domain: { domain: "app.example.com", validationState: "pending" },
+                dnsInstructions: [certRecord(), { type: "CNAME", name: "app.example.com", value: "launch-notes.indigo-hq.com" }],
+                serving: false,
+                billingBasis: "paid",
+                monthlyPriceUsd: 7,
+              },
+            };
+          }
+          return { status: 200, body: { ok: true, remaining: 0 } };
+        },
+        { loadCompanyPrice: async () => ({ basis: "paid", monthlyPriceUsd: 12.5 }), companyName: "Acme" },
+      );
+      await settle();
+      type(q(target, "custom-domain-input") as HTMLInputElement, "app.example.com");
+      (q(target, "custom-domain-add") as HTMLButtonElement).click();
+      await settle();
+      (q(target, "custom-domain-remove") as HTMLButtonElement).click();
+      flushSync();
+      expect(q(target, "custom-domain-confirm")?.textContent).toContain("$7/month charge stops");
+    });
+
+    it("prices the card refusal with the company's own amount", async () => {
+      const { target } = render(
+        (method) => (method === "GET" ? none() : { status: 402, body: { error: { code: "PAYMENT_METHOD_REQUIRED" } } }),
+        { loadCompanyPrice: async () => ({ basis: "paid", monthlyPriceUsd: 12.5, cardOnFile: false }), companyName: "Acme" },
+      );
+      await settle();
+      type(q(target, "custom-domain-input") as HTMLInputElement, "app.example.com");
+      (q(target, "custom-domain-add") as HTMLButtonElement).click();
+      await settle();
+      expect(q(target, "custom-domain-refusal-card")?.textContent).toContain("$12.50/month");
+    });
+  });
+
   it("never steers people to a subdomain", async () => {
     const empty = render(() => none());
     await settle();

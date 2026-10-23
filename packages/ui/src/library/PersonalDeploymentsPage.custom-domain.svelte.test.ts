@@ -113,6 +113,18 @@ describe("PersonalDeploymentsPage custom domain (US-007)", () => {
     await expect.poll(() => host!.querySelector("[data-testid='deploy-url']")?.textContent).toBe("https://my-notes.indigo-hq.com");
   });
 
+  it("shows the company's own price, read with its company id", async () => {
+    const loadCompanyDomainPrice = vi.fn(async () => ({ basis: "paid", monthlyPriceUsd: 0 }));
+    render({ loadCompanyDomainPrice });
+    await expect.poll(() => rows().length).toBe(2);
+    pick("domain-demo").click();
+    flushSync();
+    (host!.querySelector("[data-testid='deploy-custom-domain']") as HTMLButtonElement).click();
+    flushSync();
+    await expect.poll(() => host!.querySelector("[data-testid='custom-domain-price']")?.textContent).toBe("Domain Demo (test) is not charged for custom domains.");
+    expect(loadCompanyDomainPrice).toHaveBeenCalledWith("cmp_demo");
+  });
+
   it("hides it on a host without the domain routes", async () => {
     render({ deployDomainRequest: null });
     await expect.poll(() => rows().length).toBe(2);

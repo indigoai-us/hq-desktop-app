@@ -581,6 +581,15 @@
     return res.ok ? domainPricesFromFeed(res.value) : null;
   }
 
+  /** This company's own custom-domain price body (hq-pro #5202); throws so the sheet keeps the catalog price. */
+  async function loadCompanyDomainPrice(): Promise<unknown> {
+    const read = adapter?.company?.getCustomDomainPrice;
+    if (!read || !companyUid) return null;
+    const res = await read(companyUid);
+    if (!res.ok) throw new Error(res.message ?? res.reason ?? "company price read failed");
+    return res.value;
+  }
+
   /** A Stripe card-entry Checkout for this company; null when the caller can't mint one. */
   async function domainCardEntryUrl(): Promise<string | null> {
     const mint = adapter?.company?.createBillingCheckoutSession;
@@ -1198,6 +1207,8 @@
         request={domainRequest}
         canManage={manageDomains}
         loadPrices={loadDomainPrices}
+        loadCompanyPrice={adapter?.company?.getCustomDomainPrice && companyUid ? loadCompanyDomainPrice : null}
+        companyName={companyLabel?.trim() || slug}
         cardEntryUrl={domainCardEntryUrl}
         openExternal={(url) => openExternal?.(url)}
         onclose={closeSheet}

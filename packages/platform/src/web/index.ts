@@ -268,6 +268,9 @@ export const WEB_PATHS = {
   personalUsageSwitch: "/v1/billing/usage-switch?scope=person",
   /** GET, public price list. */
   pricing: "/v1/pricing",
+  /** GET, any active member: this company's custom-domain price (hq-pro #5202). */
+  companyCustomDomainPrice: (companyUid: string) =>
+    `/v1/billing/companies/${encodeURIComponent(companyUid)}/custom-domains/price`,
   firstWeekReturnNudge: (companyUid: string) =>
     `/membership/first-week-return-nudge?companyUid=${encodeURIComponent(companyUid)}`,
 
@@ -1223,6 +1226,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
     getUsageHistory: (companyUid) =>
       this.get(WEB_PATHS.companyUsageHistory(companyUid)),
     getPricing: () => this.get(WEB_PATHS.pricing),
+    getCustomDomainPrice: (companyUid) =>
+      this.get(WEB_PATHS.companyCustomDomainPrice(companyUid)),
     getSpendLimit: (companyUid) =>
       this.get(WEB_PATHS.companySpendLimit(companyUid)),
     getPersonalBillingSummary: () => this.get(WEB_PATHS.personalBillingSummary),

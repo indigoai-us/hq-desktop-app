@@ -133,6 +133,23 @@ describe("US-007 FilesConnectPage custom domains", () => {
     await vi.waitFor(() => expect(target.querySelector("[data-testid='deploy-url']")?.textContent).toBe("https://launch-notes.indigo-hq.com"));
   });
 
+  it("shows the company's own price in the sheet", async () => {
+    const getCustomDomainPrice = vi.fn(async () => ok({ basis: "comped", monthlyPriceUsd: 0 }));
+    const target = mountPage("deployments", null, {
+      listDeployApps: apps(),
+      deployDomainRequest: domainRequest(),
+      companyRole: "Owner",
+      companyUid: "cmp_acme",
+      companyLabel: "Acme",
+      adapter: { company: { getCustomDomainPrice } },
+    });
+    await vi.waitFor(() => expect(target.querySelector("[data-testid='deploy-domain']")).not.toBeNull());
+    (target.querySelector("[data-testid='deploy-domain']") as HTMLButtonElement).click();
+    flushSync();
+    await vi.waitFor(() => expect(target.querySelector("[data-testid='custom-domain-price']")?.textContent).toBe("Acme is not charged for custom domains."));
+    expect(getCustomDomainPrice).toHaveBeenCalledWith("cmp_acme");
+  });
+
   it("hides Custom domain on a host without the domain routes", async () => {
     const target = mountPage("deployments", null, { listDeployApps: apps(), companyRole: "Owner" });
     await vi.waitFor(() => expect(target.querySelector("[data-testid='deploy-access']")).not.toBeNull());

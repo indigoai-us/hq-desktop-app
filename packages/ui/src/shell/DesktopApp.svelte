@@ -12962,6 +12962,13 @@
     const res = await read();
     return res.ok ? domainPricesFromFeed(res.value) : null;
   }
+  async function deployCompanyDomainPrice(companyUid: string): Promise<unknown> {
+    const read = adapter.company?.getCustomDomainPrice;
+    if (!read) return null;
+    const res = await read(companyUid);
+    if (!res.ok) throw new Error(res.message ?? res.reason ?? "company price read failed");
+    return res.value;
+  }
   async function deployDomainCardEntryUrl(companyUid: string): Promise<string | null> {
     const mint = adapter.company?.createBillingCheckoutSession;
     if (!mint) return null;
@@ -14648,6 +14655,7 @@
             deployDomainRequest={adapter.company?.deployDomainRequest ?? null}
             loadDomainPrices={deployDomainPrices}
             domainCardEntryUrl={deployDomainCardEntryUrl}
+            loadCompanyDomainPrice={adapter.company?.getCustomDomainPrice ? deployCompanyDomainPrice : null}
             openExternal={onopenurl}
             actions={railGate(RAIL_DEPLOYMENTS_ACTIONS_FLAG)}
           />

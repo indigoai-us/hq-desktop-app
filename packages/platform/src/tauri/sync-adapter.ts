@@ -1510,6 +1510,8 @@ export function createSyncPlatformAdapter(
       getUsageHistory: (companyUid) =>
         hqProJson('GET', WEB_PATHS.companyUsageHistory(companyUid)),
       getPricing: () => hqProJson('GET', WEB_PATHS.pricing),
+      getCustomDomainPrice: (companyUid) =>
+        hqProJson('GET', WEB_PATHS.companyCustomDomainPrice(companyUid)),
       getSpendLimit: (companyUid) =>
         hqProJson('GET', WEB_PATHS.companySpendLimit(companyUid)),
       getPersonalBillingSummary: () => hqProJson('GET', WEB_PATHS.personalBillingSummary),
