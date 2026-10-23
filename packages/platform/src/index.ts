@@ -66,12 +66,17 @@ export {
   humanRecencyState,
   isUndatedNoHumanRow,
   isHumanMessage,
+  messageType,
+  normalizeSentVia,
   orderChannelsForViewer,
+  showsCliChip,
 } from "./humanMessage.js";
 export type {
   HumanClassifiable,
   HumanRecencyChannel,
   HumanRecencyState,
+  MessageType,
+  SentVia,
 } from "./humanMessage.js";
 
 // Shared 429 / Retry-After policy and the jittered background pollers (R2).

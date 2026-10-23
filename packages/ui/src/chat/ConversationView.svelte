@@ -33,7 +33,7 @@
   import AgentTaskStrip from "./tasks/AgentTaskStrip.svelte";
   import { TaskFeedController, isAgentUid } from "./tasks/task-feed-controller.svelte";
   import { REPLY_OVERLAY_MAX_PX } from "./reply-layout";
-  import { isHumanMessage } from "@hq/platform";
+  import { isHumanMessage, showsCliChip } from "@hq/platform";
   import { parseWorkSessionEvent } from "./messaging/workSessionEvent";
   import "./tokens.css";
   import "./chat-tokens.css";
@@ -111,6 +111,8 @@
   interface MessageRow {
     eventId: string;
     fromDisplayName: string;
+    /** Render the "CLI" chip after the sender name (`showsCliChip`). */
+    cliChip?: boolean;
     body: string;
     createdAt: string;
     direction: "in" | "out";
@@ -145,6 +147,7 @@
       eventId: wire.eventId,
       fromDisplayName:
         wire.fromDisplayName?.trim() || wire.fromEmail || "Unknown",
+      cliChip: showsCliChip(wire),
       body: wire.body ?? "",
       createdAt: wire.createdAt,
       direction: wire.direction === "out" ? "out" : "in",
@@ -545,6 +548,13 @@
               <div class="conv-body">
                 <div class="conv-head">
                   <span class="conv-from">{m.fromDisplayName}</span>
+                  {#if m.cliChip}
+                    <span
+                      class="conv-cli-chip"
+                      data-testid="message-cli-chip"
+                      title="Sent from the HQ CLI">CLI</span
+                    >
+                  {/if}
                   {#if m.createdAt}
                     <time class="conv-ts" datetime={m.createdAt}>
                       {timeLabel(m.createdAt)}
@@ -834,6 +844,19 @@
     color: var(--t2);
     font-size: 12px;
     font-weight: 600;
+  }
+
+  .conv-cli-chip {
+    padding: 0 5px;
+    border: 1px solid var(--line2);
+    border-radius: 4px;
+    background: var(--raised);
+    color: var(--t3);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 15px;
+    letter-spacing: 0.04em;
   }
 
   .conv-ts {

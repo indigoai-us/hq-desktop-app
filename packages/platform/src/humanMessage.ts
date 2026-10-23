@@ -31,6 +31,7 @@ export interface HumanClassifiable {
   isSystemEvent?: boolean | null;
   isMeshEvent?: boolean | null;
   fromPersonUid?: string | null;
+  sentVia?: string | null;
 }
 
 /** True when this message renders for a human-only viewer. */
@@ -39,21 +40,60 @@ export interface HumanClassifyOptions {
   inferFromUid?: boolean;
 }
 
+/**
+ * Three-way message type (hq-message-visibility design):
+ *  - `"system"`: explicit `isSystemEvent` / `isMeshEvent` flag (wins over
+ *    audience, as in rule 1 above).
+ *  - `"people"`: audience `"human"` / `"both"`, or no audience (rule 2), unless
+ *    rule 3's uid-prefix fallback marks it non-human.
+ *  - `"agent"`: everything else.
+ */
+export type MessageType = "people" | "agent" | "system";
+
+export function messageType(
+  msg: HumanClassifiable,
+  options: HumanClassifyOptions = {},
+): MessageType {
+  if (msg.isSystemEvent === true) return "system";
+  if (msg.isMeshEvent === true) return "system";
+  const audience = msg.audience ?? null;
+  if (audience !== null && !HUMAN_AUDIENCES.has(audience)) return "agent";
+  if (audience === null && options.inferFromUid !== false) {
+    const uid = (msg.fromPersonUid ?? "").toLowerCase();
+    if (uid && NON_HUMAN_UID_PREFIXES.some((p) => uid.startsWith(p))) {
+      return "agent";
+    }
+  }
+  return "people";
+}
+
 export function isHumanMessage(
   msg: HumanClassifiable,
   options: HumanClassifyOptions = {},
 ): boolean {
-  if (msg.isSystemEvent === true) return false;
-  if (msg.isMeshEvent === true) return false;
-  const audience = msg.audience ?? null;
-  if (audience !== null && !HUMAN_AUDIENCES.has(audience)) return false;
-  if (audience === null && options.inferFromUid !== false) {
-    const uid = (msg.fromPersonUid ?? "").toLowerCase();
-    if (uid && NON_HUMAN_UID_PREFIXES.some((p) => uid.startsWith(p))) {
-      return false;
-    }
-  }
-  return true;
+  return messageType(msg, options) === "people";
+}
+
+/** Client that sent a message. Missing or unrecognised reads as `"unknown"`. */
+export type SentVia = "cli" | "desktop" | "web" | "bot" | "unknown";
+
+export function normalizeSentVia(value: string | null | undefined): SentVia {
+  const v = (value ?? "").trim().toLowerCase();
+  return v === "cli" || v === "desktop" || v === "web" || v === "bot"
+    ? v
+    : "unknown";
+}
+
+/**
+ * True when the row must carry the "CLI" chip after the sender name: any
+ * non-system message sent from the CLI. Applied to every rendered sender row
+ * so a CLI-sent message never appears typed by a person without the chip.
+ */
+export function showsCliChip(
+  msg: HumanClassifiable & { sentVia?: string | null },
+): boolean {
+  if (normalizeSentVia(msg.sentVia) !== "cli") return false;
+  return messageType(msg, { inferFromUid: false }) !== "system";
 }
 
 /** Filter a message list to just the human-visible rows. */

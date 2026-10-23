@@ -29,7 +29,7 @@
   import { isJumboEmojiBody } from '../../lib/emojiShortcodes';
   import { shareTitle } from '../../lib/share-path';
   import { sanitizeVisibleIdentifiers } from '../../lib/visible-labels';
-  import { primaryEnterKeyHint } from '@hq/platform';
+  import { primaryEnterKeyHint, showsCliChip } from '@hq/platform';
   import type { ShareEvent } from '../../lib/notificationGroups';
   import AttachmentStack from './AttachmentStack.svelte';
   import AttachmentPicker from './AttachmentPicker.svelte';
@@ -57,6 +57,10 @@
     prompt?: string | null;
     createdAt: string;
     direction: 'in' | 'out';
+    /** Declared audience: 'human' | 'agent' | 'both'. Absent on older rows. */
+    audience?: string | null;
+    /** Sending client ('cli' | 'desktop' | 'web' | 'bot' | 'unknown'). Drives the CLI chip. */
+    sentVia?: string | null;
     // Optimistic-send states (US-010). `pending` marks an outbound message that
     // was held behind a connection request — rendered with a "Pending" chip
     // until `dm:request-update` flips it (US-011). `pendingLabel` is the chip
@@ -591,9 +595,13 @@
         <span class="dm-msg-avatar-spacer" aria-hidden="true"></span>
       {/if}
       <div class="dm-msg-column">
-      {#if groupStart}
+      {#if groupStart || showsCliChip(msg)}
+        <!-- A CLI-sent row always shows its author + chip, even mid-group. -->
         <div class="dm-msg-meta">
           <span class="dm-msg-author">{messageAuthor(msg)}</span>
+          {#if showsCliChip(msg)}
+            <span class="dm-msg-cli-chip" data-testid="message-cli-chip" title="Sent from the HQ CLI">CLI</span>
+          {/if}
           <span class="dm-msg-header-time">{formatTime(msg.createdAt)}</span>
         </div>
       {:else}
@@ -1041,6 +1049,19 @@
     font-weight: 600;
     color: var(--pop-muted);
     margin: 0 0.25rem 0.125rem;
+  }
+
+  .dm-msg-cli-chip {
+    padding: 0 5px;
+    border: 1px solid var(--line2, var(--pop-border));
+    border-radius: 4px;
+    background: var(--raised, transparent);
+    color: var(--t3, var(--pop-muted));
+    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 15px;
+    letter-spacing: 0.04em;
   }
 
   .dm-bubble {

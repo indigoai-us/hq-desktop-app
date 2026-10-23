@@ -48,6 +48,10 @@ pub struct DmEvent {
     /// rollout decision. Mirrors `details` and `prompt` in the server contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience: Option<String>,
+    /// Client that sent the message: `"cli"` | `"desktop"` | `"web"` | `"bot"`
+    /// | `"unknown"`. Absent on older servers; treat as `"unknown"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_via: Option<String>,
 }
 
 /// Per-counterparty DM unread rollup from `GET /v1/notify/inbox` (hq-pro
@@ -1041,6 +1045,10 @@ pub struct ThreadMessage {
     /// rows — treat as `"human"`. Mirrors `details` and `prompt`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience: Option<String>,
+    /// Client that sent the message: `"cli"` | `"desktop"` | `"web"` | `"bot"`
+    /// | `"unknown"`. Absent on older servers; treat as `"unknown"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_via: Option<String>,
     /// Origin of a forwarded message (`{ senderUid, senderName, sourceKind,
     /// originalCreatedAt }`). Raw JSON so the webview owns validation. Absent
     /// on ordinary rows and older servers.
@@ -1198,6 +1206,10 @@ pub struct ThreadReply {
     /// rows — treat as `"human"`. Mirrors `details` and `prompt`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience: Option<String>,
+    /// Client that sent the message: `"cli"` | `"desktop"` | `"web"` | `"bot"`
+    /// | `"unknown"`. Absent on older servers; treat as `"unknown"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_via: Option<String>,
     /// Origin of a forwarded message (`{ senderUid, senderName, sourceKind,
     /// originalCreatedAt }`). Raw JSON so the webview owns validation. Absent
     /// on ordinary rows and older servers.
@@ -1599,12 +1611,14 @@ mod tests {
             message_kind: None,
             attachments: None,
             audience: None,
+            sent_via: None,
         }
     }
 
     fn mk_dm_with_audience(event_id: &str, created_at: &str, audience: &str) -> DmEvent {
         DmEvent {
             audience: Some(audience.to_string()),
+            sent_via: None,
             ..mk_dm(event_id, created_at)
         }
     }
@@ -2922,6 +2936,33 @@ mod tests {
         }"#;
         let dm: DmEvent = serde_json::from_str(json).expect("DmEvent without audience parses");
         assert!(dm.audience.is_none());
+    }
+
+    #[test]
+    fn dm_event_sent_via_round_trips_as_camel_case() {
+        let json = r#"{
+            "eventId": "evt_3",
+            "fromPersonUid": "prs_human",
+            "fromEmail": "h@b.com",
+            "fromDisplayName": "Human",
+            "body": "from the terminal",
+            "createdAt": "2026-10-23T10:00:00Z",
+            "audience": "human",
+            "sentVia": "cli"
+        }"#;
+        let dm: DmEvent = serde_json::from_str(json).expect("DmEvent with sentVia parses");
+        assert_eq!(dm.sent_via.as_deref(), Some("cli"));
+        let out = serde_json::to_value(&dm).unwrap();
+        assert_eq!(out["sentVia"], "cli");
+        assert!(out.get("sent_via").is_none());
+    }
+
+    #[test]
+    fn dm_event_sent_via_absent_is_none_and_omitted() {
+        let dm = mk_dm("evt_4", "2026-10-23T10:00:00Z");
+        assert!(dm.sent_via.is_none());
+        let out = serde_json::to_value(&dm).unwrap();
+        assert!(out.get("sentVia").is_none());
     }
 
     #[test]

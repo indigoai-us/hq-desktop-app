@@ -23,6 +23,10 @@ export interface DmEvent {
   createdAt: string;
   messageKind?: string | null;
   attachments?: import('./messageAttachments').MessageAttachment[] | null;
+  /** Declared audience: 'human' | 'agent' | 'both'. Absent on older rows. */
+  audience?: string | null;
+  /** Sending client: 'cli' | 'desktop' | 'web' | 'bot' | 'unknown'. Absent reads as 'unknown'. */
+  sentVia?: string | null;
 }
 
 export interface ShareEvent {

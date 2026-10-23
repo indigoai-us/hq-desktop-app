@@ -4107,6 +4107,7 @@ mod tests {
             root_event_id: None,
             reply_count: None,
             audience: None,
+            sent_via: None,
             forwarded_from: None,
             forward_note: None,
             omitted_attachments: None,

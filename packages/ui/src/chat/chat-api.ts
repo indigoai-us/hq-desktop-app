@@ -176,6 +176,8 @@ export interface ConversationMessageWire {
   prompt?: string | null;
   createdAt: string;
   direction?: "in" | "out" | string;
+  /** Sending client: "cli" | "desktop" | "web" | "bot" | "unknown". Absent reads as "unknown". */
+  sentVia?: string | null;
   /** "system" for run-cards / system-event lines (parsed via channelMessageModels). */
   messageKind?: string | null;
   /** Versioned system-event envelope (run_complete card, deploy/pr lines, …). */
