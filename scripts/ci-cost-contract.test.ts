@@ -1075,7 +1075,7 @@ describe("the frontend gate splits across four parallel jobs", () => {
       "run: pnpm version:check",
       "pnpm --filter @hq/ui typecheck",
       "pnpm --filter @hq/ui test",
-      "pnpm exec playwright install-deps chromium webkit",
+      "./node_modules/.bin/playwright install-deps chromium webkit",
       "run: pnpm exec playwright install chromium webkit",
       "run: pnpm test:e2e:browser",
       "run: pnpm coverage",
