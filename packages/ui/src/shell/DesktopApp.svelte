@@ -11924,6 +11924,7 @@
     const parsed = pairUnreadsFromInboxPage(res.value, {
       since,
       selfUid: self?.uid,
+      messageTypes: messageTypesStore.value,
     });
     const inboxActivity = dmActivityFromInboxPage(res.value, {
       selfUid: self?.uid,

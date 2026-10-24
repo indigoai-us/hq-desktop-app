@@ -2,7 +2,6 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { safeUnlisten } from '../lib/listener-registry';
-  import { filterByAudience, countHiddenByAudience } from '../lib/botMessageFilter';
   import Conversation, { type ConversationMessage } from './messaging/Conversation.svelte';
   import { type ReactionEvent, dmScope } from '../lib/reactions';
   import { ReactionController } from '../lib/reactionController.svelte';
@@ -63,11 +62,13 @@
   }
 
   let messages = $state<ThreadMessage[]>([]);
-  // Audience filter: agent-audience messages show only when the prop forces
-  // them or the "Agents & CLI" message-types switch is on.
-  const showAgents = $derived(showBotMessages || messageTypesStore.value.agents);
-  const visibleMessages = $derived(filterByAudience(messages, showAgents));
-  const hiddenMessageCount = $derived(countHiddenByAudience(messages, showAgents));
+  // Message types: agent-audience messages show as rows only when the prop
+  // forces them or the "Agents & CLI" switch is on; otherwise each run of
+  // them collapses into a fold line in place (US-005).
+  const messageTypes = $derived({
+    ...messageTypesStore.value,
+    agents: showBotMessages || messageTypesStore.value.agents,
+  });
   let loadingThread = $state(false);
   let threadError = $state<string | null>(null);
   let activePeerUid: string | null = null;
@@ -322,7 +323,9 @@
 
 <div class="dm-thread-pane-wrap" data-testid="dm-thread-pane">
   <Conversation
-    messages={visibleMessages}
+    {messages}
+    {messageTypes}
+    conversationKey={event.fromPersonUid}
     showAuthors={false}
     loading={loadingThread}
     error={threadError}
@@ -336,11 +339,6 @@
     {selfPersonUid}
     {companies}
   />
-  {#if hiddenMessageCount > 0}
-    <div class="dm-hidden-notice" data-testid="dm-hidden-bot-messages" data-count={hiddenMessageCount}>
-      {hiddenMessageCount} bot {hiddenMessageCount === 1 ? 'message' : 'messages'} hidden
-    </div>
-  {/if}
 </div>
 
 <style>
@@ -349,13 +347,5 @@
     flex-direction: column;
     height: 100%;
     min-height: 0;
-  }
-
-  .dm-hidden-notice {
-    flex-shrink: 0;
-    padding: 4px 12px;
-    font-size: 11px;
-    color: var(--v4-text-2, #9ca3af);
-    text-align: center;
   }
 </style>

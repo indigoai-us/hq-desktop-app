@@ -116,6 +116,7 @@
   } from "./session-archive.js";
   import { messageTypesStore } from "./message-types.svelte.js";
   import type { MessageTypesPref } from "./message-types.js";
+  import { countsTowardUnread } from "./message-folds.js";
   import {
     applyClick as applySelectionClick,
     applySelectionKey,
@@ -3687,12 +3688,16 @@
               createdAt: stamp,
             });
           }
-          const bump = shouldBumpChannelUnread({
-            selectedId: selectedId ?? activeId,
-            channelId,
-            fromPersonUid: payload.fromPersonUid,
-            selfUid: self?.uid,
-          });
+          // A message the type preference hides sits in a fold; folds
+          // never raise the badge (US-005).
+          const bump =
+            countsTowardUnread(payload, messageTypesStore.value) &&
+            shouldBumpChannelUnread({
+              selectedId: selectedId ?? activeId,
+              channelId,
+              fromPersonUid: payload.fromPersonUid,
+              selfUid: self?.uid,
+            });
           const absoluteUnread = payload.absoluteUnread === true;
           if (!bump && !absoluteUnread) return;
           channels = applyChannelMessageWake(channels, {
@@ -3750,6 +3755,7 @@
             ]);
           }
           if (
+            !countsTowardUnread(payload, messageTypesStore.value) ||
             !shouldBumpDmUnread({
               selectedId: selectedId ?? activeId,
               fromPersonUid: payload.fromPersonUid,

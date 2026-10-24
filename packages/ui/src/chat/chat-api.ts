@@ -536,6 +536,10 @@ export interface ChatWakeEvents {
     unread?: number;
     /** `unread` is an authoritative rollup, not a one-message delta. */
     absoluteUnread?: boolean;
+    /** Message-type markers when the payload carried them (US-005: hidden types never count as unread). */
+    audience?: string | null;
+    isSystemEvent?: boolean | null;
+    isMeshEvent?: boolean | null;
   };
   /**
    * The person sent a message to this channel from the composer. Unlike a
@@ -583,6 +587,10 @@ export interface ChatWakeEvents {
     prompt?: string | null;
     /** A preceding `dm:pair-unreads` event already set the exact badge count. */
     absoluteUnread?: boolean;
+    /** Message-type markers when the payload carried them (US-005: hidden types never count as unread). */
+    audience?: string | null;
+    isSystemEvent?: boolean | null;
+    isMeshEvent?: boolean | null;
   };
   /** Incoming connection request. */
   "dm:request-new": DmRequest;

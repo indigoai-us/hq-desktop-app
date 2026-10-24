@@ -47,6 +47,33 @@ function agentStatusFromPayload(
   return dm ? { dm } : null;
 }
 
+/**
+ * Message-type markers (`audience`, `isSystemEvent`, `isMeshEvent`) carried
+ * by a channel or DM wake, so the rail can skip unread bumps for messages
+ * the message-types preference hides (US-005). Absent markers stay absent.
+ */
+export function messageTypeMarkersFromPayload(
+  payload: unknown,
+): { audience?: string; isSystemEvent?: true; isMeshEvent?: true } {
+  let parsed: unknown = payload;
+  if (typeof payload === "string" || payload instanceof Uint8Array) {
+    const text = typeof payload === "string" ? payload : mqttPayloadToText(payload);
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      return {};
+    }
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const rec = parsed as { audience?: unknown; isSystemEvent?: unknown; isMeshEvent?: unknown };
+  const audience = typeof rec.audience === "string" ? rec.audience.trim() : "";
+  return {
+    ...(audience ? { audience } : {}),
+    ...(rec.isSystemEvent === true ? { isSystemEvent: true as const } : {}),
+    ...(rec.isMeshEvent === true ? { isMeshEvent: true as const } : {}),
+  };
+}
+
 export type ChatMeshWakeBus = ReturnType<typeof createChatWakeBus>;
 
 /**
@@ -109,12 +136,12 @@ export function routeMeshWake(
   }
   const channel = channelWakeFromPayload(text || undefined);
   if (channel) {
-    wakes.emit("channel:new-message", channel);
+    wakes.emit("channel:new-message", { ...channel, ...messageTypeMarkersFromPayload(text) });
     return "channel";
   }
   const dm = parseDmDeliveredWake(payload ?? text);
   if (!dm || dm.direction === "out") return null;
-  wakes.emit("dm:new-message", dm);
+  wakes.emit("dm:new-message", { ...dm, ...messageTypeMarkersFromPayload(payload ?? text) });
   return "dm";
 }
 

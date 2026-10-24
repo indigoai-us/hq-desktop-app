@@ -30,12 +30,13 @@
   } from "./live-messages";
   import ReplyPanel, { type ReplyPreview } from "./messaging/ReplyPanel.svelte";
   import IdentityMark from "./messaging/IdentityMark.svelte";
+  import MessageFold from "./MessageFold.svelte";
+  import { groupIntoFolds } from "./message-folds.js";
   import AgentTaskStrip from "./tasks/AgentTaskStrip.svelte";
   import { TaskFeedController, isAgentUid } from "./tasks/task-feed-controller.svelte";
   import { REPLY_OVERLAY_MAX_PX } from "./reply-layout";
   import { messageType, showsCliChip, type MessageType } from "@hq/platform";
   import {
-    isMessageTypeVisible,
     isPeopleOnly,
     type MessageTypesPref,
   } from "./message-types.js";
@@ -127,6 +128,8 @@
   interface MessageRow {
     eventId: string;
     fromDisplayName: string;
+    /** Sender uid; drives the fold avatars. Absent on optimistic sends. */
+    fromPersonUid?: string;
     /** Render the "CLI" chip after the sender name (`showsCliChip`). */
     cliChip?: boolean;
     /** `messageType` of the wire row; absent on optimistic sends (people). */
@@ -163,6 +166,7 @@
   function mapWireMessage(wire: ConversationMessageWire): MessageRow {
     return {
       eventId: wire.eventId,
+      ...(wire.fromPersonUid ? { fromPersonUid: wire.fromPersonUid } : {}),
       fromDisplayName:
         wire.fromDisplayName?.trim() || wire.fromEmail || "Unknown",
       cliChip: showsCliChip(wire),
@@ -382,12 +386,13 @@
     });
   });
 
-  // Rows the current type filter lets through. Re-derives on every switch
-  // change, so the open timeline re-filters without a fetch.
-  const shownMessages = $derived(
-    typeFilter === null
-      ? messages
-      : messages.filter((m) => isMessageTypeVisible(m.type ?? "people", typeFilter)),
+  // Visible rows plus fold runs for the hidden ones (US-005). A hidden run
+  // collapses in place; a trailing run folds too.
+  const timelineRows = $derived(
+    groupIntoFolds(messages, typeFilter, {
+      typeOf: (m) => m.type ?? "people",
+      senderOf: (m) => ({ uid: m.fromPersonUid ?? "", name: m.fromDisplayName }),
+    }),
   );
 
   // Leaving or entering the server's human view changes which rows the
@@ -567,16 +572,75 @@
             {loadingOlder ? "Loading…" : "Show older messages"}
           </button>
         {/if}
-        {#if loading && shownMessages.length === 0}
+        {#if loading && timelineRows.length === 0}
           <div class="conv-status" role="status">Loading conversation…</div>
-        {:else if threadError && shownMessages.length === 0}
+        {:else if threadError && timelineRows.length === 0}
           <div class="conv-status" role="alert">{threadError}</div>
-        {:else if shownMessages.length === 0}
+        {:else if timelineRows.length === 0}
           <div class="conv-status" data-testid="conversation-empty">
             No messages yet — say hi.
           </div>
         {:else}
-          {#each shownMessages as m (m.eventId)}
+          {#key row.id}
+            {#each timelineRows as r (r.key)}
+              {#if r.kind === "fold"}
+                <MessageFold run={r} item={messageRow} />
+              {:else}
+                {@render messageRow(r.item)}
+              {/if}
+            {/each}
+          {/key}
+        {/if}
+      </div>
+
+      <AgentTaskStrip tasks={taskCtl?.tasks ?? []} />
+
+      <div class="conv-composer">
+        <textarea
+          rows="2"
+          placeholder={`Message ${row.title}`}
+          aria-label={`Message ${row.title}`}
+          data-testid="conversation-composer"
+          bind:value={draft}
+          onkeydown={onComposerKey}
+        ></textarea>
+        <button
+          type="button"
+          class="conv-send"
+          data-testid="conversation-send"
+          disabled={sending || !draft.trim()}
+          aria-busy={sending}
+          onclick={() => void send()}
+        ><RailIcon name="send" />
+          {sending ? "Sending…" : "Send"}
+        </button>
+      </div>
+    </div>
+    {#if openReplyRootId && replyScope}
+      <div
+        class="reply-column"
+        class:overlay={narrowViewport}
+        data-testid="reply-column"
+        data-reply-layout={narrowViewport ? "overlay" : "column"}
+      >
+        <ReplyPanel
+          {api}
+          {wakes}
+          rootEventId={openReplyRootId}
+          scope={replyScope}
+          channelId={row.channelId}
+          withPersonUid={row.personUid}
+          {seedRoot}
+          onclose={closeReply}
+          onreplycount={onReplyCount}
+          {onopenurl}
+        />
+      </div>
+    {/if}
+  </div>
+</section>
+
+{#snippet messageRow(m: MessageRow)}
             <div
               class="conv-msg"
               class:out={m.direction === "out"}
@@ -663,56 +727,7 @@
                 {/if}
               </div>
             </div>
-          {/each}
-        {/if}
-      </div>
-
-      <AgentTaskStrip tasks={taskCtl?.tasks ?? []} />
-
-      <div class="conv-composer">
-        <textarea
-          rows="2"
-          placeholder={`Message ${row.title}`}
-          aria-label={`Message ${row.title}`}
-          data-testid="conversation-composer"
-          bind:value={draft}
-          onkeydown={onComposerKey}
-        ></textarea>
-        <button
-          type="button"
-          class="conv-send"
-          data-testid="conversation-send"
-          disabled={sending || !draft.trim()}
-          aria-busy={sending}
-          onclick={() => void send()}
-        ><RailIcon name="send" />
-          {sending ? "Sending…" : "Send"}
-        </button>
-      </div>
-    </div>
-    {#if openReplyRootId && replyScope}
-      <div
-        class="reply-column"
-        class:overlay={narrowViewport}
-        data-testid="reply-column"
-        data-reply-layout={narrowViewport ? "overlay" : "column"}
-      >
-        <ReplyPanel
-          {api}
-          {wakes}
-          rootEventId={openReplyRootId}
-          scope={replyScope}
-          channelId={row.channelId}
-          withPersonUid={row.personUid}
-          {seedRoot}
-          onclose={closeReply}
-          onreplycount={onReplyCount}
-          {onopenurl}
-        />
-      </div>
-    {/if}
-  </div>
-</section>
+{/snippet}
 
 <style>
   .conversation-view {

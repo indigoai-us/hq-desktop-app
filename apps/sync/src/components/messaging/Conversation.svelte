@@ -24,12 +24,15 @@
     handleLinkActivate,
     presenceStatus,
     type LinkMenuAnchor,
+    MessageFold,
+    groupIntoFolds,
+    type MessageTypesPref,
   } from '@hq/ui';
   import { renderMessageBodyMarkdown } from '../../lib/messageMarkdown';
   import { isJumboEmojiBody } from '../../lib/emojiShortcodes';
   import { shareTitle } from '../../lib/share-path';
   import { sanitizeVisibleIdentifiers } from '../../lib/visible-labels';
-  import { primaryEnterKeyHint, showsCliChip } from '@hq/platform';
+  import { messageType, primaryEnterKeyHint, showsCliChip } from '@hq/platform';
   import type { ShareEvent } from '../../lib/notificationGroups';
   import AttachmentStack from './AttachmentStack.svelte';
   import AttachmentPicker from './AttachmentPicker.svelte';
@@ -90,6 +93,13 @@
 
   interface Props {
     messages: ConversationMessage[];
+    /**
+     * Message types preference (US-005). When given, runs of messages it
+     * hides collapse into fold lines in place; `null` renders every message.
+     */
+    messageTypes?: MessageTypesPref | null;
+    /** Conversation identity; a change closes every open fold. */
+    conversationKey?: string | null;
     // Retained for API compatibility. The timeline now identifies every sender,
     // including DMs, so authorship never depends on bubble alignment alone.
     showAuthors?: boolean;
@@ -150,7 +160,9 @@
   // here, so it's intentionally left out of the destructure to avoid
   // unused-binding noise — it still type-checks as an accepted prop.
   let {
-    messages,
+    messages: allMessages,
+    messageTypes = null,
+    conversationKey = null,
     loading = false,
     error = null,
     onretryload,
@@ -172,6 +184,30 @@
     belowMessages,
     companyUid = null,
   }: Props = $props();
+
+  // Visible rows and fold runs for hidden ones; `messages` is the visible
+  // list the day separators, sender grouping and scroll logic read.
+  const foldRows = $derived(
+    groupIntoFolds(allMessages, messageTypes, {
+      typeOf: (m) => messageType(m, { inferFromUid: false }),
+    }),
+  );
+  const messages = $derived(
+    foldRows.flatMap((r) => (r.kind === 'message' ? [r.item] : [])),
+  );
+  const foldItemsById = $derived(
+    new Map(
+      foldRows.flatMap((r) =>
+        r.kind === 'fold' ? r.items.map((m) => [m.eventId, r.items] as const) : [],
+      ),
+    ),
+  );
+  function foldRunItems(msg: ConversationMessage): ConversationMessage[] {
+    return foldItemsById.get(msg.eventId) ?? [msg];
+  }
+  // Folds reopen closed whenever the conversation changes.
+  const foldResetKey = $derived(conversationKey ?? '');
+  const visibleIndex = $derived(new Map(messages.map((m, i) => [m.eventId, i])));
 
   const messageAuthor = (msg: ConversationMessage) =>
     msg.direction === 'out' ? 'You' : (msg.fromDisplayName?.trim() || 'Unknown sender');
@@ -420,12 +456,12 @@
     return elapsed >= 0 && elapsed <= MESSAGE_GROUP_WINDOW_MS;
   }
 
-  function startsMessageGroup(index: number): boolean {
-    return !messagesShareGroup(messages[index - 1], messages[index]);
+  function startsMessageGroup(index: number, list: ConversationMessage[] = messages): boolean {
+    return !messagesShareGroup(list[index - 1], list[index]);
   }
 
-  function endsMessageGroup(index: number): boolean {
-    return !messagesShareGroup(messages[index], messages[index + 1]);
+  function endsMessageGroup(index: number, list: ConversationMessage[] = messages): boolean {
+    return !messagesShareGroup(list[index], list[index + 1]);
   }
 
   // Short relative-time stamp for the "last {time}" reply affordance (US-022).
@@ -561,10 +597,124 @@
       </div>
     {/if}
 
-    {#each messages as msg, index (msg.eventId)}
-    {@const groupStart = startsMessageGroup(index)}
-    {@const groupEnd = endsMessageGroup(index)}
-    {#if startsNewDay(index)}
+    {#key foldResetKey}
+    {#each foldRows as row (row.key)}
+      {#if row.kind === 'fold'}
+        <MessageFold run={row} item={foldItem} />
+      {:else}
+        {@render messageRow(row.item, visibleIndex.get(row.item.eventId) ?? 0, messages, false)}
+      {/if}
+    {/each}
+    {/key}
+    {#if belowMessages}{@render belowMessages()}{/if}
+  </div>
+
+  {#if newMessagesAvailable}
+    <button
+      class="new-messages-jump"
+      type="button"
+      onclick={jumpToLatest}
+      aria-label="Jump to new messages"
+    >
+      New messages
+      <span aria-hidden="true">↓</span>
+    </button>
+  {/if}
+  {#if linkMenu}
+    <LinkContextMenu
+      menu={linkMenu}
+      onopenurl={openConversationLink}
+      onclose={() => (linkMenu = null)}
+    />
+  {/if}
+  {#if linkCards.card}
+    <LinkHovercard
+      id={linkCards.id}
+      href={linkCards.card.href}
+      preview={linkCards.card.preview}
+      pageTitle={linkCards.pageTitle}
+      rect={linkCards.card.rect}
+      onopen={(url) => {
+        linkCards.hide();
+        openConversationLink(url);
+      }}
+      oncopy={copyLinkToClipboard}
+      onpointerenter={linkCards.hold}
+      onpointerleave={linkCards.scheduleClose}
+    />
+  {/if}
+</div>
+
+{#if composer}
+{#if readonly}
+  <div class="dm-reply dm-reply-readonly">
+    <span class="dm-reply-hint">Replies aren’t available in this preview.</span>
+  </div>
+{:else}
+  <div class="dm-reply">
+    <textarea
+      class="dm-reply-input"
+      bind:value={replyText}
+      onkeydown={onReplyKeydown}
+      {placeholder}
+      rows="3"
+      disabled={sending}
+      aria-label="Reply message"
+    ></textarea>
+    <div class="dm-reply-footer">
+      {#if sendError}
+        <span class="dm-reply-error" role="alert">{sendError}</span>
+      {:else}
+        <span class="dm-reply-hint">{primaryEnterKeyHint()} to send</span>
+      {/if}
+      <button
+        class="btn btn-send"
+        onclick={send}
+        disabled={sending || replyText.trim().length === 0}
+        aria-busy={sending}
+      >
+        {#if sending}
+          <span class="inline-spinner" aria-hidden="true"></span>
+        {/if}
+        {sending ? 'Sending…' : 'Send'}
+      </button>
+    </div>
+  </div>
+{/if}
+{/if}
+
+<svelte:window onkeydown={onAttachmentDialogKey} />
+
+{#if filesNotice}
+  <p class="dm-files-notice" data-testid="attachment-files-notice" role="status">{filesNotice}</p>
+{/if}
+
+{#if pickerAttachments}
+  <AttachmentPicker
+    attachments={pickerAttachments}
+    onclose={closeAttachmentPicker}
+    onselect={(index) => (previewIndex = index)}
+    onfolder={openAttachmentInFiles}
+  />
+{/if}
+{#if pickerAttachments && previewIndex !== null}
+  <AttachmentPreview
+    attachments={pickerAttachments}
+    index={previewIndex}
+    onclose={closeAttachmentPreview}
+    onindex={(next) => (previewIndex = next)}
+    onopeninfiles={openAttachmentInFiles}
+  />
+{/if}
+
+{#snippet foldItem(msg: ConversationMessage, index: number)}
+  {@render messageRow(msg, index, foldRunItems(msg), true)}
+{/snippet}
+
+{#snippet messageRow(msg: ConversationMessage, index: number, list: ConversationMessage[], inFold: boolean)}
+    {@const groupStart = startsMessageGroup(index, list)}
+    {@const groupEnd = endsMessageGroup(index, list)}
+    {#if !inFold && startsNewDay(index)}
       <div class="date-separator" aria-label={formatDateSeparator(msg.createdAt)}>
         <span>{formatDateSeparator(msg.createdAt)}</span>
       </div>
@@ -812,107 +962,7 @@
       </div>
       </div>
     {/if}
-    {/each}
-    {#if belowMessages}{@render belowMessages()}{/if}
-  </div>
-
-  {#if newMessagesAvailable}
-    <button
-      class="new-messages-jump"
-      type="button"
-      onclick={jumpToLatest}
-      aria-label="Jump to new messages"
-    >
-      New messages
-      <span aria-hidden="true">↓</span>
-    </button>
-  {/if}
-  {#if linkMenu}
-    <LinkContextMenu
-      menu={linkMenu}
-      onopenurl={openConversationLink}
-      onclose={() => (linkMenu = null)}
-    />
-  {/if}
-  {#if linkCards.card}
-    <LinkHovercard
-      id={linkCards.id}
-      href={linkCards.card.href}
-      preview={linkCards.card.preview}
-      pageTitle={linkCards.pageTitle}
-      rect={linkCards.card.rect}
-      onopen={(url) => {
-        linkCards.hide();
-        openConversationLink(url);
-      }}
-      oncopy={copyLinkToClipboard}
-      onpointerenter={linkCards.hold}
-      onpointerleave={linkCards.scheduleClose}
-    />
-  {/if}
-</div>
-
-{#if composer}
-{#if readonly}
-  <div class="dm-reply dm-reply-readonly">
-    <span class="dm-reply-hint">Replies aren’t available in this preview.</span>
-  </div>
-{:else}
-  <div class="dm-reply">
-    <textarea
-      class="dm-reply-input"
-      bind:value={replyText}
-      onkeydown={onReplyKeydown}
-      {placeholder}
-      rows="3"
-      disabled={sending}
-      aria-label="Reply message"
-    ></textarea>
-    <div class="dm-reply-footer">
-      {#if sendError}
-        <span class="dm-reply-error" role="alert">{sendError}</span>
-      {:else}
-        <span class="dm-reply-hint">{primaryEnterKeyHint()} to send</span>
-      {/if}
-      <button
-        class="btn btn-send"
-        onclick={send}
-        disabled={sending || replyText.trim().length === 0}
-        aria-busy={sending}
-      >
-        {#if sending}
-          <span class="inline-spinner" aria-hidden="true"></span>
-        {/if}
-        {sending ? 'Sending…' : 'Send'}
-      </button>
-    </div>
-  </div>
-{/if}
-{/if}
-
-<svelte:window onkeydown={onAttachmentDialogKey} />
-
-{#if filesNotice}
-  <p class="dm-files-notice" data-testid="attachment-files-notice" role="status">{filesNotice}</p>
-{/if}
-
-{#if pickerAttachments}
-  <AttachmentPicker
-    attachments={pickerAttachments}
-    onclose={closeAttachmentPicker}
-    onselect={(index) => (previewIndex = index)}
-    onfolder={openAttachmentInFiles}
-  />
-{/if}
-{#if pickerAttachments && previewIndex !== null}
-  <AttachmentPreview
-    attachments={pickerAttachments}
-    index={previewIndex}
-    onclose={closeAttachmentPreview}
-    onindex={(next) => (previewIndex = next)}
-    onopeninfiles={openAttachmentInFiles}
-  />
-{/if}
+{/snippet}
 
 <style>
   /* ── Thread (scrollable conversation) ─────────────────────────────────── */

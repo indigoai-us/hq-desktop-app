@@ -11,11 +11,12 @@
 //      itself is left alone.
 //   3. The default behaviour holds for everyone: the contact list is fetched
 //      with bot previews off, and threads hide agent-audience messages.
-//   4. The audience filter itself (still used by DM threads) is unchanged.
+//   4. DM threads fold agent-audience runs in place (US-005) with the same
+//      audience rules the old filter used.
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 const REPO = resolve(__dirname, '../../../..');
 const read = (rel: string) => readFileSync(resolve(REPO, rel), 'utf8');
@@ -66,62 +67,67 @@ describe('Messages toolbar: bot-message toggle removed', () => {
   });
 });
 
-// ── 4. Filter function (still used by DM threads) ───────────────────────────────────────────────────────
-describe('filterByAudience', () => {
-  type Item = { audience?: string | null };
+// ── 4. Fold grouping (replaces the old audience filter in DM threads) ────────
+// US-005: DM threads no longer drop agent-audience messages; each run of them
+// folds in place. Agent rows are hidden from the visible rows by default.
+describe('DM thread folds by audience', () => {
+  type Item = { eventId: string; audience?: string | null };
+  const OFF = { agents: false, system: false };
+  const ON = { agents: true, system: false };
+  const load = () => import('../../../../packages/ui/src/chat/message-folds');
+  const visible = (rows: Array<{ kind: string; item?: Item }>) =>
+    rows.flatMap((r) => (r.kind === 'message' && r.item ? [r.item] : []));
+  const hiddenCount = (rows: Array<{ kind: string; items?: Item[] }>) =>
+    rows.reduce((n, r) => n + (r.kind === 'fold' ? (r.items?.length ?? 0) : 0), 0);
 
-  beforeEach(async () => {
-    const mod = await import('../../src/lib/botMessageFilter');
-    // reset module state isn't needed — these are pure functions
-    return mod;
+  it('shows every item as a row when the agents switch is on', async () => {
+    const { groupIntoFolds } = await load();
+    const items: Item[] = [
+      { eventId: '1', audience: 'human' },
+      { eventId: '2', audience: 'agent' },
+      { eventId: '3', audience: 'both' },
+      { eventId: '4' },
+    ];
+    const rows = groupIntoFolds(items, ON);
+    expect(visible(rows)).toHaveLength(4);
+    expect(hiddenCount(rows)).toBe(0);
   });
 
-  it('passes all items when showBotMessages=true', async () => {
-    const { filterByAudience } = await import('../../src/lib/botMessageFilter');
+  it('hides agent-audience items from the rows when the switch is off', async () => {
+    const { groupIntoFolds } = await load();
     const items: Item[] = [
-      { audience: 'human' },
-      { audience: 'agent' },
-      { audience: 'both' },
-      {},
+      { eventId: '1', audience: 'human' },
+      { eventId: '2', audience: 'agent' },
+      { eventId: '3', audience: 'both' },
+      { eventId: '4', audience: null },
+      { eventId: '5' },
     ];
-    expect(filterByAudience(items, true)).toHaveLength(4);
-  });
-
-  it('hides agent-audience items when showBotMessages=false', async () => {
-    const { filterByAudience } = await import('../../src/lib/botMessageFilter');
-    const items: Item[] = [
-      { audience: 'human' },
-      { audience: 'agent' },
-      { audience: 'both' },
-      { audience: null },
-      {},
-    ];
-    const visible = filterByAudience(items, false);
-    expect(visible).toHaveLength(4); // human, both, null, absent all show
-    expect(visible.every((m) => m.audience !== 'agent')).toBe(true);
+    const rows = groupIntoFolds(items, OFF);
+    expect(visible(rows)).toHaveLength(4); // human, both, null, absent all show
+    expect(visible(rows).every((m) => m.audience !== 'agent')).toBe(true);
   });
 
   it('treats absent audience as human (default)', async () => {
-    const { filterByAudience } = await import('../../src/lib/botMessageFilter');
-    const items: Item[] = [{}, { audience: null }, { audience: undefined }];
-    expect(filterByAudience(items, false)).toHaveLength(3);
+    const { groupIntoFolds } = await load();
+    const items: Item[] = [{ eventId: '1' }, { eventId: '2', audience: null }, { eventId: '3', audience: undefined }];
+    expect(visible(groupIntoFolds(items, OFF))).toHaveLength(3);
   });
 
-  it('countHiddenByAudience returns 0 when toggle is on', async () => {
-    const { countHiddenByAudience } = await import('../../src/lib/botMessageFilter');
-    const items: Item[] = [{ audience: 'agent' }, { audience: 'agent' }];
-    expect(countHiddenByAudience(items, true)).toBe(0);
+  it('folds nothing when the switch is on', async () => {
+    const { groupIntoFolds } = await load();
+    const items: Item[] = [{ eventId: '1', audience: 'agent' }, { eventId: '2', audience: 'agent' }];
+    expect(hiddenCount(groupIntoFolds(items, ON))).toBe(0);
   });
 
-  it('countHiddenByAudience counts only agent items when toggle is off', async () => {
-    const { countHiddenByAudience } = await import('../../src/lib/botMessageFilter');
+  it('folds only the agent items when the switch is off', async () => {
+    const { groupIntoFolds } = await load();
     const items: Item[] = [
-      { audience: 'human' },
-      { audience: 'agent' },
-      { audience: 'agent' },
-      { audience: 'both' },
+      { eventId: '1', audience: 'human' },
+      { eventId: '2', audience: 'agent' },
+      { eventId: '3', audience: 'agent' },
+      { eventId: '4', audience: 'both' },
     ];
-    expect(countHiddenByAudience(items, false)).toBe(2);
+    expect(hiddenCount(groupIntoFolds(items, OFF))).toBe(2);
   });
 });
 
