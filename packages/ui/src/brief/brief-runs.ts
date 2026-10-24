@@ -135,11 +135,26 @@ export function latestReadyRun(entries: readonly BriefIndexEntry[]): BriefIndexE
  * local day than `now`; "refresh" (a quiet Refresh) once today's brief exists.
  */
 export function createControl(entries: readonly BriefIndexEntry[], now: Date): "create" | "refresh" {
+  return todayReadyRun(entries, now) ? "refresh" : "create";
+}
+
+/** Same calendar day in local time. */
+export function sameLocalDay(a: Date, b: Date): boolean {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+/**
+ * The newest ready run made on `now`'s local day, else null. The page opens
+ * on this run; an earlier day's brief is never shown by default (owner,
+ * 2026-10-23: "the previous day's brief shouldn't show unless you arrow
+ * back"), so a day without a brief opens on Create brief.
+ */
+export function todayReadyRun(entries: readonly BriefIndexEntry[], now: Date): BriefIndexEntry | null {
   const latest = latestReadyRun(entries);
-  if (!latest) return "create";
+  if (!latest) return null;
   const made = new Date(latest.createdAt);
-  if (Number.isNaN(made.getTime())) return "create";
-  return made.getFullYear() === now.getFullYear() && made.getMonth() === now.getMonth() && made.getDate() === now.getDate() ? "refresh" : "create";
+  if (Number.isNaN(made.getTime())) return null;
+  return sameLocalDay(made, now) ? latest : null;
 }
 
 /**
@@ -296,7 +311,12 @@ export function waitingStep(bot: string | null | undefined): string {
 export type BriefCreatePhase =
   | { kind: "idle" }
   | { kind: "blocked"; message: string; fix: BriefBotFix }
-  | { kind: "dispatching"; runId: string }
+  | {
+      kind: "dispatching";
+      runId: string;
+      /** What the scene says meanwhile: starting the bot, opening a tool. Default "Waking your bot…". */
+      step?: string;
+    }
   | {
       kind: "waiting";
       runId: string;
@@ -353,6 +373,42 @@ export const BRIEF_POLL_MS = 2_000;
  */
 export const BRIEF_DISPATCH_TIMEOUT_MS = 60_000;
 export const BRIEF_DISPATCH_TIMEOUT_MESSAGE = "Your bot did not answer. Check that it is running, then try again.";
+/**
+ * After Start it, how long the assistant gets to come up before the brief
+ * gives up on it. `hq bot start` answers as soon as launchd is kicked, so a
+ * bot that dies on boot (owner's machine, 2026-10-23: "could not verify bot
+ * identity: fetch failed", 20 ms after start) still reads as started; only
+ * a fresh listing that shows the process alive proves it is running.
+ */
+export const BRIEF_WAKE_TIMEOUT_MS = 45_000;
+/** The dispatch deadline when the run starts the bot first: the wake, then the check and send. */
+export const BRIEF_WAKE_DISPATCH_TIMEOUT_MS = BRIEF_WAKE_TIMEOUT_MS + BRIEF_DISPATCH_TIMEOUT_MS;
+/** The coding tool the fallback runs the brief in when the assistant cannot. */
+export const BRIEF_FALLBACK_TOOL = "Claude";
+/** Button label for the fallback. */
+export const BRIEF_FALLBACK_LABEL = `Run in ${BRIEF_FALLBACK_TOOL} instead`;
+
+/** The scene's step line while the assistant is being started. */
+export function wakeStep(bot: string): string {
+  return `Starting ${bot.toLowerCase() === "your assistant" ? "your assistant" : bot}…`;
+}
+
+/** The scene's step line while the fallback tool opens. */
+export function toolStep(tool: string = BRIEF_FALLBACK_TOOL): string {
+  return `Opening ${tool}…`;
+}
+
+/**
+ * The assistant did not come up in time, in plain words. A bot the listing
+ * reports as `failed` started and stopped by itself; `stopped` never came up.
+ * Either way the sentence names the two ways forward: its profile holds the
+ * reason, and the brief can run in a coding tool instead.
+ */
+export function wakeFailedMessage(bot: string, state: string | null | undefined): string {
+  const name = bot.toLowerCase() === "your assistant" ? "Your assistant" : bot;
+  const what = state === "failed" ? `${name} started but stopped right away.` : `${name} did not start.`;
+  return `${what} Open its profile to see why, or run the brief in ${BRIEF_FALLBACK_TOOL} instead.`;
+}
 /** How often a sent run asks the bot's conversation whether its turn failed. */
 export const BRIEF_BOT_FAILURE_POLL_MS = 10_000;
 
@@ -585,15 +641,29 @@ export const BRIEF_FIX_LABEL: Record<BriefBotFix, string> = {
 
 /**
  * The job message the bot receives: the skill invocation first so the bot
- * runs it as written, then the run id and company in plain words.
+ * runs it as written, then the run id and scope in plain words.
+ *
+ * With a company open in the app the brief is scoped to it. Without one the
+ * brief is the person's (`--all`: personal work plus every company they
+ * belong to): the brief belongs to the person, never to a company, so no
+ * company is required to make one.
  */
-export function briefJobMessage(runId: string, company: string): string {
-  const co = company.trim();
+export function briefJobMessage(runId: string, company: string | null): string {
+  const co = company?.trim() || null;
+  const tail = `Write workspace/brief/${runId}/status.json at every step and append workspace/brief/index.jsonl when the run ends.`;
+  if (!co) {
+    return (
+      `/daily-brief --all --run-id ${runId}\n\n` +
+      `Run the daily-brief skill now with run_id ${runId} for this person across their HQ: ` +
+      `personal work plus a section for each company they belong to, each built only from that company's data. ` +
+      tail
+    );
+  }
   return (
     `/daily-brief ${co} --run-id ${runId}\n\n` +
     `Run the daily-brief skill now with run_id ${runId} for company ${co}. ` +
     `The company is ${co}, the one open in the HQ app; do not pick another company. ` +
-    `Write workspace/brief/${runId}/status.json at every step and append workspace/brief/index.jsonl when the run ends.`
+    tail
   );
 }
 

@@ -10,7 +10,7 @@
    */
   import RailButton from "../common/button/RailButton.svelte";
   import type { BriefCreateRun } from "./brief-create.svelte.js";
-  import { BRIEF_FIX_LABEL, createControl, type BriefIndexEntry } from "./brief-runs.js";
+  import { BRIEF_FALLBACK_LABEL, BRIEF_FIX_LABEL, createControl, type BriefIndexEntry } from "./brief-runs.js";
 
   interface Props {
     entries: readonly BriefIndexEntry[];
@@ -43,6 +43,10 @@
     <RailButton icon="play" variant="primary" onclick={() => void runFix()} disabled={fixing} data-testid="brief-fix">
       {fixing ? "Working…" : BRIEF_FIX_LABEL[phase.fix]}
     </RailButton>
+    <!-- The other way to a brief when the assistant cannot take the job. -->
+    {#if create.canLaunch}
+      <RailButton icon="arrow-right" variant="ghost" onclick={() => void create.startInTool("claude")} data-testid="brief-fallback">{BRIEF_FALLBACK_LABEL}</RailButton>
+    {/if}
     <!-- Stays available while blocked: after a fix made elsewhere, pressing it checks the bot again. -->
     <RailButton
       icon={control === "refresh" ? "refresh" : "plus"}

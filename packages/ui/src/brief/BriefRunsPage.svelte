@@ -24,7 +24,7 @@
   import { BriefCreateRun, type BriefCreator } from "./brief-create.svelte.js";
   import { adapterSweepSource, gatherBriefInput, readRunHousekeeping, type BriefAdapter, type BriefSweepSource } from "./brief-data.js";
   import type { BriefHousekeeping } from "./brief-run-files.js";
-  import { BRIEF_FIX_LABEL, BRIEF_INDEX_PATH, latestReadyRun, parseBriefIndex, runIdTime, type BriefIndexEntry } from "./brief-runs.js";
+  import { BRIEF_FALLBACK_LABEL, BRIEF_FIX_LABEL, BRIEF_INDEX_PATH, latestReadyRun, parseBriefIndex, runIdTime, todayReadyRun, type BriefIndexEntry } from "./brief-runs.js";
   import type { BriefLaunch } from "./brief-context.svelte.js";
   import type { BriefInput } from "./brief-types.js";
 
@@ -169,6 +169,13 @@
     : hostCreator
       ? new BriefCreateRun({ creator: hostCreator, read: async (path) => (source ? source.readHqFile(path) : null) })
       : null;
+  /**
+   * Today's brief, if one was made. Only this one opens by itself: an earlier
+   * day's brief stays one arrow back, and a day with no brief yet opens on
+   * Create brief (the owner's rule, 2026-10-23). Hosts without a creator
+   * cannot make one, so they keep opening the newest brief.
+   */
+  const todayRunId = $derived(run ? (todayReadyRun(entries, now)?.runId ?? null) : latestRunId);
   // Ready: show the new brief. Failed: show whatever the run did write.
   const unsubscribe = run?.subscribe(async (phase) => {
     entries = await loadIndex();
@@ -206,7 +213,7 @@
     }
     switch (cp.kind) {
       case "dispatching":
-        return { phase: "running", progress: 0, step: "Waking your bot…" };
+        return { phase: "running", progress: 0, step: cp.step ?? "Waking your bot…" };
       case "waiting":
         return { phase: "running", progress: 0, step: waitingStep(cp.bot) };
       case "running":
@@ -290,10 +297,31 @@
 
   /** No runs yet and a way to make one: the pre-dawn empty state. */
   const empty = $derived(!!run && entries.length === 0 && (cp.kind === "idle" || cp.kind === "blocked"));
+  /**
+   * Briefs exist but none from today, and none picked from the strip: the
+   * page asks for today's brief instead of showing yesterday's.
+   */
+  const awaitingToday = $derived(!!run && entries.length > 0 && todayRunId == null && selectedRunId == null && (cp.kind === "idle" || cp.kind === "blocked"));
+  /** The scene is the page (no brief under it): the first brief, or today's not made yet. */
+  const scene = $derived(empty || awaitingToday);
 
   function createBrief(): void {
     bloomDone = false;
     void run?.start();
+  }
+  /** The fallback: the brief job in a coding tool instead of the assistant. */
+  function createInTool(): void {
+    bloomDone = false;
+    void run?.startInTool("claude");
+  }
+  /** Back from an earlier day's brief to today's Create brief view. */
+  function showToday(): void {
+    seq += 1;
+    selectedRunId = null;
+    shownRunId = null;
+    input = null;
+    housekeeping = null;
+    missing = [];
   }
 
   onMount(() => {
@@ -303,7 +331,11 @@
       // Resume a run already in flight (a reload, or one started elsewhere).
       if (run && !run.busy) void run.rehydrate(entries.filter((e) => e.state === "running").map((e) => e.runId));
       const wanted = initialRunId && entries.some((e) => e.runId === initialRunId) ? initialRunId : null;
-      await show(wanted ?? latestReadyRun(entries)?.runId ?? null);
+      // With briefs but none from today, the page opens on Create brief; the
+      // earlier briefs wait in the strip. Nothing is loaded for a brief that
+      // is not going to be shown.
+      if (!wanted && run && entries.length > 0 && !todayReadyRun(entries, new Date())) return;
+      await show(wanted ?? todayRunId ?? null);
     })();
   });
   onDestroy(() => {
@@ -316,7 +348,15 @@
 
 {#snippet runBar()}
   <!-- A run still being written is not missing anything yet. -->
-  <BriefRunBar {entries} {selectedRunId} {latestRunId} {now} missing={inFlightRunId && inFlightRunId === selectedRunId ? [] : missing} onselect={(id) => void show(id)} />
+  <BriefRunBar
+    {entries}
+    {selectedRunId}
+    {latestRunId}
+    {now}
+    missing={inFlightRunId && inFlightRunId === selectedRunId ? [] : missing}
+    onselect={(id) => void show(id)}
+    onback={run && todayRunId == null ? showToday : null}
+  />
 {/snippet}
 
 {#snippet createTool()}
@@ -350,7 +390,7 @@
     phase={dawn?.phase ?? "idle"}
     progress={dawn?.progress ?? 0}
     step={dawn?.step ?? ""}
-    headline={!dawn ? "Your first brief is waiting" : dawn.phase === "failed" ? "" : firstRun ? "Your first brief is on its way" : "Your new brief is on its way"}
+    headline={!dawn ? (entries.length ? "Today's brief is waiting" : "Your first brief is waiting") : dawn.phase === "failed" ? "" : firstRun ? "Your first brief is on its way" : "Your new brief is on its way"}
     onbloomdone={() => (bloomDone = true)}
     onlive={() => (pageLive = size === "page")}
     actions={!dawn ? idleActions : dawn.phase === "failed" ? failedActions : undefined}
@@ -370,6 +410,10 @@
     <RailButton icon="play" variant="ghost" onclick={() => { bloomDone = false; void run?.start({ force: true }); }} data-testid="brief-start-new">Start a new one</RailButton>
   {:else}
     <RailButton icon="refresh" variant="primary" onclick={createBrief} data-testid="brief-retry">Try again</RailButton>
+    <!-- A stopped run always leaves another way to a brief when the host has one. -->
+    {#if run?.canLaunch}
+      <RailButton icon="arrow-right" variant="ghost" onclick={createInTool} data-testid="brief-fallback">{BRIEF_FALLBACK_LABEL}</RailButton>
+    {/if}
     <RailButton icon="x" variant="ghost" onclick={() => run?.dismiss()} data-testid="brief-dismiss">Dismiss</RailButton>
   {/if}
 {/snippet}
@@ -378,6 +422,9 @@
   {#if cp.kind === "blocked"}
     <p class="blocked" data-testid="brief-blocked">{cp.message}</p>
     <button type="button" class="cta big" onclick={() => void run?.fix()} data-testid="brief-fix">{BRIEF_FIX_LABEL[cp.fix]}<svg viewBox="0 0 256 256" aria-hidden="true"><path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z" /></svg></button>
+    {#if run?.canLaunch}
+      <RailButton icon="arrow-right" variant="ghost" onclick={createInTool} data-testid="brief-fallback">{BRIEF_FALLBACK_LABEL}</RailButton>
+    {/if}
   {:else}
     <button type="button" class="cta big" onclick={createBrief} data-testid="brief-create">Create brief<svg viewBox="0 0 256 256" aria-hidden="true"><path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z" /></svg></button>
   {/if}
@@ -388,9 +435,13 @@
 {/snippet}
 
 <!-- Any run in flight, first brief or a refresh, plays on the full-page scene in place of the brief, then hands off to it. -->
-{#if (empty || dawn) && (input || run)}
+{#if (scene || dawn) && (input || run)}
   <!-- The brief's own stage (.daily-brief: tokens, light and dark), so the scene and the brief it becomes match. -->
-  <div class="daily-brief daily-brief-dawn-page">{@render dawnScene("page")}</div>
+  <div class="daily-brief daily-brief-dawn-page">
+    <!-- Earlier briefs stay one arrow back from today's view. -->
+    {#if awaitingToday && entries.length}<div class="scene-history">{@render runBar()}</div>{/if}
+    {@render dawnScene("page")}
+  </div>
 {:else if input}
   <DailyBrief dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {housekeeping} onlog={logItem} header={entries.length || run || dawn ? briefHeader : undefined} tools={run ? createTool : undefined} />
 {:else if failed}
@@ -406,6 +457,13 @@
   .daily-brief-dawn-page {
     display: flex;
     flex-direction: column;
+  }
+  /* The strip of earlier briefs above today's Create brief scene: quiet, same row the brief's header uses. */
+  .scene-history {
+    display: flex;
+    align-items: center;
+    min-height: 28px;
+    margin-bottom: 10px;
   }
   .loader {
     display: flex;

@@ -8,6 +8,17 @@ import type { BriefSweepSource } from "./brief-data.js";
 
 const NEW = "brief-20261008-090000";
 const OLD = "brief-20261005-080000";
+/**
+ * The newest fixture brief is from today: only today's brief opens by itself.
+ * Stamped at 00:01 local today (not "an hour ago", which is yesterday when CI
+ * runs in the first hour of a day) and before any run the test starts now.
+ */
+const todayEarly = (): string => {
+  const d = new Date();
+  d.setHours(0, 1, 0, 0);
+  return d.toISOString();
+};
+const NEW_AT = todayEarly();
 const entry = (runId: string, created: string, extra: Record<string, unknown> = {}) =>
   JSON.stringify({
     run_id: runId,
@@ -56,7 +67,7 @@ afterEach(() => {
 
 describe("BriefRunsPage", () => {
   const files = (): Record<string, string> => ({
-    "workspace/brief/index.jsonl": [entry(OLD, "2026-10-05T15:00:00Z", { catch_up: true }), entry(NEW, "2026-10-08T16:00:00Z")].join("\n"),
+    "workspace/brief/index.jsonl": [entry(OLD, "2026-10-05T15:00:00Z", { catch_up: true }), entry(NEW, NEW_AT)].join("\n"),
     [`workspace/brief/${NEW}/brief.json`]: JSON.stringify({ items: { decisions: [{ id: "d1", title: "Newest call" }] } }),
     [`workspace/brief/${NEW}/brief-data.json`]: "{}",
     [`workspace/brief/${NEW}/housekeeping.json`]: JSON.stringify({
@@ -162,6 +173,175 @@ describe("BriefRunsPage", () => {
     expect(target.textContent).toContain("Your first brief is waiting");
     expect(target.querySelectorAll('[data-testid="brief-create"]')).toHaveLength(1);
     expect(q("daily-brief")).toBeNull();
+  });
+
+  it("with briefs from earlier days only, opens on today's Create brief; the earlier brief is one arrow back", async () => {
+    const creator: BriefCreator = {
+      company: () => "indigo",
+      check: async () => ({ ok: false, bot: null, fix: "create-bot", message: "x" }),
+      dispatch: vi.fn(async () => null),
+      fix: vi.fn(async () => null),
+      notify: vi.fn(),
+    };
+    const f = files();
+    f["workspace/brief/index.jsonl"] = [entry(OLD, "2026-10-05T15:00:00Z"), entry(NEW, "2026-10-08T16:00:00Z")].join("\n");
+    const reads = render(f, { creator });
+    await settle();
+    // The scene, not yesterday's brief; nothing of it loaded either.
+    expect(q("brief-dawn")?.getAttribute("data-phase")).toBe("idle");
+    expect(target.textContent).toContain("Today's brief is waiting");
+    expect(q("daily-brief")).toBeNull();
+    expect(target.textContent).not.toContain("Newest call");
+    expect(reads).not.toContain(`workspace/brief/${NEW}/brief.json`);
+    expect(target.querySelectorAll('[data-testid="brief-create"]')).toHaveLength(1);
+    // The earlier briefs wait in the strip, none lit.
+    const cells = [...target.querySelectorAll<HTMLElement>('[data-testid="brief-run-cell"]')];
+    expect(cells.map((c) => c.getAttribute("data-run"))).toEqual([OLD, NEW]);
+    expect(cells.every((c) => c.getAttribute("aria-current") == null)).toBe(true);
+    // Arrow back: that brief, with the way back to today.
+    cells[1]!.click();
+    await settle();
+    expect(q("daily-brief")).not.toBeNull();
+    expect(target.textContent).toContain("Newest call");
+    expect(q("brief-today")?.textContent).toContain("Back to today");
+    expect(q("brief-latest")).toBeNull();
+    // The header's control is still Create brief: there is no brief for today.
+    expect(q("brief-create")?.getAttribute("data-control")).toBe("create");
+    q("brief-today")!.click();
+    await settle();
+    expect(q("daily-brief")).toBeNull();
+    expect(q("brief-dawn")?.getAttribute("data-phase")).toBe("idle");
+    expect(target.textContent).toContain("Today's brief is waiting");
+  });
+
+  it("with one earlier brief only, the strip still shows it so it stays reachable; Left opens it", async () => {
+    const creator: BriefCreator = {
+      company: () => "indigo",
+      check: async () => ({ ok: false, bot: null, fix: "create-bot", message: "x" }),
+      dispatch: vi.fn(async () => null),
+      fix: vi.fn(async () => null),
+      notify: vi.fn(),
+    };
+    const f = files();
+    f["workspace/brief/index.jsonl"] = entry(NEW, "2026-10-08T16:00:00Z");
+    render(f, { creator });
+    await settle();
+    const cells = [...target.querySelectorAll<HTMLElement>('[data-testid="brief-run-cell"]')];
+    expect(cells.map((c) => c.getAttribute("data-run"))).toEqual([NEW]);
+    cells[0]!.focus();
+    q("brief-run-strip")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+    await settle();
+    expect(target.textContent).toContain("Newest call");
+    // Right from the newest earlier brief goes back to today.
+    q("brief-run-strip")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    await settle();
+    expect(q("daily-brief")).toBeNull();
+    expect(target.textContent).toContain("Today's brief is waiting");
+  });
+
+  it("today's brief opens by itself, as before", async () => {
+    const creator: BriefCreator = {
+      company: () => "indigo",
+      check: async () => ({ ok: false, bot: null, fix: "create-bot", message: "x" }),
+      dispatch: vi.fn(async () => null),
+      fix: vi.fn(async () => null),
+      notify: vi.fn(),
+    };
+    render(files(), { creator });
+    await settle();
+    expect(q("daily-brief")).not.toBeNull();
+    expect(target.textContent).toContain("Newest call");
+    expect(q("brief-create")?.getAttribute("data-control")).toBe("refresh");
+  });
+
+  it("Start it on a stopped assistant plays the scene with 'Starting…', then the brief's own progress, in one press", async () => {
+    const stopped = { name: "assistant", displayName: "assistant", agentUid: "agt_1", runtime: "claude", state: "stopped", processAlive: false } as LocalBotRow;
+    const running = { ...stopped, state: "running", processAlive: true } as LocalBotRow;
+    let started = false;
+    const f = files();
+    f["workspace/brief/index.jsonl"] = entry(NEW, "2026-10-08T16:00:00Z");
+    const creator: BriefCreator = {
+      company: () => "indigo",
+      check: vi.fn(async () => (started ? { ok: true as const, bot: running } : { ok: false as const, bot: stopped, fix: "start-bot" as const, message: "assistant is not running." })),
+      dispatch: vi.fn(async (_b, _body: string, key: string) => {
+        f[`workspace/brief/${key}/status.json`] = JSON.stringify({ run_id: key, state: "running", step: "Sweeping your day", progress: 0.3 });
+        return null;
+      }),
+      fix: vi.fn(async () => {
+        started = true;
+        return null;
+      }),
+      notify: vi.fn(),
+    };
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    try {
+      render(f, { creator });
+      await settle();
+      q("brief-create")!.click();
+      await settle();
+      expect(q("brief-blocked")?.textContent).toBe("assistant is not running.");
+      q("brief-fix")!.click();
+      flushSync();
+      expect(q("brief-dawn-step")?.textContent).toContain("Starting assistant…");
+      await settle();
+      expect(creator.fix).toHaveBeenCalledWith("start-bot", stopped);
+      expect(creator.dispatch).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(2_100);
+      await settle();
+      expect(q("brief-dawn")?.getAttribute("data-phase")).toBe("running");
+      expect(q("brief-dawn-step")?.textContent).toContain("Sweeping your day");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("when the assistant cannot take the job, the scene offers Run in Claude instead, which opens the tool and follows the run", async () => {
+    const stopped = { name: "assistant", agentUid: "agt_1", runtime: "claude", state: "failed", processAlive: false } as LocalBotRow;
+    const f: Record<string, string> = {};
+    const launch = vi.fn(async (_engine: string, prompt: string) => {
+      const key = /--run-id (\S+)/.exec(prompt)![1]!;
+      f[`workspace/brief/${key}/status.json`] = JSON.stringify({ run_id: key, state: "running", step: "Reading your sessions", progress: 0.2 });
+      return null;
+    });
+    const creator: BriefCreator = {
+      company: () => "indigo",
+      check: async () => ({ ok: false, bot: stopped, fix: "start-bot", message: "Your assistant is not running." }),
+      dispatch: vi.fn(async () => null),
+      fix: vi.fn(async () => "Could not start assistant on this computer."),
+      notify: vi.fn(),
+      launch,
+    };
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    try {
+      render(f, { creator });
+      await settle();
+      q("brief-create")!.click();
+      await settle();
+      // Blocked: the fix and the other way, side by side.
+      expect(q("brief-fix")?.textContent).toContain("Start it");
+      expect(q("brief-fallback")?.textContent).toContain("Run in Claude instead");
+      // A start that fails stops with a sentence, and the other way is still there.
+      q("brief-fix")!.click();
+      await settle();
+      expect(q("brief-dawn")?.getAttribute("data-phase")).toBe("failed");
+      expect(q("brief-dawn-step")?.textContent).toContain("Could not start assistant on this computer.");
+      expect(q("brief-retry")).not.toBeNull();
+      expect(q("brief-fallback")).not.toBeNull();
+      q("brief-fallback")!.click();
+      flushSync();
+      expect(q("brief-dawn-step")?.textContent).toContain("Opening Claude…");
+      await settle();
+      expect(launch).toHaveBeenCalledTimes(1);
+      expect(launch.mock.calls[0]![0]).toBe("claude");
+      expect(launch.mock.calls[0]![1]).toContain("/daily-brief indigo --run-id ");
+      expect(q("brief-dawn-step")?.textContent).toContain("Sent to Claude, waiting for it to start");
+      await vi.advanceTimersByTimeAsync(2_100);
+      await settle();
+      expect(q("brief-dawn-step")?.textContent).toContain("Reading your sessions");
+      expect(creator.dispatch).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("with no runs and no creator, renders the old per-day brief and no history", async () => {
@@ -284,7 +464,7 @@ describe("BriefRunsPage", () => {
   it("after a refresh hands off, stepping to an older brief shows that brief, not the ready scene again", async () => {
     const bot = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
     const f = files();
-    f["workspace/brief/index.jsonl"] = entry(NEW, new Date(Date.now() - 3_600_000).toISOString());
+    f["workspace/brief/index.jsonl"] = entry(NEW, todayEarly());
     const creator: BriefCreator = {
       company: () => "indigo",
       check: async () => ({ ok: true, bot }),
@@ -307,7 +487,7 @@ describe("BriefRunsPage", () => {
     await settle();
     const runId = (run.phase as { runId: string }).runId;
     f[`workspace/brief/${runId}/status.json`] = JSON.stringify({ run_id: runId, state: "ready", step: "Done", progress: 1 });
-    f["workspace/brief/index.jsonl"] = [entry(runId, new Date().toISOString()), entry(NEW, new Date(Date.now() - 3_600_000).toISOString())].join("\n");
+    f["workspace/brief/index.jsonl"] = [entry(runId, new Date().toISOString()), entry(NEW, todayEarly())].join("\n");
     f[`workspace/brief/${runId}/brief.json`] = JSON.stringify({ items: { decisions: [{ id: "d2", title: "Fresh call" }] } });
     f[`workspace/brief/${runId}/brief-data.json`] = "{}";
     timers.shift()!();

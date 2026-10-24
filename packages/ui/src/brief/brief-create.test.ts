@@ -1,7 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import type { LocalBotRow } from "@hq/platform";
 import { ACTIVE_RUN_KEY, BriefCreateRun, type BriefCreator } from "./brief-create.svelte.js";
-import { BRIEF_BOT_FAILURE_POLL_MS, BRIEF_DISPATCH_TIMEOUT_MESSAGE, BRIEF_DISPATCH_TIMEOUT_MS, BRIEF_POLL_MS } from "./brief-runs.js";
+import {
+  BRIEF_BOT_FAILURE_POLL_MS,
+  BRIEF_DISPATCH_TIMEOUT_MESSAGE,
+  BRIEF_DISPATCH_TIMEOUT_MS,
+  BRIEF_POLL_MS,
+  BRIEF_WAKE_DISPATCH_TIMEOUT_MS,
+  BRIEF_WAKE_TIMEOUT_MS,
+} from "./brief-runs.js";
+
+/** Let the awaited chain inside the run settle without a timer. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 8; i += 1) await new Promise((r) => setTimeout(r, 0));
+}
 
 const BOT = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
 const RUN = "brief-20261008-090000";
@@ -42,7 +54,8 @@ function harness(over: Partial<BriefCreator> = {}, files: Record<string, string>
     },
     clearTimer: () => {},
     setDeadline: (fn, ms) => {
-      expect(ms).toBe(BRIEF_DISPATCH_TIMEOUT_MS);
+      // A plain send has one deadline; a Start it press gets the wake on top.
+      expect([BRIEF_DISPATCH_TIMEOUT_MS, BRIEF_WAKE_DISPATCH_TIMEOUT_MS]).toContain(ms);
       deadlines.push(fn);
       return deadlines.length - 1;
     },
@@ -104,6 +117,128 @@ describe("BriefCreateRun", () => {
     expect(await h.run.fix()).toBeNull();
     expect(h.creator.fix).toHaveBeenCalledWith("connect-model", BOT);
     expect(h.run.phase).toEqual({ kind: "idle" });
+  });
+
+  describe("Start it", () => {
+    const stopped = { ...BOT, state: "stopped", processAlive: false } as LocalBotRow;
+    const notRunning = { ok: false as const, bot: stopped, fix: "start-bot" as const, message: "pickles is not running." };
+
+    it("starts the assistant, waits until a listing shows it running, then sends the job in the same press", async () => {
+      let started = false;
+      const h = harness({
+        check: vi.fn(async () => (started ? { ok: true as const, bot: BOT } : notRunning)),
+        fix: vi.fn(async () => {
+          started = true;
+          return null;
+        }),
+      });
+      await h.run.start();
+      expect(h.run.phase).toEqual({ kind: "blocked", fix: "start-bot", message: "pickles is not running." });
+      expect(await h.run.fix()).toBeNull();
+      // The press paints the scene at once, with what is happening.
+      expect(h.run.phase).toMatchObject({ kind: "dispatching", step: "Starting pickles…" });
+      await settle();
+      expect(h.creator.fix).toHaveBeenCalledWith("start-bot", stopped);
+      expect(h.creator.dispatch).toHaveBeenCalledTimes(1);
+      expect(h.run.phase).toMatchObject({ kind: "waiting", bot: "pickles" });
+    });
+
+    it("a start the host could not make ends the run with the host's sentence, and sends nothing", async () => {
+      const h = harness({
+        check: vi.fn(async () => notRunning),
+        fix: vi.fn(async () => "Could not start pickles on this computer."),
+      });
+      await h.run.start();
+      await h.run.fix();
+      await settle();
+      expect(h.run.phase).toEqual({ kind: "failed", runId: null, message: "Could not start pickles on this computer." });
+      expect(h.creator.dispatch).not.toHaveBeenCalled();
+    });
+
+    it("an assistant that is kicked but never comes up ends the run in plain words after the wake window", async () => {
+      // `hq bot start` says "running" the moment launchd is kicked; the bot
+      // then dies on boot and the listing reads `failed` (owner, 2026-10-23).
+      const dead = { ...BOT, state: "failed", processAlive: false } as LocalBotRow;
+      const h = harness({
+        check: vi.fn(async () => ({ ok: false as const, bot: dead, fix: "start-bot" as const, message: "pickles is not running." })),
+        fix: vi.fn(async () => null),
+      });
+      await h.run.start();
+      await h.run.fix();
+      await settle();
+      expect(h.run.phase).toMatchObject({ kind: "dispatching" });
+      for (let t = 0; t < BRIEF_WAKE_TIMEOUT_MS && h.run.phase.kind === "dispatching"; t += BRIEF_POLL_MS) {
+        await h.tick();
+        await settle();
+      }
+      expect(h.run.phase).toEqual({
+        kind: "failed",
+        runId: null,
+        message: "pickles started but stopped right away. Open its profile to see why, or run the brief in Claude instead.",
+      });
+      expect(h.creator.dispatch).not.toHaveBeenCalled();
+      // Polled the listing, not just once.
+      expect((h.creator.check as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(2);
+    });
+
+    it("a different obstacle after the start (a sign-in) is handed back as its own blocked check", async () => {
+      let started = false;
+      const h = harness({
+        check: vi.fn(async () =>
+          started ? { ok: false as const, bot: BOT, fix: "sign-in" as const, message: "pickles needs you to sign in to Claude again before it can build a brief." } : notRunning,
+        ),
+        fix: vi.fn(async () => {
+          started = true;
+          return null;
+        }),
+      });
+      await h.run.start();
+      await h.run.fix();
+      await settle();
+      expect(h.run.phase).toEqual({ kind: "blocked", fix: "sign-in", message: "pickles needs you to sign in to Claude again before it can build a brief." });
+      expect(h.creator.dispatch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Run in Claude instead", () => {
+    it("opens the job in the tool and follows the same run's status file", async () => {
+      const launch = vi.fn(async () => null);
+      const h = harness({ launch });
+      expect(h.run.canLaunch).toBe(true);
+      await h.run.startInTool("claude");
+      expect(launch).toHaveBeenCalledTimes(1);
+      const [engine, prompt] = launch.mock.calls[0] as unknown as [string, string];
+      expect(engine).toBe("claude");
+      expect(prompt.startsWith(`/daily-brief indigo --run-id ${RUN}`)).toBe(true);
+      expect(h.run.phase).toEqual({ kind: "waiting", runId: RUN, sentAt: h.run.phase.kind === "waiting" ? h.run.phase.sentAt : 0, bot: "Claude" });
+      expect(h.store.get(ACTIVE_RUN_KEY)).toBe(RUN);
+      h.files[`workspace/brief/${RUN}/status.json`] = JSON.stringify({ run_id: RUN, state: "ready", step: "Done", progress: 1 });
+      await h.tick();
+      expect(h.run.phase).toEqual({ kind: "ready", runId: RUN });
+      expect(h.creator.dispatch).not.toHaveBeenCalled();
+    });
+
+    it("a tool that could not open ends the run with that sentence", async () => {
+      const h = harness({ launch: vi.fn(async () => "Claude Code was not detected. Open your HQ folder in Claude Code and run /daily-brief.") });
+      await h.run.startInTool("claude");
+      expect(h.run.phase).toEqual({ kind: "failed", runId: null, message: "Claude Code was not detected. Open your HQ folder in Claude Code and run /daily-brief." });
+    });
+
+    it("is not offered, and does nothing, on a host that cannot open a tool", async () => {
+      const h = harness();
+      expect(h.run.canLaunch).toBe(false);
+      await h.run.startInTool("claude");
+      expect(h.run.phase).toEqual({ kind: "idle" });
+    });
+  });
+
+  it("with no company open, the job is the person's brief: no 'open a company first'", async () => {
+    const h = harness({ company: () => null });
+    await h.run.start();
+    expect(h.run.phase).toMatchObject({ kind: "waiting", runId: RUN });
+    const body = (h.creator.dispatch as ReturnType<typeof vi.fn>).mock.calls[0]![1] as string;
+    expect(body.startsWith(`/daily-brief --all --run-id ${RUN}`)).toBe(true);
+    expect(h.run.company).toBeNull();
   });
 
   it("a failed send ends the run with the host's sentence and does not poll", async () => {

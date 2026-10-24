@@ -12,7 +12,13 @@ import {
   BRIEF_BOT_FAILURE_POLL_MS,
   BRIEF_DISPATCH_TIMEOUT_MESSAGE,
   BRIEF_DISPATCH_TIMEOUT_MS,
+  BRIEF_FALLBACK_TOOL,
   BRIEF_POLL_MS,
+  BRIEF_WAKE_DISPATCH_TIMEOUT_MS,
+  BRIEF_WAKE_TIMEOUT_MS,
+  toolStep,
+  wakeFailedMessage,
+  wakeStep,
   BRIEF_QUIET_MS,
   BRIEF_STALL_GRACE_MS,
   BRIEF_WATCH_POLL_MS,
@@ -47,6 +53,13 @@ export interface BriefCreator {
   dispatch(bot: LocalBotRow, body: string, idempotencyKey: string): Promise<string | null>;
   /** Run the fix for a blocked check. Resolves to a plain error sentence, or null. */
   fix(fix: BriefBotFix, bot: LocalBotRow | null): Promise<string | null>;
+  /**
+   * The fallback when the assistant cannot run: open the HQ folder in a
+   * coding tool with the job as its first prompt, so the person always has
+   * a way to get a brief. Resolves to a plain error sentence, or null once
+   * the tool opened. Optional: without it the fallback is not offered.
+   */
+  launch?(engine: "claude" | "codex" | "grok", prompt: string): Promise<string | null>;
   /** Tell the person the brief is ready (OS banner and/or in-app toast). */
   notify(title: string, body: string): void;
   /**
@@ -134,8 +147,13 @@ export class BriefCreateRun {
    * flight. The phase flips to `dispatching` synchronously, before any await,
    * so the click paints the sunrise at once; the bot lookup, model check and
    * send happen after that.
+   *
+   * `wake`: start the assistant first (the blocked check's Start it), wait
+   * until a fresh listing shows it running, then send the job in the same
+   * motion. One press, one outcome: the brief, or a plain sentence saying
+   * why the assistant is not up and what to do instead.
    */
-  start(opts: { force?: boolean } = {}): Promise<void> {
+  start(opts: { force?: boolean; wake?: boolean } = {}): Promise<void> {
     if (this.busy) return Promise.resolve();
     if (this.watching && !opts.force) {
       // The last run may still finish: ask before sending a duplicate.
@@ -147,24 +165,103 @@ export class BriefCreateRun {
     this.endWatch();
     this.stopped = false;
     const runId = briefRunId(this.now());
+    if (opts.wake) {
+      const bot = this.blockedBot;
+      this.phase = { kind: "dispatching", runId, step: wakeStep(bot ? briefBotLabel(bot) : "your assistant") };
+      return this.dispatchWithin(runId, () => this.wakeThenDispatch(runId, bot), BRIEF_WAKE_DISPATCH_TIMEOUT_MS);
+    }
     this.phase = { kind: "dispatching", runId };
-    return this.dispatchWithin(runId);
+    return this.dispatchWithin(runId, () => this.dispatch(runId));
   }
 
   /**
-   * `dispatch`, bounded: a bot check or send that never answers ends the run
+   * The fallback: run the brief in a coding tool instead of the assistant.
+   * Same run id, same files, same polling; only the worker differs. Offered
+   * wherever the assistant cannot take the job (not running, not here, its
+   * start failed), so the person is never left without a way to a brief.
+   */
+  startInTool(engine: "claude" | "codex" | "grok" = "claude"): Promise<void> {
+    if (this.busy || !this.deps.creator.launch) return Promise.resolve();
+    this.duplicatePrompt = false;
+    this.endWatch();
+    this.stopped = false;
+    const runId = briefRunId(this.now());
+    this.phase = { kind: "dispatching", runId, step: toolStep(engine === "claude" ? BRIEF_FALLBACK_TOOL : engine === "codex" ? "Codex" : "Grok") };
+    return this.dispatchWithin(runId, () => this.dispatchToTool(runId, engine));
+  }
+
+  /** True when the host can open the brief job in a coding tool. */
+  get canLaunch(): boolean {
+    return typeof this.deps.creator.launch === "function";
+  }
+
+  /**
+   * One dispatch, bounded: a bot check or send that never answers ends the run
    * with a plain message instead of leaving "Waking your bot…" up for good.
    */
-  private async dispatchWithin(runId: string): Promise<void> {
+  private async dispatchWithin(runId: string, work: () => Promise<void>, limitMs: number = BRIEF_DISPATCH_TIMEOUT_MS): Promise<void> {
     let timer: unknown = null;
     const expired = new Promise<"timeout">((resolve) => {
-      timer = (this.deps.setDeadline ?? ((fn, ms) => setTimeout(fn, ms)))(() => resolve("timeout"), BRIEF_DISPATCH_TIMEOUT_MS);
+      timer = (this.deps.setDeadline ?? ((fn, ms) => setTimeout(fn, ms)))(() => resolve("timeout"), limitMs);
     });
-    const outcome = await Promise.race([this.dispatch(runId).then(() => "done" as const), expired]);
+    const outcome = await Promise.race([work().then(() => "done" as const), expired]);
     if (timer != null) (this.deps.clearDeadline ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>)))(timer);
     if (outcome === "timeout" && !this.stopped && this.phase.kind === "dispatching" && this.phase.runId === runId) {
-      this.log("bot check or send did not answer", `${BRIEF_DISPATCH_TIMEOUT_MS} ms`);
+      this.log("bot check or send did not answer", `${limitMs} ms`);
       this.finish({ kind: "failed", runId: null, message: BRIEF_DISPATCH_TIMEOUT_MESSAGE });
+    }
+  }
+
+  /**
+   * Start the assistant, then poll the listing until it is running (or a
+   * different fix is needed), then send. `hq bot start` says "running" the
+   * moment launchd is kicked, and a bot that dies on boot keeps that word,
+   * so only a check that passes counts as started.
+   */
+  private async wakeThenDispatch(runId: string, bot: LocalBotRow | null): Promise<void> {
+    const { creator } = this.deps;
+    let error: string | null;
+    try {
+      error = await creator.fix("start-bot", bot);
+    } catch (err) {
+      this.log("bot start failed", err instanceof Error ? err.message : err);
+      error = wakeFailedMessage(bot ? briefBotLabel(bot) : "Your assistant", bot?.state);
+    }
+    if (this.stopped || !this.dispatchingRun(runId)) return;
+    if (error) {
+      this.finish({ kind: "failed", runId: null, message: error });
+      return;
+    }
+    const started = this.now().getTime();
+    let last: LocalBotRow | null = bot;
+    for (;;) {
+      let check: Awaited<ReturnType<BriefCreator["check"]>>;
+      try {
+        check = await creator.check();
+      } catch (err) {
+        this.log("bot check failed", err instanceof Error ? err.message : err);
+        this.finish({ kind: "failed", runId: null, message: "Could not check your bot. Try again in a moment." });
+        return;
+      }
+      if (this.stopped || !this.dispatchingRun(runId)) return;
+      if (check.ok) {
+        await this.send(runId, check.bot);
+        return;
+      }
+      // A different obstacle surfaced (sign-in, model): hand it to the person.
+      if (check.fix !== "start-bot") {
+        this.blockedBot = check.bot;
+        this.phase = { kind: "blocked", message: check.message, fix: check.fix };
+        return;
+      }
+      last = check.bot ?? last;
+      if (this.now().getTime() - started >= BRIEF_WAKE_TIMEOUT_MS) {
+        this.blockedBot = last;
+        this.finish({ kind: "failed", runId: null, message: wakeFailedMessage(last ? briefBotLabel(last) : "Your assistant", last?.state) });
+        return;
+      }
+      await new Promise<void>((resolve) => this.setTimer(resolve, BRIEF_POLL_MS));
+      if (this.stopped || !this.dispatchingRun(runId)) return;
     }
   }
 
@@ -184,21 +281,30 @@ export class BriefCreateRun {
       this.phase = { kind: "blocked", message: check.message, fix: check.fix };
       return;
     }
-    let company: string | null;
+    await this.send(runId, check.bot);
+  }
+
+  /**
+   * The app's company, when one is open. The brief never needs one: with no
+   * company the job is the person's brief across everything they belong to.
+   */
+  private async activeCompany(): Promise<string | null> {
     try {
-      company = (await creator.company())?.trim() || null;
+      return (await this.deps.creator.company())?.trim() || null;
     } catch (err) {
       this.log("active company read failed", err instanceof Error ? err.message : err);
-      company = null;
+      return null;
     }
+  }
+
+  /** Send the job to a bot the check passed, then wait for its status file. */
+  private async send(runId: string, bot: LocalBotRow): Promise<void> {
+    const { creator } = this.deps;
+    const company = await this.activeCompany();
     if (this.stopped || !this.dispatchingRun(runId)) return;
-    if (!company) {
-      this.finish({ kind: "failed", runId: null, message: "Open a company first, then create the brief." });
-      return;
-    }
     let error: string | null;
     try {
-      error = await creator.dispatch(check.bot, briefJobMessage(runId, company), runId);
+      error = await creator.dispatch(bot, briefJobMessage(runId, company), runId);
     } catch (err) {
       this.log("dispatch failed", err instanceof Error ? err.message : err);
       error = "Could not reach your bot. Try again in a moment.";
@@ -210,11 +316,38 @@ export class BriefCreateRun {
     }
     this.company = company;
     this.remember(runId);
-    this.sentBot = { runId, bot: check.bot, sentAt: this.now().getTime() };
+    this.sentBot = { runId, bot, sentAt: this.now().getTime() };
     this.lastFailureCheck = this.now().getTime();
-    const label = briefBotLabel(check.bot);
-    const bot = label === "Your assistant" ? "your assistant" : label;
-    this.phase = { kind: "waiting", runId, sentAt: this.now().getTime(), ...(bot ? { bot } : {}) };
+    const label = briefBotLabel(bot);
+    const who = label === "Your assistant" ? "your assistant" : label;
+    this.phase = { kind: "waiting", runId, sentAt: this.now().getTime(), ...(who ? { bot: who } : {}) };
+    this.schedule();
+  }
+
+  /** Open the job in a coding tool, then wait for its status file like any run. */
+  private async dispatchToTool(runId: string, engine: "claude" | "codex" | "grok"): Promise<void> {
+    const launch = this.deps.creator.launch;
+    if (!launch) return;
+    const company = await this.activeCompany();
+    if (this.stopped || !this.dispatchingRun(runId)) return;
+    const tool = engine === "claude" ? BRIEF_FALLBACK_TOOL : engine === "codex" ? "Codex" : "Grok";
+    let error: string | null;
+    try {
+      error = await launch.call(this.deps.creator, engine, briefJobMessage(runId, company));
+    } catch (err) {
+      this.log("tool launch failed", err instanceof Error ? err.message : err);
+      error = `Could not open ${tool}. Try again in a moment.`;
+    }
+    if (!this.dispatchingRun(runId)) return;
+    if (error) {
+      this.finish({ kind: "failed", runId: null, message: error });
+      return;
+    }
+    this.company = company;
+    this.remember(runId);
+    // No bot conversation to ask about a failed turn; the status file speaks.
+    this.sentBot = null;
+    this.phase = { kind: "waiting", runId, sentAt: this.now().getTime(), bot: tool };
     this.schedule();
   }
 
@@ -346,9 +479,18 @@ export class BriefCreateRun {
     }
   }
 
-  /** Run the blocked check's fix, then go back to idle so the person can retry. */
+  /**
+   * Run the blocked check's fix. Start it starts the assistant and carries
+   * straight on into the brief (see `start({ wake: true })`); the other
+   * fixes happen elsewhere (a sign-in, a model), so the run goes back to
+   * idle for the person to press Create brief again afterwards.
+   */
   async fix(): Promise<string | null> {
     if (this.phase.kind !== "blocked") return null;
+    if (this.phase.fix === "start-bot") {
+      void this.start({ wake: true, force: true });
+      return null;
+    }
     const error = await this.deps.creator.fix(this.phase.fix, this.blockedBot);
     if (!error) this.phase = { kind: "idle" };
     return error;

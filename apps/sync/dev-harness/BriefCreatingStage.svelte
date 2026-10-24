@@ -7,6 +7,8 @@
   //   &state=creating&over=brief a new run over today's brief: the band under the run controls
   //   &state=failed              the run stops at 45% (Try again / Dismiss)
   //   &state=waiting             the first-visit empty state; Create brief starts the simulated run
+  //   &state=blocked             the assistant is stopped: Create brief shows "not running" with Start it
+  //                              (starts it, then runs) and Run in Claude instead (the fallback run)
   //   &briefDemoAt=0..1          a frozen frame at that progress (with &state=creating)
   import { onDestroy } from 'svelte';
   import BriefRunsPage from '../../../packages/ui/src/brief/BriefRunsPage.svelte';
@@ -19,7 +21,7 @@
   interface Props {
     input: BriefInput;
     companies: { uid: string; slug?: string | null; label: string; iconUrl?: string | null }[];
-    mode: 'creating' | 'failed' | 'waiting';
+    mode: 'creating' | 'failed' | 'waiting' | 'blocked';
     /** A brief already shows; the new run plays as the band over it. */
     over: boolean;
     /** Bumped by the stage's Replay button. */
@@ -36,7 +38,7 @@
 
   const PRIOR = 'brief-20261014-071500';
   function make() {
-    const demo = briefDemoFromUrl(mode === 'failed' ? '?briefDemo=fail' : '?briefDemo=1')!;
+    const demo = briefDemoFromUrl(mode === 'failed' ? '?briefDemo=fail' : mode === 'blocked' ? '?briefDemo=blocked' : '?briefDemo=1')!;
     let ready: string | null = null;
     // The demo serves status.json; the index lists the prior brief (for the band)
     // and the new run once it reports ready, so the page hands off to it.
@@ -65,12 +67,12 @@
     void replay;
     if (first) {
       first = false;
-      if (!frozen && mode !== 'waiting') setTimeout(() => void stage.run.start(), over ? 1200 : 600);
+      if (!frozen && mode !== 'waiting' && mode !== 'blocked') setTimeout(() => void stage.run.start(), over ? 1200 : 600);
       return;
     }
     stage.run.stop();
     stage = make();
-    if (mode !== 'waiting') setTimeout(() => void stage.run.start(), 400);
+    if (mode !== 'waiting' && mode !== 'blocked') setTimeout(() => void stage.run.start(), 400);
   });
   onDestroy(() => stage.run.stop());
 </script>
