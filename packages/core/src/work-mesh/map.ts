@@ -52,6 +52,16 @@ const STATUS_BADGE: Record<string, string> = {
 };
 
 /**
+ * True when the Work Mesh has retired a story (superseded or archived when a
+ * project is re-planned). Retired stories are not Board work: the Board and
+ * the story counts leave them out. There is no retired column.
+ */
+export function isRetiredStory(story: MeshStory): boolean {
+  const raw = (story.status ?? "").toString().trim().toLowerCase();
+  return raw === "retired";
+}
+
+/**
  * Map a PROJECT_VIEW task onto one of the four Board stages.
  * Explicit `status` wins; `passes` only fills in when status is missing.
  * Unknown / unset statuses are To do — never Doing.
@@ -230,6 +240,7 @@ export function projectViewToBoard(
   }));
   const stories: MeshBoardTab["stories"] = {};
   for (const story of project.stories) {
+    if (isRetiredStory(story)) continue;
     const col = normalizeStoryStage(story);
     const statusLine = STATUS_LINE[col] ?? col.toUpperCase();
     columns
@@ -296,8 +307,9 @@ export function projectFilesToItems(
 }
 
 export function projectToStatus(project: MeshProjectView): MeshChannelStatus {
-  const total = project.stories.length;
-  const complete = project.stories.filter(
+  const live = project.stories.filter((s) => !isRetiredStory(s));
+  const total = live.length;
+  const complete = live.filter(
     (s) => normalizeStoryStage(s) === "done",
   ).length;
   return {
