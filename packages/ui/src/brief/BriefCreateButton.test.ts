@@ -129,8 +129,8 @@ describe("on the page", () => {
     const run = new BriefCreateRun({ creator, read: async () => null, storage: null, setTimer: () => 0, clearTimer: () => {}, log: () => {} });
     const id = "brief-20261013-180000";
     const files: Record<string, string> = {
-      // Made today: only today's brief opens by itself (an earlier day's opens on Create brief).
-      "workspace/brief/index.jsonl": JSON.stringify({ run_id: id, created_at: new Date(Date.now() - 3_600_000).toISOString(), state: "ready", counts: {} }),
+      // Made today (00:01 local, so it is today in any time zone and any hour): only today's brief opens by itself.
+      "workspace/brief/index.jsonl": JSON.stringify({ run_id: id, created_at: new Date(new Date().setHours(0, 1, 0, 0)).toISOString(), state: "ready", counts: {} }),
       [`workspace/brief/${id}/brief.json`]: JSON.stringify({ items: { decisions: [{ id: "d1", title: "Ship it" }] } }),
     };
     target = document.createElement("div");

@@ -8,8 +8,17 @@ import type { BriefSweepSource } from "./brief-data.js";
 
 const NEW = "brief-20261008-090000";
 const OLD = "brief-20261005-080000";
-/** The newest fixture brief is from today: only today's brief opens by itself. */
-const NEW_AT = new Date(Date.now() - 3_600_000).toISOString();
+/**
+ * The newest fixture brief is from today: only today's brief opens by itself.
+ * Stamped at 00:01 local today (not "an hour ago", which is yesterday when CI
+ * runs in the first hour of a day) and before any run the test starts now.
+ */
+const todayEarly = (): string => {
+  const d = new Date();
+  d.setHours(0, 1, 0, 0);
+  return d.toISOString();
+};
+const NEW_AT = todayEarly();
 const entry = (runId: string, created: string, extra: Record<string, unknown> = {}) =>
   JSON.stringify({
     run_id: runId,
@@ -455,7 +464,7 @@ describe("BriefRunsPage", () => {
   it("after a refresh hands off, stepping to an older brief shows that brief, not the ready scene again", async () => {
     const bot = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
     const f = files();
-    f["workspace/brief/index.jsonl"] = entry(NEW, new Date(Date.now() - 3_600_000).toISOString());
+    f["workspace/brief/index.jsonl"] = entry(NEW, todayEarly());
     const creator: BriefCreator = {
       company: () => "indigo",
       check: async () => ({ ok: true, bot }),
@@ -478,7 +487,7 @@ describe("BriefRunsPage", () => {
     await settle();
     const runId = (run.phase as { runId: string }).runId;
     f[`workspace/brief/${runId}/status.json`] = JSON.stringify({ run_id: runId, state: "ready", step: "Done", progress: 1 });
-    f["workspace/brief/index.jsonl"] = [entry(runId, new Date().toISOString()), entry(NEW, new Date(Date.now() - 3_600_000).toISOString())].join("\n");
+    f["workspace/brief/index.jsonl"] = [entry(runId, new Date().toISOString()), entry(NEW, todayEarly())].join("\n");
     f[`workspace/brief/${runId}/brief.json`] = JSON.stringify({ items: { decisions: [{ id: "d2", title: "Fresh call" }] } });
     f[`workspace/brief/${runId}/brief-data.json`] = "{}";
     timers.shift()!();
