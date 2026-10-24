@@ -16,9 +16,14 @@
 //!    often real directory copies / junctions that look like "Added" core
 //!    files. We exclude the declared contribute landing paths so pack installs
 //!    are not mistaken for core drift on any OS.
+//! 3. **Core-skills pack** — when the local `core/core.yaml` lists
+//!    `coreResidentSkills`, only those `.claude/skills/<name>` entries are
+//!    release content. Every other child of `.claude/skills` (pack links, fork
+//!    links into `personal/skills`, real folders the migration deferred) is
+//!    excluded. Without the list nothing changes.
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::Path;
 
@@ -528,11 +533,85 @@ pub fn excluded_scope_paths() -> Vec<String> {
 /// `hq install` / `scan-packages.sh`, not hq-core release files. Excluding them
 /// keeps Core Drift focused on genuine core edits on every OS — including
 /// Windows, where pack destinations are often real copies rather than symlinks.
+/// Non-resident `.claude/skills/<name>` children are added when the local
+/// core.yaml has `coreResidentSkills` (see [`non_resident_skill_scopes`]).
 pub fn excluded_scope_paths_for(hq_folder: &Path) -> Vec<String> {
     let mut out = excluded_scope_paths();
     out.extend(pack_materialization_scopes(hq_folder));
     out.extend(personal_materialization_paths(hq_folder));
+    out.extend(non_resident_skill_scopes(hq_folder));
     out
+}
+
+/// HQ-root-relative directory that holds Claude skills.
+pub const SKILLS_DIR_REL: &str = ".claude/skills";
+
+/// Parse the top-level `coreResidentSkills` list from `core/core.yaml` text.
+///
+/// Returns `None` when the key is absent, is not a list, or the YAML does not
+/// parse. `None` means skill ownership is inactive and every
+/// `.claude/skills/<name>` stays release content. Entries that are not plain
+/// skill names (`[A-Za-z0-9_][A-Za-z0-9._-]*`) are dropped. This matches
+/// hq-cloud `readCoreResidentSkills` (src/cli/core-skills-pack.ts).
+pub fn parse_core_resident_skills(core_yaml: &str) -> Option<BTreeSet<String>> {
+    let doc: serde_yaml::Value = serde_yaml::from_str(core_yaml).ok()?;
+    let list = doc.as_mapping()?.get("coreResidentSkills")?.as_sequence()?;
+    Some(
+        list.iter()
+            .filter_map(serde_yaml::Value::as_str)
+            .filter(|name| is_safe_skill_name(name))
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+/// Read `coreResidentSkills` from `<hq_folder>/core/core.yaml`.
+/// See [`parse_core_resident_skills`] for when this returns `None`.
+pub fn read_core_resident_skills(hq_folder: &Path) -> Option<BTreeSet<String>> {
+    let text = std::fs::read_to_string(hq_folder.join("core").join("core.yaml")).ok()?;
+    parse_core_resident_skills(&text)
+}
+
+fn is_safe_skill_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphanumeric() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+/// True when `rel` is `.claude/skills/<name>` or a path below it and `<name>`
+/// is not in `resident`. Such a path belongs to the core-skills pack (or a fork
+/// or user skill), not to the hq-core release.
+pub fn is_non_resident_skill_rel(rel: &str, resident: &BTreeSet<String>) -> bool {
+    let rel = rel.replace('\\', "/");
+    let Some(rest) = rel.strip_prefix(".claude/skills/") else {
+        return false;
+    };
+    let name = rest.split('/').next().unwrap_or_default();
+    !name.is_empty() && !resident.contains(name)
+}
+
+/// `.claude/skills/<name>` for every local child of `.claude/skills` that the
+/// local `core/core.yaml` `coreResidentSkills` list does not name. Links, real
+/// folders and files are all included. Empty when the list is absent, so
+/// releases without the list keep today's drift scope.
+pub fn non_resident_skill_scopes(hq_folder: &Path) -> Vec<String> {
+    let Some(resident) = read_core_resident_skills(hq_folder) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(hq_folder.join(".claude").join("skills")) else {
+        return Vec::new();
+    };
+    let mut scopes: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| !resident.contains(name))
+        .map(|name| format!("{SKILLS_DIR_REL}/{name}"))
+        .collect();
+    scopes.sort();
+    scopes
 }
 
 /// Exact locked destinations materialized from a Personal overlay. Exclude a
