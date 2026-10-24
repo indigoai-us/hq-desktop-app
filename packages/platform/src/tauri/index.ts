@@ -50,8 +50,6 @@ import {
 import {
   CLAUDE_PROVIDER_FLAG,
   DESKTOP_AGENT_CREATION_FLAG,
-  HUMAN_ONLY_CONVERSATIONS_FLAG,
-  HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   PERSONAL_TRANSCRIPTS_FLAG,
   createHqProFlagFetch,
   createHqProRestFetch,
@@ -283,10 +281,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     whoami: () => this.hqProJson("GET", "/v1/identity/whoami"),
     isAdmin: () => this.call("is_admin"),
     hasFeature: (flag, scope) =>
-      flag === HUMAN_ONLY_CONVERSATIONS_FLAG
-        ? // Pinned per release; the registry cannot turn it off.
-          Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT))
-        : this.flagsFor(scope?.companyUid).resolve(flag, () =>
+      this.flagsFor(scope?.companyUid).resolve(flag, () =>
             flag === CLAUDE_PROVIDER_FLAG ||
             flag === DESKTOP_AGENT_CREATION_FLAG ||
             flag === PERSONAL_TRANSCRIPTS_FLAG
@@ -302,9 +297,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         companyUid,
       ),
     subscribeFeature: (flag, onChange) =>
-      flag === HUMAN_ONLY_CONVERSATIONS_FLAG
-        ? () => {}
-        : this.flagsFor(null).subscribe(
+      this.flagsFor(null).subscribe(
             flag,
             () =>
               flag === CLAUDE_PROVIDER_FLAG ||

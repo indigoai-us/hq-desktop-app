@@ -131,6 +131,9 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   openCompanyIntegrations: "push",
   toggleAccountMenu: "none",
   toggleMoreCompanies: "none",
+  // Activity column (US-006): opens or closes a side column in place; the
+  // route and the selected conversation do not change.
+  toggleActivity: "none",
   // A connection card in a cloud bot's DM: opens a console page in the system
   // browser or changes the card's state. The shell stays in the conversation.
   handleConnectionAction: "none",

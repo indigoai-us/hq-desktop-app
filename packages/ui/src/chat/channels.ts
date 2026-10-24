@@ -63,8 +63,8 @@ export interface Channel {
   /**
    * Server-supplied timestamp of the last message a person typed on this
    * channel (work-mesh, bot, and system rows excluded). Present only when the
-   * server knows it. Used only when the `desktop.human-only-conversations`
-   * flag is on.
+   * server knows it. Used only when the people-only message-types
+   * preference is on.
    */
   lastHumanMessageAt?: string | null;
   /**

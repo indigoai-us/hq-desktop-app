@@ -6,7 +6,10 @@ import {
   humanRecencyState,
   isUndatedNoHumanRow,
   isHumanMessage,
+  messageType,
+  normalizeSentVia,
   orderChannelsForViewer,
+  showsCliChip,
 } from "./humanMessage.js";
 
 describe("isHumanMessage", () => {
@@ -407,5 +410,62 @@ describe("orderChannelsForViewer", () => {
       "none-old", // known none: created 1 July; its bot activity is ignored
       "none-timeless", // known none, no creation or activity time: bottom tier
     ]);
+  });
+});
+
+describe("messageType", () => {
+  it("classifies audience human and both as people", () => {
+    expect(messageType({ audience: "human" })).toBe("people");
+    expect(messageType({ audience: "both", fromPersonUid: "bot_x" })).toBe("people");
+  });
+
+  it("classifies system and mesh flags as system, even with a human audience", () => {
+    expect(messageType({ audience: "human", isSystemEvent: true })).toBe("system");
+    expect(messageType({ audience: "both", isMeshEvent: true })).toBe("system");
+  });
+
+  it("classifies agent audience and legacy bot senders as agent", () => {
+    expect(messageType({ audience: "agent" })).toBe("agent");
+    expect(messageType({ fromPersonUid: "agent_abc" })).toBe("agent");
+    expect(messageType({ fromPersonUid: "agent_abc" }, { inferFromUid: false })).toBe("people");
+  });
+
+  it("isHumanMessage agrees with messageType === people", () => {
+    const cases = [
+      {},
+      { audience: "human" },
+      { audience: "agent" },
+      { audience: "both", isMeshEvent: true },
+      { fromPersonUid: "sys_1" },
+    ];
+    for (const c of cases) {
+      expect(isHumanMessage(c)).toBe(messageType(c) === "people");
+    }
+  });
+});
+
+describe("showsCliChip", () => {
+  it("shows the chip on a for-human message sent via cli", () => {
+    expect(showsCliChip({ audience: "human", sentVia: "cli" })).toBe(true);
+    expect(showsCliChip({ audience: "both", sentVia: "CLI" })).toBe(true);
+    expect(showsCliChip({ sentVia: "cli" })).toBe(true);
+  });
+
+  it("never lets a cli-sent non-system row render without the chip", () => {
+    expect(showsCliChip({ audience: "agent", sentVia: "cli" })).toBe(true);
+    expect(showsCliChip({ fromPersonUid: "agent_x", sentVia: "cli" })).toBe(true);
+  });
+
+  it("omits the chip for other clients, missing sentVia, and system rows", () => {
+    expect(showsCliChip({ audience: "human", sentVia: "desktop" })).toBe(false);
+    expect(showsCliChip({ audience: "human" })).toBe(false);
+    expect(showsCliChip({ audience: "human", sentVia: null })).toBe(false);
+    expect(showsCliChip({ audience: "human", sentVia: "cli", isSystemEvent: true })).toBe(false);
+  });
+
+  it("normalizes sentVia, treating missing or unknown values as unknown", () => {
+    expect(normalizeSentVia(undefined)).toBe("unknown");
+    expect(normalizeSentVia("telegraph")).toBe("unknown");
+    expect(normalizeSentVia(" Web ")).toBe("web");
   });
 });

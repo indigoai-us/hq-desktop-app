@@ -52,7 +52,7 @@ export interface ConversationRow {
   /**
    * Epoch-ms of the most recent message a person typed (mesh, bot, and
    * system rows excluded). Present only when the server sent one. Read only
-   * when the `desktop.human-only-conversations` flag is on. See
+   * when the people-only message-types preference is on. See
    * `rowHumanRecencyState` for the three states this and `hasHumanMessage`
    * encode.
    */
@@ -532,7 +532,7 @@ export interface DmContactInput {
   /**
    * Server-supplied timestamp of the last message a person typed in this DM.
    * Present only when the server knows it; used only when the
-   * `desktop.human-only-conversations` flag is on.
+   * people-only message-types preference is on.
    */
   lastHumanMessageAt?: string | null;
   /**

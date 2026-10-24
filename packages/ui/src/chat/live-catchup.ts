@@ -3,6 +3,9 @@
  * Arm the directory safety poll only when the socket is not healthy.
  */
 
+import { countsTowardUnread, type UnreadClassifiable } from "./message-folds.js";
+import type { MessageTypesPref } from "./message-types.js";
+
 export type MeshConnectionState =
   | "idle"
   | "connecting"
@@ -299,7 +302,7 @@ export function isMissingEndpointFailure(
 /** Turn an inbox page into a one-row unread patch + the next exclusive since. */
 export function pairUnreadsFromInboxPage(
   page: unknown,
-  opts: { since?: string; selfUid?: string } = {},
+  opts: { since?: string; selfUid?: string; messageTypes?: MessageTypesPref } = {},
 ): { pairUnreads?: InboxPairUnread[]; nextSince?: string; delta?: boolean } {
   const rec =
     page && typeof page === "object" && !Array.isArray(page)
@@ -349,6 +352,10 @@ export function pairUnreadsFromInboxPage(
         ? (item as { fromPersonUid: string }).fromPersonUid.trim()
         : "";
     if (!uid || uid === selfUid) continue;
+    // A message the preference hides lands in a fold; folds never count.
+    if (opts.messageTypes && !countsTowardUnread(item as UnreadClassifiable, opts.messageTypes)) {
+      continue;
+    }
     counts.set(uid, (counts.get(uid) ?? 0) + 1);
   }
   return {
