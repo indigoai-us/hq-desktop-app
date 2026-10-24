@@ -15,14 +15,16 @@ const store = vi.hoisted(() => ({
   cancelBot: vi.fn(),
   inviteBotByUrl: vi.fn(),
   scheduledBots: [] as ScheduledBot[],
+  companyNamesByUid: new Map<string, string>(),
 }));
 vi.mock("./meetings-store.svelte", () => ({ meetingsStore: store }));
 
 import NotetakerControl from "./NotetakerControl.svelte";
 import InviteNotetakerSheet from "./InviteNotetakerSheet.svelte";
 import MeetingsSidepane from "./MeetingsSidepane.svelte";
+import { joinPastedLink } from "./meeting-calendar-actions";
 import { EMPTY_MEETINGS_FILTER } from "./meetings-rail-model";
-import { notetakerLinkProblem, notetakerStatus } from "./notetaker-invite";
+import { defaultNotetakerCompany, notetakerCompanyOptions, notetakerLinkProblem, notetakerStatus } from "./notetaker-invite";
 
 const event: MeetingEvent = {
   id: "review",
@@ -52,6 +54,7 @@ beforeEach(() => {
   store.cancelBot.mockReset();
   store.inviteBotByUrl.mockReset();
   store.scheduledBots = [];
+  store.companyNamesByUid = new Map([["cmp_indigo", "Indigo"]]);
 });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -195,11 +198,54 @@ describe("OWNER-R3 Invite notetaker to a meeting (header +)", () => {
     expect(q(el, "invite-notetaker-problem")).toBeNull();
     confirm.click();
     flushSync();
-    expect(store.inviteBotByUrl).toHaveBeenCalledWith("https://zoom.us/j/999", null);
+    expect(store.inviteBotByUrl).toHaveBeenCalledWith("https://zoom.us/j/999", "cmp_indigo");
     expect(q<HTMLButtonElement>(el, "invite-notetaker-confirm")!.textContent?.trim()).toBe("Inviting…");
-    resolve({ kind: "info", text: "Bot invited — meeting will save to Personal." });
+    resolve({ kind: "info", text: "Bot invited — meeting will save to Indigo." });
     await settle();
     expect(q(el, "invite-notetaker-done")?.textContent).toContain("Notetaker invited.");
+  });
+
+  // Regression: the sheet used to send every invite as Personal (companyId
+  // null). hq-pro never lets Personal record, so an entitled company member
+  // always got the HQ Workforce upgrade prompt.
+  it("never sends a pasted-link invite as Personal", async () => {
+    store.inviteBotByUrl.mockResolvedValueOnce({ kind: "info", text: "ok" });
+    const el = render(InviteNotetakerSheet, { onclose: vi.fn() });
+    type(q<HTMLInputElement>(el, "invite-notetaker-link")!, "https://zoom.us/j/999");
+    q<HTMLButtonElement>(el, "invite-notetaker-confirm")!.click();
+    await settle();
+    expect(store.inviteBotByUrl).not.toHaveBeenCalledWith(expect.anything(), null);
+  });
+
+  it("asks which company to save to when the user has several, and waits for a choice", () => {
+    store.companyNamesByUid = new Map([["cmp_indigo", "Indigo"], ["cmp_acme", "Acme"]]);
+    const el = render(InviteNotetakerSheet, { onclose: vi.fn() });
+    expect(q(el, "invite-notetaker-company")).not.toBeNull();
+    type(q<HTMLInputElement>(el, "invite-notetaker-link")!, "https://zoom.us/j/999");
+    const confirm = q<HTMLButtonElement>(el, "invite-notetaker-confirm")!;
+    expect(confirm.disabled).toBe(true);
+    confirm.click();
+    flushSync();
+    expect(store.inviteBotByUrl).not.toHaveBeenCalled();
+  });
+
+  it("explains that a company is needed when the user has none", () => {
+    store.companyNamesByUid = new Map();
+    const el = render(InviteNotetakerSheet, { onclose: vi.fn() });
+    type(q<HTMLInputElement>(el, "invite-notetaker-link")!, "https://zoom.us/j/999");
+    expect(q(el, "invite-notetaker-no-company")?.textContent).toContain("company");
+    expect(q<HTMLButtonElement>(el, "invite-notetaker-confirm")!.disabled).toBe(true);
+  });
+
+  it("lists companies by name and preselects only a sole company", () => {
+    const several = new Map([["cmp_b", "Beta"], ["cmp_a", "Alpha"]]);
+    expect(notetakerCompanyOptions(several)).toEqual([
+      { value: "cmp_a", label: "Alpha" },
+      { value: "cmp_b", label: "Beta" },
+    ]);
+    expect(defaultNotetakerCompany(several)).toBe("");
+    expect(defaultNotetakerCompany(new Map([["cmp_a", "Alpha"]]))).toBe("cmp_a");
+    expect(defaultNotetakerCompany(new Map())).toBe("");
   });
 
   it("shows a plain failure and Try again calls the invite again", async () => {
@@ -239,5 +285,23 @@ describe("OWNER-R3 Invite notetaker to a meeting (header +)", () => {
     q<HTMLButtonElement>(el, "invite-notetaker-confirm")!.click();
     await settle();
     expect(q(el, "invite-notetaker-done")).not.toBeNull();
+  });
+});
+
+// Regression (PR #1674 review): the paste-a-link Join path sent the notetaker
+// as Personal (companyId null).
+describe("OWNER-R3 joinPastedLink saves to a company", () => {
+  it("sends the sole company", async () => {
+    store.inviteBotByUrl.mockResolvedValueOnce({ kind: "info", text: "ok" });
+    await joinPastedLink("https://zoom.us/j/999", vi.fn().mockResolvedValue(undefined));
+    expect(store.inviteBotByUrl).toHaveBeenCalledWith("https://zoom.us/j/999", "cmp_indigo");
+  });
+
+  it("with several companies passes no company, so the store refuses and the reason is shown", async () => {
+    store.companyNamesByUid = new Map([["cmp_indigo", "Indigo"], ["cmp_acme", "Acme"]]);
+    store.inviteBotByUrl.mockResolvedValueOnce({ kind: "warn", text: "Choose a company for the notes first." });
+    const result = await joinPastedLink("https://zoom.us/j/999", vi.fn().mockResolvedValue(undefined));
+    expect(store.inviteBotByUrl).toHaveBeenCalledWith("https://zoom.us/j/999", null);
+    expect(result.failureDetail).toBe("Choose a company for the notes first.");
   });
 });

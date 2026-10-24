@@ -134,6 +134,8 @@ export interface GoogleCalendar {
 export interface CompanyMembership {
   companyUid: string;
   companyName?: string | null;
+  /** Some membership rows carry a slug; used as the label when the name is missing. */
+  companySlug?: string | null;
   role?: string | null;
   status: string;
 }

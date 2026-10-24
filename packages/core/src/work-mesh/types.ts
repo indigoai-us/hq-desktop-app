@@ -7,7 +7,15 @@
  */
 
 export type MeshStoryStatus =
-  "queued" | "in_progress" | "review" | "done" | "blocked" | "todo" | string;
+  | "queued"
+  | "in_progress"
+  | "review"
+  | "done"
+  | "blocked"
+  | "todo"
+  /** Superseded or archived (re-planned project). Hidden from the Board. */
+  | "retired"
+  | string;
 
 export interface MeshStory {
   id: string;

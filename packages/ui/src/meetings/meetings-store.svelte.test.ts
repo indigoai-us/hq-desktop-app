@@ -18,6 +18,7 @@ vi.mock("./meetings-cache", () => ({
 
 import {
   configureMeetingsApi,
+  buildCompanyNameMap,
   meetingsStore,
   prefetchMeetings,
   setRecordedListRetryDelaysForTests,
@@ -669,6 +670,37 @@ describe("meetings store bot dispatch (US-005)", () => {
     expect(surfaced).toEqual(invitedBot);
     expect(rowButtonKind(surfaced)).toBe("invited");
     expect(botAttachmentState(surfaced)).toBe("invited");
+  });
+
+  // Regression (PR #1674 review): a URL invite with no company went to hq-pro as
+  // Personal, which always answers with the HQ Workforce upgrade prompt.
+  it("inviteBotByUrl refuses a null or empty company and never calls inviteBot", async () => {
+    mockDispatchHappyPath({});
+    await meetingsStore.refresh(true);
+    call.mockClear();
+
+    const fromNull = await meetingsStore.inviteBotByUrl("https://zoom.us/j/123", null);
+    const fromEmpty = await meetingsStore.inviteBotByUrl("https://zoom.us/j/123", "");
+
+    expect(call).not.toHaveBeenCalledWith("inviteBot", expect.anything());
+    expect(fromNull?.kind).toBe("warn");
+    expect(fromNull?.text).toMatch(/company/i);
+    expect(fromEmpty?.kind).toBe("warn");
+  });
+
+  it("buildCompanyNameMap keeps memberships without a companyName", () => {
+    const map = buildCompanyNameMap([
+      { companyUid: "cmp_named", companyName: "Named", status: "active" },
+      { companyUid: "cmp_slug", companyName: null, companySlug: "acme", status: "active" },
+      { companyUid: "cmp_bare", status: "active" },
+      { companyUid: "cmp_blank", companyName: "  ", status: "active" },
+    ]);
+    expect([...map.entries()]).toEqual([
+      ["cmp_named", "Named"],
+      ["cmp_slug", "acme"],
+      ["cmp_bare", "cmp_bare"],
+      ["cmp_blank", "cmp_blank"],
+    ]);
   });
 
   it("inviteBotByUrl accepts bare zoom.us URLs and surfaces a recording bot on refresh", async () => {

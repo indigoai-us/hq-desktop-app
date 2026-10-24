@@ -305,4 +305,26 @@ describe("metaFromProjectView", () => {
       "Live board for HQ Work mesh.",
     );
   });
+
+  it("leaves retired stories out of the status story rollup", () => {
+    const meta = metaFromProjectView(
+      {
+        companyUid: "cmp_1",
+        projectId: "p",
+        name: "p",
+        stories: [
+          { id: "US-001", title: "Done", status: "done", passes: true },
+          { id: "US-002", title: "Old", status: "retired" },
+          { id: "US-003", title: "Next", status: "queued" },
+        ],
+        repos: [],
+        files: [],
+      },
+      [],
+      [],
+      "Indigo",
+    );
+    expect(meta.status?.stories.label).toBe("stories 1/2");
+    expect(meta.status?.stories.percent).toBe(50);
+  });
 });

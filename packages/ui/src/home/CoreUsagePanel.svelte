@@ -47,10 +47,13 @@
     rememberCoreUsage,
     type CoreUsageView,
   } from "./core-usage-model.js";
+  import { previewBillCents, usageSwitchLines } from "./usage-switch-model.js";
 
   interface BillingSource {
     getBillingSummary?(companyUid: string): Promise<AdapterResult<unknown>>;
     getUsageStatement?(companyUid: string): Promise<AdapterResult<unknown>>;
+    getUsageSwitch?(companyUid: string): Promise<AdapterResult<unknown>>;
+    getPersonalUsageSwitch?(): Promise<AdapterResult<unknown>>;
     createBillingPortalSession(companyUid: string): Promise<AdapterResult<{ url: string }>>;
     createBillingCheckoutSession?(companyUid: string): Promise<AdapterResult<{ url: string }>>;
     getPersonalBillingSummary?(): Promise<AdapterResult<unknown>>;
@@ -223,6 +226,16 @@
 
   const paid = $derived(view.kind === "ready" && view.paid);
   const notice = $derived(view.kind === "ready" ? view.notice : null);
+  /** The usage pricing switch: the date and estimate before it, the preview after it. */
+  const switchLines = $derived(
+    view.kind === "ready" && view.switchInfo
+      ? usageSwitchLines(
+          view.switchInfo,
+          view.usage?.mode === "allowance" ? previewBillCents(view.usage.totalCents, view.usage.includedCents) : null,
+          view.usage?.partial ?? false,
+        )
+      : null,
+  );
   /** Sync is paused: the bar turns red whatever the share used. */
   const paused = $derived(notice?.kind === "paused-trial-cap" || notice?.kind === "paused-card-required");
   /**
@@ -428,6 +441,16 @@
       data-testid="core-usage-notice"
       data-kind={notice.kind}
     >{mayBill ? notice.text : notice.memberText}</p>
+  {/if}
+
+  {#if switchLines && view.kind === "ready" && view.switchInfo}
+    <div class="core-usage-switch" data-testid="core-usage-switch" data-phase={view.switchInfo.phase}>
+      <p class="core-usage-note" data-testid="core-usage-switch-headline">{switchLines.headline}</p>
+      {#if switchLines.compare}
+        <p class="core-usage-note" data-testid="core-usage-switch-compare">{switchLines.compare}</p>
+      {/if}
+      <p class="core-usage-note small" data-testid="core-usage-switch-note">{switchLines.note}</p>
+    </div>
   {/if}
 
   {#if view.kind === "no-usage"}
@@ -697,6 +720,12 @@
   .core-usage-note {
     margin: 0;
     line-height: 1.35;
+  }
+
+  .core-usage-switch {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
   }
 
   .core-usage-note.small {
