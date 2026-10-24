@@ -5,6 +5,7 @@
 
 import {
   isProjectArtifactPath,
+  isRetiredStory,
   liveSessionsForProject,
   parseLiveReadResponse,
   parseMeshProjectView,
@@ -313,19 +314,21 @@ export function metaFromProjectView(
     view.files,
     view.companyUid,
   ) as ChannelFileItemModel[];
+  // Retired stories are not Board work: keep them out of the status rollup.
+  const liveStories = view.stories.filter((story) => !isRetiredStory(story));
   const status = buildChannelStatusModel({
     project: {
       id: view.projectId,
       title: view.name || view.projectId,
-      storiesTotal: view.stories.length,
-      storiesComplete: view.stories.filter((story) => story.passes === true)
+      storiesTotal: liveStories.length,
+      storiesComplete: liveStories.filter((story) => story.passes === true)
         .length,
       description: view.description ?? null,
     },
     prd: {
       name: view.name,
       repos: view.repos,
-      userStories: view.stories.map((story) => ({
+      userStories: liveStories.map((story) => ({
         id: story.id,
         title: story.title,
         passes: story.passes,

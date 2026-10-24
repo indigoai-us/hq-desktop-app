@@ -35,6 +35,7 @@ export {
 export {
   MESH_STORY_STAGES,
   boardActivityFromLive,
+  isRetiredStory,
   normalizeStoryStage,
   overlayFromSnapshot,
   projectFilesToItems,

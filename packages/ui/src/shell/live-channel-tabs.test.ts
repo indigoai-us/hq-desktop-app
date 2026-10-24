@@ -32,6 +32,22 @@ describe("tabsFromProjectView", () => {
     expect(tabs?.files.map((f) => f.name)).toEqual(["prd.json"]);
     expect(tabs?.status?.members[0]?.displayName).toBe("Ada");
   });
+
+  it("leaves retired stories out of the status story rollup", () => {
+    const tabs = tabsFromProjectView(
+      {
+        ...VIEW,
+        stories: [
+          { id: "US-001", title: "Done", status: "done", passes: true },
+          { id: "US-002", title: "Old", status: "retired" },
+          { id: "US-003", title: "Next", status: "queued" },
+        ],
+      },
+      [],
+    );
+    expect(tabs?.status?.stories.label).toBe("stories 1/2");
+    expect(tabs?.status?.stories.percent).toBe(50);
+  });
 });
 
 describe("projectIdForRow", () => {
