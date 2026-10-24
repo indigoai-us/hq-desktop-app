@@ -34,6 +34,7 @@
     type UsageAccount,
   } from "../home/core-usage-model.js";
   import type { UsagePricing } from "../company/usage-pricing.js";
+  import { previewBillCents, readUsageSwitch, usageSwitchLines, type UsageSwitchInfo } from "../home/usage-switch-model.js";
   import {
     SWITCH_NOT_AVAILABLE_TEXT,
     accountKey,
@@ -110,6 +111,9 @@
   let pricing = $state<UsagePricing | null>(null);
   let spend = $state<Record<string, SpendLimitDetail | null | "loading">>({});
   let switchStates = $state<Record<string, SwitchState>>({});
+  // The usage pricing switch for a paid line (US-026): the date and estimate
+  // on an older plan, or the 30-day preview after the switch.
+  let switchInfos = $state<Record<string, UsageSwitchInfo | null>>({});
   // Usage details in the Core menu opens this screen on the account it showed.
   // The ask is used once: a later visit from the Settings nav opens on the
   // selected company again, not on the line the menu showed days ago.
@@ -191,10 +195,19 @@
     return value === "loading" ? undefined : value;
   }
 
-  /** The detail's own reads: the spend limit, or the switch offer for a free account. */
+  /**
+   * The detail's own reads: the spend limit, the switch offer for a free
+   * account, and the usage pricing switch for a paid one.
+   */
   function loadDetail(acct: UsageAccount, view: AccountRowView | undefined): void {
     if (view?.kind !== "ready") return;
     const key = accountKey(acct);
+    if (view.plan !== "starter" && view.plan !== "trial" && (acct.kind === "personal" || acct.uid) && !(key in switchInfos)) {
+      switchInfos = { ...switchInfos, [key]: null };
+      void readUsageSwitch(company, acct.kind === "personal" ? null : acct.uid).then((info) => {
+        switchInfos = { ...switchInfos, [key]: info };
+      });
+    }
     if (view.plan === "usage" || view.plan === "trial") {
       if (spend[key] === undefined || spend[key] === null) loadSpend(acct);
     } else if (view.plan === "starter") {
@@ -454,6 +467,15 @@
                   <div><dt>Card on file</dt><dd data-testid="usage-card">{view.cardOnFile === null ? "Unknown" : view.cardOnFile ? "Yes" : "No"}</dd></div>
                 </dl>
 
+                {#if switchInfos[key]}
+                  {@const info = switchInfos[key]!}
+                  {@const lines = usageSwitchLines(info, view.usage ? previewBillCents(view.usage.usageCents, view.usage.allowanceCents) : null, view.usage ? usageIsPartial(view.usage) : false)}
+                  <div class="switch" data-testid="usage-pricing-switch" data-phase={info.phase}>
+                    <p class="note" data-testid="usage-pricing-switch-headline">{lines.headline}</p>
+                    {#if lines.compare}<p class="note" data-testid="usage-pricing-switch-compare">{lines.compare}</p>{/if}
+                    <p class="note small" data-testid="usage-pricing-switch-note">{lines.note}</p>
+                  </div>
+                {/if}
                 {#if view.plan === "starter"}
                   {@const state = switchStates[key] ?? { kind: "loading" }}
                   <div class="switch" data-testid="usage-switch" data-state={state.kind}>
@@ -768,6 +790,9 @@
   }
 
   /* Facts sit side by side at their natural width; labels never wrap. */
+  .switch {
+    margin: 0 0 8px;
+  }
   .facts {
     display: flex;
     flex-wrap: wrap;
