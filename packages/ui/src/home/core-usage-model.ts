@@ -21,6 +21,7 @@ import { parseBillingState, parseUsagePause, type AdapterResult, type Json } fro
 import { isUsageOnlySummary } from "../company/usage-billing.js";
 import { registerAccountCache } from "../common/account-caches.js";
 import type { StackSegment } from "./usage-stack.js";
+import { readUsageSwitch, type UsageSwitchInfo } from "./usage-switch-model.js";
 
 export interface UsageGroupDef {
   id: "agents" | "sync" | "storage";
@@ -150,6 +151,8 @@ export type CoreUsageView =
       usageUnavailable: boolean;
       /** Why sync is paused or a card is needed, from the summary; null when neither. */
       notice: UsageNotice | null;
+      /** The usage pricing switch (before it, or in its preview); null or absent when none. */
+      switchInfo?: UsageSwitchInfo | null;
     };
 
 /**
@@ -560,6 +563,7 @@ export function isForbidden(result: AdapterResult<unknown>): boolean {
 export interface CoreUsageSource {
   getBillingSummary?(companyUid: string): Promise<AdapterResult<Json>>;
   getUsageStatement?(companyUid: string): Promise<AdapterResult<Json>>;
+  getUsageSwitch?(companyUid: string): Promise<AdapterResult<Json>>;
 }
 
 /**
@@ -593,9 +597,12 @@ export async function readCoreUsage(
     paid: billingIsSetUp(summary.value),
     notice: isUsageOnlySummary(summary.value) ? usageNoticeFromSummary(summary.value) : null,
   };
-  if (!isUsageOnlySummary(summary.value)) return { ...base, usage: null, usageUnavailable: false };
+  // The switch is read for every company the summary answered: before the
+  // switch it is the date and estimate, after it the 30-day preview.
+  const switchInfo = await readUsageSwitch(source, companyUid);
+  if (!isUsageOnlySummary(summary.value)) return { ...base, switchInfo, usage: null, usageUnavailable: false };
   const trial = runningTrialFromSummary(summary.value, at);
-  if (trial) return { ...base, usage: trialMeterView(trial), usageUnavailable: false };
+  if (trial) return { ...base, switchInfo, usage: trialMeterView(trial), usageUnavailable: false };
   let statement: MonthStatement | null = null;
   if (source.getUsageStatement) {
     try {
@@ -607,8 +614,8 @@ export async function readCoreUsage(
     }
   }
   return statement
-    ? { ...base, usage: meterView(statement), usageUnavailable: false }
-    : { ...base, usage: null, usageUnavailable: true };
+    ? { ...base, switchInfo, usage: meterView(statement), usageUnavailable: false }
+    : { ...base, switchInfo, usage: null, usageUnavailable: true };
 }
 
 /** Waits between automatic retries of a failed read (about three tries in all). */
@@ -787,6 +794,7 @@ export function preferredUsageAccount(): string | null {
 export interface PersonalUsageSource {
   getPersonalBillingSummary?(): Promise<AdapterResult<Json>>;
   getPersonalUsageStatement?(): Promise<AdapterResult<Json>>;
+  getPersonalUsageSwitch?(): Promise<AdapterResult<Json>>;
 }
 
 /**
@@ -866,7 +874,8 @@ export async function readPersonalUsage(
     paid,
     notice: personalNoticeFromSummary(value),
   };
-  if (!personal) return { ...base, usage: null, usageUnavailable: false };
+  const switchInfo = await readUsageSwitch(source as PersonalUsageSource, null);
+  if (!personal) return { ...base, switchInfo, usage: null, usageUnavailable: false };
   let statement: MonthStatement | null = null;
   if (source.getPersonalUsageStatement) {
     try {
@@ -878,8 +887,8 @@ export async function readPersonalUsage(
     }
   }
   return statement
-    ? { ...base, usage: meterView(statement), usageUnavailable: false }
-    : { ...base, usage: null, usageUnavailable: true };
+    ? { ...base, switchInfo, usage: meterView(statement), usageUnavailable: false }
+    : { ...base, switchInfo, usage: null, usageUnavailable: true };
 }
 
 /** Read whichever account is selected, with the same quiet retries. */

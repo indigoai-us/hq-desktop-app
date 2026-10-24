@@ -260,7 +260,49 @@ describe("UsageSettingsPane: one line per account", () => {
     await open("cmp_cedar");
     expect(clean(q("usage-old-plan", detail()!))).toBe("Legacy plan");
     expect(q("usage-switch", detail()!)).toBeNull();
-    expect(src.getUsageSwitch).not.toHaveBeenCalled();
+    // Phase "none": no switch line either.
+    expect(q("usage-pricing-switch", detail()!)).toBeNull();
+  });
+
+  it("a legacy payer sees the switch date, today's price and the usage estimate (US-026)", async () => {
+    const src = source({
+      getUsageSwitch: vi.fn(async () =>
+        ok({ enabled: true, phase: "scheduled", switchDate: "2026-12-19T00:00:00.000Z", previewDays: 30, previewEndsAt: "2027-01-18T00:00:00.000Z", todayMonthlyCents: 5000, estimateCents: 1240, estimateComplete: true, cardOnFile: true, offer: { eligible: false } }),
+      ),
+    });
+    await render(src);
+    await open("cmp_cedar");
+    expect(src.getUsageSwitch).toHaveBeenCalledWith("cmp_cedar");
+    expect(q("usage-pricing-switch", detail()!)?.dataset.phase).toBe("scheduled");
+    expect(clean(q("usage-pricing-switch-headline", detail()!))).toBe("Moves to usage pricing on 19 December 2026");
+    expect(clean(q("usage-pricing-switch-compare", detail()!))).toBe("Today $50.00 a month · On usage about $12.40 a month");
+    expect(q("usage-switch", detail()!)).toBeNull();
+  });
+
+  it("a switched company sees the 30-day preview (US-026)", async () => {
+    const src = source({
+      getUsageSwitch: vi.fn(async () =>
+        ok({ enabled: true, phase: "preview", switchDate: "2026-12-19T00:00:00.000Z", previewDays: 30, previewEndsAt: "2027-01-18T00:00:00.000Z", todayMonthlyCents: null, estimateCents: null, estimateComplete: false }),
+      ),
+    });
+    await render(src);
+    await open("cmp_northwind");
+    expect(q("usage-pricing-switch", detail()!)?.dataset.phase).toBe("preview");
+    expect(clean(q("usage-pricing-switch-headline", detail()!))).toBe("Usage pricing preview until 18 January 2027");
+    expect(clean(q("usage-pricing-switch-note", detail()!))).toBe("Nothing is charged for usage during the 30-day preview. Billing on usage starts 18 January 2027.");
+    expect(clean(q("usage-pricing-switch-compare", detail()!))).toMatch(/^Your bill so far would be \$\d+\.\d\d$/);
+  });
+
+  it("a switched company with an incomplete statement sees the preview bill as a floor (US-026)", async () => {
+    const src = source({
+      getUsageStatement: vi.fn(async (uid: string) => ok({ ...statement(USAGE[uid] ?? 0), complete: false })),
+      getUsageSwitch: vi.fn(async () =>
+        ok({ enabled: true, phase: "preview", switchDate: "2026-12-19T00:00:00.000Z", previewDays: 30, previewEndsAt: "2027-01-18T00:00:00.000Z", todayMonthlyCents: null, estimateCents: null, estimateComplete: false }),
+      ),
+    });
+    await render(src);
+    await open("cmp_northwind");
+    expect(clean(q("usage-pricing-switch-compare", detail()!))).toMatch(/^Your bill so far would be at least \$\d+\.\d\d$/);
   });
 
   it("Turn off sync opens Settings > Sync", async () => {
