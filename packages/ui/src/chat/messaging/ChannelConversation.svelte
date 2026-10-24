@@ -35,7 +35,7 @@
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
   import MentionPicker from "./MentionPicker.svelte";
-  import { isHumanMessage, messageType, type LocalBotRow, type MessageType } from "@hq/platform";
+  import { isHumanMessage, type LocalBotRow, type MessageType } from "@hq/platform";
   import { isMessageTypeVisible, type MessageTypesPref } from "../message-types.js";
   import ArtifactCard from "./ArtifactCard.svelte";
   import ForwardedBlock from "./ForwardedBlock.svelte";
@@ -57,6 +57,7 @@
     type LifecycleCardActionEvent,
   } from "./channelMessageModels";
   import { parseWorkSessionEvent } from "./workSessionEvent";
+  import { timelineMessageType } from "./timeline-type";
 
   // Hoisted once per module: constructing an Intl.DateTimeFormat (what
   // toLocaleTimeString/DateString do under the hood) per row per render was a
@@ -724,11 +725,7 @@
    * cannot tell those apart from autonomous posts.
    */
   function timelineType(msg: ConversationMessageWire): MessageType {
-    const model = systemModelForMessage(msg);
-    if (model?.kind === "lifecycle_card") return "people";
-    if (model !== null) return "system";
-    if (parseWorkSessionEvent(msg.body ?? "") !== null) return "system";
-    return messageType(msg, { inferFromUid: false });
+    return timelineMessageType(msg);
   }
 
   /** Effective filter: the preference, people only for `humanOnly`, or none. */

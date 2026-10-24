@@ -7,7 +7,16 @@
   import { ReactionController } from '../lib/reactionController.svelte';
   import { mergeHydratedThread, shouldAppendInbound } from '../lib/dmThread';
   import { loadSelfPersonUid } from '../lib/selfPersonUid';
-  import { messageTypesStore } from '@hq/ui';
+  import {
+    messageTypesStore,
+    activitySession,
+    activityHiddenCount,
+    lensFor,
+    lensPrefs,
+    ActivityHeaderControl,
+    type ActivityLens,
+  } from '@hq/ui';
+  import { messageType } from '@hq/platform';
   import type { MessageAttachment } from '../lib/messageAttachments';
   import {
     loadAttachmentCompanies,
@@ -65,10 +74,33 @@
   // Message types: agent-audience messages show as rows only when the prop
   // forces them or the "Agents & CLI" switch is on; otherwise each run of
   // them collapses into a fold line in place (US-005).
-  const messageTypes = $derived({
-    ...messageTypesStore.value,
-    agents: showBotMessages || messageTypesStore.value.agents,
+  // The quick window is always narrower than the Activity column needs
+  // (US-006), so it offers the header lens: People / Agents / System / All,
+  // per conversation for this session. A chosen lens replaces the global
+  // preference here; without one the preference (and `showBotMessages`)
+  // decide as before.
+  const activityKey = $derived(`dm:${event.fromPersonUid}`);
+  // Local mirror of the session entry: the session map is the memory across
+  // conversations, this keeps the pane reactive to its own choice.
+  let activityLens = $state<ActivityLens | null>(null);
+  $effect(() => {
+    activityLens = activitySession.get(activityKey).lens;
   });
+  function chooseLens(lens: ActivityLens): void {
+    activityLens = lens;
+    activitySession.update(activityKey, { lens });
+  }
+  const messageTypes = $derived(
+    activityLens
+      ? lensPrefs(activityLens)
+      : {
+          ...messageTypesStore.value,
+          agents: showBotMessages || messageTypesStore.value.agents,
+        },
+  );
+  const hiddenCount = $derived(
+    activityHiddenCount(messages, messageTypes, (m) => messageType(m, { inferFromUid: false })),
+  );
   let loadingThread = $state(false);
   let threadError = $state<string | null>(null);
   let activePeerUid: string | null = null;
@@ -322,6 +354,16 @@
 </script>
 
 <div class="dm-thread-pane-wrap" data-testid="dm-thread-pane">
+  <div class="dm-thread-pane-toolbar">
+    <ActivityHeaderControl
+      count={hiddenCount}
+      open={false}
+      narrow={true}
+      lens={lensFor(messageTypes)}
+      ontoggle={() => {}}
+      onlens={chooseLens}
+    />
+  </div>
   <Conversation
     {messages}
     {messageTypes}
@@ -342,6 +384,13 @@
 </div>
 
 <style>
+  .dm-thread-pane-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    padding: 6px 12px 0;
+    flex: 0 0 auto;
+  }
+
   .dm-thread-pane-wrap {
     display: flex;
     flex-direction: column;

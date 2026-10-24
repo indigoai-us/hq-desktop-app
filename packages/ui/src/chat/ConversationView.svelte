@@ -36,10 +36,16 @@
   import { TaskFeedController, isAgentUid } from "./tasks/task-feed-controller.svelte";
   import { REPLY_OVERLAY_MAX_PX } from "./reply-layout";
   import { messageType, showsCliChip, type MessageType } from "@hq/platform";
+  import { type MessageTypesPref } from "./message-types.js";
+  import ActivityColumn from "./ActivityColumn.svelte";
+  import ActivityHeaderControl from "./ActivityHeaderControl.svelte";
   import {
-    isPeopleOnly,
-    type MessageTypesPref,
-  } from "./message-types.js";
+    ACTIVITY_NARROW_QUERY,
+    activityHiddenCount,
+    lensFor,
+    lensPrefs,
+  } from "./activity-column.js";
+  import { activitySession } from "./activity-session.svelte.js";
   import { parseWorkSessionEvent } from "./messaging/workSessionEvent";
   import "./tokens.css";
   import "./chat-tokens.css";
@@ -80,11 +86,18 @@
    * Effective filter: the message-types preference when given, people only
    * when `humanOnly`, otherwise everything (legacy view).
    */
-  const typeFilter = $derived<MessageTypesPref | null>(
+  const preferenceFilter = $derived<MessageTypesPref | null>(
     messageTypes ?? (humanOnly ? { agents: false, system: false } : null),
   );
-  /** Ask the server for its human view only when people alone are shown. */
-  const serverHumanView = $derived(typeFilter !== null && isPeopleOnly(typeFilter));
+
+  // Activity column (US-006). Per-conversation session state; the narrow
+  // lens, when chosen, replaces the preference for this conversation only.
+  const activity = $derived(activitySession.get(row.id));
+  let activityNarrow = $state(false);
+  const typeFilter = $derived<MessageTypesPref | null>(
+    activityNarrow && activity.lens ? lensPrefs(activity.lens) : preferenceFilter,
+  );
+  const activityColumnOpen = $derived(activity.open && !activityNarrow);
 
   /** A body that parses as a work-session event is a system (mesh) row. */
   function rowType(wire: ConversationMessageWire): MessageType {
@@ -190,16 +203,13 @@
     messages: ConversationMessageWire[];
     nextCursor: string | null;
   }> {
-    // People only: ask the server for the human view. A server that predates
-    // the option ignores it and returns an unfiltered page, which the local
-    // type filter handles as before. The key is only added in that mode, so
-    // the unfiltered request is unchanged.
-    const view = serverHumanView ? { view: "human" as const } : {};
+    // Always the full timeline: hidden types are classified and folded on
+    // the client over the loaded page (US-006), and the Activity column reads
+    // the same rows, so no second request is made.
     if (row.kind === "dm" && row.personUid) {
       const resp = await api.fetchDmThread({
         withPersonUid: row.personUid,
         limit: PAGE_SIZE,
-        ...view,
       });
       return {
         messages: resp.messages ?? [],
@@ -212,7 +222,6 @@
         channelId: row.channelId,
         limit: PAGE_SIZE,
         cursor,
-        ...view,
       });
       return {
         messages: detail.messages ?? [],
@@ -395,17 +404,34 @@
     }),
   );
 
-  // Leaving or entering the server's human view changes which rows the
-  // server sends, so read the conversation again. Skips the first run (the
-  // row effect above already loads).
-  let lastServerHumanView: boolean | null = null;
+  const rowTypeOf = (m: MessageRow): MessageType => m.type ?? "people";
+  const activityCount = $derived(activityHiddenCount(messages, typeFilter, rowTypeOf));
+  const activityItems = $derived(
+    messages
+      .filter((m) => rowTypeOf(m) !== "people")
+      .map((m) => ({
+        eventId: m.eventId,
+        type: rowTypeOf(m),
+        fromDisplayName: m.fromDisplayName,
+        fromPersonUid: m.fromPersonUid ?? null,
+        body: m.body,
+        createdAt: m.createdAt,
+        cliChip: m.cliChip === true,
+      })),
+  );
+
   $effect(() => {
-    const next = serverHumanView;
-    untrack(() => {
-      const prev = lastServerHumanView;
-      lastServerHumanView = next;
-      if (prev !== null && prev !== next) void load();
-    });
+    const mq =
+      typeof window !== "undefined" && typeof window.matchMedia === "function"
+        ? window.matchMedia(ACTIVITY_NARROW_QUERY)
+        : null;
+    if (!mq) return;
+    const apply = () => {
+      activityNarrow = mq.matches;
+    };
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
   });
 
   // Wake-driven refresh: a wake for THIS conversation re-fetches from REST.
@@ -556,6 +582,16 @@
 >
   <div class="conversation-stage" data-testid="chat-stage">
     <div class="conversation-main">
+      <div class="conv-toolbar" data-testid="conversation-toolbar">
+        <ActivityHeaderControl
+          count={activityCount}
+          open={activityColumnOpen}
+          narrow={activityNarrow}
+          lens={lensFor(typeFilter)}
+          ontoggle={() => activitySession.update(row.id, { open: !activity.open })}
+          onlens={(lens) => activitySession.update(row.id, { lens })}
+        />
+      </div>
       <div
         class="conv-thread"
         bind:this={scroller}
@@ -634,6 +670,16 @@
           onclose={closeReply}
           onreplycount={onReplyCount}
           {onopenurl}
+        />
+      </div>
+    {:else if activityColumnOpen}
+      <div class="reply-column" data-testid="activity-slot">
+        <ActivityColumn
+          items={activityItems}
+          segment={activity.segment}
+          onsegment={(segment) => activitySession.update(row.id, { segment })}
+          onreply={openReply}
+          onclose={() => activitySession.update(row.id, { open: false })}
         />
       </div>
     {/if}
@@ -773,6 +819,12 @@
     width: min(100%, 420px);
     z-index: 5;
     background: var(--v4-ground, #161618);
+  }
+
+  .conv-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    flex: 0 0 auto;
   }
 
   .conv-reply-row {
