@@ -19,6 +19,7 @@ import {
   planRequiredUpgradeUrl,
 } from "./invite-errors";
 import { isRecordingCompanyMembership } from "./recording-membership";
+import { notetakerNeedsCompanyText } from "./notetaker-invite";
 import {
   buildRefreshProblemReport,
   botForEvent,
@@ -901,10 +902,17 @@ function buildBotMap(bots: ScheduledBot[]): Map<string, ScheduledBot> {
   return m;
 }
 
-function buildCompanyNameMap(rows: CompanyMembership[]): Map<string, string> {
+/**
+ * Every membership gets an entry, even one hq-pro returned without a name: the
+ * notetaker must be able to save to it. The label falls back to the slug, then
+ * the uid.
+ */
+export function buildCompanyNameMap(rows: CompanyMembership[]): Map<string, string> {
   const m = new Map<string, string>();
   for (const row of rows) {
-    if (row.companyName) m.set(row.companyUid, row.companyName);
+    if (!row.companyUid) continue;
+    const label = row.companyName?.trim() || row.companySlug?.trim() || row.companyUid;
+    m.set(row.companyUid, label);
   }
   return m;
 }
@@ -1137,6 +1145,11 @@ async function inviteBotByUrl(
 ): Promise<ToastDescriptor | null> {
   const url = meetingUrl.trim();
   if (!isPlausibleMeetingUrl(url)) return null;
+  // hq-pro refuses every Personal recording with the HQ Workforce prompt, so a
+  // URL invite without a company is never sent.
+  if (!companyId) {
+    return { kind: "warn", text: notetakerNeedsCompanyText(companyNamesByUid.size) };
+  }
   const epoch = sessionEpoch;
   try {
     unwrap(
