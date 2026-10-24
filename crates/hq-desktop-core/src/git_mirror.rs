@@ -14800,4 +14800,178 @@ hint: Updates were rejected because the remote contains work that you do not hav
             Utc::now()
         ));
     }
+
+    // ── feedback_1c0cef29 regression: lock loop then overlay mass delete ──
+
+    /// Replays the sequence reported in feedback_1c0cef29: the mirror met a held
+    /// root `.git/index.lock`, an autocommit raced it, and a pull then met a
+    /// directory-overlay marker over the local `knowledge/` directory (~480
+    /// files), which left the whole tree staged as deleted.
+    ///
+    /// Asserts outcomes: every blocked pass returns (no unbounded retry), the
+    /// wedged lock is reaped by the hard timeout with at most one warning, the
+    /// overlay-shaped deletion is refused with nothing staged or committed, and
+    /// all 480 files remain in HEAD and on disk once the directory returns.
+    #[test]
+    fn feedback_1c0cef29_lock_loop_then_overlay_marker_never_stages_a_mass_delete() {
+        const KNOWLEDGE_FILES: usize = 480;
+        let _serial = serial();
+        std::env::remove_var(BULK_OVERRIDE_ENV);
+        reset_refusal_report_state();
+        reset_index_lock_report_state();
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        init_repo(root);
+        for i in 0..KNOWLEDGE_FILES {
+            let path = root.join(format!("knowledge/doc-{i:04}.md"));
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, format!("knowledge {i}\n")).unwrap();
+        }
+        for i in 0..20 {
+            fs::write(root.join(format!("file-{i:04}.md")), format!("content {i}")).unwrap();
+        }
+        git_ok(root, &["add", "-A"]);
+        git_ok(root, &["commit", "-q", "-m", "seed knowledge tree"]);
+        let head_before = rev_count(root);
+        let hq = root.to_str().unwrap();
+        let git_dir = git_dir_of(root);
+        let lock = index_lock_path(&git_dir);
+
+        // 1. A held, non-empty root index.lock (a writer that died mid-write).
+        fs::write(&lock, b"partial index data").unwrap();
+        fs::write(root.join("new-note.md"), "written while locked").unwrap();
+        set_probe_override(Some((false, false)));
+
+        // 2. An autocommit races the held lock. It must fail on the lock and
+        //    must not remove it or commit anything.
+        let racer_root = root.to_path_buf();
+        let racer = std::thread::spawn(move || {
+            git(&racer_root, &["add", "-A"]).status.success()
+                || git(&racer_root, &["commit", "-q", "-am", "autocommit"])
+                    .status
+                    .success()
+        });
+        // Mirror passes run concurrently with the racer. Each must return.
+        let mut blocked_passes = 0;
+        let mut pass_events = Vec::new();
+        for _ in 0..25 {
+            let events = sentry::test::with_captured_events(|| {
+                if run_mirror_at(root).is_err() {
+                    blocked_passes += 1;
+                }
+            });
+            pass_events.extend(events);
+        }
+        assert!(
+            !racer.join().unwrap(),
+            "the racing autocommit must be refused by the held lock"
+        );
+        assert_eq!(
+            blocked_passes, 25,
+            "every pass under a held lock fails and returns"
+        );
+        assert!(
+            lock.exists(),
+            "a held lock younger than the grace is never removed"
+        );
+        assert_eq!(rev_count(root), head_before, "nothing commits while locked");
+        assert!(
+            pass_events.is_empty(),
+            "a lock that merely blocks passes must not bill Sentry: {pass_events:?}"
+        );
+
+        // 3. Bounded lock handling: the frozen lock opens the wedge clock once,
+        //    is still refused inside the window, and is reaped past the hard
+        //    timeout. Across the whole episode at most one warning is billed.
+        let t0 = future_now();
+        let mut reaped_at = None;
+        let wedge_events = sentry::test::with_captured_events(|| {
+            for step in 0..40u64 {
+                // One pass a minute, 40 minutes > the 30 minute hard timeout.
+                let now = t0 + Duration::from_secs(step * 60);
+                if reap_index_lock_if_stale(hq, &git_dir, STALE_LOCK_MIN_AGE, now) {
+                    reaped_at = Some(step);
+                    break;
+                }
+                assert!(lock.exists(), "the lock survives until the timeout");
+            }
+        });
+        let reaped_at = reaped_at.expect("the hard timeout must reap a frozen, unheld lock");
+        assert!(
+            reaped_at * 60 >= WEDGED_LOCK_HARD_TIMEOUT.as_secs(),
+            "the lock must not be reaped before the hard timeout (step {reaped_at})"
+        );
+        assert!(!lock.exists(), "the wedged lock is gone after the reap");
+        let warnings = wedge_events
+            .iter()
+            .filter(|e| {
+                e.tags.get("git_mirror_kind").map(String::as_str) == Some("index-lock-wedged")
+            })
+            .count();
+        assert!(
+            warnings <= 1,
+            "a wedge episode bills at most one warning, got {warnings}"
+        );
+        set_probe_override(None);
+
+        // The unblocked mirror commits the note written during the lock.
+        run_mirror_at(root).expect("mirror proceeds once the lock is reaped");
+        assert_eq!(rev_count(root), head_before + 1);
+        let head_after_unlock = rev_count(root);
+
+        // 4. A pull meets a directory-overlay marker over knowledge/: the
+        //    directory is displaced and a single marker file takes its key.
+        let aside = TempDir::new().unwrap();
+        let displaced = aside.path().join("knowledge");
+        fs::rename(root.join("knowledge"), &displaced).unwrap();
+        fs::write(
+            root.join("knowledge"),
+            "overlay-marker -> ../shared/knowledge",
+        )
+        .unwrap();
+
+        for _ in 0..3 {
+            run_mirror_at(root).expect("a refused mass delete is a safe outcome");
+            assert_eq!(
+                rev_count(root),
+                head_after_unlock,
+                "the mass delete never commits"
+            );
+            assert!(
+                index_is_clean(root),
+                "no deletion is left staged after a refusal"
+            );
+        }
+        let head_tree = git_ok(
+            root,
+            &["ls-tree", "-r", "--name-only", "HEAD", "knowledge/"],
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&head_tree.stdout).lines().count(),
+            KNOWLEDGE_FILES,
+            "HEAD still carries every knowledge file"
+        );
+
+        // 5. The overlay resolves and the directory returns: nothing was lost
+        //    and the next pass has nothing to commit.
+        fs::remove_file(root.join("knowledge")).unwrap();
+        fs::rename(&displaced, root.join("knowledge")).unwrap();
+        run_mirror_at(root).expect("mirror ok after the directory returns");
+        assert_eq!(rev_count(root), head_after_unlock);
+        assert!(index_is_clean(root));
+        for i in 0..KNOWLEDGE_FILES {
+            assert!(root.join(format!("knowledge/doc-{i:04}.md")).exists());
+        }
+        let staged_deletes = git_ok(
+            root,
+            &["diff", "--cached", "--diff-filter=D", "--name-only"],
+        );
+        assert!(
+            staged_deletes.stdout.is_empty(),
+            "no staged deletions remain"
+        );
+        reset_refusal_report_state();
+        reset_index_lock_report_state();
+    }
 }
