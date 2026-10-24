@@ -156,3 +156,50 @@ describe("ProjectView parser", () => {
     expect(calls).toEqual(["work-mesh"]);
   });
 });
+
+describe("retired stories (feedback 2d8d6e29)", () => {
+  const base = (id: string): Story => ({
+    id,
+    title: id,
+    description: "",
+    acceptanceCriteria: [],
+    passes: false,
+    labels: [],
+    dependsOn: [],
+  });
+
+  it("parses retired as a mesh status", () => {
+    const live = parseProjectViewStories(
+      { projectId: "p", stories: [{ id: "US-2", status: "retired" }] },
+      "p",
+    );
+    expect(live?.[0]?.meshStatus).toBe("retired");
+  });
+
+  it("drops retired stories from the merged Board stories", () => {
+    const live = parseProjectViewStories(
+      {
+        projectId: "p",
+        stories: [
+          { id: "US-1", status: "in_progress" },
+          { id: "US-2", status: "retired" },
+          { id: "US-9", status: "retired" },
+          { id: "US-10", status: "queued" },
+        ],
+      },
+      "p",
+    );
+    const merged = mergeStories([base("US-1"), base("US-2")], live);
+    expect(merged.map((s) => s.id)).toEqual(["US-1", "US-10"]);
+  });
+
+  it("keeps a story with an unknown status and reads no mesh status", () => {
+    const live = parseProjectViewStories(
+      { projectId: "p", stories: [{ id: "US-1", status: "mystery" }] },
+      "p",
+    );
+    const merged = mergeStories([base("US-1")], live);
+    expect(merged.map((s) => s.id)).toEqual(["US-1"]);
+    expect(merged[0]?.meshStatus).toBeNull();
+  });
+});

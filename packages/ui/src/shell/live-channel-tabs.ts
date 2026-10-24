@@ -8,6 +8,7 @@
  */
 import {
   isProjectArtifactPath,
+  isRetiredStory,
   parseMeshProjectView,
   parseMeshStory,
   projectFilesToItems,
@@ -114,6 +115,8 @@ export function tabsFromProjectView(
     view.companyUid,
   ) as ChannelFileItemModel[];
   const mesh = projectToStatus(view);
+  // Retired stories are not Board work: keep them out of the status rollup.
+  const liveStories = view.stories.filter((story) => !isRetiredStory(story));
   const status = buildChannelStatusModel({
     project: {
       id: view.projectId,
@@ -125,7 +128,7 @@ export function tabsFromProjectView(
     prd: {
       name: view.name,
       repos: view.repos,
-      userStories: view.stories.map((story) => ({
+      userStories: liveStories.map((story) => ({
         id: story.id,
         title: story.title,
         passes: story.passes,

@@ -90,7 +90,13 @@ function parseChanges(raw: unknown): StoryChange[] {
   return out.slice(-32);
 }
 
-const MESH_STATUSES: ReadonlySet<string> = new Set(["queued", "in_progress", "review", "done"]);
+const MESH_STATUSES: ReadonlySet<string> = new Set([
+  "queued",
+  "in_progress",
+  "review",
+  "done",
+  "retired",
+]);
 
 function parseMeshStatus(raw: unknown): StoryMeshStatus | null {
   return typeof raw === "string" && MESH_STATUSES.has(raw) ? (raw as StoryMeshStatus) : null;
@@ -201,13 +207,16 @@ export function mergeStories(
   if (!live) return staticStories.map(blankAssignment);
   const byId = new Map(live.map((story) => [story.id, story]));
   const seen = new Set<string>();
-  const merged = staticStories.map((story) => {
+  const merged: Story[] = [];
+  for (const story of staticStories) {
     seen.add(story.id);
     const row = byId.get(story.id);
-    return row ? applyLive(story, row) : blankAssignment(story);
-  });
+    // A retired story (superseded or archived on re-plan) is not Board work.
+    if (row?.meshStatus === "retired") continue;
+    merged.push(row ? applyLive(story, row) : blankAssignment(story));
+  }
   for (const row of live) {
-    if (seen.has(row.id)) continue;
+    if (seen.has(row.id) || row.meshStatus === "retired") continue;
     merged.push(
       applyLive(
         {
