@@ -58,6 +58,8 @@
   } from "./channelMessageModels";
   import { parseWorkSessionEvent } from "./workSessionEvent";
   import { timelineMessageType } from "./timeline-type";
+  import MessageFold from "../MessageFold.svelte";
+  import { groupIntoFolds } from "../message-folds.js";
 
   // Hoisted once per module: constructing an Intl.DateTimeFormat (what
   // toLocaleTimeString/DateString do under the hood) per row per render was a
@@ -380,18 +382,6 @@
      */
     messageTypes?: MessageTypesPref | null;
     /**
-     * The host's history pages for this conversation are filtered and paged
-     * by the server (it echoed `view: "human"`). `hasEarlier` is then exactly
-     * "the last page carried a cursor", and a page may add no visible row
-     * while a cursor remains (the server's read budget ran out, or the page
-     * held only rows this pane hides). In that case the pane keeps fetching,
-     * bounded per user action, and shows a loading state instead of an empty
-     * pane with a "load earlier" button. Leave false for a server that did
-     * not echo the view: the pane then behaves exactly as it did before this
-     * option existed. Read only when `humanOnly` is on.
-     */
-    serverHumanView?: boolean;
-    /**
      * Identity of the conversation this pane shows (the host passes the row
      * id). A run of history requests is bound to the identity it started
      * for: once this value changes, or the pane is unmounted, the run issues
@@ -459,7 +449,6 @@
     localBots = null,
     humanOnly = false,
     messageTypes = null,
-    serverHumanView = false,
     conversationKey = null,
     offline = false,
     peerPersonUid = null,
@@ -711,9 +700,27 @@
     if (typeFilter === null) return rootMessages;
     return rootMessages.filter((msg) => !hiddenByType(msg));
   });
-  const windowed = $derived(
+  /**
+   * The window counts VISIBLE rows (so "Show N earlier" and the newest page
+   * are about rows the reader can read), then keeps every hidden row from
+   * the oldest windowed visible row onward so it folds in place (US-007)
+   * instead of leaving the timeline. With nothing older left, leading hidden
+   * rows are kept too; a conversation of only hidden rows is one fold.
+   */
+  const visibleWindow = $derived(
     takeNewestWindow(visibleRootMessages, { extra: extraOlder }),
   );
+  const windowed = $derived.by((): { hidden: number; rows: ConversationMessageWire[] } => {
+    if (typeFilter === null || visibleWindow.hidden === 0) {
+      return {
+        hidden: visibleWindow.hidden,
+        rows: typeFilter === null ? visibleWindow.rows : rootMessages.slice(),
+      };
+    }
+    const first = visibleWindow.rows[0];
+    const start = first ? rootMessages.indexOf(first) : 0;
+    return { hidden: visibleWindow.hidden, rows: rootMessages.slice(Math.max(0, start)) };
+  });
   /** First eventId wins so the keyed each never receives duplicate keys
    *  (host page + optimistic localSends race). */
   /**
@@ -748,32 +755,12 @@
       // entirely — rendering nothing for them would still paint an empty
       // bubble with an avatar and a timestamp.
       if (isHiddenTimelineMessage(msg)) continue;
-      // Message types: hide mesh/system rows and any
-      // non-human-audience message. A mesh row that parses as a work-session
-      // event is dropped downstream via `parseWorkSessionEvent` below.
-      // Filtering happens here (not only in renderRows) so a channel whose
-      // only messages are non-human reaches the empty state instead of a
-      // blank pane.
-      if (hiddenByType(msg)) continue;
       seen.add(id);
       out.push(msg);
     }
     return out;
   });
 
-  /**
-   * Root rows from the host that this pane paints: visible in this mode and
-   * not a retired card (`timeline` drops those). The server human view reads
-   * this one set everywhere it asks "is there anything to show yet": to
-   * start the open-time run, to decide whether a run should continue, and to
-   * choose between the loading, paused, and ordinary states. Reading
-   * `visibleRootMessages` in one place and `timeline` in another left a
-   * cached conversation whose only visible row was a retired card on
-   * "Loading earlier messages" with no run and no button.
-   */
-  const paintableRootMessages = $derived(
-    visibleRootMessages.filter((msg) => !isHiddenTimelineMessage(msg)),
-  );
 
   // Persisted answered-decision state, derived from the whole injected message
   // set (root + replies, oldest → newest) so a card locks + highlights its
@@ -1041,16 +1028,6 @@
    */
   const AUTO_FETCH_MAX_PAGES = 5;
   let autoFetchPages = $state(0);
-  /**
-   * Server human view: history requests one user action may issue while the
-   * pages it gets back add no visible row. Opening the conversation counts as
-   * one action, and so does each press of the button. The server reads up to
-   * 1,000 underlying rows per request, so one action crosses about 8,000
-   * hidden rows before the pane stops and asks.
-   */
-  const SERVER_VIEW_MAX_REQUESTS_PER_ACTION = 8;
-  /** Server human view: the open-time run has been started for this mount. */
-  let serverViewAutoStarted = $state(false);
   /** "Show N earlier" prepends rows; anchor the height so the view holds still. */
   let earlierError = $state(false);
   /** The pane has been unmounted: no run may issue another request. */
@@ -1090,23 +1067,7 @@
     prependAnchorHeight = scroller?.scrollHeight ?? 0;
     try {
       if (windowed.hidden === 0) {
-        const paintableBefore = paintableRootMessages.length;
-        let requests = 0;
-        do {
-          if (!stillCurrent()) break;
-          await onloadearlier?.();
-          requests += 1;
-          // Without the server's echo this is one request per action, as it
-          // always was. The echo is read after the request because it arrives
-          // with the page.
-          if (!(humanOnly && serverHumanView)) break;
-          await tick();
-        } while (
-          stillCurrent() &&
-          hasEarlier &&
-          paintableRootMessages.length === paintableBefore &&
-          requests < SERVER_VIEW_MAX_REQUESTS_PER_ACTION
-        );
+        if (stillCurrent()) await onloadearlier?.();
       }
       if (stillCurrent()) extraOlder += TIMELINE_WINDOW;
     } catch {
@@ -1133,40 +1094,16 @@
     if (!hasEarlier) return;
     if (loadingEarlier) return;
     if (earlierError) return;
-    // Server human view: one bounded run per mount (`showEarlier` issues the
-    // requests). Otherwise: one request per run, up to the page cap.
-    if (serverHumanView) {
-      if (serverViewAutoStarted) return;
-    } else if (autoFetchPages >= AUTO_FETCH_MAX_PAGES) return;
+    // One request per run, up to the page cap.
+    if (autoFetchPages >= AUTO_FETCH_MAX_PAGES) return;
     // Only auto-fetch when the visible pane is EMPTY. Any visible human row
     // means the reader has something to read on open; further paging stays
     // click-driven so an ordinary channel does not silently chew server pages.
-    // The server human view reads the rows the pane paints, the same set
-    // `serverScanEmpty` reads, so the two cannot disagree about "empty".
-    const shown = serverHumanView
-      ? paintableRootMessages.length
-      : visibleRootMessages.length;
-    if (shown > 0) return;
-    if (serverHumanView) serverViewAutoStarted = true;
-    else autoFetchPages += 1;
+    if (visibleRootMessages.length > 0) return;
+    autoFetchPages += 1;
     void showEarlier();
   });
 
-  /**
-   * Server human view with nothing to show yet while the server still holds a
-   * cursor. The pane must not present this as an empty conversation with a
-   * "load earlier" button: before the open-time run starts it reads as
-   * loading, and once a run has spent its request budget it says so and
-   * offers to keep looking.
-   */
-  const serverScanEmpty = $derived(
-    humanOnly &&
-      serverHumanView &&
-      hasEarlier &&
-      !loading &&
-      !earlierError &&
-      paintableRootMessages.length === 0,
-  );
 
   let selectedMentions = $state<MentionTarget[]>([]);
   let mentionHighlight = $state(0);
@@ -1603,6 +1540,10 @@
    */
   interface RenderRow {
     msg: ConversationMessageWire;
+    /** `msg.eventId`; lets `groupIntoFolds` key the row. */
+    eventId: string;
+    /** Message type (people / agents / system) from the shared classifier. */
+    type: MessageType;
     systemModel: ReturnType<typeof systemModelForMessage>;
     workActivity: ReturnType<typeof parseWorkSessionEvent>;
     shareCard: ReturnType<typeof parseShareRequestEvent>;
@@ -1615,24 +1556,54 @@
   }
   const renderRows = $derived.by((): RenderRow[] => {
     const out: RenderRow[] = [];
+    // Two grouping chains: visible rows group with visible rows, and rows a
+    // fold holds group with the previous hidden row of the same run. A fold
+    // between two visible rows breaks their group (US-007).
     let prev: ConversationMessageWire | undefined;
     let prevSpecial = false;
     let prevDay = "";
     let prevStackable = false;
+    let prevHidden: ConversationMessageWire | undefined;
+    let prevHiddenSpecial = false;
+    let lastWasHidden = false;
     for (const msg of timeline) {
       const day = dayKey(msg.createdAt);
-      const startsNewDay = prev === undefined || day !== prevDay;
       const systemModel = systemModelForMessage(msg);
       const shareCard = systemModel ? null : parseShareRequestEvent(msg.systemEvent);
       const special = systemModel !== null || shareCard !== null;
       const workActivity = parseWorkSessionEvent(msg.body ?? "");
-      // Message types: a message whose body parses as a
-      // work-mesh activity event is a mesh row and MUST NOT render, even if
-      // the classifier missed it on the wire fields.
-      if (hiddenByType(msg)) continue;
+      const type = timelineType(msg);
+      // Message types: a hidden row is kept for its fold. It never starts a
+      // day separator or a share stack inside the fold.
+      if (hiddenByType(msg)) {
+        out.push({
+          msg,
+          eventId: msg.eventId,
+          type,
+          systemModel,
+          workActivity,
+          shareCard,
+          shareStack: null,
+          groupStart:
+            !lastWasHidden ||
+            prevHidden === undefined ||
+            !messagesShareGroup(prevHidden, msg, prevHiddenSpecial, special),
+          startsNewDay: false,
+          timeLabel: formatTime(msg.createdAt),
+          dateLabel: "",
+        });
+        prevHidden = msg;
+        prevHiddenSpecial = special;
+        lastWasHidden = true;
+        continue;
+      }
+      const brokenByFold = lastWasHidden;
+      lastWasHidden = false;
+      const startsNewDay = prev === undefined || day !== prevDay;
       const stackable = !special && !workActivity && isStackableShare(msg);
       const leader = out.at(-1);
       if (
+        !brokenByFold &&
         stackable &&
         prevStackable &&
         leader &&
@@ -1645,11 +1616,14 @@
       }
       out.push({
         msg,
+        eventId: msg.eventId,
+        type,
         systemModel,
         workActivity,
         shareCard,
         shareStack: null,
         groupStart:
+          brokenByFold ||
           prev === undefined ||
           !messagesShareGroup(prev, msg, prevSpecial, special),
         startsNewDay,
@@ -1662,6 +1636,29 @@
       prevStackable = stackable;
     }
     return out;
+  });
+
+  /**
+   * Visible rows plus fold runs for the hidden ones (US-005 folds, wired into
+   * this pane by US-007). A hidden run collapses in place; a trailing run
+   * folds too. Folds never touch read state.
+   */
+  const foldedRows = $derived(
+    groupIntoFolds(renderRows, typeFilter, {
+      typeOf: (row) => row.type,
+      idOf: (row) => row.eventId,
+      senderOf: (row) => ({
+        uid: (row.msg.fromPersonUid ?? "").trim(),
+        name: messageAuthor(row.msg),
+      }),
+    }),
+  );
+  /** Newest visible row: tail affordances hang off it, never off a fold. */
+  const tailEventId = $derived.by(() => {
+    for (let i = renderRows.length - 1; i >= 0; i -= 1) {
+      if (!hiddenByType(renderRows[i].msg)) return renderRows[i].eventId;
+    }
+    return undefined;
   });
 
   function toggle(messageId: string, emoji: string): void {
@@ -2337,28 +2334,12 @@
         {#if timeline.length === 0 && loading}
           <ReadLoader testid="conversation-loading" />
         {/if}
-        {#if loadingEarlier || (serverScanEmpty && !serverViewAutoStarted)}
+        {#if loadingEarlier}
           <div
             role="status"
             class="dm-load-earlier"
             data-testid="conversation-loading-earlier"
           >Loading earlier messages…</div>
-        {:else if serverScanEmpty}
-          <div
-            role="status"
-            class="dm-thread-empty"
-            data-testid="conversation-scan-paused"
-          >
-            No messages found in the most recent activity.
-          </div>
-          <button
-            type="button"
-            class="dm-load-earlier"
-            data-testid="conversation-load-earlier"
-            onclick={showEarlier}
-          ><RailIcon name="chevron-down" />
-            Look further back
-          </button>
         {:else if windowed.hidden > 0 || hasEarlier}
           <button
             type="button"
@@ -2369,12 +2350,12 @@
             {earlierError ? "Couldn't load earlier messages. Retry" : windowed.hidden > 0 ? `Show ${windowed.hidden} earlier messages` : "Load earlier messages"}
           </button>
         {/if}
-        {#each renderRows as row (row.msg.eventId)}
+        {#snippet channelRow(row: RenderRow, _index?: number)}
           {@const msg = row.msg}
           {@const systemModel = row.systemModel}
           {@const workActivity = row.workActivity}
           {@const groupStart = row.groupStart}
-          {@const isTail = msg.eventId === renderRows[renderRows.length - 1]?.msg.eventId}
+          {@const isTail = msg.eventId === tailEventId}
           {#if row.startsNewDay}
             <div
               class="date-separator"
@@ -2722,6 +2703,13 @@
                 {@render messageActions(msg, false)}
               </div>
             </div>
+          {/if}
+        {/snippet}
+        {#each foldedRows as fr (fr.key)}
+          {#if fr.kind === "fold"}
+            <MessageFold run={fr} item={channelRow} />
+          {:else}
+            {@render channelRow(fr.item)}
           {/if}
         {/each}
         {#if belowMessages}{@render belowMessages()}{/if}

@@ -125,7 +125,7 @@ describe("ChannelConversation human-only mode", () => {
     expect(text).toContain("bot-reply-both-xyz");
   });
 
-  it("default-on: a channel with only non-human rows shows the empty state", async () => {
+  it("default-on: a channel with only non-human rows shows one fold, not the empty state", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);
     component = mount(ChannelConversation, {
@@ -139,7 +139,10 @@ describe("ChannelConversation human-only mode", () => {
       },
     });
     await tick();
-    expect(host.querySelector('[data-testid="conversation-empty"]')).not.toBeNull();
+    // Machine traffic is never silently lost (US-007): the hidden run folds.
+    expect(host.querySelector('[data-testid="conversation-empty"]')).toBeNull();
+    expect(host.querySelectorAll('[data-testid="message-fold"]').length).toBe(1);
+    expect(host.querySelector('[data-testid="message-fold"]')?.getAttribute("data-fold-count")).toBe("2");
     expect(host.querySelector(".work-mesh-row")).toBeNull();
   });
 

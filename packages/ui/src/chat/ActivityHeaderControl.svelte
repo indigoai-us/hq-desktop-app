@@ -130,7 +130,7 @@
     padding: 4px;
     border: 1px solid var(--panel-border, var(--line2));
     border-radius: 8px;
-    background: var(--panel-bg, var(--elevated));
+    background: var(--overlay-bg, var(--panel-bg, var(--elevated)));
     box-shadow: var(--panel-shadow, none);
   }
 
