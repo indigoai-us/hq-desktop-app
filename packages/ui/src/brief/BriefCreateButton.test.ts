@@ -96,6 +96,32 @@ describe("BriefCreateButton", () => {
   });
 });
 
+describe("blocked", () => {
+  it("shows Run in Claude instead beside the fix when the host can open a tool, and not otherwise", () => {
+    const blocked = { kind: "blocked", fix: "start-bot", message: "Your assistant is not running." };
+    for (const canLaunch of [true, false]) {
+      const startInTool = vi.fn(async () => {});
+      const create = { phase: blocked, busy: false, start: vi.fn(async () => {}), fix: vi.fn(async () => null), startInTool, canLaunch } as unknown as BriefCreateRun;
+      target = document.createElement("div");
+      document.body.appendChild(target);
+      app = mount(BriefCreateButton, { target, props: { entries: EARLIER, now: NOW, create } });
+      flushSync();
+      expect(target.querySelector('[data-testid="brief-fix"]')?.textContent).toContain("Start it");
+      const fallback = target.querySelector<HTMLButtonElement>('[data-testid="brief-fallback"]');
+      if (canLaunch) {
+        expect(fallback?.textContent).toContain("Run in Claude instead");
+        fallback!.click();
+        expect(startInTool).toHaveBeenCalledWith("claude");
+      } else {
+        expect(fallback).toBeNull();
+      }
+      unmount(app);
+      app = null;
+      target.remove();
+    }
+  });
+});
+
 describe("on the page", () => {
   it("sits on the title row, right of the Daily Brief block, not on the history row", async () => {
     const bot = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
@@ -103,7 +129,8 @@ describe("on the page", () => {
     const run = new BriefCreateRun({ creator, read: async () => null, storage: null, setTimer: () => 0, clearTimer: () => {}, log: () => {} });
     const id = "brief-20261013-180000";
     const files: Record<string, string> = {
-      "workspace/brief/index.jsonl": JSON.stringify({ run_id: id, created_at: "2026-10-13T18:00:00Z", state: "ready", counts: {} }),
+      // Made today: only today's brief opens by itself (an earlier day's opens on Create brief).
+      "workspace/brief/index.jsonl": JSON.stringify({ run_id: id, created_at: new Date(Date.now() - 3_600_000).toISOString(), state: "ready", counts: {} }),
       [`workspace/brief/${id}/brief.json`]: JSON.stringify({ items: { decisions: [{ id: "d1", title: "Ship it" }] } }),
     };
     target = document.createElement("div");

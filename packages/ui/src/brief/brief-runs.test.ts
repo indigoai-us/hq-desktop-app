@@ -23,6 +23,9 @@ import {
   relativeRunLabel,
   runIdTime,
   stepRun,
+  todayReadyRun,
+  wakeFailedMessage,
+  wakeStep,
   type BriefCreatePhase,
 } from "./brief-runs.js";
 import { sweepPath } from "./brief-data.js";
@@ -338,6 +341,42 @@ describe("the bot that runs the job", () => {
     expect(indigo.split("\n")[0]).toBe("/daily-brief indigo --run-id brief-20261009-090122");
     expect(indigo).toContain("for company indigo");
     expect(indigo).toContain("do not pick another company");
+  });
+
+  it("with no company open, the job is the person's brief across everything: never a company gate", () => {
+    const msg = briefJobMessage("brief-20261023-090000", null);
+    expect(msg.split("\n")[0]).toBe("/daily-brief --all --run-id brief-20261023-090000");
+    expect(msg).toContain("for this person across their HQ");
+    expect(msg).toContain("workspace/brief/brief-20261023-090000/status.json");
+    expect(msg).not.toMatch(/open a company/i);
+    expect(briefJobMessage("brief-20261023-090000", "  ").split("\n")[0]).toBe("/daily-brief --all --run-id brief-20261023-090000");
+  });
+});
+
+describe("todayReadyRun", () => {
+  const line = (run_id: string, created_at: string, state = "ready") => JSON.stringify({ run_id, created_at, state });
+  const now = new Date(2026, 9, 23, 9, 30);
+
+  it("is the newest ready run made on the same local day, else null", () => {
+    const today = parseBriefIndex([line("brief-20261023-071500", new Date(2026, 9, 23, 7, 15).toISOString()), line("brief-20261022-180000", new Date(2026, 9, 22, 18, 0).toISOString())].join("\n")).entries;
+    expect(todayReadyRun(today, now)?.runId).toBe("brief-20261023-071500");
+    // Yesterday's brief is never today's: the page opens on Create brief instead of showing it.
+    const yesterday = parseBriefIndex(line("brief-20261022-180000", new Date(2026, 9, 22, 18, 0).toISOString())).entries;
+    expect(todayReadyRun(yesterday, now)).toBeNull();
+    // A failed run today does not count; an unreadable date does not count.
+    const failed = parseBriefIndex(line("brief-20261023-071500", new Date(2026, 9, 23, 7, 15).toISOString(), "failed")).entries;
+    expect(todayReadyRun(failed, now)).toBeNull();
+    expect(todayReadyRun([], now)).toBeNull();
+  });
+});
+
+describe("the wake path's words", () => {
+  it("names the assistant plainly in the step and the failure", () => {
+    expect(wakeStep("Your assistant")).toBe("Starting your assistant…");
+    expect(wakeStep("Pickles")).toBe("Starting Pickles…");
+    // A bot the listing reports as failed started and stopped on its own; one still stopped never came up.
+    expect(wakeFailedMessage("Your assistant", "failed")).toBe("Your assistant started but stopped right away. Open its profile to see why, or run the brief in Claude instead.");
+    expect(wakeFailedMessage("Pickles", "stopped")).toBe("Pickles did not start. Open its profile to see why, or run the brief in Claude instead.");
   });
 });
 

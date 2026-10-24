@@ -5559,6 +5559,9 @@
           openSetupBotDm({ agentUid: bot.agentUid, handle: bot.name });
           return null;
         },
+        // The fallback when the assistant cannot run: the same job as a
+        // coding-tool session's first prompt (same run id, same files).
+        launch: launchBriefPrompt,
         async botFailure(bot, sinceMs) {
           const res = await adapter.messaging.fetchDmThread({ withPersonUid: bot.agentUid, limit: 20 });
           if (!res.ok) return null;
@@ -5621,7 +5624,7 @@
   const briefRailRun = $derived.by(() => {
     const p = briefRun?.phase;
     if (!p) return null;
-    if (p.kind === "dispatching") return { progress: 0, step: "Waking your bot…" };
+    if (p.kind === "dispatching") return { progress: 0, step: p.step ?? "Waking your bot…" };
     if (p.kind === "waiting") return { progress: 0, step: waitingStep(p.bot) };
     if (p.kind === "running") {
       const latest = p.activity?.at(-1)?.label;

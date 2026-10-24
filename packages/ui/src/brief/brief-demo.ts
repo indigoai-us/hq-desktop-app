@@ -110,20 +110,38 @@ export function briefDemoFromUrl(search: string): BriefDemo | null {
   const at = params.get("briefDemoAt");
   if (!mode && at == null) return null;
   const fails = mode === "fail";
+  // `briefDemo=blocked`: the assistant is stopped. Start it brings it up
+  // after a moment and the run carries on; Run in Claude instead runs the
+  // same simulated job as the fallback. For the design harness's render check.
+  const blocked = mode === "blocked";
   const frozen = at == null ? null : at === "fail" ? "fail" : Math.min(1, Math.max(0, Number(at) || 0));
   let started = 0;
   let runId = "";
+  let woke = 0;
   const bot = { name: "demo", agentUid: "agt_demo", runtime: "claude", state: "running", processAlive: true } as LocalBotRow;
+  const stopped = { ...bot, state: "stopped", processAlive: false } as LocalBotRow;
+  const begin = (key: string): null => {
+    started = Date.now();
+    runId = key;
+    return null;
+  };
   const creator: BriefCreator = {
     company: () => "indigo",
-    check: async () => ({ ok: true, bot }),
-    dispatch: async (_bot, _body, key) => {
-      started = Date.now();
-      runId = key;
+    check: async () => (blocked && (!woke || Date.now() - woke < 1_500) ? { ok: false, bot: stopped, fix: "start-bot", message: "demo is not running." } : { ok: true, bot }),
+    dispatch: async (_bot, _body, key) => begin(key),
+    fix: async () => {
+      woke = Date.now();
       return null;
     },
-    fix: async () => null,
     notify: (title) => console.info(`[daily-brief demo] ${title}`),
+    ...(blocked
+      ? {
+          launch: async (_engine, prompt) => {
+            const key = /--run-id (\S+)/.exec(prompt)?.[1];
+            return key ? begin(key) : "Could not open Claude.";
+          },
+        }
+      : {}),
   };
   const source: BriefSweepSource = {
     async readHqFile(path) {

@@ -147,12 +147,15 @@ describe("dispatch names the app's active company", () => {
     run.stop();
   });
 
-  it("does not dispatch when there is no active company", async () => {
+  it("with no active company, sends the person's brief (--all): the brief never needs a company", async () => {
     const c = creator(() => null);
     const run = new BriefCreateRun({ creator: c, read: async () => null, storage: null, setTimer: () => 0, clearTimer: () => {}, log: () => {} });
     await run.start();
-    expect(c.dispatch).not.toHaveBeenCalled();
-    expect(run.phase).toEqual({ kind: "failed", runId: null, message: "Open a company first, then create the brief." });
+    const body = (c.dispatch as ReturnType<typeof vi.fn>).mock.calls[0]![1] as string;
+    expect(body).toMatch(/^\/daily-brief --all --run-id brief-\d{8}-\d{6}\n/);
+    expect(body).not.toMatch(/open a company/i);
+    expect(run.phase).toMatchObject({ kind: "waiting" });
+    run.stop();
   });
 });
 

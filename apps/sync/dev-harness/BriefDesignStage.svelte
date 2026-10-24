@@ -112,9 +112,9 @@
     history.replaceState(null, '', url);
   });
 
-  type Scene = 'brief' | 'creating' | 'failed' | 'waiting';
+  type Scene = 'brief' | 'creating' | 'failed' | 'waiting' | 'blocked';
   const s0 = params.get('state');
-  let scene = $state<Scene>(s0 === 'creating' || s0 === 'failed' || s0 === 'waiting' ? s0 : 'brief');
+  let scene = $state<Scene>(s0 === 'creating' || s0 === 'failed' || s0 === 'waiting' || s0 === 'blocked' ? s0 : 'brief');
   let over = $state(params.get('over') === 'brief');
   let replay = $state(0);
   function pickScene(next: Scene, overBrief = false) {
@@ -178,6 +178,7 @@
     {/each}
     <span class="sep"></span>
     <button class:on={scene === 'waiting'} onclick={() => (scene === 'waiting' ? replay++ : pickScene('waiting'))} title="The first-visit empty state">Waiting</button>
+    <button class:on={scene === 'blocked'} onclick={() => (scene === 'blocked' ? replay++ : pickScene('blocked'))} title="The assistant is stopped: Start it, or Run in Claude instead">Blocked</button>
     <button class:on={scene === 'creating'} onclick={() => (scene === 'creating' ? replay++ : pickScene('creating', over))} title="Play the Create brief scene; click again to replay"
       >{scene === 'creating' ? 'Replay creating' : 'Creating'}</button
     >
