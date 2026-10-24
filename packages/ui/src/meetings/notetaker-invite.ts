@@ -21,6 +21,30 @@ export function canInviteNotetaker(raw: string): boolean {
   return Boolean(link) && notetakerLinkProblem(link) === null;
 }
 
+/**
+ * Companies the notetaker can save to, by name. Personal is not offered:
+ * hq-pro refuses every Personal recording with the HQ Workforce prompt.
+ */
+export function notetakerCompanyOptions(
+  companyNamesByUid: ReadonlyMap<string, string>,
+): Array<{ value: string; label: string }> {
+  return [...companyNamesByUid.entries()]
+    .map(([value, label]) => ({ value, label }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/** The sole company, preselected; "" when the user must choose (or has none). */
+export function defaultNotetakerCompany(companyNamesByUid: ReadonlyMap<string, string>): string {
+  return companyNamesByUid.size === 1 ? [...companyNamesByUid.keys()][0]! : "";
+}
+
+/** Why a pasted-link invite was not sent: it had no company to save to. */
+export function notetakerNeedsCompanyText(companyCount: number): string {
+  return companyCount === 0
+    ? "The notetaker saves its notes to a company. Join or create a company in HQ to invite it."
+    : "Choose a company for the notes first. Use Invite notetaker to pick one.";
+}
+
 export interface NotetakerStatus {
   /** What the notetaker is doing, in plain words; empty when none is invited. */
   label: string;

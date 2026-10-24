@@ -9,6 +9,7 @@ import { mount, tick, unmount } from "svelte";
 import { ok, unavailable, type AdapterResult, type PlatformAdapter } from "@hq/platform";
 
 import MeetingsPage from "./MeetingsPage.svelte";
+import InviteNotetakerSheet from "./InviteNotetakerSheet.svelte";
 import {
   configureMeetingsApi,
   meetingsStore,
@@ -116,12 +117,108 @@ describe("MeetingsPage paste-a-link company picker", () => {
     expect(host.querySelector(".meetings")?.contains(menu)).toBe(false);
     expect(menu.style.position).toBe("fixed");
     const labels = [...menu.querySelectorAll('[role="option"] .dd-label')].map((o) => o.textContent);
-    expect(labels).toEqual(["Personal", "Indigo", "Holler", "Frogbear"]);
+    expect(labels).toEqual(["Choose a company", "Indigo", "Holler", "Frogbear"]);
 
     menu.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
     menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     await tick();
     expect(document.querySelector('[data-testid="url-invite-company-menu"]')).toBeNull();
     expect(document.activeElement).toBe(button);
+  });
+
+  function typeUrl(value: string): void {
+    const input = host.querySelector<HTMLInputElement>(".url-input")!;
+    input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  function mountPage(): void {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(MeetingsPage, { target: host, props: { adapter: fakeAdapter() } });
+  }
+
+  // Regression (PR #1674 review): the URL input defaulted to Personal, which
+  // hq-pro always refuses with the HQ Workforce prompt.
+  it("does not invite as Personal: with several companies Invite waits for a pick", async () => {
+    mountPage();
+    await vi.waitFor(() => expect(meetingsStore.companyNamesByUid.size).toBe(3));
+    typeUrl("https://zoom.us/j/123");
+    await tick();
+    const invite = host.querySelector<HTMLButtonElement>('[data-testid="meetings-url-invite"]')!;
+    expect(invite.disabled).toBe(true);
+    invite.click();
+    await tick();
+    expect(call).not.toHaveBeenCalledWith("inviteBot");
+  });
+
+  it("invites to the sole company when the user has one", async () => {
+    call.mockImplementation((method: string) => {
+      if (method === "listMemberships") {
+        return Promise.resolve(ok([{ companyUid: "co-indigo", companyName: "Indigo", status: "active" }]));
+      }
+      if (method === "inviteBot") return Promise.resolve(ok({ botId: "b1" }));
+      if (method === "listAccounts" || method === "listUpcoming" || method === "listScheduledBots") {
+        return Promise.resolve(ok([]));
+      }
+      if (method === "listCalendars") return Promise.resolve(ok({ calendars: [], selectedCalendarIds: [] }));
+      throw new Error(`Unexpected api call: ${method}`);
+    });
+    const spy = vi.spyOn(meetingsStore, "inviteBotByUrl");
+    mountPage();
+    await vi.waitFor(() => expect(meetingsStore.companyNamesByUid.size).toBe(1));
+    typeUrl("https://zoom.us/j/123");
+    await tick();
+    const invite = host.querySelector<HTMLButtonElement>('[data-testid="meetings-url-invite"]')!;
+    expect(invite.disabled).toBe(false);
+    invite.click();
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledWith("https://zoom.us/j/123", "co-indigo"));
+    spy.mockRestore();
+  });
+});
+
+// Regression (PR #1674 review): the sheet chose its company once at open, so
+// memberships that arrived later left Invite disabled with no picker.
+describe("Invite notetaker sheet with memberships that load late", () => {
+  it("preselects the sole company once the list arrives", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    call.mockImplementation(async (method: string) => {
+      if (method === "listMemberships") {
+        await gate;
+        return ok([{ companyUid: "co-indigo", companyName: "Indigo", status: "active" }]);
+      }
+      if (method === "listAccounts" || method === "listUpcoming" || method === "listScheduledBots") return ok([]);
+      throw new Error(`Unexpected api call: ${method}`);
+    });
+    // Start from an empty store: a new session generation resets the tenant
+    // session, which clears the companies an earlier test loaded.
+    localStorage.clear();
+    configureMeetingsApi({
+      meetings: meetingsApi(),
+      feedback: { submitBugReport: () => call("submitBugReport") as never },
+      sessionGeneration: 1674,
+    });
+    const spy = vi.spyOn(meetingsStore, "inviteBotByUrl").mockResolvedValue({ kind: "info", text: "ok" });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(InviteNotetakerSheet, { target: host, props: { onclose: () => {} } });
+    const refreshing = meetingsStore.refresh(true);
+    const link = host.querySelector<HTMLInputElement>('[data-testid="invite-notetaker-link"]')!;
+    link.value = "https://zoom.us/j/999";
+    link.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    const confirm = () => host.querySelector<HTMLButtonElement>('[data-testid="invite-notetaker-confirm"]')!;
+    expect(meetingsStore.companyNamesByUid.size).toBe(0);
+    expect(confirm().disabled).toBe(true);
+
+    release();
+    await refreshing;
+    await tick();
+    expect(meetingsStore.companyNamesByUid.size).toBe(1);
+    expect(confirm().disabled).toBe(false);
+    confirm().click();
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledWith("https://zoom.us/j/999", "co-indigo"));
+    spy.mockRestore();
   });
 });
