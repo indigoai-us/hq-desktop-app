@@ -5,6 +5,7 @@ import { mount, tick, unmount } from "svelte";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
+import { messageTypesStore } from "../chat/message-types.svelte.js";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { createChatWakeBus } from "../chat/chat-api.js";
@@ -71,6 +72,10 @@ async function settle(times = 10): Promise<void> {
 }
 
 async function mountProject(adapterValue: PlatformAdapter, wakes = createChatWakeBus()): Promise<void> {
+  // Project activity rows are system events. These tests read them on the
+  // timeline, so both message-type switches are on (they used to rely on the
+  // retired human-only flag answering false).
+  messageTypesStore.set({ agents: true, system: true });
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(DesktopApp, {
@@ -101,6 +106,7 @@ afterEach(async () => {
   component = null;
   host?.remove();
   document.body.innerHTML = "";
+  messageTypesStore.set({ agents: false, system: false });
 });
 
 describe("DesktopApp project activity", () => {

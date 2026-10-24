@@ -30,10 +30,22 @@
   } from "./live-messages";
   import ReplyPanel, { type ReplyPreview } from "./messaging/ReplyPanel.svelte";
   import IdentityMark from "./messaging/IdentityMark.svelte";
+  import MessageFold from "./MessageFold.svelte";
+  import { groupIntoFolds } from "./message-folds.js";
   import AgentTaskStrip from "./tasks/AgentTaskStrip.svelte";
   import { TaskFeedController, isAgentUid } from "./tasks/task-feed-controller.svelte";
   import { REPLY_OVERLAY_MAX_PX } from "./reply-layout";
-  import { isHumanMessage } from "@hq/platform";
+  import { messageType, showsCliChip, type MessageType } from "@hq/platform";
+  import { type MessageTypesPref } from "./message-types.js";
+  import ActivityColumn from "./ActivityColumn.svelte";
+  import ActivityHeaderControl from "./ActivityHeaderControl.svelte";
+  import {
+    ACTIVITY_NARROW_QUERY,
+    activityHiddenCount,
+    lensFor,
+    lensPrefs,
+  } from "./activity-column.js";
+  import { activitySession } from "./activity-session.svelte.js";
   import { parseWorkSessionEvent } from "./messaging/workSessionEvent";
   import "./tokens.css";
   import "./chat-tokens.css";
@@ -48,11 +60,17 @@
     /** Platform seam for opening an external URL from a reply-body link. */
     onopenurl?: (url: string) => void;
     /**
-     * When true (the `desktop.human-only-conversations` flag is on), mesh /
-     * system rows and non-human-audience messages are dropped from the
-     * rendered timeline. Default off preserves the legacy view.
+     * When true, mesh / system rows and non-human-audience messages are
+     * dropped from the rendered timeline. Read only when `messageTypes` is
+     * not given. Default off preserves the legacy view.
      */
     humanOnly?: boolean;
+    /**
+     * Message types preference (`hq:messages:types.v1`). When given it wins
+     * over `humanOnly`: people always show, agent rows iff `agents`, system
+     * rows iff `system`. A change re-filters the open timeline at once.
+     */
+    messageTypes?: MessageTypesPref | null;
   }
 
   let {
@@ -61,18 +79,30 @@
     row,
     onopenurl,
     humanOnly = false,
+    messageTypes = null,
   }: Props = $props();
 
   /**
-   * desktop.human-only-conversations: hide mesh/system rows and any message
-   * whose audience is not human. See `@hq/platform` `isHumanMessage`.
-   * A body that parses as a work-session event is a mesh row.
+   * Effective filter: the message-types preference when given, people only
+   * when `humanOnly`, otherwise everything (legacy view).
    */
-  function keepForHumanOnly(wire: ConversationMessageWire): boolean {
-    if (!humanOnly) return true;
-    if (!isHumanMessage(wire)) return false;
-    if (parseWorkSessionEvent(wire.body ?? "") !== null) return false;
-    return true;
+  const preferenceFilter = $derived<MessageTypesPref | null>(
+    messageTypes ?? (humanOnly ? { agents: false, system: false } : null),
+  );
+
+  // Activity column (US-006). Per-conversation session state; the narrow
+  // lens, when chosen, replaces the preference for this conversation only.
+  const activity = $derived(activitySession.get(row.id));
+  let activityNarrow = $state(false);
+  const typeFilter = $derived<MessageTypesPref | null>(
+    activityNarrow && activity.lens ? lensPrefs(activity.lens) : preferenceFilter,
+  );
+  const activityColumnOpen = $derived(activity.open && !activityNarrow);
+
+  /** A body that parses as a work-session event is a system (mesh) row. */
+  function rowType(wire: ConversationMessageWire): MessageType {
+    if (parseWorkSessionEvent(wire.body ?? "") !== null) return "system";
+    return messageType(wire);
   }
 
   // Background-task chips for every agent in this conversation — the room-
@@ -111,6 +141,12 @@
   interface MessageRow {
     eventId: string;
     fromDisplayName: string;
+    /** Sender uid; drives the fold avatars. Absent on optimistic sends. */
+    fromPersonUid?: string;
+    /** Render the "CLI" chip after the sender name (`showsCliChip`). */
+    cliChip?: boolean;
+    /** `messageType` of the wire row; absent on optimistic sends (people). */
+    type?: MessageType;
     body: string;
     createdAt: string;
     direction: "in" | "out";
@@ -143,8 +179,11 @@
   function mapWireMessage(wire: ConversationMessageWire): MessageRow {
     return {
       eventId: wire.eventId,
+      ...(wire.fromPersonUid ? { fromPersonUid: wire.fromPersonUid } : {}),
       fromDisplayName:
         wire.fromDisplayName?.trim() || wire.fromEmail || "Unknown",
+      cliChip: showsCliChip(wire),
+      type: rowType(wire),
       body: wire.body ?? "",
       createdAt: wire.createdAt,
       direction: wire.direction === "out" ? "out" : "in",
@@ -164,16 +203,13 @@
     messages: ConversationMessageWire[];
     nextCursor: string | null;
   }> {
-    // humanOnly: ask the server for the human view. A server that predates
-    // the option ignores it and returns an unfiltered page, which the local
-    // `keepForHumanOnly` filter handles as before. The key is only added in
-    // humanOnly mode, so the unfiltered request is unchanged.
-    const view = humanOnly ? { view: "human" as const } : {};
+    // Always the full timeline: hidden types are classified and folded on
+    // the client over the loaded page (US-006), and the Activity column reads
+    // the same rows, so no second request is made.
     if (row.kind === "dm" && row.personUid) {
       const resp = await api.fetchDmThread({
         withPersonUid: row.personUid,
         limit: PAGE_SIZE,
-        ...view,
       });
       return {
         messages: resp.messages ?? [],
@@ -186,7 +222,6 @@
         channelId: row.channelId,
         limit: PAGE_SIZE,
         cursor,
-        ...view,
       });
       return {
         messages: detail.messages ?? [],
@@ -204,10 +239,12 @@
       fetchPage: fetchWirePage,
       pageSize: PAGE_SIZE,
       initialCursor: cursor,
+      // The type filter reads audience; without it every row reads as people.
+      keepAudience: true,
     });
     return {
       page: roots
-        .filter((wire) => !isReplyMessage(wire) && keepForHumanOnly(wire))
+        .filter((wire) => !isReplyMessage(wire))
         .map(mapWireMessage),
       nextCursor: newer,
     };
@@ -358,6 +395,45 @@
     });
   });
 
+  // Visible rows plus fold runs for the hidden ones (US-005). A hidden run
+  // collapses in place; a trailing run folds too.
+  const timelineRows = $derived(
+    groupIntoFolds(messages, typeFilter, {
+      typeOf: (m) => m.type ?? "people",
+      senderOf: (m) => ({ uid: m.fromPersonUid ?? "", name: m.fromDisplayName }),
+    }),
+  );
+
+  const rowTypeOf = (m: MessageRow): MessageType => m.type ?? "people";
+  const activityCount = $derived(activityHiddenCount(messages, typeFilter, rowTypeOf));
+  const activityItems = $derived(
+    messages
+      .filter((m) => rowTypeOf(m) !== "people")
+      .map((m) => ({
+        eventId: m.eventId,
+        type: rowTypeOf(m),
+        fromDisplayName: m.fromDisplayName,
+        fromPersonUid: m.fromPersonUid ?? null,
+        body: m.body,
+        createdAt: m.createdAt,
+        cliChip: m.cliChip === true,
+      })),
+  );
+
+  $effect(() => {
+    const mq =
+      typeof window !== "undefined" && typeof window.matchMedia === "function"
+        ? window.matchMedia(ACTIVITY_NARROW_QUERY)
+        : null;
+    if (!mq) return;
+    const apply = () => {
+      activityNarrow = mq.matches;
+    };
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  });
+
   // Wake-driven refresh: a wake for THIS conversation re-fetches from REST.
   $effect(() => {
     if (!wakes) return;
@@ -506,6 +582,16 @@
 >
   <div class="conversation-stage" data-testid="chat-stage">
     <div class="conversation-main">
+      <div class="conv-toolbar" data-testid="conversation-toolbar">
+        <ActivityHeaderControl
+          count={activityCount}
+          open={activityColumnOpen}
+          narrow={activityNarrow}
+          lens={lensFor(typeFilter)}
+          ontoggle={() => activitySession.update(row.id, { open: !activity.open })}
+          onlens={(lens) => activitySession.update(row.id, { lens })}
+        />
+      </div>
       <div
         class="conv-thread"
         bind:this={scroller}
@@ -522,16 +608,85 @@
             {loadingOlder ? "Loading…" : "Show older messages"}
           </button>
         {/if}
-        {#if loading && messages.length === 0}
+        {#if loading && timelineRows.length === 0}
           <div class="conv-status" role="status">Loading conversation…</div>
-        {:else if threadError && messages.length === 0}
+        {:else if threadError && timelineRows.length === 0}
           <div class="conv-status" role="alert">{threadError}</div>
-        {:else if messages.length === 0}
+        {:else if timelineRows.length === 0}
           <div class="conv-status" data-testid="conversation-empty">
             No messages yet — say hi.
           </div>
         {:else}
-          {#each messages as m (m.eventId)}
+          {#key row.id}
+            {#each timelineRows as r (r.key)}
+              {#if r.kind === "fold"}
+                <MessageFold run={r} item={messageRow} />
+              {:else}
+                {@render messageRow(r.item)}
+              {/if}
+            {/each}
+          {/key}
+        {/if}
+      </div>
+
+      <AgentTaskStrip tasks={taskCtl?.tasks ?? []} />
+
+      <div class="conv-composer">
+        <textarea
+          rows="2"
+          placeholder={`Message ${row.title}`}
+          aria-label={`Message ${row.title}`}
+          data-testid="conversation-composer"
+          bind:value={draft}
+          onkeydown={onComposerKey}
+        ></textarea>
+        <button
+          type="button"
+          class="conv-send"
+          data-testid="conversation-send"
+          disabled={sending || !draft.trim()}
+          aria-busy={sending}
+          onclick={() => void send()}
+        ><RailIcon name="send" />
+          {sending ? "Sending…" : "Send"}
+        </button>
+      </div>
+    </div>
+    {#if openReplyRootId && replyScope}
+      <div
+        class="reply-column"
+        class:overlay={narrowViewport}
+        data-testid="reply-column"
+        data-reply-layout={narrowViewport ? "overlay" : "column"}
+      >
+        <ReplyPanel
+          {api}
+          {wakes}
+          rootEventId={openReplyRootId}
+          scope={replyScope}
+          channelId={row.channelId}
+          withPersonUid={row.personUid}
+          {seedRoot}
+          onclose={closeReply}
+          onreplycount={onReplyCount}
+          {onopenurl}
+        />
+      </div>
+    {:else if activityColumnOpen}
+      <div class="reply-column" data-testid="activity-slot">
+        <ActivityColumn
+          items={activityItems}
+          segment={activity.segment}
+          onsegment={(segment) => activitySession.update(row.id, { segment })}
+          onreply={openReply}
+          onclose={() => activitySession.update(row.id, { open: false })}
+        />
+      </div>
+    {/if}
+  </div>
+</section>
+
+{#snippet messageRow(m: MessageRow)}
             <div
               class="conv-msg"
               class:out={m.direction === "out"}
@@ -545,6 +700,13 @@
               <div class="conv-body">
                 <div class="conv-head">
                   <span class="conv-from">{m.fromDisplayName}</span>
+                  {#if m.cliChip}
+                    <span
+                      class="conv-cli-chip"
+                      data-testid="message-cli-chip"
+                      title="Sent from the HQ CLI">CLI</span
+                    >
+                  {/if}
                   {#if m.createdAt}
                     <time class="conv-ts" datetime={m.createdAt}>
                       {timeLabel(m.createdAt)}
@@ -611,56 +773,7 @@
                 {/if}
               </div>
             </div>
-          {/each}
-        {/if}
-      </div>
-
-      <AgentTaskStrip tasks={taskCtl?.tasks ?? []} />
-
-      <div class="conv-composer">
-        <textarea
-          rows="2"
-          placeholder={`Message ${row.title}`}
-          aria-label={`Message ${row.title}`}
-          data-testid="conversation-composer"
-          bind:value={draft}
-          onkeydown={onComposerKey}
-        ></textarea>
-        <button
-          type="button"
-          class="conv-send"
-          data-testid="conversation-send"
-          disabled={sending || !draft.trim()}
-          aria-busy={sending}
-          onclick={() => void send()}
-        ><RailIcon name="send" />
-          {sending ? "Sending…" : "Send"}
-        </button>
-      </div>
-    </div>
-    {#if openReplyRootId && replyScope}
-      <div
-        class="reply-column"
-        class:overlay={narrowViewport}
-        data-testid="reply-column"
-        data-reply-layout={narrowViewport ? "overlay" : "column"}
-      >
-        <ReplyPanel
-          {api}
-          {wakes}
-          rootEventId={openReplyRootId}
-          scope={replyScope}
-          channelId={row.channelId}
-          withPersonUid={row.personUid}
-          {seedRoot}
-          onclose={closeReply}
-          onreplycount={onReplyCount}
-          {onopenurl}
-        />
-      </div>
-    {/if}
-  </div>
-</section>
+{/snippet}
 
 <style>
   .conversation-view {
@@ -706,6 +819,12 @@
     width: min(100%, 420px);
     z-index: 5;
     background: var(--v4-ground, #161618);
+  }
+
+  .conv-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    flex: 0 0 auto;
   }
 
   .conv-reply-row {
@@ -834,6 +953,19 @@
     color: var(--t2);
     font-size: 12px;
     font-weight: 600;
+  }
+
+  .conv-cli-chip {
+    padding: 0 5px;
+    border: 1px solid var(--line2);
+    border-radius: 4px;
+    background: var(--raised);
+    color: var(--t3);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 15px;
+    letter-spacing: 0.04em;
   }
 
   .conv-ts {

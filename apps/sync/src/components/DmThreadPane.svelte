@@ -2,12 +2,21 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { safeUnlisten } from '../lib/listener-registry';
-  import { filterByAudience, countHiddenByAudience } from '../lib/botMessageFilter';
   import Conversation, { type ConversationMessage } from './messaging/Conversation.svelte';
   import { type ReactionEvent, dmScope } from '../lib/reactions';
   import { ReactionController } from '../lib/reactionController.svelte';
   import { mergeHydratedThread, shouldAppendInbound } from '../lib/dmThread';
   import { loadSelfPersonUid } from '../lib/selfPersonUid';
+  import {
+    messageTypesStore,
+    activitySession,
+    activityHiddenCount,
+    lensFor,
+    lensPrefs,
+    ActivityHeaderControl,
+    type ActivityLens,
+  } from '@hq/ui';
+  import { messageType } from '@hq/platform';
   import type { MessageAttachment } from '../lib/messageAttachments';
   import {
     loadAttachmentCompanies,
@@ -38,7 +47,11 @@
 
   interface Props {
     event: DmEvent;
-    /** US-006 toggle: when false (default), agent-audience messages are hidden. */
+    /**
+     * Force agent-audience messages on. When false (default), the global
+     * message-types preference (`hq:messages:types.v1`, "Agents & CLI")
+     * decides; it is off by default, so agent messages stay hidden.
+     */
     showBotMessages?: boolean;
   }
 
@@ -58,9 +71,36 @@
   }
 
   let messages = $state<ThreadMessage[]>([]);
-  // US-006: apply audience filter; when toggle is off, only human/both messages show.
-  const visibleMessages = $derived(filterByAudience(messages, showBotMessages));
-  const hiddenMessageCount = $derived(countHiddenByAudience(messages, showBotMessages));
+  // Message types: agent-audience messages show as rows only when the prop
+  // forces them or the "Agents & CLI" switch is on; otherwise each run of
+  // them collapses into a fold line in place (US-005).
+  // The quick window is always narrower than the Activity column needs
+  // (US-006), so it offers the header lens: People / Agents / System / All,
+  // per conversation for this session. A chosen lens replaces the global
+  // preference here; without one the preference (and `showBotMessages`)
+  // decide as before.
+  const activityKey = $derived(`dm:${event.fromPersonUid}`);
+  // Local mirror of the session entry: the session map is the memory across
+  // conversations, this keeps the pane reactive to its own choice.
+  let activityLens = $state<ActivityLens | null>(null);
+  $effect(() => {
+    activityLens = activitySession.get(activityKey).lens;
+  });
+  function chooseLens(lens: ActivityLens): void {
+    activityLens = lens;
+    activitySession.update(activityKey, { lens });
+  }
+  const messageTypes = $derived(
+    activityLens
+      ? lensPrefs(activityLens)
+      : {
+          ...messageTypesStore.value,
+          agents: showBotMessages || messageTypesStore.value.agents,
+        },
+  );
+  const hiddenCount = $derived(
+    activityHiddenCount(messages, messageTypes, (m) => messageType(m, { inferFromUid: false })),
+  );
   let loadingThread = $state(false);
   let threadError = $state<string | null>(null);
   let activePeerUid: string | null = null;
@@ -314,8 +354,20 @@
 </script>
 
 <div class="dm-thread-pane-wrap" data-testid="dm-thread-pane">
+  <div class="dm-thread-pane-toolbar">
+    <ActivityHeaderControl
+      count={hiddenCount}
+      open={false}
+      narrow={true}
+      lens={lensFor(messageTypes)}
+      ontoggle={() => {}}
+      onlens={chooseLens}
+    />
+  </div>
   <Conversation
-    messages={visibleMessages}
+    {messages}
+    {messageTypes}
+    conversationKey={event.fromPersonUid}
     showAuthors={false}
     loading={loadingThread}
     error={threadError}
@@ -329,26 +381,20 @@
     {selfPersonUid}
     {companies}
   />
-  {#if hiddenMessageCount > 0}
-    <div class="dm-hidden-notice" data-testid="dm-hidden-bot-messages" data-count={hiddenMessageCount}>
-      {hiddenMessageCount} bot {hiddenMessageCount === 1 ? 'message' : 'messages'} hidden
-    </div>
-  {/if}
 </div>
 
 <style>
+  .dm-thread-pane-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    padding: 6px 12px 0;
+    flex: 0 0 auto;
+  }
+
   .dm-thread-pane-wrap {
     display: flex;
     flex-direction: column;
     height: 100%;
     min-height: 0;
-  }
-
-  .dm-hidden-notice {
-    flex-shrink: 0;
-    padding: 4px 12px;
-    font-size: 11px;
-    color: var(--v4-text-2, #9ca3af);
-    text-align: center;
   }
 </style>

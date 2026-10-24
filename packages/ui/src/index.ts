@@ -87,6 +87,14 @@ export * from "./chat/channel-admin.js";
 export * from "./chat/portfolio-session.js";
 export * from "./chat/channel-directory-reconciler.js";
 export * from "./chat/sidebar-model.js";
+export { messageTypesStore } from "./chat/message-types.svelte.js";
+export * from "./chat/message-types.js";
+export * from "./chat/message-folds.js";
+export { default as MessageFold } from "./chat/MessageFold.svelte";
+export * from "./chat/activity-column.js";
+export { activitySession, type ActivityState } from "./chat/activity-session.svelte.js";
+export { default as ActivityColumn } from "./chat/ActivityColumn.svelte";
+export { default as ActivityHeaderControl } from "./chat/ActivityHeaderControl.svelte";
 export {
   DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
   CONVERSATION_BOOT_GRACE_MS,

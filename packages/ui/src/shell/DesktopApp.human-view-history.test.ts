@@ -1,16 +1,18 @@
 // @vitest-environment happy-dom
 
 /**
- * Human-only history requests ask the server for the human view.
+ * History reads always ask for the full timeline (hq-message-visibility
+ * US-006, which retired the US-004 server human view).
  *
- * In humanOnly mode the first page and every "earlier" page of a channel or
- * a 1:1 DM is requested with `view: "human"`. A server that implements it
- * echoes `view: "human"` and pages on its side; an older server ignores the
- * parameter and returns an ordinary unfiltered page with no echo. These
- * tests drive DesktopApp against a scripted adapter playing each server.
+ * With people only shown (the default), the first page and every "earlier"
+ * page of a channel or a 1:1 DM is requested without `view`; agent and system
+ * rows are classified and hidden on the client over the loaded page, so folds
+ * and the Activity column share the one fetch. These tests drive DesktopApp
+ * against a scripted adapter.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mount, tick, unmount } from "svelte";
+import { messageTypesStore } from "../chat/message-types.svelte.js";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
@@ -77,6 +79,18 @@ function mesh(n: number): Record<string, unknown> {
     body: MESH_BODY,
     createdAt: new Date(Date.UTC(2026, 7, 28, 12, n)).toISOString(),
     direction: "in",
+  };
+}
+
+function agentRow(n: number): Record<string, unknown> {
+  return {
+    eventId: `evt_a_${n}`,
+    fromPersonUid: "agt_scout",
+    fromDisplayName: "Scout",
+    body: `agent-row-${n}-xyz`,
+    createdAt: new Date(Date.UTC(2026, 7, 28, 11, n)).toISOString(),
+    direction: "in",
+    audience: "agent",
   };
 }
 
@@ -177,10 +191,28 @@ function fixture(partial: Partial<Fixture> = {}): Fixture {
   };
 }
 
+/**
+ * The retired `desktop.human-only-conversations` flag is now the message-types
+ * preference (hq-message-visibility US-004). `humanOnly: false` maps to both
+ * switches on and `true` to the default (people only); `undefined` leaves
+ * the store as the test set it. Reset to the default before each test.
+ */
+function applyMessageTypes(humanOnly: boolean | undefined): void {
+  // Undefined: the test set the store itself (or left the default).
+  if (humanOnly === undefined) return;
+  messageTypesStore.set(
+    humanOnly === false ? { agents: true, system: true } : { agents: false, system: false },
+  );
+}
+beforeEach(() => {
+  messageTypesStore.set({ agents: false, system: false });
+});
+
 async function mountApp(
   fx: Fixture,
   row: ConversationRow,
 ): Promise<ReturnType<typeof createChatWakeBus>> {
+  applyMessageTypes(fx.humanOnly);
   const wakes = createChatWakeBus();
   host = document.createElement("div");
   host.className = "desktop-shell chat-shell";
@@ -210,26 +242,28 @@ const liveCalls = (fx: Fixture) =>
 /** Requests for an earlier page, in order. */
 const earlierCalls = (fx: Fixture) => fx.calls.filter((call) => call.cursor);
 
-describe("DesktopApp human view history: server that echoes view: \"human\"", () => {
-  it("a full page: the first request carries view=human, rows render, and earlier pages go back with the cursor and the view", async () => {
+describe("DesktopApp history: people only reads the full timeline", () => {
+  it("a full page: the first request carries no view, rows render, and earlier pages go back with the cursor and no view", async () => {
     const fx = fixture({
-      first: { messages: [human(3), human(2)], view: "human", nextCursor: "cur_1" },
-      byCursor: { cur_1: { messages: [human(1)], view: "human" } },
+      first: { messages: [human(3), mesh(1), human(2)], nextCursor: "cur_1" },
+      byCursor: { cur_1: { messages: [human(1)] } },
     });
     await mountApp(fx, CHANNEL_ROW);
 
-    // The history load is the first request, and it asks for the human view.
+    // The history load is the first request, and it asks for the full timeline.
     expect(fx.calls[0]).toMatchObject({
       route: "channel",
       channelId: "chn_ops",
       limit: 50,
-      view: "human",
     });
+    expect("view" in fx.calls[0], JSON.stringify(fx.calls[0])).toBe(false);
     expect(fx.calls[0].cursor ?? null).toBeNull();
     expect(fx.calls[0].since ?? null).toBeNull();
     expect(earlierCalls(fx)).toHaveLength(0);
     expect(host.textContent).toContain("human-row-3-xyz");
     expect(host.textContent).toContain("human-row-2-xyz");
+    // The agent / system row loaded with the page is hidden on the client.
+    expect(host.textContent).not.toContain("mesh-row-summary-xyz");
 
     // hasEarlier is exactly "the page carried a cursor".
     const button = loadEarlierButton();
@@ -242,27 +276,28 @@ describe("DesktopApp human view history: server that echoes view: \"human\"", ()
       route: "channel",
       channelId: "chn_ops",
       cursor: "cur_1",
-      view: "human",
     });
+    expect("view" in earlierCalls(fx)[0]).toBe(false);
     expect(host.textContent).toContain("human-row-1-xyz");
     // The last page had no cursor: no more history, no button.
     expect(loadEarlierButton()).toBeNull();
   });
 
-  it("a truncated empty page, then a page with human rows: the pane keeps fetching and never shows an empty pane with a button", async () => {
+  it("pages of only hidden rows, then a page with human rows: the pane keeps fetching (no view) and never shows an empty pane with a button", async () => {
     const fx = fixture({
-      first: { messages: [], view: "human", nextCursor: "cur_1", viewScanTruncated: true },
+      first: { messages: [mesh(3)], nextCursor: "cur_1" },
       byCursor: {
-        cur_1: { messages: [], view: "human", nextCursor: "cur_2", viewScanTruncated: true },
-        cur_2: { messages: [human(2), human(1)], view: "human" },
+        cur_1: { messages: [mesh(2)], nextCursor: "cur_2" },
+        cur_2: { messages: [human(2), human(1)] },
       },
     });
     await mountApp(fx, CHANNEL_ROW);
     await settle(30);
 
     expect(earlierCalls(fx).map((call) => call.cursor)).toEqual(["cur_1", "cur_2"]);
-    expect(fx.calls[0].view).toBe("human");
-    expect(earlierCalls(fx).every((call) => call.view === "human")).toBe(true);
+    for (const call of fx.calls) {
+      expect("view" in call, JSON.stringify(call)).toBe(false);
+    }
     expect(host.textContent).toContain("human-row-1-xyz");
     expect(host.textContent).toContain("human-row-2-xyz");
     expect(q("conversation-empty")).toBeNull();
@@ -271,7 +306,7 @@ describe("DesktopApp human view history: server that echoes view: \"human\"", ()
   });
 
   it("an empty page with no cursor: the empty state and no button", async () => {
-    const fx = fixture({ first: { messages: [], view: "human" } });
+    const fx = fixture({ first: { messages: [] } });
     await mountApp(fx, CHANNEL_ROW);
     await settle(20);
 
@@ -281,10 +316,9 @@ describe("DesktopApp human view history: server that echoes view: \"human\"", ()
     expect(q("conversation-scan-paused")).toBeNull();
   });
 
-  it("1:1 DM: the thread route gets view=human, and its cursor pages earlier history", async () => {
+  it("1:1 DM: the thread route gets no view, and agent and system rows on the page are hidden locally", async () => {
     const fx = fixture({
-      first: { messages: [human(3), human(2)], view: "human", nextCursor: "dm_cur_1" },
-      byCursor: { dm_cur_1: { messages: [human(1)], view: "human" } },
+      first: { messages: [human(3), mesh(2), agentRow(1), human(2)] },
     });
     await mountApp(fx, DM_ROW);
 
@@ -292,44 +326,38 @@ describe("DesktopApp human view history: server that echoes view: \"human\"", ()
       route: "dm",
       withPersonUid: "prs_ada",
       limit: 50,
-      view: "human",
     });
+    expect("view" in fx.calls[0], JSON.stringify(fx.calls[0])).toBe(false);
     expect(fx.calls[0].cursor ?? null).toBeNull();
     expect(host.textContent).toContain("human-row-3-xyz");
-
-    const button = loadEarlierButton();
-    expect(button, "the echoed DM page carried a cursor").not.toBeNull();
-    button!.click();
-    await settle(20);
-
-    expect(earlierCalls(fx)).toHaveLength(1);
-    expect(earlierCalls(fx)[0]).toMatchObject({
-      route: "dm",
-      withPersonUid: "prs_ada",
-      cursor: "dm_cur_1",
-      view: "human",
-    });
-    expect(host.textContent).toContain("human-row-1-xyz");
-    expect(loadEarlierButton()).toBeNull();
+    expect(host.textContent).toContain("human-row-2-xyz");
+    expect(host.textContent).not.toContain("mesh-row-summary-xyz");
+    expect(host.textContent).not.toContain("agent-row-1-xyz");
   });
 
-  it("1:1 DM: a truncated empty thread page keeps fetching until rows arrive", async () => {
-    const fx = fixture({
-      first: { messages: [], view: "human", nextCursor: "dm_cur_1", viewScanTruncated: true },
-      byCursor: { dm_cur_1: { messages: [human(1)], view: "human" } },
-    });
+  it("1:1 DM with 4 human messages and 30 agent updates: one full-timeline read, 4 rows on screen", async () => {
+    const rows = [];
+    for (let i = 30; i >= 1; i -= 1) rows.push(agentRow(i));
+    rows.splice(0, 0, human(4));
+    rows.splice(10, 0, human(3));
+    rows.splice(20, 0, human(2));
+    rows.push(human(1));
+    const fx = fixture({ first: { messages: rows } });
     await mountApp(fx, DM_ROW);
-    await settle(30);
+    await settle(20);
 
-    expect(earlierCalls(fx).map((call) => [call.route, call.cursor, call.view])).toEqual([
-      ["dm", "dm_cur_1", "human"],
-    ]);
-    expect(host.textContent).toContain("human-row-1-xyz");
+    const history = fx.calls.filter((call) => call.route === "dm" && !call.since && !call.cursor);
+    expect(history.length).toBeGreaterThanOrEqual(1);
+    for (const call of fx.calls) {
+      expect("view" in call, JSON.stringify(call)).toBe(false);
+    }
+    for (const n of [1, 2, 3, 4]) expect(host.textContent).toContain(`human-row-${n}-xyz`);
+    expect(host.textContent).not.toContain("agent-row-");
   });
 
   it("a live catch-up read stays unfiltered: a new-message wake sends since and no view", async () => {
     const fx = fixture({
-      first: { messages: [human(1)], view: "human" },
+      first: { messages: [human(1)] },
       sincePage: {
         messages: [human(9, { createdAt: "2026-09-01T10:00:00.000Z" })],
       },
@@ -353,11 +381,14 @@ describe("DesktopApp human view history: server that echoes view: \"human\"", ()
   });
 
   it("a catch-up read sends no view even when nothing is on screen to take a since from", async () => {
-    const fx = fixture({ first: { messages: [], view: "human" } });
+    const fx = fixture({ first: { messages: [] } });
     const wakes = await mountApp(fx, CHANNEL_ROW);
     await settle(20);
     const before = fx.calls.length;
-    expect(fx.calls.slice(0, before).some((call) => call.view === "human")).toBe(true);
+    expect(before).toBeGreaterThanOrEqual(1);
+    for (const call of fx.calls.slice(0, before)) {
+      expect("view" in call, JSON.stringify(call)).toBe(false);
+    }
 
     wakes.emit("mesh:catchup", { reason: "focus" });
     await settle(20);
@@ -370,7 +401,7 @@ describe("DesktopApp human view history: server that echoes view: \"human\"", ()
   });
 
   it("the person's own just-sent message stays on screen, and the rail is told about the send", async () => {
-    const fx = fixture({ first: { messages: [human(1)], view: "human" } });
+    const fx = fixture({ first: { messages: [human(1)] } });
     const wakes = await mountApp(fx, CHANNEL_ROW);
     const ownSends: string[] = [];
     wakes.on("channel:own-send", ({ channelId }) => {
@@ -397,14 +428,17 @@ describe("DesktopApp human view history: a run of earlier requests ends with its
     const held = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const emptyPage = (next: string): Page => ({
-      messages: [],
-      view: "human",
-      nextCursor: next,
-      viewScanTruncated: true,
-    });
+    // One hidden row per page, fixed by the page's cursor so a re-read of a
+    // page returns the same row.
+    const emptyPage = (next: string): Page => {
+      const [prefix, n] = next.split("_");
+      return {
+        messages: [mesh((prefix === "ops" ? 100 : 200) + Number(n))],
+        nextCursor: next,
+      };
+    };
     // Both channels hold nothing a person typed, and the server always has
-    // a further cursor: every page is empty and truncated.
+    // a further cursor: every page holds only hidden rows.
     const fx = fixture({
       route: (call) => {
         if (call.since) return undefined;
@@ -422,7 +456,8 @@ describe("DesktopApp human view history: a run of earlier requests ends with its
       earlierCalls(fx)
         .filter((call) => call.channelId === channelId)
         .map((call) => call.cursor);
-    const ownRun = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => `design_${n}`);
+    // The bounded auto-fetch: five earlier pages per open conversation.
+    const ownRun = [1, 2, 3, 4, 5].map((n) => `design_${n}`);
 
     await mountApp(fx, CHANNEL_ROW);
     // The open-time run for the first conversation is under way and waiting
@@ -433,10 +468,9 @@ describe("DesktopApp human view history: a run of earlier requests ends with its
     requestChannelOpen("chn_design", { title: "design" });
     await settle(40);
 
-    // The new conversation's own open-time run: eight requests, each for the
-    // next cursor, then the paused state.
+    // The new conversation's own open-time run: five requests, each for the
+    // next cursor, then the ordinary pager.
     expect(cursorsFor("chn_design")).toEqual(ownRun);
-    expect(q("conversation-scan-paused")).not.toBeNull();
 
     // The first conversation's request now answers. Its run started for a
     // conversation that is no longer open, so it must not ask again: the
@@ -450,13 +484,15 @@ describe("DesktopApp human view history: a run of earlier requests ends with its
       fx.calls.filter((call) => call.route === "dm"),
       "no DM thread request",
     ).toHaveLength(0);
-    expect(q("conversation-scan-paused")).not.toBeNull();
-    expect(loadEarlierButton()?.textContent).toContain("Look further back");
+    for (const call of fx.calls) {
+      expect("view" in call, JSON.stringify(call)).toBe(false);
+    }
+    expect(loadEarlierButton()?.textContent).toContain("Load earlier messages");
   });
 });
 
-describe("DesktopApp human view history: older server (no view echo)", () => {
-  it("channel: the request carries view=human, the unfiltered page is filtered locally, and paging works as before", async () => {
+describe("DesktopApp history: unfiltered pages, filtered locally", () => {
+  it("channel: the request carries no view, the unfiltered page is filtered locally, and paging works as before", async () => {
     const fx = fixture({
       // No `view` in the responses: the server ignored the parameter.
       first: { messages: [mesh(2), human(2), mesh(1)], nextCursor: "old_cur_1" },
@@ -464,7 +500,8 @@ describe("DesktopApp human view history: older server (no view echo)", () => {
     });
     await mountApp(fx, CHANNEL_ROW);
 
-    expect(fx.calls[0]).toMatchObject({ route: "channel", limit: 50, view: "human" });
+    expect(fx.calls[0]).toMatchObject({ route: "channel", limit: 50 });
+    expect("view" in fx.calls[0], JSON.stringify(fx.calls[0])).toBe(false);
     expect(earlierCalls(fx)).toHaveLength(0);
     // Local filter: the mesh rows the old server sent are hidden.
     expect(host.textContent).toContain("human-row-2-xyz");
@@ -503,7 +540,7 @@ describe("DesktopApp human view history: older server (no view echo)", () => {
     expect(loadEarlierButton()?.textContent ?? "").toContain("Load earlier messages");
   });
 
-  it("1:1 DM: without the echo the thread gets no cursor and no earlier paging, as before", async () => {
+  it("1:1 DM: the thread keeps its newest window, with no cursor and no earlier paging", async () => {
     const fx = fixture({
       first: { messages: [human(2), human(1)], nextCursor: "old_dm_cur" },
     });
@@ -517,7 +554,7 @@ describe("DesktopApp human view history: older server (no view echo)", () => {
 });
 
 describe("DesktopApp human view history: when view is not sent", () => {
-  it("flag off: no request carries view, for a channel or a DM, first page or earlier", async () => {
+  it("Agents & CLI and System events on: no request carries view, for a channel or a DM, first page or earlier", async () => {
     const fx = fixture({
       humanOnly: false,
       first: { messages: [mesh(1), human(2)], nextCursor: "cur_1" },
@@ -535,7 +572,7 @@ describe("DesktopApp human view history: when view is not sent", () => {
     }
   });
 
-  it("flag off, DM: the thread request carries no view", async () => {
+  it("message types on, DM: the thread request carries no view", async () => {
     const fx = fixture({ humanOnly: false, first: { messages: [human(1)] } });
     await mountApp(fx, DM_ROW);
     expect(fx.calls.length).toBeGreaterThanOrEqual(1);
@@ -545,8 +582,9 @@ describe("DesktopApp human view history: when view is not sent", () => {
     }
   });
 
-  it("a host that cannot answer the flag sends no view (the default is not a confirmation)", async () => {
+  it("a host that cannot answer feature flags still follows the stored preference: Agents & CLI on sends no view", async () => {
     const fx = fixture({ humanOnly: undefined, first: { messages: [human(1)] } });
+    messageTypesStore.set({ agents: true, system: false });
     await mountApp(fx, CHANNEL_ROW);
     expect(fx.calls.length).toBeGreaterThanOrEqual(1);
     for (const call of fx.calls) {

@@ -27,8 +27,6 @@ export {
   FIRST_WEEK_RETURN_NUDGE_FLAG,
   HQ_ANYWHERE_RUNTIME_FLAG,
   HQ_STORAGE_FLAG,
-  HUMAN_ONLY_CONVERSATIONS_FLAG,
-  HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   PERSONAL_WORKSPACE_BOARD_FLAG,
   PERSONAL_TRANSCRIPTS_FLAG,
   POST_READY_ACTION_TELEMETRY_FLAG,
@@ -66,12 +64,17 @@ export {
   humanRecencyState,
   isUndatedNoHumanRow,
   isHumanMessage,
+  messageType,
+  normalizeSentVia,
   orderChannelsForViewer,
+  showsCliChip,
 } from "./humanMessage.js";
 export type {
   HumanClassifiable,
   HumanRecencyChannel,
   HumanRecencyState,
+  MessageType,
+  SentVia,
 } from "./humanMessage.js";
 
 // Shared 429 / Retry-After policy and the jittered background pollers (R2).

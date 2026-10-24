@@ -176,6 +176,8 @@ export interface ConversationMessageWire {
   prompt?: string | null;
   createdAt: string;
   direction?: "in" | "out" | string;
+  /** Sending client: "cli" | "desktop" | "web" | "bot" | "unknown". Absent reads as "unknown". */
+  sentVia?: string | null;
   /** "system" for run-cards / system-event lines (parsed via channelMessageModels). */
   messageKind?: string | null;
   /** Versioned system-event envelope (run_complete card, deploy/pr lines, …). */
@@ -250,7 +252,7 @@ export interface ConversationMessageWire {
     agent?: boolean;
   }> | null;
   /**
-   * Audience classifier used by the `desktop.human-only-conversations` flag.
+   * Audience classifier used by the people-only message-types preference.
    * `null` / `undefined` / `"human"` / `"both"` = human; `"bot"` / `"mesh"`
    * / other = not human. See `@hq/platform` `isHumanMessage`.
    */
@@ -534,6 +536,10 @@ export interface ChatWakeEvents {
     unread?: number;
     /** `unread` is an authoritative rollup, not a one-message delta. */
     absoluteUnread?: boolean;
+    /** Message-type markers when the payload carried them (US-005: hidden types never count as unread). */
+    audience?: string | null;
+    isSystemEvent?: boolean | null;
+    isMeshEvent?: boolean | null;
   };
   /**
    * The person sent a message to this channel from the composer. Unlike a
@@ -581,6 +587,10 @@ export interface ChatWakeEvents {
     prompt?: string | null;
     /** A preceding `dm:pair-unreads` event already set the exact badge count. */
     absoluteUnread?: boolean;
+    /** Message-type markers when the payload carried them (US-005: hidden types never count as unread). */
+    audience?: string | null;
+    isSystemEvent?: boolean | null;
+    isMeshEvent?: boolean | null;
   };
   /** Incoming connection request. */
   "dm:request-new": DmRequest;

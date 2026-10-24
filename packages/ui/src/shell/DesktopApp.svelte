@@ -25,9 +25,21 @@
    * stays platform-pure: every backend touch flows through the injected
    * adapter + api seams and the ChatWakeBus.
    */
+  import { messageTypesStore } from "../chat/message-types.svelte.js";
+  import { isPeopleOnly, type MessageTypesPref } from "../chat/message-types.js";
+  import ActivityColumn from "../chat/ActivityColumn.svelte";
+  import ActivityHeaderControl from "../chat/ActivityHeaderControl.svelte";
+  import {
+    ACTIVITY_NARROW_QUERY,
+    activityHiddenCount,
+    lensFor,
+    lensPrefs,
+  } from "../chat/activity-column.js";
+  import { activitySession } from "../chat/activity-session.svelte.js";
+  import { timelineMessageType } from "../chat/messaging/timeline-type.js";
+  import { showsCliChip } from "@hq/platform";
   import {
     DESKTOP_AGENT_CREATION_FLAG,
-    HUMAN_ONLY_CONVERSATIONS_FLAG,
     READY_FIRST_ACTION_FLAG,
     VISUAL_FIRST_RUN_FLAG,
     FIRST_RUN_FOUND_APPS_FLAG,
@@ -941,7 +953,6 @@
     type TimelineDisplayOptions,
     timelinePageFromPayload,
     withFetchedTimelineRoots,
-    HUMAN_HISTORY_VIEW,
   } from "../chat/live-messages.js";
   import {
     DM_INBOX_SINCE_KEY,
@@ -2120,23 +2131,16 @@
   let cheatSheetOpen = $state(false);
 
   /**
-   * desktop.human-only-conversations: on by default. The desktop adapters
-   * pin the flag to `HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT` (true), so
-   * the initial state is `true` to avoid a first-paint flash of mesh rows.
-   * An adapter that answers `ok(false)` (or fails) still turns it off; the
-   * web adapter keeps the registry read. Callers hide mesh / non-human messages in
-   * conversation views and reorder the sidebar by last human message when
-   * this is true. See `packages/platform/src/humanMessage.ts` for the rule.
+   * Message types preference (`hq:messages:types.v1`, hq-message-visibility
+   * US-004). Replaces the retired `desktop.human-only-conversations` flag.
+   * With both switches off (the default) only people messages show: callers
+   * hide mesh / non-human messages, ask the server for its human view, and
+   * reorder the sidebar by last human message. Turning a switch on in the
+   * sidebar filter menu re-filters at once. See
+   * `packages/platform/src/humanMessage.ts` for the classification rule.
    */
-  let humanOnlyConversations = $state(true);
-  /**
-   * The adapter has answered that the flag is on. `humanOnlyConversations`
-   * starts `true` before any answer so the first paint hides mesh rows, but a
-   * history request only asks the server for the human view (`view=human`)
-   * once the answer is in. Otherwise a host that ends up with the flag off
-   * would have loaded a server-filtered page it then has to show unfiltered.
-   */
-  let humanOnlyConfirmed = $state(false);
+  const messageTypes = $derived(messageTypesStore.value);
+  const humanOnlyConversations = $derived(isPeopleOnly(messageTypes));
   let readyFirstActionEnabled = $state(false);
   $effect(() => {
     const identity = adapter?.identity;
@@ -2152,35 +2156,6 @@
           if (!cancelled) readyFirstActionEnabled = result.ok && result.value === true;
         })
       : undefined;
-    return () => {
-      cancelled = true;
-      unsubscribe?.();
-    };
-  });
-  $effect(() => {
-    const identity = adapter?.identity;
-    if (!identity || typeof identity.hasFeature !== "function") return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const initial = await identity.hasFeature(
-          HUMAN_ONLY_CONVERSATIONS_FLAG,
-        );
-        if (cancelled) return;
-        humanOnlyConversations = initial.ok && initial.value === true;
-        humanOnlyConfirmed = humanOnlyConversations;
-      } catch {
-        // Registry outage / partial mock — stay dark.
-      }
-    })();
-    const unsubscribe =
-      typeof identity.subscribeFeature === "function"
-        ? identity.subscribeFeature(HUMAN_ONLY_CONVERSATIONS_FLAG, (result) => {
-            if (cancelled) return;
-            humanOnlyConversations = result.ok && result.value === true;
-            humanOnlyConfirmed = humanOnlyConversations;
-          })
-        : undefined;
     return () => {
       cancelled = true;
       unsubscribe?.();
@@ -6601,17 +6576,17 @@
 
   /**
    * `history` marks the read that loads a conversation's newest history page
-   * (its result goes to `applyFetchedTimeline`). Only that read asks the
-   * server for the human view. A catch-up read does not, with or without
-   * `since`: it runs on every wake and on the safety poll, and a filtered
-   * read may scan a thousand rows on the server where an unfiltered one
-   * reads twenty. The local filter hides what a catch-up page should not show.
+   * (its result goes to `applyFetchedTimeline`). Every read asks for the full
+   * timeline: hidden message types are classified on the client over the
+   * loaded page, so folds and the Activity column (US-006) share this one
+   * fetch. `history` is kept for callers; it no longer changes the request.
    */
   async function fetchTimelineRaw(
     row: ConversationRow,
     since?: string,
     history = false,
   ): Promise<unknown | null> {
+    void history;
     const started = performance.now();
     console.info("[hq-desktop]", {
       t: Date.now(),
@@ -6619,16 +6594,12 @@
       id: row.id,
       since: since ?? null,
     });
-    const view = history && !since && wantsServerHumanView()
-      ? { view: HUMAN_HISTORY_VIEW }
-      : {};
     try {
       if (row.kind === "dm" && row.personUid) {
         const res = await adapter.messaging.fetchDmThread({
           withPersonUid: row.personUid,
           limit: since ? 20 : 50,
           since,
-          ...view,
         });
         console.info("[hq-desktop]", {
           t: Date.now(),
@@ -6660,7 +6631,6 @@
           channelId: row.channelId,
           limit: since ? 20 : 50,
           since,
-          ...view,
         });
         console.info("[hq-desktop]", {
           t: Date.now(),
@@ -6685,15 +6655,6 @@
   }
 
   let historyCursors = $state<Record<string, string | null>>({});
-  /**
-   * Row id → the newest history page for it came back with `view: "human"`,
-   * meaning the server filtered and paged it. Only then is the page trusted:
-   * "earlier" exists exactly when the page carried a `nextCursor`, and a 1:1
-   * DM gets a cursor at all. An older server ignores `view` and echoes
-   * nothing, which leaves a row out of this map and on the previous
-   * behaviour (local filter, bounded auto-fetch, no DM paging).
-   */
-  let historyServerView = $state<Record<string, boolean>>({});
   /** Rows asked for on a history page. */
   const HISTORY_PAGE_LIMIT = 50;
   /**
@@ -6703,11 +6664,6 @@
    */
   let historyStartHeld = $state<Record<string, boolean>>({});
 
-  /** History requests ask for the server-side human view only once the flag is confirmed on. */
-  function wantsServerHumanView(): boolean {
-    return humanOnlyConversations && humanOnlyConfirmed;
-  }
-
   /** Record what one history page says about paging for this row. */
   function recordHistoryPage(
     row: ConversationRow,
@@ -6715,8 +6671,8 @@
     requestedCursor: string | null,
   ): void {
     const page = timelinePageFromPayload(raw);
-    const serverView = page.view === HUMAN_HISTORY_VIEW;
-    historyServerView[row.id] = serverView;
+    // History reads ask for the full timeline, so no page is server-filtered.
+    const serverView = false;
     // Whether the timeline now reaches the conversation's first row. Read
     // only for a direct message with a bot whose first message is not known.
     if (row.kind === "dm" && (row.personUid ?? "").startsWith("agt_")) {
@@ -6727,9 +6683,9 @@
         serverView,
       });
     }
-    // Without the echo a 1:1 DM keeps no cursor, as before this option
-    // existed. With it, the server's cursor is the only paging signal.
-    const next = row.channelId || serverView ? (page.nextCursor ?? null) : null;
+    // A channel pages by the server's cursor. A 1:1 DM keeps its newest
+    // window (DM paging is not offered on the full timeline).
+    const next = row.channelId ? (page.nextCursor ?? null) : null;
     historyCursors[row.id] =
       requestedCursor !== null && next === requestedCursor ? null : next;
   }
@@ -6740,16 +6696,12 @@
     const generation = tenantGeneration;
     const cursor = historyCursors[row.id];
     if (!cursor) return;
-    // A cursor from a human-view page must go back with `view=human`. One
-    // from an unfiltered page is a plain row key, which that route accepts
-    // too, so the option follows the mode and not the cursor's origin.
-    const view = wantsServerHumanView() ? { view: HUMAN_HISTORY_VIEW } : {};
     const raw = row.channelId
-      ? unwrapAdapter(await adapter.messaging.fetchChannel({ channelId: row.channelId, cursor, limit: 50, ...view }))
+      ? unwrapAdapter(await adapter.messaging.fetchChannel({ channelId: row.channelId, cursor, limit: 50 }))
       : row.kind === "dm" && row.personUid
         ? await hydrateBotDmRoots(
             row,
-            unwrapAdapter(await adapter.messaging.fetchDmThread({ withPersonUid: row.personUid, cursor, limit: 50, ...view })),
+            unwrapAdapter(await adapter.messaging.fetchDmThread({ withPersonUid: row.personUid, cursor, limit: 50 })),
             liveTimeline,
           )
         : null;
@@ -6757,26 +6709,6 @@
     recordHistoryPage(row, raw, cursor);
     commitTimeline(row, mergeFetchedTimeline(liveTimeline, raw, timelineDisplayFor(row)));
   }
-
-  // The flag turned off while server-filtered pages are held: those pages
-  // lack the rows the unfiltered view shows. Drop them and read the open
-  // conversation again without `view`.
-  $effect(() => {
-    if (humanOnlyConversations) return;
-    untrack(() => {
-      const filtered = Object.keys(historyServerView).filter(
-        (id) => historyServerView[id],
-      );
-      if (filtered.length === 0) return;
-      for (const id of filtered) timelineCache.delete(id);
-      historyServerView = {};
-      const row = selectedRow;
-      if (!row || !filtered.includes(row.id)) return;
-      void fetchTimelineRaw(row, undefined, true)
-        .then((raw) => applyFetchedTimeline(row, raw))
-        .catch(() => {});
-    });
-  });
 
   /**
    * A channel opened by id before it was in the loaded rows (a deep link, a
@@ -8524,6 +8456,58 @@
   const conversationEmptyLabel = $derived(
     isProjectChannel ? "No activity yet" : "No messages yet",
   );
+
+  // Activity column (hq-message-visibility US-006). Open / closed, segment and
+  // the narrow-window lens are remembered per conversation for this session
+  // (in memory). Below the column's minimum width the header offers the
+  // lens; a chosen lens replaces the global preference for that
+  // conversation only. The column reads the timeline already loaded for the
+  // conversation, so it follows the same wake-driven live path and makes no
+  // request of its own.
+  let activityNarrow = $state(false);
+  const activityState = $derived(selectedRow ? activitySession.get(selectedRow.id) : null);
+  const conversationMessageTypes = $derived<MessageTypesPref>(
+    activityNarrow && activityState?.lens ? lensPrefs(activityState.lens) : messageTypes,
+  );
+  const activityColumnOpen = $derived(Boolean(activityState?.open) && !activityNarrow);
+  const activityRootRows = $derived(
+    timelineWithActivity.filter((m) => !(m.rootEventId ?? "").trim() || m.rootEventId === m.eventId),
+  );
+  const activityCount = $derived(
+    activityHiddenCount(activityRootRows, conversationMessageTypes, timelineMessageType),
+  );
+  const activityItems = $derived(
+    activityRootRows
+      .map((m) => ({ m, type: timelineMessageType(m) }))
+      .filter(({ type }) => type !== "people")
+      .map(({ m, type }) => ({
+        eventId: m.eventId,
+        type,
+        fromDisplayName: m.fromDisplayName?.trim() || m.fromEmail || "Unknown",
+        fromPersonUid: m.fromPersonUid ?? null,
+        body: m.body ?? "",
+        createdAt: m.createdAt,
+        cliChip: showsCliChip(m),
+      })),
+  );
+  $effect(() => {
+    const mq =
+      typeof window !== "undefined" && typeof window.matchMedia === "function"
+        ? window.matchMedia(ACTIVITY_NARROW_QUERY)
+        : null;
+    if (!mq) return;
+    const apply = () => {
+      activityNarrow = mq.matches;
+    };
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  });
+  function toggleActivity(): void {
+    const row = selectedRow;
+    if (!row) return;
+    activitySession.update(row.id, { open: !activitySession.get(row.id).open });
+  }
 
   const messageScope = $derived(messageScopeForRow(selectedRow));
   let liveReactions = $state<ReactionMap>({});
@@ -11962,6 +11946,7 @@
     const parsed = pairUnreadsFromInboxPage(res.value, {
       since,
       selfUid: self?.uid,
+      messageTypes: messageTypesStore.value,
     });
     const inboxActivity = dmActivityFromInboxPage(res.value, {
       selfUid: self?.uid,
@@ -14785,7 +14770,8 @@
             data-testid="channel-header"
             data-reply-open={openReplyRootId ||
             openProfileMember ||
-            openAgentMember
+            openAgentMember ||
+            activityColumnOpen
               ? "true"
               : "false"}
           >
@@ -14955,6 +14941,18 @@
             </div>
 
             <div class="channel-header-trailing">
+              {#if !isSetupChannel(selectedRow.channelId)}
+                <ActivityHeaderControl
+                  count={activityCount}
+                  open={activityColumnOpen}
+                  narrow={activityNarrow}
+                  lens={lensFor(conversationMessageTypes)}
+                  ontoggle={toggleActivity}
+                  onlens={(lens) => {
+                    if (selectedRow) activitySession.update(selectedRow.id, { lens });
+                  }}
+                />
+              {/if}
               {#if canEditSelectedAgent}
                 <button
                   type="button"
@@ -15658,7 +15656,8 @@
                 <ChannelConversation
                   restoreScroll={pendingRestoreScroll}
                   {localBots}
-                  humanOnly={humanOnlyConversations}
+                  humanOnly={isPeopleOnly(conversationMessageTypes)}
+                  messageTypes={conversationMessageTypes}
                   messages={timelineWithActivity}
                   onseen={async () => {
                     const row = selectedRow;
@@ -15671,8 +15670,6 @@
                     wakes?.emit?.("conversation:read", { id: row.id });
                   }}
                   hasEarlier={Boolean(historyCursors[selectedRow.id])}
-                  serverHumanView={humanOnlyConversations &&
-                    Boolean(historyServerView[selectedRow.id])}
                   onloadearlier={loadEarlierTimeline}
                   conversationKey={selectedRow.id}
                   emptyLabel={conversationEmptyLabel}
@@ -15955,6 +15952,22 @@
                     mentionCandidates={mentionRoster}
                     allowHereMention={Boolean(selectedRow?.channelId)}
                     {onopenurl}
+                  />
+                </div>
+              {:else if activityColumnOpen}
+                <div
+                  class="reply-column inspector-pane activity-pane"
+                  data-testid="activity-slot"
+                  data-reply-layout="column"
+                >
+                  <ActivityColumn
+                    items={activityItems}
+                    segment={activityState?.segment ?? "agents"}
+                    onsegment={(segment) => {
+                      if (selectedRow) activitySession.update(selectedRow.id, { segment });
+                    }}
+                    onreply={openReply}
+                    onclose={toggleActivity}
                   />
                 </div>
               {/if}

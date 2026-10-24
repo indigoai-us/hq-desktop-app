@@ -26,6 +26,10 @@ export interface DmEvent {
   details?: string | null;
   prompt?: string | null;
   createdAt: string;
+  /** Declared audience: "human" | "agent" | "both". Absent on older rows. */
+  audience?: string | null;
+  /** Sending client: "cli" | "desktop" | "web" | "bot" | "unknown". Absent reads as "unknown". */
+  sentVia?: string | null;
 }
 
 export interface ShareEvent {

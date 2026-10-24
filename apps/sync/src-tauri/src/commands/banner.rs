@@ -798,6 +798,7 @@ pub async fn preview_dm_banner(app: AppHandle) -> Result<(), String> {
         message_kind: None,
         attachments: None,
         audience: None,
+        sent_via: None,
     };
     show_dm_banner(app, event).await
 }
