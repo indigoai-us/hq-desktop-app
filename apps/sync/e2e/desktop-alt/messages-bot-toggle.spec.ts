@@ -1,12 +1,17 @@
 // @vitest-environment happy-dom
 //
-// US-006 follow-up — the "Show bot messages" toggle was removed from the
-// Messages toolbar (owner: "remove this button").
+// hq-message-visibility US-007: the old "Show bot messages" toggle and its
+// persisted key are gone, replaced by the "Message types" section in the
+// sidebar filter menu (US-004) and in-place folds (US-005).
 //
 // Locks:
+//   0. ChatSidebar's filter menu has the "Message types" section: caption,
+//      the "Agents & CLI" and "System events" switches, the exact hint line,
+//      and the `hq:messages:types.v1` storage key behind it.
 //   1. Neither Messages toolbar (ChatSidebar in @hq/ui, DmThreadPane here)
-//      renders the toggle or wires its handler.
-//   2. Nobody reads the old persisted preference, so a previously saved "on"
+//      renders the old toggle or wires its handler.
+//   2. Nobody reads the old persisted preference anywhere in packages/ui,
+//      packages/platform or apps/sync source, so a previously saved "on"
 //      cannot leave the list stuck showing bot messages; the stored value
 //      itself is left alone.
 //   3. The default behaviour holds for everyone: the contact list is fetched
@@ -14,13 +19,79 @@
 //   4. DM threads fold agent-audience runs in place (US-005) with the same
 //      audience rules the old filter used.
 
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 const REPO = resolve(__dirname, '../../../..');
 const read = (rel: string) => readFileSync(resolve(REPO, rel), 'utf8');
 const OLD_KEY = 'hq:messages:show-bot-messages';
+
+const NEW_KEY = 'hq:messages:types.v1';
+
+/** Every source file under `rel` (ts, js, svelte), skipping build output. */
+function sourceFiles(rel: string): string[] {
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      if (name === 'node_modules' || name === 'dist' || name === 'target' || name === '.svelte-kit') continue;
+      const full = join(dir, name);
+      if (statSync(full).isDirectory()) walk(full);
+      else if (/\.(ts|tsx|js|mjs|cjs|svelte)$/.test(name)) out.push(full);
+    }
+  };
+  walk(resolve(REPO, rel));
+  return out;
+}
+
+// ── 0. Message types section replaces the toggle ─────────────────────────────
+describe('Messages filter menu: Message types section', () => {
+  const chatSidebar = read('packages/ui/src/chat/ChatSidebar.svelte');
+  const prefModule = read('packages/ui/src/chat/message-types.ts');
+  const storeModule = read('packages/ui/src/chat/message-types.svelte.ts');
+
+  it('renders the caption, both switches and the exact hint line', () => {
+    expect(chatSidebar).toContain('data-testid="chat-filter-types-caption">Message types</div>');
+    expect(chatSidebar).toContain('<span class="chat-filter-text">Agents &amp; CLI</span>');
+    expect(chatSidebar).toContain('<span class="chat-filter-text">System events</span>');
+    expect(chatSidebar).toContain(
+      '>Applies everywhere. Any conversation can override from its header.</p>',
+    );
+  });
+
+  it('the two switches are real switches bound to the preference', () => {
+    const agents = chatSidebar.indexOf('data-testid="chat-filter-type-agents"');
+    const system = chatSidebar.indexOf('data-testid="chat-filter-type-system"');
+    expect(agents).toBeGreaterThan(-1);
+    expect(system).toBeGreaterThan(agents);
+    const agentsTag = chatSidebar.slice(chatSidebar.lastIndexOf('<button', agents), agents + 200);
+    const systemTag = chatSidebar.slice(chatSidebar.lastIndexOf('<button', system), system + 200);
+    expect(agentsTag).toContain('role="switch"');
+    expect(agentsTag).toContain('aria-checked={messageTypes.agents}');
+    expect(agentsTag).toContain('setMessageType("agents", !messageTypes.agents)');
+    expect(systemTag).toContain('role="switch"');
+    expect(systemTag).toContain('aria-checked={messageTypes.system}');
+    expect(systemTag).toContain('setMessageType("system", !messageTypes.system)');
+  });
+
+  it('persists under hq:messages:types.v1 through the shared store', () => {
+    expect(prefModule).toContain(`export const MESSAGE_TYPES_STORAGE_KEY = "${NEW_KEY}";`);
+    expect(prefModule).toContain('storage.getItem(MESSAGE_TYPES_STORAGE_KEY)');
+    expect(storeModule).toContain('loadMessageTypes(');
+    expect(storeModule).toContain('saveMessageTypes(current, storage)');
+    expect(chatSidebar).toContain('import { messageTypesStore } from "./message-types.svelte.js";');
+    expect(chatSidebar).toContain('messageTypesStore.set(');
+  });
+
+  it('the legacy key is never read in packages/ui, packages/platform or apps/sync source', () => {
+    const roots = ['packages/ui/src', 'packages/platform/src', 'apps/sync/src'];
+    const files = roots.flatMap(sourceFiles);
+    // Guard against a vacuous pass from a wrong root.
+    expect(files.length).toBeGreaterThan(100);
+    const hits = files.filter((f) => readFileSync(f, 'utf8').includes(OLD_KEY));
+    expect(hits).toEqual([]);
+  });
+});
 
 // ── 1–3. Source contract: toggle gone, preference unread, default off ────────
 describe('Messages toolbar: bot-message toggle removed', () => {
